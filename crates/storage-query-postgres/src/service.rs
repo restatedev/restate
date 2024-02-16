@@ -11,6 +11,7 @@
 use crate::pgwire_server::HandlerFactory;
 use codederror::CodedError;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_task_center::cancellation_watcher;
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -38,7 +39,7 @@ pub struct PostgresQueryService {
 }
 
 impl PostgresQueryService {
-    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let PostgresQueryService {
             bind_address,
             query_context,
@@ -52,7 +53,7 @@ impl PostgresQueryService {
             }
         })?;
 
-        let shutdown = drain.signaled();
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
         let factory = HandlerFactory::new(query_context);

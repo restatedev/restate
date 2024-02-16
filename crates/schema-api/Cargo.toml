@@ -20,7 +20,7 @@ proto_symbol = ["dep:bytes"]
 serde = ["dep:serde", "dep:serde_with", "restate-types?/serde", "dep:restate-serde-util"]
 serde_schema = ["serde", "dep:schemars", "restate-types?/serde_schema", "restate-serde-util?/schema"]
 service = ["dep:bytes", "dep:restate-types"]
-subscription = ["dep:anyhow"]
+subscription = ["dep:anyhow", "dep:restate-types"]
 
 [dependencies]
 restate-base64-util = { workspace = true, optional = true }

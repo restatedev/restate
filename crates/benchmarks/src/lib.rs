@@ -70,9 +70,9 @@ pub fn spawn_restate(config: Configuration) -> (TaskCenter, Runtime) {
     let tc = TaskCenterFactory::create(rt.handle().clone());
     let cloned_tc = tc.clone();
     rt.block_on(async move {
-        Node::new(config.node)
-            .expect("Restate node must build")
-            .boot(&cloned_tc)
+        let node = Node::new(config.node).expect("Restate node must build");
+        cloned_tc
+            .run_in_scope_sync("startup", None, || node.start())
             .expect("Restate node must boot");
     });
 

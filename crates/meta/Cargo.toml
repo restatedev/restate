@@ -22,6 +22,7 @@ restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 
 anyhow = { workspace = true }

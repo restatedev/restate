@@ -12,7 +12,6 @@ use super::options::JsonOptions;
 use super::*;
 
 use codederror::CodedError;
-use futures::FutureExt;
 use hyper::server::conn::AddrStream;
 use hyper::service::make_service_fn;
 use hyper::service::service_fn;
@@ -21,6 +20,7 @@ use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
+use restate_task_center::cancellation_watcher;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -97,7 +97,7 @@ where
         (ingress, start_signal_rx)
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), IngressServerError> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let HyperServerIngress {
             listening_addr,
             concurrency_limit,
@@ -148,10 +148,10 @@ where
         // future completion does not affect endpoint
         let _ = start_signal_tx.send(server.local_addr());
 
-        server
-            .with_graceful_shutdown(drain.signaled().map(|_| ()))
+        Ok(server
+            .with_graceful_shutdown(cancellation_watcher())
             .await
-            .map_err(IngressServerError::Running)
+            .map_err(IngressServerError::Running)?)
     }
 }
 
@@ -162,11 +162,11 @@ mod tests {
     use std::net::SocketAddr;
 
     use bytes::Bytes;
-    use drain::Signal;
     use http::header::CONTENT_TYPE;
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
+    use restate_task_center::{create_test_task_center, TaskCenter, TaskKind};
     use serde_json::json;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -333,7 +333,7 @@ mod tests {
     }
 
     async fn bootstrap_test() -> (SocketAddr, JoinHandle<Option<IngressRequest>>, TestHandle) {
-        let (drain, watch) = drain::channel();
+        let tc = create_test_task_center();
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
@@ -344,7 +344,8 @@ mod tests {
             test_schemas(),
             ingress_request_tx,
         );
-        let ingress_handle = tokio::spawn(ingress.run(watch));
+        tc.spawn(TaskKind::SystemService, "ingress", None, ingress.run())
+            .unwrap();
 
         // Mock the service invocation receiver
         let input = tokio::spawn(async move { ingress_request_rx.recv().await });
@@ -352,15 +353,14 @@ mod tests {
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, input, TestHandle(drain, ingress_handle))
+        (address, input, TestHandle(tc))
     }
 
-    struct TestHandle(Signal, JoinHandle<Result<(), IngressServerError>>);
+    struct TestHandle(TaskCenter);
 
     impl TestHandle {
         async fn close(self) {
-            self.0.drain().await;
-            self.1.await.unwrap().unwrap();
+            self.0.cancel_tasks(None, None).await;
         }
     }
 }

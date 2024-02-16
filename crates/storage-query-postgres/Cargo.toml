@@ -17,8 +17,11 @@ restate-storage-api = {workspace = true}
 restate-storage-proto = {workspace = true }
 restate-storage-query-datafusion = {workspace = true }
 restate-storage-rocksdb = {workspace = true }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 
+
+anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
