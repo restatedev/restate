@@ -416,7 +416,7 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self, drain: drain::Watch) -> Result<(), Error> {
+    pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         let mut external_client_ingress_handle = tokio::spawn(

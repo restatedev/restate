@@ -11,7 +11,5 @@
 mod cluster_controller;
 mod worker;
 
-pub use cluster_controller::{
-    ClusterControllerRole, ClusterControllerRoleBuildError, ClusterControllerRoleError,
-};
-pub use worker::{update_schemas, WorkerRole, WorkerRoleBuildError, WorkerRoleError};
+pub use cluster_controller::{ClusterControllerRole, ClusterControllerRoleBuildError};
+pub use worker::{update_schemas, WorkerRole, WorkerRoleBuildError};

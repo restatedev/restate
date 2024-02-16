@@ -28,10 +28,12 @@ restate-schema-api = { workspace = true }
 restate-schema-impl = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
+restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 restate-worker-api = { workspace = true }
 
+anyhow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -56,8 +58,18 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+restate-test-util = { workspace = true }
+
+googletest = { workspace = true }
+test-log = { workspace = true }
+tracing-test = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

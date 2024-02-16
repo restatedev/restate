@@ -20,7 +20,7 @@ use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
     let config = restate_benchmarks::restate_configuration();
-    let (_rt, signal, app_handle) = restate_benchmarks::spawn_restate(config);
+    let (tc, _rt) = restate_benchmarks::spawn_restate(config);
 
     let current_thread_rt = Builder::new_current_thread()
         .enable_all()
@@ -48,13 +48,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
                 .iter(|| send_sequential_counter_requests(counter_client.clone(), num_requests))
         });
 
-    current_thread_rt.block_on(async move {
-        signal.drain().await;
-        app_handle
-            .await
-            .expect("restate should not panic")
-            .expect("restate should not fail");
-    });
+    current_thread_rt.block_on(tc.shutdown_node("completed", 0));
 }
 
 async fn send_sequential_counter_requests(

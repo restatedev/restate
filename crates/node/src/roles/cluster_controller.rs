@@ -8,45 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Options;
+use anyhow::Context;
 use codederror::CodedError;
-use futures::TryFutureExt;
+use tonic::transport::Channel;
+use tracing::info;
+
 use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_node_services::worker::{StateMutationRequest, TerminationRequest};
+use restate_task_center::{cancellation_watcher, task_center, TaskKind};
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
 use restate_worker_api::{Error, Handle};
-use tokio::task::{JoinError, JoinSet};
-use tonic::transport::Channel;
-use tracing::info;
 
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum ClusterControllerRoleError {
-    #[error("cluster controller failed: {0}")]
-    ClusterController(
-        #[from]
-        #[code]
-        restate_cluster_controller::Error,
-    ),
-    #[error("cluster controller role component panicked: {0}")]
-    #[code(unknown)]
-    ComponentPanic(#[from] JoinError),
-    #[error("admin component failed: {0}")]
-    Admin(
-        #[from]
-        #[code]
-        restate_admin::Error,
-    ),
-    #[error("meta component failed: {0}")]
-    Meta(
-        #[from]
-        #[code]
-        restate_meta::Error,
-    ),
-}
+use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum ClusterControllerRoleBuildError {
@@ -74,64 +51,54 @@ impl ClusterControllerRole {
         self.meta.schema_reader()
     }
 
-    pub async fn run(
-        mut self,
-        shutdown_watch: drain::Watch,
-    ) -> Result<(), ClusterControllerRoleError> {
+    pub async fn run(mut self) -> Result<(), anyhow::Error> {
         info!("Running cluster controller role");
 
-        let shutdown_signal = shutdown_watch.signaled();
+        let shutdown_signal = cancellation_watcher();
         let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
-        let mut component_set = JoinSet::new();
-
         // Init the meta. This will reload the schemas in memory.
-        self.meta
-            .init()
-            .await
-            .map_err(ClusterControllerRoleError::Meta)?;
+        self.meta.init().await?;
 
-        component_set.spawn(
-            self.meta
-                .run(inner_shutdown_watch.clone())
-                .map_ok(|_| "meta-service")
-                .map_err(ClusterControllerRoleError::Meta),
-        );
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "meta-service",
+            None,
+            self.meta.run(inner_shutdown_watch.clone()),
+        )?;
 
-        component_set.spawn(
-            self.controller
-                .run(inner_shutdown_watch.clone())
-                .map_ok(|_| "cluster-controller")
-                .map_err(ClusterControllerRoleError::ClusterController),
-        );
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "cluster-controller-service",
+            None,
+            self.controller.run(inner_shutdown_watch.clone()),
+        )?;
 
         // todo: Make address configurable
-        let worker_channel =
-            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
+        let worker_channel = Channel::builder(
+            "http://127.0.0.1:5122/"
+                .parse()
+                .context("valid worker address uri")?,
+        )
+        .connect_lazy();
         let worker_handle = GrpcWorkerHandle::new(worker_channel.clone());
         let worker_svc_client =
             restate_node_services::worker::worker_svc_client::WorkerSvcClient::new(worker_channel);
 
-        component_set.spawn(
+        task_center().spawn_child(
+            TaskKind::SystemService,
+            "admin-service",
+            None,
             self.admin
-                .run(inner_shutdown_watch, worker_handle, worker_svc_client)
-                .map_ok(|_| "admin")
-                .map_err(ClusterControllerRoleError::Admin),
-        );
+                .run(inner_shutdown_watch, worker_handle, worker_svc_client),
+        )?;
 
         tokio::select! {
             _ = shutdown_signal => {
                 info!("Stopping cluster controller role");
                 // ignore result because we are shutting down
                 inner_shutdown_signal.drain().await;
-                component_set.shutdown().await;
             },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(ClusterControllerRoleError::ComponentPanic)??;
-                panic!("Unexpected termination of cluster controller role component '{component_name}'");
-
-            }
-
         }
 
         Ok(())
