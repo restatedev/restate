@@ -28,7 +28,7 @@ impl NodeCtrlSvc for NodeCtrlHandler {
         // STUB IMPLEMENTATION
         return Ok(Response::new(IdentResponse {
             status: NodeStatus::Alive.into(),
-            node_id: NodeId::my_node_node().map(Into::into),
+            node_id: NodeId::my_node_id().map(Into::into),
             nodes_config_version: NodesConfiguration::current_version().into(),
         }));
     }
