@@ -13,12 +13,10 @@ mod roles;
 mod server;
 
 use codederror::CodedError;
-use futures::TryFutureExt;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{MyNodeIdWriter, NodeId, PlainNodeId};
 use std::time::Duration;
 use tokio::net::UnixStream;
-use tokio::task::{JoinError, JoinSet};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 use tracing::{info, warn};
@@ -30,6 +28,7 @@ pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
 use restate_node_services::cluster_controller::AttachmentRequest;
+use restate_task_center::{task_center, TaskCenter, TaskKind};
 use restate_types::nodes_config::{
     NetworkAddress, NodeConfig, NodesConfiguration, NodesConfigurationWriter, Role,
 };
@@ -38,33 +37,12 @@ pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsB
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("worker failed: {0}")]
-    Worker(
-        #[from]
-        #[code]
-        roles::WorkerRoleError,
-    ),
-    #[error("controller failed: {0}")]
-    Controller(
-        #[from]
-        #[code]
-        roles::ClusterControllerRoleError,
-    ),
-    #[error("node ctrl service failed: {0}")]
-    NodeCtrlService(
-        #[from]
-        #[code]
-        server::Error,
-    ),
     #[error("invalid cluster controller address: {0}")]
     #[code(unknown)]
     InvalidClusterControllerAddress(http::Error),
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
     Attachment(NetworkAddress, tonic::Status),
-    #[error("node component panicked: {0}")]
-    #[code(unknown)]
-    ComponentPanic(JoinError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -153,71 +131,33 @@ impl Node {
         })
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
-        let shutdown_signal = shutdown_watch.signaled();
-        tokio::pin!(shutdown_signal);
-
-        let (component_shutdown_signal, component_shutdown_watch) = drain::channel();
-
-        let mut component_set: JoinSet<Result<&'static str, Error>> = JoinSet::new();
-
-        component_set.spawn(
-            self.server
-                .run(component_shutdown_watch.clone())
-                .map_ok(|_| "server")
-                .map_err(Error::NodeCtrlService),
-        );
+    pub fn boot(self, tc: &TaskCenter) -> Result<(), anyhow::Error> {
+        tc.spawn(TaskKind::RpcServer, "node-server", None, self.server.run())?;
 
         if let Some(cluster_controller_role) = self.cluster_controller_role {
-            component_set.spawn(
-                cluster_controller_role
-                    .run(component_shutdown_watch.clone())
-                    .map_ok(|_| "cluster-controller-role")
-                    .map_err(Error::Controller),
-            );
-        }
-
-        tokio::select! {
-            _ = &mut shutdown_signal => {
-                drop(component_shutdown_watch);
-                component_shutdown_signal.drain().await;
-                component_set.shutdown().await;
-                return Ok(());
-            },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(Error::ComponentPanic)??;
-                panic!("Unexpected termination of '{component_name}'");
-            }
-            attachment_result = Self::attach_node(self.options, self.cluster_controller_address) => {
-                attachment_result?
-            }
+            tc.spawn(
+                TaskKind::RoleRunner,
+                "cluster-controller-role",
+                None,
+                cluster_controller_role.run(),
+            )?;
         }
 
         if let Some(worker_role) = self.worker_role {
-            component_set.spawn(
-                worker_role
-                    .run(
+            tc.spawn(TaskKind::SystemBoot, "worker-init", None, async {
+                Self::attach_node(self.options, self.cluster_controller_address).await?;
+                // Startup the worker
+                task_center().spawn(
+                    TaskKind::RoleRunner,
+                    "worker-role",
+                    None,
+                    worker_role.run(
                         NodeId::my_node_node()
                             .expect("my NodeId should be set after attaching to cluster"),
-                        component_shutdown_watch,
-                    )
-                    .map_ok(|_| "worker-role")
-                    .map_err(Error::Worker),
-            );
-        } else {
-            drop(component_shutdown_watch);
-        }
-
-        tokio::select! {
-            _ = shutdown_signal => {
-                info!("Shutting node down");
-                component_shutdown_signal.drain().await;
-                component_set.shutdown().await;
-            },
-            Some(component_result) = component_set.join_next() => {
-                let component_name = component_result.map_err(Error::ComponentPanic)??;
-                panic!("Unexpected termination of '{component_name}'");
-            }
+                    ),
+                )?;
+                Ok(())
+            })?;
         }
 
         Ok(())

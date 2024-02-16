@@ -36,7 +36,7 @@ impl Service {
         ClusterControllerHandle
     }
 
-    pub async fn run(self, shutdown_watch: drain::Watch) -> Result<(), Error> {
+    pub async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
         let _ = shutdown_watch.signaled().await;
         Ok(())
     }

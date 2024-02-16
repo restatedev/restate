@@ -30,6 +30,7 @@ restate-fs-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-node = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
+restate-task-center = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
@@ -49,6 +50,7 @@ serde_with = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.1" }
 
