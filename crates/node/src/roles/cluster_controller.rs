@@ -17,7 +17,7 @@ use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_node_services::worker::{StateMutationRequest, TerminationRequest};
-use restate_task_center::{cancellation_watcher, task_center, TaskKind};
+use restate_task_center::{task_center, TaskKind};
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
@@ -51,11 +51,8 @@ impl ClusterControllerRole {
         self.meta.schema_reader()
     }
 
-    pub async fn run(mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self) -> Result<(), anyhow::Error> {
         info!("Running cluster controller role");
-
-        let shutdown_signal = cancellation_watcher();
-        let (inner_shutdown_signal, inner_shutdown_watch) = drain::channel();
 
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
@@ -64,14 +61,14 @@ impl ClusterControllerRole {
             TaskKind::SystemService,
             "meta-service",
             None,
-            self.meta.run(inner_shutdown_watch.clone()),
+            self.meta.run(),
         )?;
 
         task_center().spawn_child(
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
-            self.controller.run(inner_shutdown_watch.clone()),
+            self.controller.run(),
         )?;
 
         // todo: Make address configurable
@@ -86,20 +83,11 @@ impl ClusterControllerRole {
             restate_node_services::worker::worker_svc_client::WorkerSvcClient::new(worker_channel);
 
         task_center().spawn_child(
-            TaskKind::SystemService,
-            "admin-service",
+            TaskKind::RpcServer,
+            "admin-rpc-server",
             None,
-            self.admin
-                .run(inner_shutdown_watch, worker_handle, worker_svc_client),
+            self.admin.run(worker_handle, worker_svc_client),
         )?;
-
-        tokio::select! {
-            _ = shutdown_signal => {
-                info!("Stopping cluster controller role");
-                // ignore result because we are shutting down
-                inner_shutdown_signal.drain().await;
-            },
-        }
 
         Ok(())
     }

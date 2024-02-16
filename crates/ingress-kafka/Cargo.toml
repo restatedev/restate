@@ -17,9 +17,11 @@ restate-futures-util = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
+restate-task-center = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
+anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 derive_builder = { workspace = true }

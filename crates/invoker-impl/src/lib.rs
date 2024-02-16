@@ -18,7 +18,6 @@ mod state_machine_manager;
 mod status_store;
 
 use codederror::CodedError;
-use drain::ReleaseShutdown;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -31,6 +30,7 @@ use restate_invoker_api::{
 };
 use restate_queue::SegmentQueue;
 use restate_schema_api::deployment::DeploymentResolver;
+use restate_task_center::cancellation_watcher;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
@@ -231,14 +231,14 @@ where
         ChannelStatusReader(self.input_tx.clone())
     }
 
-    pub async fn run(self, drain: drain::Watch) {
+    pub async fn run(self) -> anyhow::Result<()> {
         let Service {
             tmp_dir,
             inner: mut service,
             ..
         } = self;
 
-        let shutdown = drain.signaled();
+        let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
         // Prepare the segmented queue
@@ -257,6 +257,7 @@ where
 
         // Wait for all the tasks to shutdown
         service.invocation_tasks.shutdown().await;
+        Ok(())
     }
 }
 
@@ -293,7 +294,7 @@ where
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
-        F: Future<Output = ReleaseShutdown>,
+        F: Future<Output = ()>,
     {
         tokio::select! {
             Some(input_message) = self.input_rx.recv() => {
@@ -931,9 +932,11 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use restate_task_center::{create_test_task_center, TaskKind};
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
@@ -1022,6 +1025,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
+        let tc = create_test_task_center();
         let tempdir = tempfile::tempdir().unwrap();
         let service = Service::new(
             // all invocations are unknown leading to immediate retries
@@ -1042,11 +1046,11 @@ mod tests {
             entry_enricher::mocks::MockEntryEnricher,
         );
 
-        let (signal, watch) = drain::channel();
-
         let mut handle = service.handle();
 
-        let invoker_join_handle = tokio::spawn(service.run(watch));
+        let invoker_task_id = tc
+            .spawn(TaskKind::SystemService, "invoker", None, service.run())
+            .unwrap();
 
         let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
         let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::new());
@@ -1071,15 +1075,14 @@ mod tests {
         // the invocation and we won't see a result for the invocation (failure because the deployment cannot be resolved).
         check!(let Some(_) = output_rx.recv().await);
 
-        signal.drain().await;
-        invoker_join_handle.await.unwrap();
+        tc.cancel_task(invoker_task_id).unwrap().await.unwrap();
     }
 
     #[test(tokio::test)]
     async fn quota_allows_one_concurrent_invocation() {
         let mut segment_queue = SegmentQueue::new(tempdir().unwrap().into_path(), 1024);
-        let (_signal, watch) = drain::channel();
-        let shutdown = watch.signaled();
+        let cancel_token = CancellationToken::new();
+        let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);
 
         let sid_1 = mock_sid();

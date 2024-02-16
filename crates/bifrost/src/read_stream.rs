@@ -82,6 +82,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
+    use restate_task_center::create_test_task_center;
     use tokio::task::JoinHandle;
     use tracing::info;
     use tracing_test::traced_test;
@@ -94,77 +95,77 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_basic_readstream() -> Result<()> {
-        // start a simple bifrost service with 5 logs.
-        let num_partitions = 5;
-        let read_after = Lsn::from(5);
-        let (shutdown_signal, shutdown_watch) = drain::channel();
+        let tc = create_test_task_center();
+        tc.run_in_scope("test", None, async {
+            // start a simple bifrost service with 5 logs.
+            let num_partitions = 5;
+            let read_after = Lsn::from(5);
 
-        let bifrost_opts = Options {
-            default_provider: ProviderKind::Memory,
-            ..Options::default()
-        };
-        let bifrost_svc = bifrost_opts.build(num_partitions);
-        let mut bifrost = bifrost_svc.handle();
+            let bifrost_opts = Options {
+                default_provider: ProviderKind::Memory,
+                ..Options::default()
+            };
+            let bifrost_svc = bifrost_opts.build(num_partitions);
+            let mut bifrost = bifrost_svc.handle();
 
-        // start bifrost service in the background
-        let svc_handle = bifrost_svc.start(shutdown_watch).await?;
+            // start bifrost service in the background
+            bifrost_svc.start().await.unwrap();
 
-        let mut reader = bifrost.create_reader(LogId::from(0), Lsn::from(5));
-        assert_eq!(read_after, reader.current_read_pointer());
+            let mut reader = bifrost.create_reader(LogId::from(0), Lsn::from(5));
+            assert_eq!(read_after, reader.current_read_pointer());
 
-        // We have not written anything yet, this should return None.
-        assert!(reader.read_next_opt().await?.is_none());
-        // read points should not change, nothing has been read.
-        assert_eq!(read_after, reader.current_read_pointer());
+            // We have not written anything yet, this should return None.
+            assert!(reader.read_next_opt().await?.is_none());
+            // read points should not change, nothing has been read.
+            assert_eq!(read_after, reader.current_read_pointer());
 
-        // spawn a reader that reads 5 records and exits.
-        let reader_bg_handle: JoinHandle<Result<()>> = tokio::spawn(async move {
+            // spawn a reader that reads 5 records and exits.
+            let reader_bg_handle: JoinHandle<Result<()>> = tokio::spawn(async move {
+                for i in 1..=5 {
+                    let record = reader.read_next().await?;
+                    let expected_lsn = Lsn::from(i) + read_after;
+                    info!(?record, "read record");
+                    assert_eq!(expected_lsn, record.offset);
+                    assert_eq!(
+                        Payload::from(format!("record{}", expected_lsn)),
+                        record.record.into_payload_unchecked()
+                    );
+                    assert_eq!(expected_lsn, reader.current_read_pointer());
+                }
+                Ok(())
+            });
+
+            tokio::task::yield_now().await;
+            // Not finished, we still didn't append records
+            assert!(!reader_bg_handle.is_finished());
+
+            // append 5 records to the log
             for i in 1..=5 {
-                let record = reader.read_next().await?;
-                let expected_lsn = Lsn::from(i) + read_after;
-                info!(?record, "read record");
-                assert_eq!(expected_lsn, record.offset);
-                assert_eq!(
-                    Payload::from(format!("record{}", expected_lsn)),
-                    record.record.into_payload_unchecked()
-                );
-                assert_eq!(expected_lsn, reader.current_read_pointer());
+                let lsn = bifrost
+                    .append(LogId::from(0), format!("record{}", i).into())
+                    .await?;
+                info!(?lsn, "appended record");
             }
+
+            // Written records are not enough for the reader to finish.
+            // Not finished, we still didn't append records
+            tokio::task::yield_now().await;
+            assert!(!reader_bg_handle.is_finished());
+            assert!(!logs_contain("read record"));
+
+            // write 5 more records.
+            for i in 6..=10 {
+                bifrost
+                    .append(LogId::from(0), format!("record{}", i).into())
+                    .await?;
+            }
+
+            // reader has finished
+            assert!(reader_bg_handle.await.unwrap().is_ok());
+            assert!(logs_contain("read record"));
+
             Ok(())
-        });
-
-        tokio::task::yield_now().await;
-        // Not finished, we still didn't append records
-        assert!(!reader_bg_handle.is_finished());
-
-        // append 5 records to the log
-        for i in 1..=5 {
-            let lsn = bifrost
-                .append(LogId::from(0), format!("record{}", i).into())
-                .await?;
-            info!(?lsn, "appended record");
-        }
-
-        // Written records are not enough for the reader to finish.
-        // Not finished, we still didn't append records
-        tokio::task::yield_now().await;
-        assert!(!reader_bg_handle.is_finished());
-        assert!(!logs_contain("read record"));
-
-        // write 5 more records.
-        for i in 6..=10 {
-            bifrost
-                .append(LogId::from(0), format!("record{}", i).into())
-                .await?;
-        }
-
-        // reader has finished
-        assert!(reader_bg_handle.await.unwrap().is_ok());
-        assert!(logs_contain("read record"));
-
-        shutdown_signal.drain().await;
-        assert!(svc_handle.is_finished());
-
-        Ok(())
+        })
+        .await
     }
 }

@@ -10,18 +10,16 @@
 
 extern crate core;
 
-use crate::ingress_integration::{ExternalClientIngressRunner, IngressIntegrationError};
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partitioning_scheme::FixedConsecutivePartitions;
 use crate::services::Services;
 use codederror::CodedError;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use partition::shuffle;
 use restate_bifrost::Bifrost;
 use restate_consensus::Consensus;
-use restate_ingress_dispatcher::Service as IngressDispatcherService;
+use restate_ingress_dispatcher::{IngressDispatcherOutput, Service as IngressDispatcherService};
+use restate_ingress_grpc::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
@@ -32,17 +30,15 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
+use restate_task_center::{cancellation_watcher, task_center, TaskKind};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
-use restate_types::time::MillisSinceEpoch;
-use restate_types::GenerationalNodeId;
+use restate_types::NodeId;
 use std::ops::RangeInclusive;
-use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
 use util::IdentitySender;
 
-mod ingress_integration;
 mod invoker_integration;
 mod metric_definitions;
 mod network_integration;
@@ -95,6 +91,7 @@ type PartitionProcessor = partition::PartitionProcessor<
     InvokerChannelServiceHandle,
     UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
 >;
+type ExternalClientIngress = HyperServerIngress<Schemas>;
 
 /// # Worker options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
@@ -173,39 +170,12 @@ impl Options {
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("component '{component}' panicked: {cause}")]
-    #[code(unknown)]
-    ComponentPanic {
-        component: &'static str,
-        cause: tokio::task::JoinError,
-    },
     #[error("thread '{thread}' panicked: {cause}")]
     #[code(unknown)]
     ThreadPanic {
         thread: &'static str,
         cause: restate_types::errors::ThreadJoinError,
     },
-    #[error("network failed: {0}")]
-    #[code(unknown)]
-    Network(#[from] restate_network::RoutingError),
-    #[error("storage query postgres failed: {0}")]
-    #[code(unknown)]
-    StorageQueryPostgres(#[from] restate_storage_query_postgres::Error),
-    #[error("consensus failed: {0}")]
-    #[code(unknown)]
-    Consensus(anyhow::Error),
-    #[error("external client ingress failed: {0}")]
-    ExternalClientIngress(
-        #[from]
-        #[code]
-        IngressIntegrationError,
-    ),
-    #[error("no partition processor is running")]
-    #[code(unknown)]
-    NoPartitionProcessorRunning,
-    #[error("partition processor failed: {0}")]
-    #[code(unknown)]
-    PartitionProcessor(anyhow::Error),
     #[error("worker services failed: {0}")]
     #[code(unknown)]
     Services(#[from] services::Error),
@@ -215,10 +185,6 @@ pub enum Error {
 }
 
 impl Error {
-    fn component_panic(component: &'static str, cause: tokio::task::JoinError) -> Self {
-        Error::ComponentPanic { component, cause }
-    }
-
     fn thread_panic(thread: &'static str, cause: restate_types::errors::ThreadJoinError) -> Self {
         Error::ThreadPanic { thread, cause }
     }
@@ -237,7 +203,9 @@ pub struct Worker {
         EntryEnricher<Schemas, ProtobufRawEntryCodec>,
         Schemas,
     >,
-    external_client_ingress_runner: ExternalClientIngressRunner,
+    ingress_dispatcher_service: IngressDispatcherService,
+    external_client_ingress: ExternalClientIngress,
+    network_ingress_sender: mpsc::Sender<IngressDispatcherOutput>,
     ingress_kafka: IngressKafkaService,
     services: Services<FixedConsecutivePartitions>,
     rocksdb_writer: RocksDBWriter,
@@ -261,12 +229,7 @@ impl Worker {
         let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
-        // TODO: Get my node ID from controller (given a node name).
-        // This generation is temporary
-        let generation: u32 = MillisSinceEpoch::now().as_u64() as u32;
-        let my_node_id = GenerationalNodeId::new(1, generation);
-
-        let ingress_dispatcher_service = IngressDispatcherService::new(my_node_id, channel_size);
+        let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
 
         // ingress_grpc
         let external_client_ingress = ingress_grpc.build(
@@ -354,11 +317,9 @@ impl Worker {
             storage_query_context,
             storage_query_postgres,
             invoker,
-            external_client_ingress_runner: ExternalClientIngressRunner::new(
-                ingress_dispatcher_service,
-                external_client_ingress,
-                network_ingress_sender,
-            ),
+            ingress_dispatcher_service,
+            external_client_ingress,
+            network_ingress_sender,
             ingress_kafka,
             services,
             rocksdb_writer,
@@ -416,92 +377,97 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self, drain: drain::Watch) -> anyhow::Result<()> {
+    pub async fn run(self, my_node_id: NodeId) -> anyhow::Result<()> {
+        let tc = task_center();
+        let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
-        let mut external_client_ingress_handle = tokio::spawn(
-            self.external_client_ingress_runner
-                .run(shutdown_watch.clone()),
-        );
-        let mut invoker_handle = tokio::spawn(self.invoker.run(shutdown_watch.clone()));
-        let mut network_handle = tokio::spawn(self.network.run(shutdown_watch.clone()));
-        let mut storage_query_postgres_handle =
-            tokio::spawn(self.storage_query_postgres.run(shutdown_watch.clone()));
-        let mut consensus_handle = tokio::spawn(self.consensus.run());
-        let mut processors_handles: FuturesUnordered<_> = self
-            .processors
-            .into_iter()
-            .map(|partition_processor| tokio::spawn(partition_processor.run()))
-            .collect();
-        let mut ingress_kafka_handle = tokio::spawn(self.ingress_kafka.run(shutdown_watch.clone()));
-        let mut services_handle = tokio::spawn(self.services.run(shutdown_watch.clone()));
-        let mut rocksdb_writer_handle = self.rocksdb_writer.run(shutdown_watch);
+        // RocksDB Writer
+        tc.spawn_child(TaskKind::SystemService, "rocksdb-writer", None, async {
+            let handle = self.rocksdb_writer.run(shutdown_watch);
+            Ok(handle
+                .await
+                .map_err(|err| Error::thread_panic("rocksdb writer", err))?
+                .map_err(Error::RocksDBWriter)?)
+        })?;
 
-        let shutdown = drain.signaled();
+        // Ingress dispatcher
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "ingress-dispatcher",
+            None,
+            self.ingress_dispatcher_service
+                .run(my_node_id, self.network_ingress_sender),
+        )?;
+
+        // Ingress RPC server
+        tc.spawn_child(
+            TaskKind::RpcServer,
+            "ingress-rpc-server",
+            None,
+            self.external_client_ingress.run(),
+        )?;
+
+        // Invoker service
+        tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
+
+        // Networking
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "networking",
+            None,
+            self.network.run(),
+        )?;
+
+        // Postgres external server
+        tc.spawn_child(
+            TaskKind::RpcServer,
+            "postgres-query-server",
+            None,
+            self.storage_query_postgres.run(),
+        )?;
+
+        // Kafka Ingress
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "kafka-ingress",
+            None,
+            self.ingress_kafka.run(),
+        )?;
+
+        // Consensus Service
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "consensus",
+            None,
+            self.consensus.run(),
+        )?;
+
+        // Create partition processors
+        for processor in self.processors {
+            tc.spawn_child(
+                TaskKind::PartitionProcessor,
+                "partition-processor",
+                Some(processor.partition_id),
+                processor.run(),
+            )?;
+        }
+
+        // Create worker operations service
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "worker-ops-service",
+            None,
+            self.services.run(),
+        )?;
 
         tokio::select! {
             _ = shutdown => {
                 debug!("Initiating shutdown of worker");
 
-                // first we shut down the network which shuts down the consensus which shuts
-                // down the partition processors transitively
+                // This will only shutdown rocksdb writer thread. Everything else will respond to
+                // the cancellation signal independently.
                 shutdown_signal.drain().await;
-
-                // ignored because we are shutting down
-                let _ = join!(
-                    network_handle,
-                    storage_query_postgres_handle,
-                    consensus_handle,
-                    processors_handles.collect::<Vec<_>>(),
-                    invoker_handle,
-                    external_client_ingress_handle,
-                    ingress_kafka_handle,
-                    services_handle,
-                    rocksdb_writer_handle,);
-
-                debug!("Completed shutdown of worker");
-            },
-            invoker_result = &mut invoker_handle => {
-                invoker_result.map_err(|err| Error::component_panic("invoker", err))?;
-                panic!("Unexpected termination of invoker.");
-            },
-            network_result = &mut network_handle => {
-                network_result.map_err(|err| Error::component_panic("network", err))??;
-                panic!("Unexpected termination of network.");
-            },
-            storage_query_postgres_result = &mut storage_query_postgres_handle => {
-                storage_query_postgres_result.map_err(|err| Error::component_panic("postgres storage query", err))??;
-                panic!("Unexpected termination of postgres storage query.");
-            },
-            consensus_result = &mut consensus_handle => {
-                consensus_result
-                .map_err(|err| Error::component_panic("consensus", err))?
-                .map_err(Error::Consensus)?;
-                panic!("Unexpected termination of consensus.");
-            },
-            processor_result = processors_handles.next() => {
-                processor_result
-                .ok_or(Error::NoPartitionProcessorRunning)?
-                .map_err(|err| Error::component_panic("partition processor", err))?
-                .map_err(Error::PartitionProcessor)?;
-                panic!("Unexpected termination of one of the partition processors.");
-            },
-            external_client_ingress_result = &mut external_client_ingress_handle => {
-                external_client_ingress_result.map_err(|err| Error::component_panic("external client ingress", err))??;
-                panic!("Unexpected termination of external client ingress.");
-            },
-            ingress_kafka_result = &mut ingress_kafka_handle => {
-                ingress_kafka_result.map_err(|err| Error::component_panic("kafka ingress", err))?;
-                panic!("Unexpected termination of kafka ingress.");
-            },
-            services_result = &mut services_handle => {
-                services_result.map_err(|err| Error::component_panic("worker services", err))??;
-                panic!("Unexpected termination of worker services.");
-            },
-            rocksdb_result = &mut rocksdb_writer_handle => {
-                rocksdb_result.map_err(|err| Error::thread_panic("rocksdb writer", err))?
-                .map_err(Error::RocksDBWriter)?;
-                panic!("Unexpected termination of rocksdb writer.");
             }
         }
 

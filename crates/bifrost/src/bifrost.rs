@@ -17,8 +17,6 @@ use std::sync::{Arc, Mutex};
 
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
-#[cfg(any(test, feature = "memory_loglet"))]
-use tokio::task::JoinHandle;
 
 use restate_types::logs::{LogId, LogsVersion, Lsn, Payload, SequenceNumber};
 
@@ -44,21 +42,16 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]
-    pub async fn new_in_memory(
-        num_logs: u64,
-        shutdown_watch: drain::Watch,
-    ) -> (Self, JoinHandle<Result<(), Error>>) {
+    pub async fn new_in_memory(num_logs: u64) -> Self {
         let bifrost_svc = Options::memory().build(num_logs);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
-        (
-            bifrost,
-            bifrost_svc
-                .start(shutdown_watch)
-                .await
-                .expect("in memory loglet must start"),
-        )
+        bifrost_svc
+            .start()
+            .await
+            .expect("in memory loglet must start");
+        bifrost
     }
 
     /// Appends a single record to a log. The log id must exist, otherwise the
@@ -271,6 +264,7 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
+    use restate_task_center::{create_test_task_center, task_center};
     use restate_types::logs::SequenceNumber;
     use tracing::info;
     use tracing_test::traced_test;
@@ -278,109 +272,107 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_append_smoke() -> Result<()> {
-        // start a simple bifrost service with 5 logs.
-        let num_partitions = 5;
-        let (shutdown_signal, shutdown_watch) = drain::channel();
-        let (mut bifrost, svc_handle) =
-            Bifrost::new_in_memory(num_partitions, shutdown_watch).await;
+        let tc = create_test_task_center();
+        tc.run_in_scope("test", None, async {
+            // start a simple bifrost service with 5 logs.
+            let num_partitions = 5;
+            let mut bifrost = Bifrost::new_in_memory(num_partitions).await;
 
-        let mut clean_bifrost_clone = bifrost.clone();
+            let mut clean_bifrost_clone = bifrost.clone();
 
-        let mut max_lsn = Lsn::INVALID;
-        for i in 1..=5 {
-            // Append a record to memory
-            let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
-            info!(%lsn, "Appended record to log");
-            assert_eq!(Lsn::from(i), lsn);
-            max_lsn = lsn;
-        }
+            let mut max_lsn = Lsn::INVALID;
+            for i in 1..=5 {
+                // Append a record to memory
+                let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
+                info!(%lsn, "Appended record to log");
+                assert_eq!(Lsn::from(i), lsn);
+                max_lsn = lsn;
+            }
 
-        // Append to a log that doesn't exist.
-        let invalid_log = LogId::from(num_partitions + 1);
-        let resp = bifrost.append(invalid_log, Payload::default()).await;
+            // Append to a log that doesn't exist.
+            let invalid_log = LogId::from(num_partitions + 1);
+            let resp = bifrost.append(invalid_log, Payload::default()).await;
 
-        assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
+            assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 
-        // use a cloned bifrost.
-        let mut cloned_bifrost = bifrost.clone();
-        for _ in 1..=5 {
-            // Append a record to memory
-            let lsn = cloned_bifrost
+            // use a cloned bifrost.
+            let mut cloned_bifrost = bifrost.clone();
+            for _ in 1..=5 {
+                // Append a record to memory
+                let lsn = cloned_bifrost
+                    .append(LogId::from(0), Payload::default())
+                    .await?;
+                info!(%lsn, "Appended record to log");
+                assert_eq!(max_lsn + Lsn::from(1), lsn);
+                max_lsn = lsn;
+            }
+
+            // Ensure original clone writes to the same underlying loglet.
+            let lsn = clean_bifrost_clone
                 .append(LogId::from(0), Payload::default())
                 .await?;
-            info!(%lsn, "Appended record to log");
             assert_eq!(max_lsn + Lsn::from(1), lsn);
             max_lsn = lsn;
-        }
 
-        // Ensure original clone writes to the same underlying loglet.
-        let lsn = clean_bifrost_clone
-            .append(LogId::from(0), Payload::default())
-            .await?;
-        assert_eq!(max_lsn + Lsn::from(1), lsn);
-        max_lsn = lsn;
+            // Writes to a another log doesn't impact existing
+            let lsn = bifrost.append(LogId::from(3), Payload::default()).await?;
+            assert_eq!(Lsn::from(1), lsn);
 
-        // Writes to a another log doesn't impact existing
-        let lsn = bifrost.append(LogId::from(3), Payload::default()).await?;
-        assert_eq!(Lsn::from(1), lsn);
+            let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
+            assert_eq!(max_lsn + Lsn::from(1), lsn);
+            max_lsn = lsn;
 
-        let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
-        assert_eq!(max_lsn + Lsn::from(1), lsn);
-        max_lsn = lsn;
+            let tail = bifrost
+                .find_tail(LogId::from(0), FindTailAttributes::default())
+                .await?;
+            assert_eq!(max_lsn, tail.unwrap());
 
-        let tail = bifrost
-            .find_tail(LogId::from(0), FindTailAttributes::default())
-            .await?;
-        assert_eq!(max_lsn, tail.unwrap());
-
-        // Initiate shutdown
-        shutdown_signal.drain().await;
-
-        assert!(svc_handle.is_finished());
-
-        // appends cannot succeed after shutdown
-        let res = bifrost.append(LogId::from(0), Payload::default()).await;
-        assert!(matches!(res, Err(Error::Shutdown)));
-        // Validate the watchdog has called the provider::start() function.
-        assert!(logs_contain("Starting in-memory loglet provider"));
-        assert!(logs_contain("Shutting down in-memory loglet provider"));
-        assert!(logs_contain("Bifrost watchdog shutdown complete"));
-        Ok(())
+            // Initiate shutdown
+            task_center().shutdown_node("completed", 0).await;
+            // appends cannot succeed after shutdown
+            let res = bifrost.append(LogId::from(0), Payload::default()).await;
+            assert!(matches!(res, Err(Error::Shutdown)));
+            // Validate the watchdog has called the provider::start() function.
+            assert!(logs_contain("Starting in-memory loglet provider"));
+            assert!(logs_contain("Shutting down in-memory loglet provider"));
+            assert!(logs_contain("Bifrost watchdog shutdown complete"));
+            Ok(())
+        })
+        .await
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_lazy_initialization() -> Result<()> {
-        let delay = Duration::from_secs(5);
-        let (shutdown_signal, shutdown_watch) = drain::channel();
-        let num_partitions = 5;
-        // This memory provider adds a delay to its loglet initialization, we want
-        // to ensure that appends do not fail while waiting for the loglet;
-        let memory_provider = MemoryLogletProvider::with_init_delay(delay);
+        let tc = create_test_task_center();
+        tc.run_in_scope("test", None, async {
+            let delay = Duration::from_secs(5);
+            let num_partitions = 5;
+            // This memory provider adds a delay to its loglet initialization, we want
+            // to ensure that appends do not fail while waiting for the loglet;
+            let memory_provider = MemoryLogletProvider::with_init_delay(delay);
 
-        let bifrost_opts = Options {
-            default_provider: ProviderKind::Memory,
-            ..Options::default()
-        };
-        let bifrost_svc = bifrost_opts.build(num_partitions);
-        let mut bifrost = bifrost_svc.handle();
+            let bifrost_opts = Options {
+                default_provider: ProviderKind::Memory,
+                ..Options::default()
+            };
+            let bifrost_svc = bifrost_opts.build(num_partitions);
+            let mut bifrost = bifrost_svc.handle();
 
-        // Inject out preconfigured memory provider
-        bifrost
-            .inner()
-            .inject_provider(ProviderKind::Memory, memory_provider);
+            // Inject out preconfigured memory provider
+            bifrost
+                .inner()
+                .inject_provider(ProviderKind::Memory, memory_provider);
 
-        // start bifrost service in the background
-        let svc_handle = bifrost_svc.start(shutdown_watch).await?;
+            // start bifrost service in the background
+            bifrost_svc.start().await.unwrap();
 
-        let start = tokio::time::Instant::now();
-        let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
-        assert_eq!(Lsn::from(1), lsn);
-        // The append was properly delayed
-        assert_eq!(delay, start.elapsed());
-
-        // Initiate shutdown
-        shutdown_signal.drain().await;
-        assert!(svc_handle.is_finished());
-        Ok(())
+            let start = tokio::time::Instant::now();
+            let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
+            assert_eq!(Lsn::from(1), lsn);
+            // The append was properly delayed
+            assert_eq!(delay, start.elapsed());
+            Ok(())
+        })
+        .await
     }
 }
