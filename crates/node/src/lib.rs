@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod net_utils;
 mod options;
 mod roles;
 mod server;
@@ -16,11 +17,9 @@ use codederror::CodedError;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{MyNodeIdWriter, NodeId, PlainNodeId};
 use std::time::Duration;
-use tokio::net::UnixStream;
-use tonic::transport::{Channel, Endpoint, Uri};
-use tower::service_fn;
 use tracing::{info, warn};
 
+use crate::net_utils::NetworkAddressExt;
 use crate::roles::{AdminRole, WorkerRole};
 use crate::server::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
@@ -139,18 +138,25 @@ impl Node {
         )?;
 
         if let Some(admin_role) = self.admin_role {
-            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
+            tc.spawn(
+                TaskKind::SystemBoot,
+                "admin-init",
+                None,
+                // todo: fix me. Only works if admin and worker are co-located.
+                admin_role.start(self.admin_address.clone()),
+            )?;
         }
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(TaskKind::SystemBoot, "worker-init", None, async {
-                Self::attach_node(self.options, self.admin_address).await?;
+                Self::attach_node(self.options, self.admin_address.clone()).await?;
                 // MyNodeId should be set here.
                 // Startup the worker role.
                 worker_role
                     .start(
                         NodeId::my_node_id()
                             .expect("my NodeId should be set after attaching to cluster"),
+                        self.admin_address,
                     )
                     .await?;
                 Ok(())
@@ -166,7 +172,8 @@ impl Node {
             options.node_name, options.node_id,
         );
 
-        let channel = Self::create_channel_from_network_address(&admin_address)
+        let channel = admin_address
+            .connect_lazy()
             .map_err(Error::InvalidClusterControllerAddress)?;
 
         let cc_client = ClusterControllerSvcClient::new(channel);
@@ -214,46 +221,5 @@ impl Node {
             NodesConfiguration::current_version()
         );
         Ok(())
-    }
-
-    fn create_channel_from_network_address(
-        cluster_controller_address: &NetworkAddress,
-    ) -> Result<Channel, http::Error> {
-        let channel = match cluster_controller_address {
-            NetworkAddress::Uds(uds_path) => {
-                let uds_path = uds_path.clone();
-                // dummy endpoint required to specify an uds connector, it is not used anywhere
-                Endpoint::try_from("/")
-                    .expect("/ should be a valid Uri")
-                    .connect_with_connector_lazy(service_fn(move |_: Uri| {
-                        UnixStream::connect(uds_path.clone())
-                    }))
-            }
-            NetworkAddress::TcpSocketAddr(socket_addr) => {
-                let uri = Self::create_uri(socket_addr)?;
-                Self::create_lazy_channel_from_uri(uri)
-            }
-            NetworkAddress::DnsName(dns_name) => {
-                let uri = Self::create_uri(dns_name)?;
-                Self::create_lazy_channel_from_uri(uri)
-            }
-        };
-        Ok(channel)
-    }
-
-    fn create_uri(authority: impl ToString) -> Result<Uri, http::Error> {
-        Uri::builder()
-            // todo: Make the scheme configurable
-            .scheme("http")
-            .authority(authority.to_string())
-            .path_and_query("/")
-            .build()
-    }
-
-    fn create_lazy_channel_from_uri(uri: Uri) -> Channel {
-        // todo: Make the channel settings configurable
-        Channel::builder(uri)
-            .connect_timeout(Duration::from_secs(5))
-            .connect_lazy()
     }
 }

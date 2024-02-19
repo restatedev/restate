@@ -20,6 +20,7 @@ use serde_with::serde_as;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// Address to bind for the Node server.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub bind_address: NetworkAddress,
 

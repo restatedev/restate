@@ -15,6 +15,7 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
+use crate::net_utils::NetworkAddressExt;
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
 use restate_node_services::metadata::FetchSchemasRequest;
@@ -24,6 +25,7 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_task_center::task_center;
 use restate_task_center::TaskKind;
+use restate_types::nodes_config::NetworkAddress;
 use restate_types::NodeId;
 use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
@@ -115,16 +117,18 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn start(self, my_node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn start(
+        self,
+        my_node_id: NodeId,
+        admin_address: NetworkAddress,
+    ) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         self.bifrost.start().await?;
 
-        // todo: make this configurable
-        let channel =
-            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
+        let channel = admin_address.connect_lazy()?;
         let mut metadata_svc_client = MetadataSvcClient::new(channel);
 
         // Fetch latest schema information and fail if this is not possible

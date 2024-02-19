@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
 use codederror::CodedError;
 use tonic::transport::Channel;
 use tracing::info;
 
+use crate::net_utils::NetworkAddressExt;
 use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_node_services::worker::{StateMutationRequest, TerminationRequest};
 use restate_task_center::{task_center, TaskKind};
 use restate_types::invocation::InvocationTermination;
+use restate_types::nodes_config::NetworkAddress;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
 use restate_worker_api::{Error, Handle};
@@ -51,7 +52,7 @@ impl AdminRole {
         self.meta.schema_reader()
     }
 
-    pub async fn start(mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self, worker_address: NetworkAddress) -> Result<(), anyhow::Error> {
         info!("Running admin role");
 
         // Init the meta. This will reload the schemas in memory.
@@ -71,13 +72,7 @@ impl AdminRole {
             self.controller.run(),
         )?;
 
-        // todo: Make address configurable
-        let worker_channel = Channel::builder(
-            "http://127.0.0.1:5122/"
-                .parse()
-                .context("valid worker address uri")?,
-        )
-        .connect_lazy();
+        let worker_channel = worker_address.connect_lazy()?;
         let worker_handle = GrpcWorkerHandle::new(worker_channel.clone());
         let worker_svc_client =
             restate_node_services::worker::worker_svc_client::WorkerSvcClient::new(worker_channel);
