@@ -51,8 +51,23 @@ impl AdminRole {
         self.meta.schema_reader()
     }
 
-    pub async fn start(mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self, bootstrap_cluster: bool) -> Result<(), anyhow::Error> {
         info!("Running admin role");
+
+        // TODO: We are bootstrapping. The server assumes that this is the sole controller node
+        // and that the nodes configuration is already loaded in memory. The node will
+        // use this as static configuration to bootstrap itself. The is also allowed to commit the
+        // nodes configuration to disk.
+        if bootstrap_cluster {
+            // TODO:
+            // A nodes configuration already exists in Metadata. Use this to bootstrap the node and
+            // the cluster until
+            // Serve the in-memory configuration until
+        } else {
+            // TODO: load nodes configuration from metadata store, or use on-disk cache
+            // until a quorum read is possible.
+            unimplemented!()
+        }
 
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;

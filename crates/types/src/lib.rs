@@ -13,6 +13,7 @@
 mod base62_util;
 mod id_util;
 mod macros;
+mod metadata;
 mod node_id;
 
 pub mod deployment;
@@ -29,4 +30,5 @@ pub mod subscription;
 pub mod time;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
+pub use metadata::*;
 pub use node_id::*;
