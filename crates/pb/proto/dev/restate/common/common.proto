@@ -15,3 +15,8 @@ message NodeId {
   uint32 id = 1;
   optional uint32 generation = 2;
 }
+
+// A generic type for versioned metadata
+message Version {
+  uint32 value = 1;
+}
