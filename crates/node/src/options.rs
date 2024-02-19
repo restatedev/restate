@@ -35,11 +35,11 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(with = "Vec<String>"))]
     pub roles: EnumSet<Role>,
 
-    /// Configures the cluster controller address. If it is not specified, then this
-    /// node needs to run the cluster controller
+    /// Configures the admin address. If it is not specified, then this
+    /// node needs to run the admin role
     #[serde_as(as = "serde_with::NoneAsEmptyString")]
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub cluster_controller_address: Option<NetworkAddress>,
+    pub admin_address: Option<NetworkAddress>,
 }
 
 impl Default for Options {
@@ -53,8 +53,8 @@ impl Default for Options {
             admin: Default::default(),
             bifrost: Default::default(),
             cluster_controller: Default::default(),
-            roles: Role::Worker | Role::ClusterController,
-            cluster_controller_address: None,
+            roles: Role::Worker | Role::Admin,
+            admin_address: None,
         }
     }
 }

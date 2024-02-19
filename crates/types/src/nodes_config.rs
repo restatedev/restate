@@ -40,7 +40,7 @@ pub enum NodesConfigError {
 #[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
 pub enum Role {
     Worker,
-    ClusterController,
+    Admin,
 }
 
 #[derive(

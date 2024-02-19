@@ -21,7 +21,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 use tracing::{info, warn};
 
-use crate::roles::{ClusterControllerRole, WorkerRole};
+use crate::roles::{AdminRole, WorkerRole};
 use crate::server::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
@@ -57,7 +57,7 @@ pub enum BuildError {
     ClusterController(
         #[from]
         #[code]
-        roles::ClusterControllerRoleBuildError,
+        roles::AdminRoleBuildError,
     ),
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
@@ -66,9 +66,9 @@ pub enum BuildError {
 
 pub struct Node {
     options: Options,
-    cluster_controller_address: NetworkAddress,
+    admin_address: NetworkAddress,
 
-    cluster_controller_role: Option<ClusterControllerRole>,
+    admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
     server: NodeServer,
 }
@@ -76,8 +76,8 @@ pub struct Node {
 impl Node {
     pub fn new(options: Options) -> Result<Self, BuildError> {
         let opts = options.clone();
-        let cluster_controller_role = if options.roles.contains(Role::ClusterController) {
-            Some(ClusterControllerRole::try_from(options.clone())?)
+        let admin_role = if options.roles.contains(Role::Admin) {
+            Some(AdminRole::try_from(options.clone())?)
         } else {
             None
         };
@@ -99,24 +99,22 @@ impl Node {
                     worker.subscription_controller(),
                 )
             }),
-            cluster_controller_role.as_ref().map(|cluster_controller| {
+            admin_role.as_ref().map(|cluster_controller| {
                 ClusterControllerDependencies::new(
-                    cluster_controller.handle(),
+                    cluster_controller.cluster_controller_handle(),
                     cluster_controller.schema_reader(),
                 )
             }),
         );
 
-        let cluster_controller_address = if let Some(cluster_controller_address) =
-            options.cluster_controller_address
-        {
-            if cluster_controller_role.is_some() {
-                warn!("This node is running the cluster controller but has also a remote cluster controller address configured. \
-                This indicates a potential misconfiguration. Trying to connect to the remote cluster controller.");
+        let admin_address = if let Some(admin_address) = options.admin_address {
+            if admin_role.is_some() {
+                warn!("This node is running the admin roles but has also a remote admin address configured. \
+                This indicates a potential misconfiguration. Trying to connect to the remote admin.");
             }
 
-            cluster_controller_address
-        } else if cluster_controller_role.is_some() {
+            admin_address
+        } else if admin_role.is_some() {
             NetworkAddress::DnsName(format!("127.0.0.1:{}", server.port()))
         } else {
             return Err(BuildError::UnknownClusterController);
@@ -124,8 +122,8 @@ impl Node {
 
         Ok(Node {
             options: opts,
-            cluster_controller_address,
-            cluster_controller_role,
+            admin_address,
+            admin_role,
             worker_role,
             server,
         })
@@ -140,18 +138,13 @@ impl Node {
             self.server.run(),
         )?;
 
-        if let Some(cluster_controller_role) = self.cluster_controller_role {
-            tc.spawn(
-                TaskKind::SystemBoot,
-                "cluster-controller-init",
-                None,
-                cluster_controller_role.start(),
-            )?;
+        if let Some(admin_role) = self.admin_role {
+            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
         }
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(TaskKind::SystemBoot, "worker-init", None, async {
-                Self::attach_node(self.options, self.cluster_controller_address).await?;
+                Self::attach_node(self.options, self.admin_address).await?;
                 // MyNodeId should be set here.
                 // Startup the worker role.
                 worker_role
@@ -167,17 +160,13 @@ impl Node {
         Ok(())
     }
 
-    async fn attach_node(
-        options: Options,
-        cluster_controller_address: NetworkAddress,
-    ) -> Result<(), Error> {
+    async fn attach_node(options: Options, admin_address: NetworkAddress) -> Result<(), Error> {
         info!(
-            "Attaching '{}' (insist on ID?={:?}) to cluster controller at '{cluster_controller_address}'",
-            options.node_name,
-            options.node_id,
+            "Attaching '{}' (insist on ID?={:?}) to admin at '{admin_address}'",
+            options.node_name, options.node_id,
         );
 
-        let channel = Self::create_channel_from_network_address(&cluster_controller_address)
+        let channel = Self::create_channel_from_network_address(&admin_address)
             .map_err(Error::InvalidClusterControllerAddress)?;
 
         let cc_client = ClusterControllerSvcClient::new(channel);
@@ -193,7 +182,7 @@ impl Node {
                     .await
             })
             .await
-            .map_err(|err| Error::Attachment(cluster_controller_address, err))?;
+            .map_err(|err| Error::Attachment(admin_address, err))?;
 
         // todo: Generational NodeId should come from attachment result
         let now = MillisSinceEpoch::now();
