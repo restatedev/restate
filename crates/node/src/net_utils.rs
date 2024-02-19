@@ -35,9 +35,9 @@ fn create_channel_from_network_address(
     let channel = match network_address {
         NetworkAddress::Uds(uds_path) => {
             let uds_path = uds_path.clone();
-            // dummy endpoint required to specify an uds connector, it is not used anywhere
-            Endpoint::try_from("/")
-                .expect("/ should be a valid Uri")
+            // We need to specify a valid URI with scheme and authority since tower's AddOrigin expects it
+            Endpoint::try_from("http://127.0.0.1")
+                .expect("http://127.0.0.1 should be a valid Uri")
                 .connect_with_connector_lazy(service_fn(move |_: Uri| {
                     UnixStream::connect(uds_path.clone())
                 }))
