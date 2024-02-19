@@ -115,7 +115,7 @@ impl Node {
 
             admin_address
         } else if admin_role.is_some() {
-            NetworkAddress::DnsName(format!("127.0.0.1:{}", server.port()))
+            server.address().clone()
         } else {
             return Err(BuildError::UnknownClusterController);
         };
@@ -199,13 +199,12 @@ impl Node {
         );
         // Temporary: nodes configuration from current node.
         let mut nodes_config = NodesConfiguration::default();
-        let address: NetworkAddress = NetworkAddress::TcpSocketAddr(options.server.bind_address);
         let node = NodeConfig::new(
             options.node_name,
             my_node_id
                 .as_generational()
                 .expect("my NodeId is generational"),
-            address,
+            options.server.bind_address,
             options.roles,
         );
         nodes_config.upsert_node(node);

@@ -8,10 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
+use axum::body::BoxBody;
+use std::io;
+use std::net::{AddrParseError, SocketAddr};
 
 use axum::routing::get;
 use codederror::CodedError;
+use hyper::server::accept::Accept;
+use hyper::server::conn::AddrIncoming;
+use hyper::service::Service;
+use serde::de::StdError;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::UnixListener;
+use tonic::codegen::tokio_stream::wrappers::UnixListenerStream;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -35,6 +44,7 @@ use restate_node_services::worker::worker_svc_server::WorkerSvcServer;
 use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_types::nodes_config::NetworkAddress;
 use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 
 use crate::server::multiplex::MultiplexService;
@@ -43,13 +53,23 @@ use crate::server::state::HandlerStateBuilder;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
-    #[error("failed binding to address '{address}' specified in 'server.bind_address'")]
+    #[error("failed binding to address '{address}' specified in 'server.bind_address': {source}")]
     #[code(restate_errors::RT0004)]
-    Binding {
+    TcpBinding {
         address: SocketAddr,
         #[source]
         source: hyper::Error,
     },
+    #[error("failed opening uds '{uds_path}' specified in 'server.bind_address': {source}")]
+    #[code(unknown)]
+    UdsBinding {
+        uds_path: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed parsing dns name specified in server.bind_address': {0}")]
+    #[code(unknown)]
+    DnsParsing(AddrParseError),
     #[error("error while running server service: {0}")]
     #[code(unknown)]
     Running(hyper::Error),
@@ -153,29 +173,81 @@ impl NodeServer {
         // Multiplex both grpc and http based on content-type
         let service = MultiplexService::new(router, server_builder.into_service());
 
-        // Bind and serve
-        let server = hyper::Server::try_bind(&self.opts.bind_address)
-            .map_err(|err| Error::Binding {
-                address: self.opts.bind_address,
-                source: err,
-            })?
-            .serve(tower::make::Shared::new(service));
+        match self.opts.bind_address {
+            NetworkAddress::Uds(uds_path) => {
+                let unix_listener =
+                    UnixListener::bind(&uds_path).map_err(|err| Error::UdsBinding {
+                        uds_path: uds_path.clone(),
+                        source: err,
+                    })?;
+                let acceptor =
+                    hyper::server::accept::from_stream(UnixListenerStream::new(unix_listener));
 
-        info!(
-            net.host.addr = %server.local_addr().ip(),
-            net.host.port = %server.local_addr().port(),
-            "Node server listening"
-        );
+                info!(
+                    uds.path = %uds_path,
+                    "Node server listening");
 
-        // Wait server graceful shutdown
-        Ok(server
-            .with_graceful_shutdown(cancellation_watcher())
-            .await
-            .map_err(Error::Running)?)
+                Self::run_server(service, acceptor).await?
+            }
+            NetworkAddress::TcpSocketAddr(socket_addr) => {
+                Self::run_tcp_server(service, socket_addr).await?
+            }
+            NetworkAddress::DnsName(dns_name) => {
+                let socket_addr = dns_name.parse().map_err(Error::DnsParsing)?;
+                Self::run_tcp_server(service, socket_addr).await?
+            }
+        }
+
+        Ok(())
     }
 
-    pub fn port(&self) -> u16 {
-        self.opts.bind_address.port()
+    pub fn address(&self) -> &NetworkAddress {
+        &self.opts.bind_address
+    }
+
+    async fn run_tcp_server<S>(service: S, socket_addr: SocketAddr) -> Result<(), Error>
+    where
+        S: Service<http::Request<hyper::Body>, Response = http::Response<BoxBody>>
+            + Send
+            + Clone
+            + 'static,
+        S::Error: Into<Box<dyn StdError + Send + Sync>>,
+        S::Future: Send,
+    {
+        let acceptor = AddrIncoming::bind(&socket_addr).map_err(|err| Error::TcpBinding {
+            address: socket_addr,
+            source: err,
+        })?;
+
+        info!(
+            net.host.addr = %acceptor.local_addr().ip(),
+            net.host.port = %acceptor.local_addr().port(),
+            "Node server listening");
+
+        Self::run_server(service, acceptor).await
+    }
+
+    async fn run_server<S, Conn, Err>(
+        service: S,
+        acceptor: impl Accept<Conn = Conn, Error = Err>,
+    ) -> Result<(), Error>
+    where
+        S: Service<http::Request<hyper::Body>, Response = http::Response<BoxBody>>
+            + Send
+            + Clone
+            + 'static,
+        S::Error: Into<Box<dyn StdError + Send + Sync>>,
+        S::Future: Send,
+        Conn: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        Err: Into<Box<dyn StdError + Send + Sync>>,
+    {
+        let server = hyper::Server::builder(acceptor).serve(tower::make::Shared::new(service));
+
+        // Wait server graceful shutdown
+        server
+            .with_graceful_shutdown(cancellation_watcher())
+            .await
+            .map_err(Error::Running)
     }
 }
 

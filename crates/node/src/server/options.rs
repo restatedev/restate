@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
-
 use crate::server::service::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
+use restate_types::nodes_config::NetworkAddress;
 use serde_with::serde_as;
 
 /// # Node server options
@@ -21,7 +20,8 @@ use serde_with::serde_as;
 #[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// Address to bind for the Node server.
-    pub bind_address: SocketAddr,
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub bind_address: NetworkAddress,
 
     /// Timeout for idle histograms.
     ///
