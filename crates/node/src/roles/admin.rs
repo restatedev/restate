@@ -51,7 +51,7 @@ impl AdminRole {
         self.meta.schema_reader()
     }
 
-    pub async fn start(mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(mut self, _bootstrap_cluster: bool) -> Result<(), anyhow::Error> {
         info!("Running admin role");
 
         // Init the meta. This will reload the schemas in memory.

@@ -43,6 +43,7 @@ derive_builder = { workspace = true }
 drain = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
+hostname = { version = "0.3.1" }
 http = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true, features = ["full"] }

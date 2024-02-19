@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use crate::server::service::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
+use restate_types::nodes_config::AdvertisedAddress;
 use serde_with::serde_as;
 
 /// # Node server options
@@ -22,6 +24,11 @@ use serde_with::serde_as;
 pub struct Options {
     /// Address to bind for the Node server.
     pub bind_address: SocketAddr,
+
+    /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
+    /// unset.
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub advertise_address: AdvertisedAddress,
 
     /// Timeout for idle histograms.
     ///
@@ -39,6 +46,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:5122".parse().unwrap(),
+            advertise_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
         }

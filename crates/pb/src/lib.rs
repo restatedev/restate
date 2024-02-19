@@ -79,6 +79,20 @@ pub mod restate {
 
         include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
 
+        impl From<Version> for restate_types::Version {
+            fn from(version: Version) -> Self {
+                restate_types::Version::from(version.value)
+            }
+        }
+
+        impl From<restate_types::Version> for Version {
+            fn from(version: restate_types::Version) -> Self {
+                Version {
+                    value: version.into(),
+                }
+            }
+        }
+
         impl From<NodeId> for restate_types::NodeId {
             fn from(node_id: NodeId) -> Self {
                 restate_types::NodeId::new(node_id.id, node_id.generation)
