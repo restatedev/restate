@@ -11,8 +11,8 @@
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
-use restate_types::nodes_config::ConfigVersion;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_types::Version;
 
 use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
@@ -66,7 +66,7 @@ pub enum Source {
         node_id: GenerationalNodeId,
         /// Last config version observed by sender. If this is a newer generation
         /// or an unknown ID, we might need to update our config.
-        nodes_config_version: ConfigVersion,
+        nodes_config_version: Version,
         // If unset and AckMode is dedup, we use the node_id as a key.
         dedup_key: Option<String>,
         sequence_number: MessageIndex,

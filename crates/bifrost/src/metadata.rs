@@ -14,7 +14,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use restate_types::logs::{LogId, LogsVersion, Lsn, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::Version;
 
 use crate::loglet::ProviderKind;
 
@@ -22,7 +23,7 @@ use crate::loglet::ProviderKind;
 /// Metadata updates are versioned and atomic.
 #[derive(Debug, Clone)]
 pub struct Logs {
-    pub(crate) version: LogsVersion,
+    pub(crate) version: Version,
     pub(crate) logs: HashMap<LogId, Chain>,
 }
 
@@ -59,14 +60,14 @@ impl LogletConfig {
 pub struct LogletParams(String);
 
 impl Logs {
-    pub fn new(version: LogsVersion, logs: HashMap<LogId, Chain>) -> Self {
+    pub fn new(version: Version, logs: HashMap<LogId, Chain>) -> Self {
         Self { version, logs }
     }
 
     /// empty metadata with an invalid version
     pub fn empty() -> Self {
         Self {
-            version: LogsVersion::INVALID,
+            version: Version::INVALID,
             logs: Default::default(),
         }
     }

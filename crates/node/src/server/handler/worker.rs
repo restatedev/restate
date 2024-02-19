@@ -12,11 +12,10 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
-use restate_bifrost::Bifrost;
 use restate_node_services::worker::worker_svc_server::WorkerSvc;
 use restate_node_services::worker::{
-    BifrostVersion, StateMutationRequest, StorageQueryRequest, StorageQueryResponse,
-    TerminationRequest, UpdateSchemaRequest,
+    StateMutationRequest, StorageQueryRequest, StorageQueryResponse, TerminationRequest,
+    UpdateSchemaRequest,
 };
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
@@ -25,7 +24,6 @@ use restate_worker_api::Handle;
 use tonic::{Request, Response, Status};
 
 pub struct WorkerHandler {
-    bifrost: Bifrost,
     worker_cmd_tx: WorkerCommandSender,
     query_context: QueryContext,
     schemas: Schemas,
@@ -34,14 +32,12 @@ pub struct WorkerHandler {
 
 impl WorkerHandler {
     pub fn new(
-        bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
         schemas: Schemas,
         subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         Self {
-            bifrost,
             worker_cmd_tx,
             query_context,
             schemas,
@@ -52,16 +48,6 @@ impl WorkerHandler {
 
 #[async_trait::async_trait]
 impl WorkerSvc for WorkerHandler {
-    async fn get_bifrost_version(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<BifrostVersion>, Status> {
-        let version = self.bifrost.metadata_version();
-        return Ok(Response::new(BifrostVersion {
-            version: version.into(),
-        }));
-    }
-
     async fn terminate_invocation(
         &self,
         request: Request<TerminationRequest>,

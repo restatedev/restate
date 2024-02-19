@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod cluster_controller;
+mod admin;
 mod worker;
 
-pub use cluster_controller::{ClusterControllerRole, ClusterControllerRoleBuildError};
+pub use admin::{AdminRole, AdminRoleBuildError};
 pub use worker::{update_schemas, WorkerRole, WorkerRoleBuildError};

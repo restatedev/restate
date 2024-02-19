@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
-use restate_types::logs::{LogId, LogsVersion, Lsn, Payload, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::Version;
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper, ProviderKind};
 use crate::metadata::Logs;
@@ -93,8 +94,8 @@ impl Bifrost {
         self.inner.find_tail(log_id, attributes).await
     }
 
-    /// The version of the currently loaded metadata
-    pub fn metadata_version(&self) -> LogsVersion {
+    /// The version of the currently loaded logs metadata
+    pub fn version(&self) -> Version {
         self.inner.log_metadata.lock().unwrap().version
     }
 

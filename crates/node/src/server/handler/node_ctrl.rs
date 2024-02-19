@@ -10,7 +10,6 @@
 
 use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvc;
 use restate_node_services::node_ctrl::{IdentResponse, NodeStatus};
-use restate_types::nodes_config::NodesConfiguration;
 use restate_types::NodeId;
 use tonic::{Request, Response, Status};
 
@@ -29,7 +28,6 @@ impl NodeCtrlSvc for NodeCtrlHandler {
         return Ok(Response::new(IdentResponse {
             status: NodeStatus::Alive.into(),
             node_id: NodeId::my_node_id().map(Into::into),
-            nodes_config_version: NodesConfiguration::current_version().into(),
         }));
     }
 }

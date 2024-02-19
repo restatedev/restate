@@ -133,7 +133,6 @@ impl NodeServer {
         }
 
         if let Some(WorkerDependencies {
-            bifrost,
             worker_cmd_tx,
             query_context,
             schemas,
@@ -142,7 +141,6 @@ impl NodeServer {
         }) = self.worker
         {
             server_builder = server_builder.add_service(WorkerSvcServer::new(WorkerHandler::new(
-                bifrost,
                 worker_cmd_tx,
                 query_context,
                 schemas,
@@ -189,7 +187,7 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 
 pub struct WorkerDependencies {
     rocksdb: RocksDBStorage,
-    bifrost: Bifrost,
+    _bifrost: Bifrost,
     worker_cmd_tx: WorkerCommandSender,
     query_context: QueryContext,
     schemas: Schemas,
@@ -199,7 +197,7 @@ pub struct WorkerDependencies {
 impl WorkerDependencies {
     pub fn new(
         rocksdb: RocksDBStorage,
-        bifrost: Bifrost,
+        _bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
         schemas: Schemas,
@@ -207,7 +205,7 @@ impl WorkerDependencies {
     ) -> Self {
         WorkerDependencies {
             rocksdb,
-            bifrost,
+            _bifrost,
             worker_cmd_tx,
             query_context,
             schemas,
