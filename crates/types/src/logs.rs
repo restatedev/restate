@@ -76,28 +76,6 @@ impl SequenceNumber for Lsn {
     }
 }
 
-/// Log metadata version.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-    Ord,
-    PartialOrd,
-    derive_more::Display,
-    derive_more::From,
-    derive_more::Into,
-)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[display(fmt = "v{}", _0)]
-pub struct LogsVersion(u64);
-
-impl LogsVersion {
-    pub const INVALID: LogsVersion = LogsVersion(0);
-}
-
 pub trait SequenceNumber
 where
     Self: Sized + Into<u64> + From<u64> + Eq + PartialEq + Ord + PartialOrd,

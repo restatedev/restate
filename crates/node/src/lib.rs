@@ -14,7 +14,7 @@ mod server;
 
 use codederror::CodedError;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{MyNodeIdWriter, NodeId, PlainNodeId};
+use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, PlainNodeId, Version};
 use std::time::Duration;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -29,9 +29,7 @@ pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
 use restate_node_services::cluster_controller::AttachmentRequest;
 use restate_task_center::{task_center, TaskKind};
-use restate_types::nodes_config::{
-    NetworkAddress, NodeConfig, NodesConfiguration, NodesConfigurationWriter, Role,
-};
+use restate_types::nodes_config::{NetworkAddress, NodeConfig, NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -62,6 +60,10 @@ pub enum BuildError {
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
     UnknownClusterController,
+
+    #[error("cluster bootstrap failed: {0}")]
+    #[code(unknown)]
+    Bootstrap(String),
 }
 
 pub struct Node {
@@ -76,6 +78,16 @@ pub struct Node {
 impl Node {
     pub fn new(options: Options) -> Result<Self, BuildError> {
         let opts = options.clone();
+        // ensure we have cluster admin role if bootstrapping.
+        if options.bootstrap_cluster {
+            info!("Bootstrapping cluster");
+            if !options.roles.contains(Role::Admin) {
+                return Err(BuildError::Bootstrap(format!(
+                    "Node must include the 'Admin' role when starting in bootstrap mode. Currently it has roles {}", options.roles
+                )));
+            }
+        }
+
         let admin_role = if options.roles.contains(Role::Admin) {
             Some(AdminRole::try_from(options.clone())?)
         } else {
@@ -129,8 +141,53 @@ impl Node {
         })
     }
 
-    pub fn start(self) -> Result<(), anyhow::Error> {
+    pub async fn start(self) -> Result<(), anyhow::Error> {
         let tc = task_center();
+        // If starting in bootstrap mode, we initialize the nodes configuration
+        // with a static config.
+        if self.options.bootstrap_cluster {
+            let temp_id: GenerationalNodeId = if let Some(my_id) = self.options.node_id {
+                my_id.with_generation(1)
+            } else {
+                // default to node-id 1 generation 1
+                GenerationalNodeId::new(1, 1)
+            };
+            // Temporary: nodes configuration from current node.
+            let mut nodes_config =
+                NodesConfiguration::new(Version::MIN, self.options.cluster_name.clone());
+            let address: NetworkAddress = NetworkAddress::TcpSocketAddr(
+                self.options
+                    .server
+                    .advertise_address
+                    .unwrap_or(self.options.server.bind_address),
+            );
+            let my_node = NodeConfig::new(
+                self.options.node_name.clone(),
+                temp_id,
+                address,
+                self.options.roles,
+            );
+            nodes_config.upsert_node(my_node);
+            info!(
+                "Created a bootstrap nodes-configuration version {} for cluster {}",
+                nodes_config.version(),
+                self.options.cluster_name.clone(),
+            );
+            info!("Initial nodes configuration is loaded");
+        } else {
+            // Not supported at the moment
+            unimplemented!()
+        }
+
+        if let Some(admin_role) = self.admin_role {
+            tc.spawn(
+                TaskKind::SystemBoot,
+                "admin-init",
+                None,
+                admin_role.start(self.options.bootstrap_cluster),
+            )?;
+        }
+
         tc.spawn(
             TaskKind::RpcServer,
             "node-rpc-server",
@@ -138,13 +195,10 @@ impl Node {
             self.server.run(),
         )?;
 
-        if let Some(admin_role) = self.admin_role {
-            tc.spawn(TaskKind::SystemBoot, "admin-init", None, admin_role.start())?;
-        }
+        Self::attach_node(self.options, self.admin_address).await?;
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(TaskKind::SystemBoot, "worker-init", None, async {
-                Self::attach_node(self.options, self.admin_address).await?;
                 // MyNodeId should be set here.
                 // Startup the worker role.
                 worker_role
@@ -196,23 +250,6 @@ impl Node {
         info!(
             "Node attached to cluster controller. My Node ID is {}",
             my_node_id
-        );
-        // Temporary: nodes configuration from current node.
-        let mut nodes_config = NodesConfiguration::default();
-        let address: NetworkAddress = NetworkAddress::TcpSocketAddr(options.server.bind_address);
-        let node = NodeConfig::new(
-            options.node_name,
-            my_node_id
-                .as_generational()
-                .expect("my NodeId is generational"),
-            address,
-            options.roles,
-        );
-        nodes_config.upsert_node(node);
-        NodesConfigurationWriter::set_as_current_unconditional(nodes_config);
-        info!(
-            "Loaded nodes configuration version {}",
-            NodesConfiguration::current_version()
         );
         Ok(())
     }

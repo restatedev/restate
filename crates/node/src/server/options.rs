@@ -23,6 +23,10 @@ pub struct Options {
     /// Address to bind for the Node server.
     pub bind_address: SocketAddr,
 
+    /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
+    /// unset.
+    pub advertise_address: Option<SocketAddr>,
+
     /// Timeout for idle histograms.
     ///
     /// The duration after which a histogram is considered idle and will be removed from
@@ -39,6 +43,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:5122".parse().unwrap(),
+            advertise_address: Some("127.0.0.1:5122".parse().unwrap()),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
         }

@@ -10,13 +10,11 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "dev/restate/common/common.proto";
 
 package dev.restate.worker;
 
 service WorkerSvc {
-  // Get the current known version of bifrost metadata on this node
-  rpc GetBifrostVersion(google.protobuf.Empty) returns (BifrostVersion);
-
   // Terminate the specified invocation
   rpc TerminateInvocation(TerminationRequest) returns (google.protobuf.Empty);
 
@@ -28,10 +26,6 @@ service WorkerSvc {
 
   // Updates the schema information on the worker node
   rpc UpdateSchemas(UpdateSchemaRequest) returns (google.protobuf.Empty);
-}
-
-message BifrostVersion {
-  uint64 version = 1;
 }
 
 message TerminationRequest {

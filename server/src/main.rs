@@ -14,6 +14,7 @@ use restate_errors::fmt::RestateCode;
 use restate_server::build_info;
 use restate_server::Configuration;
 use restate_task_center::TaskCenterFactory;
+use restate_task_center::TaskKind;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
 use std::ops::Div;
@@ -154,7 +155,7 @@ fn main() {
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = tc.run_in_scope_sync("startup", None, || node.unwrap().start());
+            let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
 
             tokio::select! {
                 signal_name = signal::shutdown() => {

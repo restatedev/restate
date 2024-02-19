@@ -31,7 +31,6 @@ service NodeCtrlSvc {
 message IdentResponse {
   NodeStatus status = 1;
   dev.restate.common.NodeId node_id = 2;
-  uint32 nodes_config_version = 3;
 }
 
 
