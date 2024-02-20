@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod cluster_controller;
-pub mod metadata;
-pub mod node_ctrl;
-pub mod worker;
+pub mod cluster_ctrl;
+pub mod node;
 
 use std::fmt::Write;
 use std::iter::once;
@@ -23,11 +21,11 @@ use restate_storage_rocksdb::{TableKind, DB};
 use rocksdb::statistics::{Histogram, Ticker};
 use rocksdb::AsColumnFamilyRef;
 
-use crate::server::prometheus_helpers::{
+use crate::network_server::prometheus_helpers::{
     format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
     format_rocksdb_stat_ticker_for_prometheus, MetricUnit,
 };
-use crate::server::state::HandlerState;
+use crate::network_server::state::NodeCtrlHandlerState;
 
 static ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheDataBytesInsert,
@@ -129,7 +127,7 @@ static ROCKSDB_PROPERTIES: &[(&str, MetricUnit)] = &[
 ];
 
 // -- Direct HTTP Handlers --
-pub async fn render_metrics(State(state): State<HandlerState>) -> String {
+pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
     let mut out = String::new();
 
     // Response content type is plain/text and that's expected.
@@ -223,7 +221,7 @@ pub async fn render_metrics(State(state): State<HandlerState>) -> String {
     out
 }
 
-pub async fn rocksdb_stats(State(state): State<HandlerState>) -> impl IntoResponse {
+pub async fn rocksdb_stats(State(state): State<NodeCtrlHandlerState>) -> impl IntoResponse {
     let Some(db) = state.rocksdb_storage else {
         return String::new();
     };

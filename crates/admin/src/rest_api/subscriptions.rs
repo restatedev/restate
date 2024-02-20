@@ -53,7 +53,7 @@ pub async fn create_subscription<W>(
         )
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client()).await?;
+    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -171,7 +171,7 @@ pub async fn delete_subscription<W>(
         .delete_subscription(subscription_id)
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client()).await?;
+    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
 
     Ok(StatusCode::ACCEPTED)
 }

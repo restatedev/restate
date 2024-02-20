@@ -92,7 +92,7 @@ pub async fn modify_service<W>(
         .modify_service(service_name.clone(), public)
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.worker_svc_client()).await?;
+    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
 
     state
         .schemas()
