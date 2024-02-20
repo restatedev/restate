@@ -10,30 +10,15 @@
 
 extern crate core;
 
-use restate_types::time::MillisSinceEpoch;
-use std::borrow::Borrow;
-use std::fmt::Debug;
 use std::future::Future;
-use std::hash::Hash;
 
 mod options;
 mod service;
 
 pub use options::{Options, OptionsBuilder, OptionsBuilderError};
+use restate_types::timer::Timer;
 pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;
-
-pub trait Timer: Hash + Eq + Borrow<Self::TimerKey> {
-    type TimerKey: TimerKey + Send;
-
-    fn timer_key(&self) -> &Self::TimerKey;
-}
-
-/// Timer key establishes an absolute order on [`Timer`]. Naturally, this should be key under
-/// which the timer value is stored and can be retrieved.
-pub trait TimerKey: Ord + Clone + Hash + Debug {
-    fn wake_up_time(&self) -> MillisSinceEpoch;
-}
 
 pub trait TimerReader<T>
 where
@@ -42,7 +27,7 @@ where
     /// Gets the next `num_timers` starting with the next timer after `previous_timer_key`.
     ///
     /// # Contract
-    /// The returned timers need to follow the order defined by [`TimerKey`]. This entails
+    /// The returned timers need to follow the order defined by [`restate_types::timer::TimerKey`]. This entails
     /// scan timers must never return a timer whose key is <= `previous_timer_key`
     fn get_timers(
         &mut self,

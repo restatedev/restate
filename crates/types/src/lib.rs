@@ -28,6 +28,7 @@ pub mod retries;
 pub mod state_mut;
 pub mod subscription;
 pub mod time;
+pub mod timer;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use metadata::*;

@@ -10,10 +10,11 @@
 
 use crate::service::clock::tests::ManualClock;
 use crate::service::clock::TokioClock;
-use crate::{Timer, TimerKey, TimerReader, TimerService};
+use crate::{Timer, TimerReader, TimerService};
 use futures_util::FutureExt;
 use restate_test_util::let_assert;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::timer::TimerKey;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Debug;

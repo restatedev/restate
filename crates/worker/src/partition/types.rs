@@ -135,7 +135,7 @@ impl TimerKeyWrapper {
     }
 }
 
-impl restate_timer::Timer for TimerValue {
+impl restate_types::timer::Timer for TimerValue {
     type TimerKey = TimerKeyWrapper;
 
     fn timer_key(&self) -> &Self::TimerKey {
@@ -143,7 +143,7 @@ impl restate_timer::Timer for TimerValue {
     }
 }
 
-impl restate_timer::TimerKey for TimerKeyWrapper {
+impl restate_types::timer::TimerKey for TimerKeyWrapper {
     fn wake_up_time(&self) -> MillisSinceEpoch {
         MillisSinceEpoch::from(self.0.timestamp)
     }
