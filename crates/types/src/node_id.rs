@@ -195,6 +195,10 @@ impl GenerationalNodeId {
         self.1
     }
 
+    pub fn bump_generation(&mut self) {
+        self.1 += 1;
+    }
+
     pub fn is_newer_than(self, other: GenerationalNodeId) -> bool {
         self.0 == other.0 && self.1 > other.1
     }

@@ -18,16 +18,6 @@ use tracing::info;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::FileMetaReader;
-use restate_storage_rocksdb::RocksDBStorage;
-use restate_task_center::cancellation_watcher;
-
-use crate::server::handler;
-use crate::server::handler::cluster_controller::ClusterControllerHandler;
-use crate::server::handler::metadata::MetadataHandler;
-use crate::server::handler::node_ctrl::NodeCtrlHandler;
-use crate::server::handler::worker::WorkerHandler;
-// TODO cleanup
-use crate::server::metrics::install_global_prometheus_recorder;
 use restate_node_services::cluster_controller::cluster_controller_svc_server::ClusterControllerSvcServer;
 use restate_node_services::metadata::metadata_svc_server::MetadataSvcServer;
 use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvcServer;
@@ -35,8 +25,16 @@ use restate_node_services::worker::worker_svc_server::WorkerSvcServer;
 use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_rocksdb::RocksDBStorage;
+use restate_task_center::cancellation_watcher;
 use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 
+use crate::server::handler;
+use crate::server::handler::cluster_controller::ClusterControllerHandler;
+use crate::server::handler::metadata::MetadataHandler;
+use crate::server::handler::node_ctrl::NodeCtrlHandler;
+use crate::server::handler::worker::WorkerHandler;
+use crate::server::metrics::install_global_prometheus_recorder;
 use crate::server::multiplex::MultiplexService;
 use crate::server::options::Options;
 use crate::server::state::HandlerStateBuilder;
