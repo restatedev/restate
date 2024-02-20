@@ -43,6 +43,7 @@ restate-storage-rocksdb = { workspace = true }
 restate-task-center = { workspace = true }
 restate-timer = { workspace = true }
 restate-types = { workspace = true }
+restate-wal-protocol = { workspace = true }
 restate-worker-api = { workspace = true }
 
 anyhow = { workspace = true }

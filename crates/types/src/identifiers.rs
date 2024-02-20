@@ -26,8 +26,9 @@ use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
 use crate::time::MillisSinceEpoch;
 
+// todo: Can be removed once shuffles no longer need acks
 /// Identifying a member of a raft group
-pub type PeerId = u64;
+pub type PeerId = PartitionId;
 
 /// Identifying the leader epoch of a partition processor
 #[derive(

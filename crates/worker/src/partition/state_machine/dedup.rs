@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{AckCommand, AckMode, Effects, Error};
+use super::{Effects, Error};
 
-use crate::partition::state_machine::commands::DeduplicationSource;
 use crate::partition::state_machine::{
     Action, ActionCollector, InterpretationResult, StateMachine,
 };
 use crate::partition::storage::Transaction;
+use crate::partition::types::{AckResponse, IngressAckResponse, ShuffleAckResponse};
 use restate_storage_api::deduplication_table::SequenceNumberSource;
 use restate_types::journal::raw::RawEntryCodec;
-use restate_types::message::MessageIndex;
+use restate_types::message::{AckKind, MessageIndex};
+use restate_wal_protocol::{AckMode, Envelope, Source};
 
 #[derive(Debug)]
 pub struct DeduplicatingStateMachine<Codec> {
@@ -41,64 +42,105 @@ where
         Collector: ActionCollector,
     >(
         &mut self,
-        command: AckCommand,
+        envelope: Envelope,
         effects: &mut Effects,
         mut transaction: Transaction<TransactionType>,
         mut message_collector: Collector,
         is_leader: bool,
     ) -> Result<InterpretationResult<Transaction<TransactionType>, Collector>, Error> {
-        let (fsm_command, ack_mode) = command.into_inner();
-
-        match ack_mode {
-            AckMode::Ack(ack_target) => {
-                message_collector.collect(Action::SendAckResponse(ack_target.acknowledge()));
+        match envelope.header.ack_mode {
+            AckMode::Ack => {
+                let ack_response =
+                    create_ack_response(&envelope.header.source, |sequence_number| {
+                        AckKind::Acknowledge(sequence_number)
+                    });
+                message_collector.collect(Action::SendAckResponse(ack_response));
             }
-            AckMode::Dedup(deduplication_source) => {
-                let (source, seq_number) = match deduplication_source {
-                    DeduplicationSource::Shuffle {
-                        seq_number,
-                        producing_partition_id,
+            AckMode::Dedup => {
+                let (source, seq_number) = match &envelope.header.source {
+                    Source::Processor {
+                        partition_id,
+                        sequence_number,
                         ..
                     } => (
-                        SequenceNumberSource::Partition(producing_partition_id),
-                        seq_number,
+                        SequenceNumberSource::Partition(*partition_id),
+                        sequence_number.expect("sequence number must be present"),
                     ),
-                    DeduplicationSource::Ingress {
-                        seq_number,
-                        ref source_id,
+                    Source::Ingress {
+                        dedup_key,
+                        sequence_number,
                         ..
                     } => (
-                        SequenceNumberSource::Ingress(source_id.clone().into()),
-                        seq_number,
+                        SequenceNumberSource::Ingress(
+                            dedup_key.clone().expect("dedup key must be present").into(),
+                        ),
+                        *sequence_number,
                     ),
+                    Source::ControlPlane { .. } => {
+                        unimplemented!("control plane should not require deduping")
+                    }
                 };
 
                 if let Some(last_known_seq_number) =
                     transaction.load_dedup_seq_number(source.clone()).await?
                 {
                     if seq_number <= last_known_seq_number {
-                        message_collector.collect(Action::SendAckResponse(
-                            deduplication_source.duplicate(last_known_seq_number),
-                        ));
+                        let ack_response =
+                            create_ack_response(&envelope.header.source, |seq_number| {
+                                AckKind::Duplicate {
+                                    seq_number,
+                                    last_known_seq_number,
+                                }
+                            });
+                        message_collector.collect(Action::SendAckResponse(ack_response));
                         return Ok(InterpretationResult::new(transaction, message_collector));
                     }
                 }
 
                 transaction.store_dedup_seq_number(source, seq_number).await;
-                message_collector
-                    .collect(Action::SendAckResponse(deduplication_source.acknowledge()));
+                let ack_response = create_ack_response(&envelope.header.source, |seq_number| {
+                    AckKind::Acknowledge(seq_number)
+                });
+                message_collector.collect(Action::SendAckResponse(ack_response));
             }
             AckMode::None => {}
         }
 
         self.inner
             .apply(
-                fsm_command,
+                envelope.command,
                 effects,
                 transaction,
                 message_collector,
                 is_leader,
             )
             .await
+    }
+}
+
+fn create_ack_response(
+    source: &Source,
+    ack_kind: impl FnOnce(MessageIndex) -> AckKind,
+) -> AckResponse {
+    match source {
+        Source::Processor {
+            partition_id,
+            sequence_number,
+            ..
+        } => AckResponse::Shuffle(ShuffleAckResponse {
+            shuffle_target: *partition_id,
+            kind: ack_kind(sequence_number.expect("sequence number must be present")),
+        }),
+        Source::Ingress {
+            node_id,
+            sequence_number,
+            dedup_key,
+            ..
+        } => AckResponse::Ingress(IngressAckResponse {
+            _from_node_id: *node_id,
+            dedup_source: dedup_key.clone(),
+            kind: ack_kind(*sequence_number),
+        }),
+        Source::ControlPlane { .. } => unimplemented!("control plane should not require acks"),
     }
 }

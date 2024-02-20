@@ -14,10 +14,10 @@ use prost::Message;
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{EventReceiverServiceInstanceType, Sink, Subscription};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, PeerId};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, PeerId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::{AckKind, MessageIndex};
-use restate_types::GenerationalNodeId;
+use restate_types::{GenerationalNodeId, Version};
 use std::fmt::Display;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +28,7 @@ mod event_remapping;
 mod service;
 
 pub use event_remapping::Error as EventError;
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 pub use service::Error as ServiceError;
 pub use service::Service;
 
@@ -316,12 +317,7 @@ impl IngressDispatcherInput {
 
 #[derive(Debug)]
 pub enum IngressDispatcherOutput {
-    Invocation {
-        service_invocation: ServiceInvocation,
-        from_node_id: GenerationalNodeId,
-        deduplication_source: Option<String>,
-        msg_index: MessageIndex,
-    },
+    Envelope(Envelope),
     Ack(AckResponse),
 }
 
@@ -338,12 +334,27 @@ impl IngressDispatcherOutput {
         deduplication_source: Option<String>,
         msg_index: MessageIndex,
     ) -> Self {
-        Self::Invocation {
-            service_invocation,
-            from_node_id,
-            deduplication_source,
-            msg_index,
-        }
+        let ack_mode = if deduplication_source.is_some() {
+            AckMode::Dedup
+        } else {
+            AckMode::Ack
+        };
+
+        let header = Header {
+            source: Source::Ingress {
+                node_id: from_node_id,
+                sequence_number: msg_index,
+                dedup_key: deduplication_source,
+                // todo: Retrieve proper node config version
+                nodes_config_version: Version::MIN,
+            },
+            dest: Destination::Processor {
+                partition_key: service_invocation.fid.partition_key(),
+            },
+            ack_mode,
+        };
+
+        Self::Envelope(Envelope::new(header, Command::Invoke(service_invocation)))
     }
 
     pub fn shuffle_ack(ack_response: AckResponse) -> Self {

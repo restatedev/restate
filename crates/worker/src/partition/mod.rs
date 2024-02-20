@@ -12,7 +12,7 @@ use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_
 use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
 use crate::partition::state_machine::{
-    AckCommand, ActionCollector, DeduplicatingStateMachine, Effects, InterpretationResult,
+    ActionCollector, DeduplicatingStateMachine, Effects, InterpretationResult,
 };
 use crate::partition::storage::{PartitionStorage, Transaction};
 use crate::util::IdentitySender;
@@ -36,17 +36,14 @@ mod services;
 pub mod shuffle;
 mod state_machine;
 pub mod storage;
-mod types;
+pub mod types;
 
+use crate::partition::types::AckResponse;
 pub use options::Options;
-pub use state_machine::{
-    AckCommand as StateMachineAckCommand, AckResponse as StateMachineAckResponse,
-    AckTarget as StateMachineAckTarget, Command as StateMachineCommand,
-    DeduplicationSource as StateMachineDeduplicationSource,
-    IngressAckResponse as StateMachineIngressAckResponse,
-    ShuffleDeduplicationResponse as StateMachineShuffleDeduplicationResponse,
-};
-pub(super) use types::TimerValue;
+use restate_wal_protocol::Envelope;
+
+type ConsensusReader = mpsc::Receiver<restate_consensus::Command<Envelope>>;
+type ConsensusWriter = IdentitySender<Envelope>;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
@@ -57,14 +54,14 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     timer_service_options: restate_timer::Options,
     channel_size: usize,
 
-    command_rx: mpsc::Receiver<restate_consensus::Command<StateMachineAckCommand>>,
-    proposal_tx: IdentitySender<StateMachineAckCommand>,
+    consensus_reader: ConsensusReader,
+    consensus_writer: ConsensusWriter,
 
     invoker_tx: InvokerInputSender,
 
     network_handle: NetworkHandle,
 
-    ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
 
     rocksdb_storage: RocksDBStorage,
 
@@ -89,11 +86,11 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
-        command_stream: mpsc::Receiver<restate_consensus::Command<StateMachineAckCommand>>,
-        proposal_sender: IdentitySender<StateMachineAckCommand>,
+        consensus_reader: ConsensusReader,
+        consensus_writer: ConsensusWriter,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
+        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         options: Options,
@@ -104,8 +101,8 @@ where
             partition_key_range,
             timer_service_options,
             channel_size,
-            command_rx: command_stream,
-            proposal_tx: proposal_sender,
+            consensus_reader,
+            consensus_writer,
             invoker_tx,
             network_handle,
             ack_tx,
@@ -124,10 +121,10 @@ where
             partition_key_range,
             timer_service_options,
             channel_size,
-            mut command_rx,
+            mut consensus_reader,
             invoker_tx,
             network_handle,
-            proposal_tx,
+            consensus_writer,
             ack_tx,
             rocksdb_storage,
             schemas,
@@ -149,17 +146,17 @@ where
             invoker_tx,
             network_handle,
             ack_tx,
-            proposal_tx.clone(),
+            consensus_writer.clone(),
         );
 
         let mut state_machine =
             Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
-        let actuator_output_handler = ActionEffectHandler::new(proposal_tx);
+        let mut actuator_output_handler = None;
 
         loop {
             tokio::select! {
-                mut next_command = command_rx.recv() => {
+                mut next_command = consensus_reader.recv() => {
                     if next_command.is_none() {
                         break;
                     }
@@ -177,14 +174,14 @@ where
                                 let is_leader = leadership_state.is_leader();
                                 let message_collector = leadership_state.into_message_collector();
 
-                                let (application_result, command) = Self::apply_command(
+                                let (application_result, command) = Self::apply_envelope(
                                     &mut state_machine,
                                     command,
                                     &mut effects,
                                     transaction,
                                     message_collector,
                                     is_leader,
-                                    &mut command_rx,
+                                    &mut consensus_reader,
                                     options.max_batch_duration.map(Into::into))
                                 .await?;
 
@@ -205,10 +202,13 @@ where
 
                                 )
                                 .await?;
+
+                                actuator_output_handler = Some(ActionEffectHandler::new(partition_id, leader_epoch, partition_key_range.clone(), consensus_writer.clone()));
                             }
                             restate_consensus::Command::BecomeFollower => {
                                 info!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, "Become follower");
                                 (actuator_stream, leadership_state) = leadership_state.become_follower().await?;
+                                actuator_output_handler = None;
                             },
                             restate_consensus::Command::ApplySnapshot => {
                                 unimplemented!("Not supported yet.");
@@ -222,13 +222,13 @@ where
                 actuator_output = actuator_stream.next() => {
                     counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
                     let actuator_output = actuator_output.ok_or_else(|| anyhow::anyhow!("actuator stream is closed"))?;
-                    actuator_output_handler.handle(actuator_output).await;
+                    actuator_output_handler.as_ref().expect("actuator output handler must be present when being leader").handle(actuator_output).await;
                 },
                 task_result = leadership_state.run_tasks() => {
                     match task_result {
                         TaskResult::Timer(timer) => {
                             counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
-                            actuator_output_handler.handle(ActionEffect::Timer(timer)).await;
+                            actuator_output_handler.as_ref().expect("actuator output handler must be present when being leader").handle(ActionEffect::Timer(timer)).await;
                         },
                         TaskResult::TerminatedTask(result) => {
                             Err(result)?
@@ -258,22 +258,22 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn apply_command<
+    pub async fn apply_envelope<
         TransactionType: restate_storage_api::Transaction + Send,
         Collector: ActionCollector,
     >(
         state_machine: &mut DeduplicatingStateMachine<RawEntryCodec>,
-        command: AckCommand,
+        envelope: Envelope,
         effects: &mut Effects,
         transaction: Transaction<TransactionType>,
         message_collector: Collector,
         is_leader: bool,
-        command_rx: &mut mpsc::Receiver<restate_consensus::Command<AckCommand>>,
+        consensus_reader: &mut ConsensusReader,
         max_batch_duration: Option<Duration>,
     ) -> Result<
         (
             InterpretationResult<Transaction<TransactionType>, Collector>,
-            Option<restate_consensus::Command<AckCommand>>,
+            Option<restate_consensus::Command<Envelope>>,
         ),
         state_machine::Error,
     > {
@@ -282,18 +282,18 @@ where
 
         // Apply state machine
         let mut application_result = state_machine
-            .apply(command, effects, transaction, message_collector, is_leader)
+            .apply(envelope, effects, transaction, message_collector, is_leader)
             .await?;
 
         while max_batch_duration_start
             .map(|(max_duration, start)| start.elapsed() < max_duration)
             .unwrap_or(true)
         {
-            if let Ok(command) = command_rx.try_recv() {
-                if let restate_consensus::Command::Apply(command) = command {
+            if let Ok(command) = consensus_reader.try_recv() {
+                if let restate_consensus::Command::Apply(envelope) = command {
                     let (transaction, message_collector) = application_result.into_inner();
                     application_result = state_machine
-                        .apply(command, effects, transaction, message_collector, is_leader)
+                        .apply(envelope, effects, transaction, message_collector, is_leader)
                         .await?;
                 } else {
                     return Ok((application_result, Some(command)));

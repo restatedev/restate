@@ -266,7 +266,7 @@ async fn awakeable_with_success() {
             result: EntryResult::Success(Bytes::default()),
         },
     ));
-    let cmd = Command::Invoker(InvokerEffect {
+    let cmd = Command::InvokerEffect(InvokerEffect {
         full_invocation_id: sid_caller.clone(),
         kind: EffectKind::JournalEntry {
             entry_index: 1,
@@ -321,7 +321,7 @@ async fn awakeable_with_failure() {
             result: EntryResult::Failure(UserErrorCode::FailedPrecondition, "Some failure".into()),
         },
     ));
-    let cmd = Command::Invoker(InvokerEffect {
+    let cmd = Command::InvokerEffect(InvokerEffect {
         full_invocation_id: sid_caller.clone(),
         kind: EffectKind::JournalEntry {
             entry_index: 1,
@@ -368,7 +368,7 @@ async fn send_response_using_invocation_id() {
 
     let fid = FullInvocationId::mock_random();
 
-    let cmd = Command::Response(InvocationResponse {
+    let cmd = Command::InvocationResponse(InvocationResponse {
         id: MaybeFullInvocationId::Partial(InvocationId::from(fid.clone())),
         entry_index: 1,
         result: ResponseResult::Success(Bytes::from_static(b"hello")),

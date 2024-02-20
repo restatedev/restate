@@ -450,10 +450,10 @@ mod tests {
         let output_message = output_rx.recv().await.unwrap();
 
         let_assert!(
-            IngressDispatcherOutput::Invocation {
-                service_invocation,
+            IngressDispatcherOutput::Envelope(Envelope {
+                command: Command::Invoke(service_invocation),
                 ..
-            } = output_message
+            }) = output_message
         );
         assert_that!(
             service_invocation,

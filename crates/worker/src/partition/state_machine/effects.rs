@@ -21,8 +21,6 @@ use std::fmt;
 use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 
-use crate::partition::types::TimerKeyDisplay;
-use crate::partition::TimerValue;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::{Timer, TimerKey};
@@ -38,6 +36,8 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
+use restate_wal_protocol::timer::TimerKeyDisplay;
+use restate_wal_protocol::timer::TimerValue;
 
 #[derive(Debug)]
 pub(crate) enum Effect {

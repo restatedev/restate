@@ -18,6 +18,7 @@ restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-task-center = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
+restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }

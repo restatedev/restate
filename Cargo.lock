@@ -4894,6 +4894,7 @@ dependencies = [
  "restate-task-center",
  "restate-test-util",
  "restate-types",
+ "restate-wal-protocol",
  "test-log",
  "thiserror",
  "tokio",
@@ -5638,6 +5639,7 @@ name = "restate-wal-protocol"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "assert2",
  "async-trait",
  "bincode",
  "bytes",
@@ -5711,6 +5713,7 @@ dependencies = [
  "restate-test-util",
  "restate-timer",
  "restate-types",
+ "restate-wal-protocol",
  "restate-worker-api",
  "schemars",
  "serde",

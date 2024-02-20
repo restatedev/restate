@@ -212,7 +212,7 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(Effect::OutboxMessage(pat!(
+                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                     OutboxMessage::IngressResponse {
                         full_invocation_id: eq(fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
@@ -220,7 +220,7 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(Effect::OutboxMessage(pat!(
+                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                     OutboxMessage::ServiceInvocation(pat!(ServiceInvocation {
                         fid: pat!(FullInvocationId {
                             service_id: pat!(ServiceId {

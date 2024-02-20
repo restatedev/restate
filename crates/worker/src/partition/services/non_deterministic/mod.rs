@@ -27,7 +27,7 @@ use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::time::MillisSinceEpoch;
-use std::borrow::Cow;
+use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::sync::mpsc;
@@ -37,70 +37,9 @@ mod idempotent_invoker;
 mod ingress;
 mod remote_context;
 
-#[derive(Debug)]
-pub struct Effects {
-    full_invocation_id: FullInvocationId,
-    effects: Vec<Effect>,
-}
-
-impl Effects {
-    pub(crate) fn new(full_invocation_id: FullInvocationId, effects: Vec<Effect>) -> Self {
-        Self {
-            full_invocation_id,
-            effects,
-        }
-    }
-
-    pub(crate) fn into_inner(self) -> (FullInvocationId, Vec<Effect>) {
-        (self.full_invocation_id, self.effects)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum Effect {
-    CreateJournal {
-        service_id: ServiceId,
-        invocation_uuid: InvocationUuid,
-        span_context: ServiceInvocationSpanContext,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-    },
-    StoreEntry {
-        service_id: ServiceId,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    },
-    DropJournal {
-        service_id: ServiceId,
-        journal_length: EntryIndex,
-    },
-
-    SetState {
-        key: Cow<'static, str>,
-        value: Bytes,
-    },
-    ClearState(Cow<'static, str>),
-
-    OutboxMessage(OutboxMessage),
-    DelayedInvoke {
-        target_fid: FullInvocationId,
-        target_method: String,
-        argument: Bytes,
-        source: Source,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        time: MillisSinceEpoch,
-        timer_index: EntryIndex,
-    },
-
-    End(
-        // NBIS can optionally fail, depending on the context the error might or might not be used.
-        Option<InvocationError>,
-    ),
-}
-
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
-pub(crate) type EffectsSender = mpsc::UnboundedSender<Effects>;
-pub(crate) type EffectsReceiver = mpsc::UnboundedReceiver<Effects>;
+pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
+pub(crate) type EffectsReceiver = mpsc::UnboundedReceiver<BuiltinServiceEffects>;
 
 pub(crate) struct ServiceInvoker<'a> {
     storage: PartitionStorage<RocksDBStorage>,
@@ -180,7 +119,7 @@ impl<'a> ServiceInvoker<'a> {
         match result {
             Ok(()) => {
                 // Just append End
-                out_effects.push(Effect::End(None));
+                out_effects.push(BuiltinServiceEffect::End(None));
             }
             Err(e) => {
                 warn!(
@@ -190,7 +129,7 @@ impl<'a> ServiceInvoker<'a> {
                     e);
                 // Clear effects, and append end error
                 out_effects.clear();
-                out_effects.push(Effect::End(Some(e)))
+                out_effects.push(BuiltinServiceEffect::End(Some(e)))
             }
         }
 
@@ -198,7 +137,7 @@ impl<'a> ServiceInvoker<'a> {
         // the receiver channel should only be shut down if the system is shutting down
         let _ = self
             .effects_tx
-            .send(Effects::new(full_invocation_id, out_effects));
+            .send(BuiltinServiceEffects::new(full_invocation_id, out_effects));
     }
 }
 
@@ -209,15 +148,15 @@ struct StateAndJournalTransitions {
 }
 
 impl StateAndJournalTransitions {
-    fn fill_effects_buffer(mut self, effects: &mut Vec<Effect>) {
+    fn fill_effects_buffer(mut self, effects: &mut Vec<BuiltinServiceEffect>) {
         for (key, opt_value) in self.state_entries.into_iter() {
             if let Some(value) = opt_value {
-                effects.push(Effect::SetState {
+                effects.push(BuiltinServiceEffect::SetState {
                     key: key.into(),
                     value,
                 });
             } else {
-                effects.push(Effect::ClearState(key.into()));
+                effects.push(BuiltinServiceEffect::ClearState(key.into()));
             }
         }
 
@@ -227,7 +166,7 @@ impl StateAndJournalTransitions {
         for key in order {
             let ((service_id, entry_index), journal_entry) =
                 self.journal_entries.remove_entry(&key).unwrap();
-            effects.push(Effect::StoreEntry {
+            effects.push(BuiltinServiceEffect::StoreEntry {
                 service_id,
                 entry_index,
                 journal_entry,
@@ -244,7 +183,7 @@ struct InvocationContext<'a, S> {
     span_context: &'a ServiceInvocationSpanContext,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
 
-    effects_buffer: &'a mut Vec<Effect>,
+    effects_buffer: &'a mut Vec<BuiltinServiceEffect>,
     state_and_journal_transitions: &'a mut StateAndJournalTransitions,
 }
 
@@ -267,13 +206,14 @@ impl<S: StateReader> InvocationContext<'_, S> {
         completion_notification_target: NotificationTarget,
         kill_notification_target: NotificationTarget,
     ) {
-        self.effects_buffer.push(Effect::CreateJournal {
-            service_id,
-            invocation_uuid,
-            span_context,
-            completion_notification_target,
-            kill_notification_target,
-        });
+        self.effects_buffer
+            .push(BuiltinServiceEffect::CreateJournal {
+                service_id,
+                invocation_uuid,
+                span_context,
+                completion_notification_target,
+                kill_notification_target,
+            });
     }
 
     async fn read_journal_entry(
@@ -310,7 +250,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
 
     fn drop_journal(&mut self, service_id: ServiceId, journal_length: EntryIndex) {
         self.state_and_journal_transitions.journal_entries.clear();
-        self.effects_buffer.push(Effect::DropJournal {
+        self.effects_buffer.push(BuiltinServiceEffect::DropJournal {
             service_id,
             journal_length,
         });
@@ -404,29 +344,33 @@ impl<S: StateReader> InvocationContext<'_, S> {
         timer_index: EntryIndex,
     ) {
         // Perhaps we can internally keep track of the timer index here?
-        self.effects_buffer.push(Effect::DelayedInvoke {
-            target_fid,
-            target_method,
-            argument,
-            source,
-            response_sink,
-            time,
-            timer_index,
-        });
+        self.effects_buffer
+            .push(BuiltinServiceEffect::DelayedInvoke {
+                target_fid,
+                target_method,
+                argument,
+                source,
+                response_sink,
+                time,
+                timer_index,
+            });
     }
 
     fn send_message(&mut self, msg: OutboxMessage) {
-        self.effects_buffer.push(Effect::OutboxMessage(msg))
+        self.effects_buffer
+            .push(BuiltinServiceEffect::OutboxMessage(msg))
     }
 
     fn reply_to_caller(&mut self, res: ResponseResult) {
         if let Some(response_sink) = self.response_sink {
             self.effects_buffer
-                .push(Effect::OutboxMessage(OutboxMessage::from_response_sink(
-                    self.full_invocation_id,
-                    response_sink.clone(),
-                    res,
-                )));
+                .push(BuiltinServiceEffect::OutboxMessage(
+                    OutboxMessage::from_response_sink(
+                        self.full_invocation_id,
+                        response_sink.clone(),
+                        res,
+                    ),
+                ));
         }
     }
 }
@@ -441,16 +385,16 @@ mod tests {
     use restate_types::GenerationalNodeId;
 
     impl MockStateReader {
-        pub(super) fn apply_effects(&mut self, effects: &[Effect]) {
+        pub(super) fn apply_effects(&mut self, effects: &[BuiltinServiceEffect]) {
             for effect in effects {
                 match effect {
-                    Effect::SetState { key, value } => {
+                    BuiltinServiceEffect::SetState { key, value } => {
                         self.0.insert(key.to_string(), value.clone());
                     }
-                    Effect::ClearState(key) => {
+                    BuiltinServiceEffect::ClearState(key) => {
                         self.0.remove(&key.to_string());
                     }
-                    Effect::CreateJournal {
+                    BuiltinServiceEffect::CreateJournal {
                         span_context,
                         invocation_uuid,
                         ..
@@ -461,7 +405,7 @@ mod tests {
                             Vec::default(),
                         ));
                     }
-                    Effect::StoreEntry {
+                    BuiltinServiceEffect::StoreEntry {
                         journal_entry,
                         entry_index,
                         ..
@@ -470,7 +414,7 @@ mod tests {
                         meta.length += 1;
                         v.insert(*entry_index as usize, journal_entry.clone())
                     }
-                    Effect::DropJournal { journal_length, .. } => {
+                    BuiltinServiceEffect::DropJournal { journal_length, .. } => {
                         assert_eq!(self.1.as_ref().unwrap().1.length, *journal_length);
                         self.1 = None
                     }
@@ -524,7 +468,7 @@ mod tests {
         pub(super) async fn invoke<'this, F>(
             &'this mut self,
             f: F,
-        ) -> Result<(FullInvocationId, Vec<Effect>), InvocationError>
+        ) -> Result<(FullInvocationId, Vec<BuiltinServiceEffect>), InvocationError>
         where
             F: for<'fut> FnOnce(
                 &'fut mut InvocationContext<'fut, MockStateReader>,

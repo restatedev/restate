@@ -11,12 +11,15 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use async_channel::{TryRecvError, TrySendError};
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{FullInvocationId, PartitionId, PeerId};
+use restate_types::identifiers::{
+    FullInvocationId, LeaderEpoch, PartitionId, PartitionKey, PeerId, WithPartitionKey,
+};
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
 };
 use restate_types::message::{AckKind, MessageIndex};
-use restate_types::GenerationalNodeId;
+use restate_types::{GenerationalNodeId, NodeId};
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -68,37 +71,85 @@ pub(crate) struct IngressResponse {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ShuffleOutput {
-    shuffle_id: PeerId,
-    partition_id: PartitionId,
-    msg_index: MessageIndex,
-    message: ShuffleMessageDestination,
+pub(crate) enum ShuffleOutput {
+    Envelope(Envelope),
+    Ingress {
+        shuffle_id: PeerId,
+        seq_number: MessageIndex,
+        response: IngressResponse,
+    },
 }
 
 impl ShuffleOutput {
-    pub(crate) fn new(
-        shuffle_id: PeerId,
-        partition_id: PartitionId,
-        msg_index: MessageIndex,
-        message: ShuffleMessageDestination,
+    fn from_outbox_message(
+        outbox_message: OutboxMessage,
+        seq_number: MessageIndex,
+        shuffle_metadata: &ShuffleMetadata,
     ) -> Self {
-        Self {
-            shuffle_id,
-            partition_id,
-            msg_index,
-            message,
+        match outbox_message {
+            OutboxMessage::IngressResponse {
+                full_invocation_id,
+                response,
+                to_node_id,
+            } => ShuffleOutput::Ingress {
+                shuffle_id: shuffle_metadata.peer_id,
+                seq_number,
+                response: IngressResponse {
+                    full_invocation_id,
+                    response,
+                    _to_node_id: to_node_id,
+                },
+            },
+            OutboxMessage::ServiceInvocation(service_invocation) => {
+                let header = Self::create_header(
+                    service_invocation.fid.partition_key(),
+                    seq_number,
+                    shuffle_metadata,
+                );
+                let envelope = Envelope::new(header, Command::Invoke(service_invocation));
+                ShuffleOutput::Envelope(envelope)
+            }
+            OutboxMessage::ServiceResponse(invocation_response) => {
+                let header = Self::create_header(
+                    invocation_response.id.partition_key(),
+                    seq_number,
+                    shuffle_metadata,
+                );
+                let envelope =
+                    Envelope::new(header, Command::InvocationResponse(invocation_response));
+                ShuffleOutput::Envelope(envelope)
+            }
+            OutboxMessage::InvocationTermination(invocation_termination) => {
+                let header = Self::create_header(
+                    invocation_termination.maybe_fid.partition_key(),
+                    seq_number,
+                    shuffle_metadata,
+                );
+                let envelope =
+                    Envelope::new(header, Command::TerminateInvocation(invocation_termination));
+                ShuffleOutput::Envelope(envelope)
+            }
         }
     }
 
-    pub(crate) fn into_inner(
-        self,
-    ) -> (PeerId, PartitionId, MessageIndex, ShuffleMessageDestination) {
-        (
-            self.shuffle_id,
-            self.partition_id,
-            self.msg_index,
-            self.message,
-        )
+    fn create_header(
+        dest_partition_key: PartitionKey,
+        seq_number: MessageIndex,
+        shuffle_metadata: &ShuffleMetadata,
+    ) -> Header {
+        Header {
+            source: Source::Processor {
+                partition_id: shuffle_metadata.partition_id,
+                partition_key: None,
+                sequence_number: Some(seq_number),
+                leader_epoch: shuffle_metadata.leader_epoch,
+                node_id: shuffle_metadata.node_id.id(),
+            },
+            dest: Destination::Processor {
+                partition_key: dest_partition_key,
+            },
+            ack_mode: AckMode::Dedup,
+        }
     }
 }
 
@@ -206,9 +257,32 @@ impl HintSender {
     }
 }
 
-pub(super) struct Shuffle<OR> {
+#[derive(Debug)]
+pub(crate) struct ShuffleMetadata {
     peer_id: PeerId,
     partition_id: PartitionId,
+    leader_epoch: LeaderEpoch,
+    node_id: NodeId,
+}
+
+impl ShuffleMetadata {
+    pub(crate) fn new(
+        peer_id: PeerId,
+        partition_id: PartitionId,
+        leader_epoch: LeaderEpoch,
+        node_id: NodeId,
+    ) -> Self {
+        ShuffleMetadata {
+            peer_id,
+            partition_id,
+            leader_epoch,
+            node_id,
+        }
+    }
+}
+
+pub(super) struct Shuffle<OR> {
+    metadata: ShuffleMetadata,
 
     outbox_reader: OR,
 
@@ -232,8 +306,7 @@ where
     OR: OutboxReader + Send + Sync + 'static,
 {
     pub(super) fn new(
-        peer_id: PeerId,
-        partition_id: PartitionId,
+        metadata: ShuffleMetadata,
         outbox_reader: OR,
         network_tx: mpsc::Sender<ShuffleOutput>,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
@@ -243,8 +316,7 @@ where
         let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
         Self {
-            peer_id,
-            partition_id,
+            metadata,
             outbox_reader,
             network_tx,
             network_in_rx,
@@ -256,7 +328,7 @@ where
     }
 
     pub(super) fn peer_id(&self) -> PeerId {
-        self.peer_id
+        self.metadata.peer_id
     }
 
     pub(super) fn create_network_sender(&self) -> NetworkSender<ShuffleInput> {
@@ -269,8 +341,7 @@ where
 
     pub(super) async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
         let Self {
-            peer_id,
-            partition_id,
+            metadata,
             mut hint_rx,
             mut network_in_rx,
             outbox_reader,
@@ -279,14 +350,14 @@ where
             ..
         } = self;
 
-        debug!(restate.partition.peer = %peer_id, restate.partition.id = %partition_id, "Running shuffle");
+        debug!(restate.partition.peer = %metadata.peer_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
 
         let shutdown = shutdown_watch.signaled();
         tokio::pin!(shutdown);
 
+        let peer_id = metadata.peer_id;
         let state_machine = StateMachine::new(
-            peer_id,
-            partition_id,
+            metadata,
             outbox_reader,
             |msg| network_tx.send(msg),
             &mut hint_rx,
@@ -322,11 +393,10 @@ where
 mod state_machine {
     use crate::partition::shuffle;
     use crate::partition::shuffle::{
-        NewOutboxMessage, OutboxReaderError, ShuffleInput, ShuffleOutput,
+        NewOutboxMessage, OutboxReaderError, ShuffleInput, ShuffleMetadata, ShuffleOutput,
     };
     use pin_project::pin_project;
     use restate_storage_api::outbox_table::OutboxMessage;
-    use restate_types::identifiers::{PartitionId, PeerId};
     use restate_types::message::{AckKind, MessageIndex};
     use std::cmp::Ordering;
     use std::future::Future;
@@ -355,8 +425,7 @@ mod state_machine {
 
     #[pin_project]
     pub(super) struct StateMachine<'a, OutboxReader, SendOp, SendFuture> {
-        shuffle_id: PeerId,
-        partition_id: PartitionId,
+        metadata: ShuffleMetadata,
         current_sequence_number: MessageIndex,
         outbox_reader: Option<OutboxReader>,
         read_future: ReadFuture<OutboxReader>,
@@ -399,8 +468,7 @@ mod state_machine {
         OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
-            shuffle_id: PeerId,
-            partition_id: PartitionId,
+            metadata: ShuffleMetadata,
             outbox_reader: OutboxReader,
             send_operation: SendOp,
             hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
@@ -413,8 +481,7 @@ mod state_machine {
             let reading_future = get_next_message(outbox_reader, current_sequence_number);
 
             Self {
-                shuffle_id,
-                partition_id,
+                metadata,
                 current_sequence_number,
                 outbox_reader: None,
                 read_future: ReusableBoxFuture::new(reading_future),
@@ -442,12 +509,12 @@ mod state_machine {
 
                             match seq_number.cmp(this.current_sequence_number) {
                                 Ordering::Equal => {
-                                    let send_future = (this.send_operation)(ShuffleOutput::new(
-                                        *this.shuffle_id,
-                                        *this.partition_id,
-                                        seq_number,
-                                        message.into(),
-                                    ));
+                                    let send_future =
+                                        (this.send_operation)(ShuffleOutput::from_outbox_message(
+                                            message,
+                                            seq_number,
+                                            this.metadata,
+                                        ));
                                     this.state.set(State::Sending(send_future));
                                     break;
                                 }
@@ -476,12 +543,12 @@ mod state_machine {
                             if seq_number >= *this.current_sequence_number {
                                 *this.current_sequence_number = seq_number;
 
-                                let send_future = (this.send_operation)(ShuffleOutput::new(
-                                    *this.shuffle_id,
-                                    *this.partition_id,
-                                    seq_number,
-                                    message.into(),
-                                ));
+                                let send_future =
+                                    (this.send_operation)(ShuffleOutput::from_outbox_message(
+                                        message,
+                                        seq_number,
+                                        this.metadata,
+                                    ));
 
                                 this.state.set(State::Sending(send_future));
                             } else {

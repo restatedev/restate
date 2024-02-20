@@ -80,9 +80,10 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_wal_protocol::Envelope;
 pub use services::WorkerCommandSender;
 
-type PartitionProcessorCommand = partition::StateMachineAckCommand;
+type PartitionProcessorCommand = Envelope;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
@@ -335,7 +336,7 @@ impl Worker {
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-        ack_sender: PartitionProcessorSender<partition::StateMachineAckResponse>,
+        ack_sender: PartitionProcessorSender<partition::types::AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         partition_processor_options: partition::Options,
