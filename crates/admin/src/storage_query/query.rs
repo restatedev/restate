@@ -30,7 +30,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use okapi_operation::*;
-use restate_node_services::worker::StorageQueryRequest;
+use restate_node_services::node::StorageQueryRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -62,7 +62,7 @@ pub async fn query(
     State(state): State<Arc<QueryServiceState>>,
     #[request_body(required = true)] Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, StorageQueryError> {
-    let mut worker_grpc_client = state.worker_svc_client.clone();
+    let mut worker_grpc_client = state.node_svc_client.clone();
 
     let response_stream = worker_grpc_client
         .query_storage(StorageQueryRequest {

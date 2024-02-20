@@ -10,13 +10,14 @@
 
 use anyhow::Context;
 use codederror::CodedError;
+use restate_node_services::node::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
 use tracing::info;
 
 use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
-use restate_node_services::worker::{StateMutationRequest, TerminationRequest};
+use restate_node_services::node::{StateMutationRequest, TerminationRequest};
 use restate_task_center::{task_center, TaskKind};
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
@@ -78,15 +79,14 @@ impl AdminRole {
                 .context("valid worker address uri")?,
         )
         .connect_lazy();
-        let worker_handle = GrpcWorkerHandle::new(worker_channel.clone());
-        let worker_svc_client =
-            restate_node_services::worker::worker_svc_client::WorkerSvcClient::new(worker_channel);
+        let node_handle = GrpcNodeHandle::new(worker_channel.clone());
+        let node_svc_client = NodeSvcClient::new(worker_channel);
 
         task_center().spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            self.admin.run(worker_handle, worker_svc_client),
+            self.admin.run(node_handle, node_svc_client),
         )?;
 
         Ok(())
@@ -111,21 +111,19 @@ impl TryFrom<Options> for AdminRole {
 }
 
 #[derive(Debug, Clone)]
-struct GrpcWorkerHandle {
-    grpc_client: restate_node_services::worker::worker_svc_client::WorkerSvcClient<Channel>,
+struct GrpcNodeHandle {
+    grpc_client: NodeSvcClient<Channel>,
 }
 
-impl GrpcWorkerHandle {
+impl GrpcNodeHandle {
     fn new(channel: Channel) -> Self {
-        GrpcWorkerHandle {
-            grpc_client: restate_node_services::worker::worker_svc_client::WorkerSvcClient::new(
-                channel,
-            ),
+        GrpcNodeHandle {
+            grpc_client: NodeSvcClient::new(channel),
         }
     }
 }
 
-impl Handle for GrpcWorkerHandle {
+impl Handle for GrpcNodeHandle {
     async fn terminate_invocation(
         &self,
         invocation_termination: InvocationTermination,

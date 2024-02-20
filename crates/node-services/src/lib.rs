@@ -10,45 +10,24 @@
 
 use restate_pb::restate::common;
 
-pub mod node_ctrl {
+pub mod cluster_ctrl {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
 
-    tonic::include_proto!("dev.restate.node_ctrl");
+    tonic::include_proto!("dev.restate.cluster_ctrl");
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic::include_file_descriptor_set!("node_ctrl_descriptor");
+        tonic::include_file_descriptor_set!("cluster_ctrl_svc_descriptor");
 }
 
-pub mod cluster_controller {
+pub mod node {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
 
-    tonic::include_proto!("dev.restate.cluster_controller");
+    tonic::include_proto!("dev.restate.node");
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic::include_file_descriptor_set!("cluster_controller_descriptor");
-}
-
-pub mod worker {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-
-    tonic::include_proto!("dev.restate.worker");
-
-    pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("worker_descriptor");
-}
-
-pub mod metadata {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-
-    tonic::include_proto!("dev.restate.metadata");
-
-    pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic::include_file_descriptor_set!("metadata_descriptor");
+        tonic::include_file_descriptor_set!("node_svc_descriptor");
 }

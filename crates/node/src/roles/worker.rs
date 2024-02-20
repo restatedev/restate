@@ -15,12 +15,10 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
-use restate_bifrost::{Bifrost, BifrostService};
 use restate_network::utils::create_grpc_channel_from_network_address;
-use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
-use restate_node_services::cluster_controller::AttachmentRequest;
-use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
-use restate_node_services::metadata::FetchSchemasRequest;
+use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_node_services::cluster_ctrl::AttachmentRequest;
+use restate_node_services::cluster_ctrl::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
@@ -45,9 +43,6 @@ pub enum WorkerRoleError {
         #[code]
         restate_worker::Error,
     ),
-    #[error("bifrost failed: {0}")]
-    #[code(unknown)]
-    Bifrost(#[from] restate_bifrost::Error),
     #[error(transparent)]
     Schema(
         #[from]
@@ -100,16 +95,11 @@ pub enum WorkerRoleBuildError {
 pub struct WorkerRole {
     schemas: Schemas,
     worker: Worker,
-    bifrost: BifrostService,
 }
 
 impl WorkerRole {
     pub fn rocksdb_storage(&self) -> &RocksDBStorage {
         self.worker.rocksdb_storage()
-    }
-
-    pub fn bifrost_handle(&self) -> Bifrost {
-        self.bifrost.handle()
     }
 
     pub fn worker_command_tx(&self) -> WorkerCommandSender {
@@ -132,9 +122,6 @@ impl WorkerRole {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
-        // Ensures bifrost has initial metadata synced up before starting the worker.
-        self.bifrost.start().await?;
-
         let admin_address = metadata
             .nodes_config()
             .get_admin_node()
@@ -144,13 +131,13 @@ impl WorkerRole {
 
         let channel = create_grpc_channel_from_network_address(admin_address.clone())
             .expect("valid admin address");
-        let mut metadata_svc_client = MetadataSvcClient::new(channel);
+        let mut cluster_ctrl_client = ClusterCtrlSvcClient::new(channel);
 
         // Fetch latest schema information and fail if this is not possible
         Self::fetch_and_update_schemas(
             &self.schemas,
             subscription_controller.as_ref(),
-            &mut metadata_svc_client,
+            &mut cluster_ctrl_client,
         )
         .await?;
 
@@ -159,7 +146,7 @@ impl WorkerRole {
             TaskKind::MetadataBackgroundSync,
             "schema-updater",
             None,
-            Self::reload_schemas(subscription_controller, self.schemas, metadata_svc_client),
+            Self::reload_schemas(subscription_controller, self.schemas, cluster_ctrl_client),
         )?;
 
         task_center().spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
@@ -176,7 +163,7 @@ impl WorkerRole {
         let channel = create_grpc_channel_from_network_address(admin_address.clone())
             .map_err(WorkerRoleError::InvalidClusterControllerAddress)?;
 
-        let cc_client = ClusterControllerSvcClient::new(channel);
+        let cc_client = ClusterCtrlSvcClient::new(channel);
 
         let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
             .retry_operation(|| async {
@@ -209,7 +196,7 @@ impl WorkerRole {
     async fn reload_schemas<SC>(
         subscription_controller: Option<SC>,
         schemas: Schemas,
-        mut metadata_svc_client: MetadataSvcClient<Channel>,
+        mut cluster_ctrl_client: ClusterCtrlSvcClient<Channel>,
     ) -> anyhow::Result<()>
     where
         SC: SubscriptionController + Clone + Send + Sync,
@@ -226,7 +213,7 @@ impl WorkerRole {
                 Self::fetch_and_update_schemas(
                     &schemas,
                     subscription_controller.as_ref(),
-                    &mut metadata_svc_client,
+                    &mut cluster_ctrl_client,
                 )
                 .await,
             )?;
@@ -236,25 +223,25 @@ impl WorkerRole {
     async fn fetch_and_update_schemas<SC>(
         schemas: &Schemas,
         subscription_controller: Option<&SC>,
-        metadata_svc_client: &mut MetadataSvcClient<Channel>,
+        cluster_ctrl_client: &mut ClusterCtrlSvcClient<Channel>,
     ) -> Result<(), SchemaError>
     where
         SC: SubscriptionController + Send + Sync,
     {
-        let schema_updates = Self::fetch_schemas(metadata_svc_client).await?;
+        let schema_updates = Self::fetch_schemas(cluster_ctrl_client).await?;
         update_schemas(schemas, subscription_controller, schema_updates).await?;
 
         Ok(())
     }
 
     async fn fetch_schemas(
-        metadata_svc_client: &MetadataSvcClient<Channel>,
+        cluster_ctrl_client: &ClusterCtrlSvcClient<Channel>,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemaError> {
         let response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
             .retry_operation(|| {
-                let mut metadata_svc_client = metadata_svc_client.clone();
+                let mut cluster_ctrl_client = cluster_ctrl_client.clone();
                 async move {
-                    metadata_svc_client
+                    cluster_ctrl_client
                         // todo introduce schema version information to avoid fetching and overwriting the schema information
                         //  over and over again
                         .fetch_schemas(FetchSchemasRequest {})
@@ -275,15 +262,10 @@ impl TryFrom<Options> for WorkerRole {
     type Error = WorkerRoleBuildError;
 
     fn try_from(options: Options) -> Result<Self, Self::Error> {
-        let bifrost = options.bifrost.build(options.worker.partitions);
         let schemas = Schemas::default();
-        let worker = options.worker.build(schemas.clone(), bifrost.handle())?;
+        let worker = options.worker.build(schemas.clone())?;
 
-        Ok(WorkerRole {
-            schemas,
-            worker,
-            bifrost,
-        })
+        Ok(WorkerRole { schemas, worker })
     }
 }
 

@@ -10,7 +10,7 @@
 //
 
 use restate_meta::{FileMetaReader, MetaHandle};
-use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
+use restate_node_services::node::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
 use tonic::transport::Channel;
 
@@ -19,13 +19,13 @@ pub struct AdminServiceState<W> {
     meta_handle: MetaHandle,
     schemas: Schemas,
     worker_handle: W,
-    worker_svc_client: WorkerSvcClient<Channel>,
+    node_svc_client: NodeSvcClient<Channel>,
     schema_reader: FileMetaReader,
 }
 
 #[derive(Clone)]
 pub struct QueryServiceState {
-    pub worker_svc_client: WorkerSvcClient<Channel>,
+    pub node_svc_client: NodeSvcClient<Channel>,
 }
 
 impl<W> AdminServiceState<W> {
@@ -33,14 +33,14 @@ impl<W> AdminServiceState<W> {
         meta_handle: MetaHandle,
         schemas: Schemas,
         worker_handle: W,
-        worker_svc_client: WorkerSvcClient<Channel>,
+        node_svc_client: NodeSvcClient<Channel>,
         schema_reader: FileMetaReader,
     ) -> Self {
         Self {
             meta_handle,
             schemas,
             worker_handle,
-            worker_svc_client,
+            node_svc_client,
             schema_reader,
         }
     }
@@ -53,8 +53,8 @@ impl<W> AdminServiceState<W> {
         &self.schemas
     }
 
-    pub fn worker_svc_client(&self) -> WorkerSvcClient<Channel> {
-        self.worker_svc_client.clone()
+    pub fn node_svc_client(&self) -> NodeSvcClient<Channel> {
+        self.node_svc_client.clone()
     }
 
     pub fn schema_reader(&self) -> &FileMetaReader {
