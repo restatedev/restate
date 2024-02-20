@@ -16,9 +16,12 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

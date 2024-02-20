@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 
 mod routing;
 mod unbounded_handle;
+pub mod utils;
 
 pub use routing::{Network, PartitionProcessorSender, RoutingError};
 pub use unbounded_handle::UnboundedNetworkHandle;

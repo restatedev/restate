@@ -16,6 +16,9 @@ use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
 use restate_bifrost::{Bifrost, BifrostService};
+use restate_network::utils::create_grpc_channel_from_network_address;
+use restate_node_services::cluster_controller::cluster_controller_svc_client::ClusterControllerSvcClient;
+use restate_node_services::cluster_controller::AttachmentRequest;
 use restate_node_services::metadata::metadata_svc_client::MetadataSvcClient;
 use restate_node_services::metadata::FetchSchemasRequest;
 use restate_schema_api::subscription::SubscriptionResolver;
@@ -24,10 +27,14 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_task_center::task_center;
 use restate_task_center::TaskKind;
+use restate_types::nodes_config::AdvertisedAddress;
+use restate_types::retries::RetryPolicy;
 use restate_types::NodeId;
 use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
+use tracing::info;
 
+use crate::metadata::Metadata;
 use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -47,6 +54,12 @@ pub enum WorkerRoleError {
         #[code]
         SchemaError,
     ),
+    #[error("invalid cluster controller address: {0}")]
+    #[code(unknown)]
+    InvalidClusterControllerAddress(http::Error),
+    #[error("failed to attach to cluster at '{0}': {1}")]
+    #[code(unknown)]
+    Attachment(AdvertisedAddress, tonic::Status),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -115,16 +128,22 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn start(self, my_node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn start(self, metadata: Metadata) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         self.bifrost.start().await?;
 
-        // todo: make this configurable
-        let channel =
-            Channel::builder("http://127.0.0.1:5122/".parse().expect("valid uri")).connect_lazy();
+        let admin_address = metadata
+            .nodes_config()
+            .get_admin_node()
+            .expect("at least one admin node")
+            .address
+            .clone();
+
+        let channel = create_grpc_channel_from_network_address(admin_address.clone())
+            .expect("valid admin address");
         let mut metadata_svc_client = MetadataSvcClient::new(channel);
 
         // Fetch latest schema information and fail if this is not possible
@@ -143,13 +162,47 @@ impl WorkerRole {
             Self::reload_schemas(subscription_controller, self.schemas, metadata_svc_client),
         )?;
 
-        task_center().spawn_child(
-            TaskKind::RoleRunner,
-            "worker-service",
-            None,
-            self.worker.run(my_node_id),
-        )?;
+        task_center().spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
+            Self::attach_node(admin_address).await?;
+            self.worker.run().await
+        })?;
 
+        Ok(())
+    }
+
+    async fn attach_node(admin_address: AdvertisedAddress) -> Result<(), WorkerRoleError> {
+        info!("Worker attaching to admin at '{admin_address}'");
+
+        let channel = create_grpc_channel_from_network_address(admin_address.clone())
+            .map_err(WorkerRoleError::InvalidClusterControllerAddress)?;
+
+        let cc_client = ClusterControllerSvcClient::new(channel);
+
+        let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
+            .retry_operation(|| async {
+                cc_client
+                    .clone()
+                    .attach_node(AttachmentRequest {
+                        node_id: NodeId::my_node_id().map(Into::into),
+                    })
+                    .await
+            })
+            .await
+            .map_err(|err| WorkerRoleError::Attachment(admin_address, err))?;
+        Ok(())
+    }
+
+    fn ignore_fetch_error(result: Result<(), SchemaError>) -> Result<(), SchemaError> {
+        if let Err(err) = result {
+            match err {
+                SchemaError::Fetch(err) => {
+                    debug!("Failed fetching schema information: {err}. Retrying.");
+                }
+                SchemaError::Decode(_) | SchemaError::Update(_) | SchemaError::Subscription(_) => {
+                    Err(err)?
+                }
+            }
+        }
         Ok(())
     }
 
@@ -180,20 +233,6 @@ impl WorkerRole {
         }
     }
 
-    fn ignore_fetch_error(result: Result<(), SchemaError>) -> Result<(), SchemaError> {
-        if let Err(err) = result {
-            match err {
-                SchemaError::Fetch(err) => {
-                    debug!("Failed fetching schema information: {err}. Retrying.");
-                }
-                SchemaError::Decode(_) | SchemaError::Update(_) | SchemaError::Subscription(_) => {
-                    Err(err)?
-                }
-            }
-        }
-        Ok(())
-    }
-
     async fn fetch_and_update_schemas<SC>(
         schemas: &Schemas,
         subscription_controller: Option<&SC>,
@@ -209,12 +248,19 @@ impl WorkerRole {
     }
 
     async fn fetch_schemas(
-        metadata_svc_client: &mut MetadataSvcClient<Channel>,
+        metadata_svc_client: &MetadataSvcClient<Channel>,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemaError> {
-        let response = metadata_svc_client
-            // todo introduce schema version information to avoid fetching and overwriting the schema information
-            //  over and over again
-            .fetch_schemas(FetchSchemasRequest {})
+        let response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
+            .retry_operation(|| {
+                let mut metadata_svc_client = metadata_svc_client.clone();
+                async move {
+                    metadata_svc_client
+                        // todo introduce schema version information to avoid fetching and overwriting the schema information
+                        //  over and over again
+                        .fetch_schemas(FetchSchemasRequest {})
+                        .await
+                }
+            })
             .await?;
 
         let (schema_updates, _) = bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(

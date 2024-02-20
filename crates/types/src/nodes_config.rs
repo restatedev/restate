@@ -189,6 +189,14 @@ impl NodesConfiguration {
         let id = self.name_lookup.get(name.as_ref())?;
         self.find_node_by_id(*id).ok()
     }
+
+    /// Returns _an_ admin node.
+    pub fn get_admin_node(&self) -> Option<&NodeConfig> {
+        self.nodes.values().find_map(|maybe| match maybe {
+            MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
+            _ => None,
+        })
+    }
 }
 
 #[cfg(test)]
