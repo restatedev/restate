@@ -15,34 +15,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("node_ctrl_descriptor.bin"))
-        // allow older protobuf compiler to be used
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/node_ctrl.proto"], &["proto", "../pb/proto"])?;
-
-    tonic_build::configure()
-        .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("cluster_controller_descriptor.bin"))
+        .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile(
-            &["./proto/cluster_controller.proto"],
+            &["./proto/cluster_ctrl_svc.proto"],
             &["proto", "../pb/proto"],
         )?;
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("worker_descriptor.bin"))
+        .file_descriptor_set_path(out_dir.join("node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/worker.proto"], &["proto", "../pb/proto"])?;
-
-    tonic_build::configure()
-        .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("metadata_descriptor.bin"))
-        // allow older protobuf compiler to be used
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/metadata.proto"], &["proto", "../pb/proto"])?;
+        .compile(&["./proto/node_svc.proto"], &["proto", "../pb/proto"])?;
 
     Ok(())
 }

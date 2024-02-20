@@ -12,20 +12,38 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 import "dev/restate/common/common.proto";
 
-package dev.restate.worker;
+package dev.restate.node;
 
-service WorkerSvc {
+service NodeSvc {
+  // Get identity information from this node.
+  rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
+
   // Terminate the specified invocation
   rpc TerminateInvocation(TerminationRequest) returns (google.protobuf.Empty);
 
   // Mutate the specified state
   rpc MutateState(StateMutationRequest) returns (google.protobuf.Empty);
 
-  // Queries the storage of the worker and returns the result as a stream of responses
+  // Queries the storage of the worker and returns the result as a stream of
+  // responses
   rpc QueryStorage(StorageQueryRequest) returns (stream StorageQueryResponse);
 
   // Updates the schema information on the worker node
   rpc UpdateSchemas(UpdateSchemaRequest) returns (google.protobuf.Empty);
+}
+
+enum NodeStatus {
+  NodeStatus_UNKNOWN = 0;
+  ALIVE = 1;
+  // The node is not fully running yet.
+  STARTING_UP = 2;
+  // The node is performing a graceful shutdown.
+  SHUTTING_DOWN = 3;
+}
+
+message IdentResponse {
+  NodeStatus status = 1;
+  dev.restate.common.NodeId node_id = 2;
 }
 
 message TerminationRequest {

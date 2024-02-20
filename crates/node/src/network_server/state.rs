@@ -12,7 +12,7 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use restate_storage_rocksdb::RocksDBStorage;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct HandlerState {
+pub struct NodeCtrlHandlerState {
     #[builder(default)]
     pub prometheus_handle: Option<PrometheusHandle>,
     #[builder(default)]
