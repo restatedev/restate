@@ -15,29 +15,25 @@ use codederror::CodedError;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::FileMetaReader;
-use restate_node_services::cluster_controller::cluster_controller_svc_server::ClusterControllerSvcServer;
-use restate_node_services::metadata::metadata_svc_server::MetadataSvcServer;
-use restate_node_services::node_ctrl::node_ctrl_svc_server::NodeCtrlSvcServer;
-use restate_node_services::worker::worker_svc_server::WorkerSvcServer;
-use restate_node_services::{cluster_controller, metadata, node_ctrl, worker};
+use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
+use restate_node_services::node::node_svc_server::NodeSvcServer;
+use restate_node_services::{cluster_ctrl, node};
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_task_center::cancellation_watcher;
 use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 
-use crate::server::handler;
-use crate::server::handler::cluster_controller::ClusterControllerHandler;
-use crate::server::handler::metadata::MetadataHandler;
-use crate::server::handler::node_ctrl::NodeCtrlHandler;
-use crate::server::handler::worker::WorkerHandler;
-use crate::server::metrics::install_global_prometheus_recorder;
-use crate::server::multiplex::MultiplexService;
-use crate::server::options::Options;
-use crate::server::state::HandlerStateBuilder;
+use crate::metadata::{Metadata, MetadataWriter};
+use crate::network_server::handler;
+use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
+use crate::network_server::handler::node::NodeSvcHandler;
+use crate::network_server::metrics::install_global_prometheus_recorder;
+use crate::network_server::multiplex::MultiplexService;
+use crate::network_server::options::Options;
+use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -56,30 +52,36 @@ pub enum Error {
     Grpc(#[from] tonic_reflection::server::Error),
 }
 
-pub struct NodeServer {
+pub struct NetworkServer {
     opts: Options,
-    worker: Option<WorkerDependencies>,
-    cluster_controller: Option<ClusterControllerDependencies>,
+    worker_deps: Option<WorkerDependencies>,
+    admin_deps: Option<AdminDependencies>,
+    metadata: Metadata,
+    metadata_writer: MetadataWriter,
 }
 
-impl NodeServer {
+impl NetworkServer {
     pub fn new(
         opts: Options,
-        worker: Option<WorkerDependencies>,
-        cluster_controller: Option<ClusterControllerDependencies>,
+        metadata: Metadata,
+        metadata_writer: MetadataWriter,
+        worker_deps: Option<WorkerDependencies>,
+        admin_deps: Option<AdminDependencies>,
     ) -> Self {
         Self {
             opts,
-            worker,
-            cluster_controller,
+            worker_deps,
+            admin_deps,
+            metadata,
+            metadata_writer,
         }
     }
 
     pub async fn run(self) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
-        let mut state_builder = HandlerStateBuilder::default();
+        let mut state_builder = NodeCtrlHandlerStateBuilder::default();
 
-        if let Some(WorkerDependencies { rocksdb, .. }) = self.worker.as_ref() {
+        if let Some(WorkerDependencies { rocksdb, .. }) = self.worker_deps.as_ref() {
             state_builder.rocksdb_storage(Some(rocksdb.clone()));
         }
 
@@ -104,47 +106,29 @@ impl NodeServer {
 
         // -- GRPC Service Setup
         let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(node_ctrl::FILE_DESCRIPTOR_SET);
+            .register_encoded_file_descriptor_set(node::FILE_DESCRIPTOR_SET);
 
-        if self.cluster_controller.is_some() {
+        if self.admin_deps.is_some() {
             reflection_service_builder = reflection_service_builder
-                .register_encoded_file_descriptor_set(cluster_controller::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(metadata::FILE_DESCRIPTOR_SET);
+                .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
         }
 
-        if self.worker.is_some() {
-            reflection_service_builder = reflection_service_builder
-                .register_encoded_file_descriptor_set(worker::FILE_DESCRIPTOR_SET);
-        }
+        let cluster_controller_service = self.admin_deps.map(|admin_deps| {
+            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
+                admin_deps,
+                self.metadata.clone(),
+            ))
+        });
 
-        let mut server_builder = tonic::transport::Server::builder()
+        let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-            .add_service(NodeCtrlSvcServer::new(NodeCtrlHandler::new()))
+            .add_service(NodeSvcServer::new(NodeSvcHandler::new(
+                self.worker_deps,
+                self.metadata_writer,
+                self.metadata,
+            )))
+            .add_optional_service(cluster_controller_service)
             .add_service(reflection_service_builder.build()?);
-
-        if let Some(ClusterControllerDependencies { schema_reader, .. }) = self.cluster_controller {
-            server_builder = server_builder
-                .add_service(ClusterControllerSvcServer::new(
-                    ClusterControllerHandler::new(),
-                ))
-                .add_service(MetadataSvcServer::new(MetadataHandler::new(schema_reader)));
-        }
-
-        if let Some(WorkerDependencies {
-            worker_cmd_tx,
-            query_context,
-            schemas,
-            subscription_controller,
-            ..
-        }) = self.worker
-        {
-            server_builder = server_builder.add_service(WorkerSvcServer::new(WorkerHandler::new(
-                worker_cmd_tx,
-                query_context,
-                schemas,
-                subscription_controller,
-            )));
-        }
 
         // Multiplex both grpc and http based on content-type
         let service = MultiplexService::new(router, server_builder.into_service());
@@ -184,18 +168,16 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 }
 
 pub struct WorkerDependencies {
-    rocksdb: RocksDBStorage,
-    _bifrost: Bifrost,
-    worker_cmd_tx: WorkerCommandSender,
-    query_context: QueryContext,
-    schemas: Schemas,
-    subscription_controller: Option<SubscriptionControllerHandle>,
+    pub rocksdb: RocksDBStorage,
+    pub worker_cmd_tx: WorkerCommandSender,
+    pub query_context: QueryContext,
+    pub schemas: Schemas,
+    pub subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerDependencies {
     pub fn new(
         rocksdb: RocksDBStorage,
-        _bifrost: Bifrost,
         worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
         schemas: Schemas,
@@ -203,7 +185,6 @@ impl WorkerDependencies {
     ) -> Self {
         WorkerDependencies {
             rocksdb,
-            _bifrost,
             worker_cmd_tx,
             query_context,
             schemas,
@@ -212,17 +193,17 @@ impl WorkerDependencies {
     }
 }
 
-pub struct ClusterControllerDependencies {
-    _cluster_controller_handle: ClusterControllerHandle,
-    schema_reader: FileMetaReader,
+pub struct AdminDependencies {
+    pub _cluster_controller_handle: ClusterControllerHandle,
+    pub schema_reader: FileMetaReader,
 }
 
-impl ClusterControllerDependencies {
+impl AdminDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
         schema_reader: FileMetaReader,
     ) -> Self {
-        ClusterControllerDependencies {
+        AdminDependencies {
             _cluster_controller_handle: cluster_controller_handle,
             schema_reader,
         }

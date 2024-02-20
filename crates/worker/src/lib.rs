@@ -16,7 +16,6 @@ use crate::partitioning_scheme::FixedConsecutivePartitions;
 use crate::services::Services;
 use codederror::CodedError;
 use partition::shuffle;
-use restate_bifrost::Bifrost;
 use restate_consensus::Consensus;
 use restate_ingress_dispatcher::{IngressDispatcherOutput, Service as IngressDispatcherService};
 use restate_ingress_grpc::HyperServerIngress;
@@ -162,9 +161,9 @@ impl Options {
         &self.storage_rocksdb.path
     }
 
-    pub fn build(self, schemas: Schemas, bifrost: Bifrost) -> Result<Worker, BuildError> {
+    pub fn build(self, schemas: Schemas) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
-        Worker::new(self, schemas, bifrost)
+        Worker::new(self, schemas)
     }
 }
 
@@ -213,7 +212,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(opts: Options, schemas: Schemas, _bifrost: Bifrost) -> Result<Self, BuildError> {
+    pub fn new(opts: Options, schemas: Schemas) -> Result<Self, BuildError> {
         let Options {
             channel_size,
             ingress_grpc,
