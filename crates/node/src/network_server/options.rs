@@ -11,9 +11,12 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-use crate::server::service::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
-use restate_types::nodes_config::AdvertisedAddress;
 use serde_with::serde_as;
+
+use restate_types::nodes_config::AdvertisedAddress;
+
+use crate::metadata::{Metadata, MetadataWriter};
+use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDependencies};
 
 /// # Node server options
 #[serde_as]
@@ -56,9 +59,11 @@ impl Default for Options {
 impl Options {
     pub fn build(
         self,
-        worker: Option<WorkerDependencies>,
-        cluster_controller: Option<ClusterControllerDependencies>,
-    ) -> NodeServer {
-        NodeServer::new(self, worker, cluster_controller)
+        metadata: Metadata,
+        metadata_writer: MetadataWriter,
+        node_deps: Option<WorkerDependencies>,
+        admin_deps: Option<AdminDependencies>,
+    ) -> NetworkServer {
+        NetworkServer::new(self, metadata, metadata_writer, node_deps, admin_deps)
     }
 }
