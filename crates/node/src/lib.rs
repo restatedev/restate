@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 mod metadata;
+mod network_server;
 mod options;
 mod roles;
-mod server;
 
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
+use restate_bifrost::BifrostService;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
@@ -29,8 +30,8 @@ use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
 
 use self::metadata::MetadataManager;
+use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
-use crate::server::{ClusterControllerDependencies, NodeServer, WorkerDependencies};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -56,7 +57,6 @@ pub enum BuildError {
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
     UnknownClusterController,
-
     #[error("cluster bootstrap failed: {0}")]
     #[code(unknown)]
     Bootstrap(String),
@@ -64,10 +64,11 @@ pub enum BuildError {
 
 pub struct Node {
     options: Options,
-    admin_role: Option<AdminRole>,
     metadata_manager: MetadataManager,
+    bifrost: BifrostService,
+    admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
-    server: NodeServer,
+    server: NetworkServer,
 }
 
 impl Node {
@@ -97,11 +98,14 @@ impl Node {
             None
         };
 
+        let bifrost = options.bifrost.build(options.worker.partitions);
+
         let server = options.server.build(
+            metadata_manager.metadata(),
+            metadata_manager.writer(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
                     worker.rocksdb_storage().clone(),
-                    worker.bifrost_handle(),
                     worker.worker_command_tx(),
                     worker.storage_query_context().clone(),
                     worker.schemas(),
@@ -109,7 +113,7 @@ impl Node {
                 )
             }),
             admin_role.as_ref().map(|cluster_controller| {
-                ClusterControllerDependencies::new(
+                AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
                     cluster_controller.schema_reader(),
                 )
@@ -119,6 +123,7 @@ impl Node {
         Ok(Node {
             options: opts,
             metadata_manager,
+            bifrost,
             admin_role,
             worker_role,
             server,
@@ -232,6 +237,9 @@ impl Node {
         MyNodeIdWriter::set_as_my_node_id(my_node_id);
         info!("My Node ID is {}", my_node_id);
 
+        // Ensures bifrost has initial metadata synced up before starting the worker.
+        self.bifrost.start().await?;
+
         if let Some(admin_role) = self.admin_role {
             tc.spawn(
                 TaskKind::SystemBoot,
@@ -241,13 +249,6 @@ impl Node {
             )?;
         }
 
-        tc.spawn(
-            TaskKind::RpcServer,
-            "node-rpc-server",
-            None,
-            self.server.run(),
-        )?;
-
         if let Some(worker_role) = self.worker_role {
             tc.spawn(
                 TaskKind::SystemBoot,
@@ -256,6 +257,13 @@ impl Node {
                 worker_role.start(metadata),
             )?;
         }
+
+        tc.spawn(
+            TaskKind::RpcServer,
+            "node-rpc-server",
+            None,
+            self.server.run(),
+        )?;
 
         Ok(())
     }

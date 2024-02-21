@@ -10,7 +10,7 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
-use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
+use restate_node_services::node::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_task_center::{create_test_task_center, TaskKind};
 use restate_types::identifiers::SubscriptionId;
@@ -103,7 +103,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         None,
         admin_service.run(
             Mock,
-            WorkerSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
+            NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
         ),
     )?;
 

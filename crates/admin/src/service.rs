@@ -17,7 +17,7 @@ use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 use restate_meta::{FileMetaReader, MetaHandle};
-use restate_node_services::worker::worker_svc_client::WorkerSvcClient;
+use restate_node_services::node::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
 use tracing::info;
 
@@ -50,17 +50,17 @@ impl AdminService {
     pub async fn run(
         self,
         worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-        worker_svc_client: WorkerSvcClient<Channel>,
+        node_svc_client: NodeSvcClient<Channel>,
     ) -> anyhow::Result<()> {
         let rest_state = state::AdminServiceState::new(
             self.meta_handle,
             self.schemas,
             worker_handle,
-            worker_svc_client.clone(),
+            node_svc_client.clone(),
             self.schema_reader,
         );
 
-        let query_state = Arc::new(state::QueryServiceState { worker_svc_client });
+        let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));
 
         let router = router

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::server;
+use crate::network_server;
 use enumset::EnumSet;
 use restate_types::nodes_config::{AdvertisedAddress, Role};
 use restate_types::PlainNodeId;
@@ -32,7 +32,7 @@ pub struct Options {
 
     pub meta: restate_meta::Options,
     pub worker: restate_worker::Options,
-    pub server: server::Options,
+    pub server: network_server::Options,
     pub admin: restate_admin::Options,
     pub bifrost: restate_bifrost::Options,
     pub cluster_controller: restate_cluster_controller::Options,
