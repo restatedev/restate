@@ -14,13 +14,12 @@ import "dev/restate/common/common.proto";
 package dev.restate.cluster_controller;
 
 service ClusterControllerSvc {
-  // Attach node at cluster controller
+  // Attach worker at cluster controller
   rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
 }
 
 message AttachmentRequest {
-  string node_name = 1;
-  optional dev.restate.common.NodeId node_id = 2;
+  optional dev.restate.common.NodeId node_id = 1;
 }
 
 message AttachmentResponse {}

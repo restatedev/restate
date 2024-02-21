@@ -27,8 +27,8 @@ impl ClusterControllerSvc for ClusterControllerHandler {
         &self,
         request: Request<AttachmentRequest>,
     ) -> Result<Response<AttachmentResponse>, Status> {
-        let node_name = request.into_inner().node_name;
-        debug!("Register node '{}'", node_name);
+        let node_id = request.into_inner().node_id.expect("node id must be set");
+        debug!("Attaching node '{:?}'", node_id);
         Ok(Response::new(AttachmentResponse {}))
     }
 }

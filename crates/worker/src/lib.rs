@@ -377,8 +377,9 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self, my_node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
+        let my_node_id = NodeId::my_node_id().expect("my node ID is set");
         let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
