@@ -23,6 +23,7 @@ use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
 use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use metrics::counter;
+use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
@@ -30,7 +31,6 @@ use restate_invoker_api::{
 };
 use restate_queue::SegmentQueue;
 use restate_schema_api::deployment::DeploymentResolver;
-use restate_task_center::cancellation_watcher;
 use restate_timer_queue::TimerQueue;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
@@ -932,7 +932,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use restate_task_center::{create_test_task_center, TaskKind};
+    use restate_core::{create_test_task_center, TaskKind};
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;

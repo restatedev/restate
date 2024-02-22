@@ -18,6 +18,7 @@ restate-storage-api = { workspace = true }
 restate-invoker-api = { workspace = true }
 
 anyhow = { workspace = true }
+assert2 = { workspace = true }
 async-trait = { workspace = true }
 bincode = { workspace = true, optional = true }
 bytes = { workspace = true }

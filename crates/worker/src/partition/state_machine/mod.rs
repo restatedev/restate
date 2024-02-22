@@ -16,22 +16,18 @@ use restate_types::message::MessageIndex;
 
 mod actions;
 mod command_interpreter;
-mod commands;
 mod dedup;
 mod effect_interpreter;
 mod effects;
 
 pub use actions::Action;
 pub use command_interpreter::StateReader;
-pub use commands::{
-    AckCommand, AckMode, AckResponse, AckTarget, Command, DeduplicationSource, IngressAckResponse,
-    ShuffleDeduplicationResponse,
-};
 pub use dedup::DeduplicatingStateMachine;
 pub use effect_interpreter::StateStorage;
 pub use effect_interpreter::{ActionCollector, InterpretationResult};
 pub use effects::Effects;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_wal_protocol::Command;
 
 #[derive(Debug)]
 pub struct StateMachine<Codec>(CommandInterpreter<Codec>);
@@ -63,7 +59,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         is_leader: bool,
     ) -> Result<InterpretationResult<Transaction<TransactionType>, Collector>, Error> {
         // Handle the command, returns the span_relation to use to log effects
-        let command_type = command.type_human();
+        let command_type = command.name();
         let (fid, span_relation) = self.0.on_apply(command, effects, &mut transaction).await?;
         counter!(PARTITION_APPLY_COMMAND, "command" => command_type).increment(1);
 
@@ -95,7 +91,6 @@ mod tests {
     use test_log::test;
     use tracing::info;
 
-    use crate::partition::services::non_deterministic::{Effect, Effects as NBISEffects};
     use crate::partition::types::{InvokerEffect, InvokerEffectKind};
 
     use restate_invoker_api::InvokeInputJournal;
@@ -241,7 +236,7 @@ mod tests {
 
         // Send completion first
         let _ = state_machine
-            .apply(Command::Response(InvocationResponse {
+            .apply(Command::InvocationResponse(InvocationResponse {
                 id: MaybeFullInvocationId::Full(fid.clone()),
                 entry_index: 1,
                 result: ResponseResult::Success(Bytes::default()),
@@ -263,7 +258,7 @@ mod tests {
         //   * If the awakeable entry has not been received yet, when receiving it the completion will be sent through.
 
         let actions = state_machine
-            .apply(Command::Invoker(InvokerEffect {
+            .apply(Command::InvokerEffect(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -301,7 +296,7 @@ mod tests {
         );
 
         let actions = state_machine
-            .apply(Command::Invoker(InvokerEffect {
+            .apply(Command::InvokerEffect(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::Suspended {
                     waiting_for_completed_entries: HashSet::from([1]),
@@ -328,14 +323,14 @@ mod tests {
         let caller_fid = FullInvocationId::mock_random();
 
         let _ = state_machine
-            .apply(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invoke(ServiceInvocation {
                 fid,
                 ..ServiceInvocation::mock()
             }))
             .await;
 
         let _ = state_machine
-            .apply(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invoke(ServiceInvocation {
                 fid: inboxed_fid.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_fid.clone(),
@@ -436,14 +431,14 @@ mod tests {
         );
 
         state_machine
-            .apply(Command::ExternalStateMutation(ExternalStateMutation {
+            .apply(Command::PatchState(ExternalStateMutation {
                 service_id: fid.service_id.clone(),
                 version: None,
                 state: first_state_mutation,
             }))
             .await;
         state_machine
-            .apply(Command::ExternalStateMutation(ExternalStateMutation {
+            .apply(Command::PatchState(ExternalStateMutation {
                 service_id: fid.service_id.clone(),
                 version: None,
                 state: second_state_mutation.clone(),
@@ -453,7 +448,7 @@ mod tests {
         // terminating the ongoing invocation should trigger popping from the inbox until the
         // next invocation is found
         state_machine
-            .apply(Command::Invoker(InvokerEffect {
+            .apply(Command::InvokerEffect(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::End,
             }))
@@ -488,7 +483,7 @@ mod tests {
             mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
 
         state_machine
-            .apply(Command::Invoker(InvokerEffect {
+            .apply(Command::InvokerEffect(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -521,7 +516,7 @@ mod tests {
         txn.commit().await.unwrap();
 
         let actions = state_machine
-            .apply(Command::Invoker(InvokerEffect {
+            .apply(Command::InvokerEffect(InvokerEffect {
                 full_invocation_id: fid.clone(),
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
@@ -562,6 +557,7 @@ mod tests {
         use restate_types::journal::enriched::EnrichedRawEntry;
         use restate_types::journal::EntryType;
         use restate_types::journal::{AwakeableEntry, Completion, CompletionResult, Entry};
+        use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 
         #[test(tokio::test)]
         async fn create() -> TestResult {
@@ -597,9 +593,9 @@ mod tests {
             let virtual_invocation_invocation_uuid = InvocationUuid::new();
 
             let actions = state_machine
-                .apply(Command::BuiltInInvoker(NBISEffects::new(
+                .apply(Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
                     fid_virtual_invocation_creator,
-                    vec![Effect::CreateJournal {
+                    vec![BuiltinServiceEffect::CreateJournal {
                         service_id: virtual_invocation_service_id.clone(),
                         invocation_uuid: virtual_invocation_invocation_uuid,
                         span_context: Default::default(),
@@ -692,17 +688,17 @@ mod tests {
 
             // Create the entry
             let actions = state_machine
-                .apply(Command::BuiltInInvoker(NBISEffects::new(
+                .apply(Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
                     fid_virtual_invocation_creator,
                     vec![
-                        Effect::StoreEntry {
+                        BuiltinServiceEffect::StoreEntry {
                             service_id: virtual_invocation_service_id.clone(),
                             entry_index: 0,
                             journal_entry: ProtobufRawEntryCodec::serialize_enriched(
                                 Entry::Awakeable(AwakeableEntry { result: None }),
                             ),
                         },
-                        Effect::End(None),
+                        BuiltinServiceEffect::End(None),
                     ],
                 )))
                 .await;
@@ -738,7 +734,7 @@ mod tests {
 
             // Now send completion
             let actions = state_machine
-                .apply(Command::Response(InvocationResponse {
+                .apply(Command::InvocationResponse(InvocationResponse {
                     id: MaybeFullInvocationId::Partial(InvocationId::new(
                         virtual_invocation_service_id.partition_key(),
                         virtual_invocation_invocation_uuid,
@@ -787,7 +783,7 @@ mod tests {
         let fid = FullInvocationId::with_service_id(service_id, InvocationUuid::new());
 
         let actions = state_machine
-            .apply(Command::Invocation(ServiceInvocation {
+            .apply(Command::Invoke(ServiceInvocation {
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),

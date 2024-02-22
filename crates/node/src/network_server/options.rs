@@ -13,9 +13,9 @@ use std::str::FromStr;
 
 use serde_with::serde_as;
 
+use restate_core::metadata::{Metadata, MetadataWriter};
 use restate_types::nodes_config::AdvertisedAddress;
 
-use crate::metadata::{Metadata, MetadataWriter};
 use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDependencies};
 
 /// # Node server options

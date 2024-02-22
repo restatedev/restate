@@ -12,6 +12,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
+use restate_core::metadata::{Metadata, MetadataWriter};
 use restate_node_services::node::node_svc_server::NodeSvc;
 use restate_node_services::node::{IdentResponse, NodeStatus};
 use restate_node_services::node::{
@@ -23,7 +24,6 @@ use restate_types::NodeId;
 use restate_worker_api::Handle;
 use tonic::{Request, Response, Status};
 
-use crate::metadata::{Metadata, MetadataWriter};
 use crate::network_server::WorkerDependencies;
 
 pub struct NodeSvcHandler {

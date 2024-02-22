@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::shuffle::{HintSender, Shuffle};
-use crate::partition::{
-    shuffle, storage, StateMachineAckCommand, StateMachineAckResponse, TimerValue,
-};
+use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
+use crate::partition::{shuffle, storage, ConsensusWriter};
 use assert2::let_assert;
 use futures::{future, StreamExt};
 use restate_invoker_api::InvokeInputJournal;
@@ -29,7 +27,7 @@ mod action_collector;
 
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::Action;
-use crate::util::IdentitySender;
+use crate::partition::types::AckResponse;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_errors::NotRunningError;
 use restate_schema_impl::Schemas;
@@ -38,6 +36,8 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::EntryType;
+use restate_types::NodeId;
+use restate_wal_protocol::timer::TimerValue;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
@@ -59,8 +59,8 @@ pub(crate) struct FollowerState<I, N> {
     channel_size: usize,
     invoker_tx: I,
     network_handle: N,
-    ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
-    self_proposal_tx: IdentitySender<StateMachineAckCommand>,
+    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+    consensus_writer: ConsensusWriter,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -97,8 +97,8 @@ where
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<StateMachineAckResponse>,
-        self_proposal_tx: IdentitySender<StateMachineAckCommand>,
+        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
+        consensus_writer: ConsensusWriter,
     ) -> (ActionEffectStream, Self) {
         (
             ActionEffectStream::Follower,
@@ -110,7 +110,7 @@ where
                 invoker_tx,
                 network_handle,
                 ack_tx,
-                self_proposal_tx,
+                consensus_writer,
             }),
         )
     }
@@ -190,8 +190,12 @@ where
             let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
 
             let shuffle = Shuffle::new(
-                follower_state.peer_id,
-                follower_state.partition_id,
+                ShuffleMetadata::new(
+                    follower_state.peer_id,
+                    follower_state.partition_id,
+                    leader_epoch,
+                    NodeId::my_node_id().expect("NodeId should be set"),
+                ),
                 partition_storage.clone(),
                 follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,
@@ -328,7 +332,7 @@ where
                     mut invoker_tx,
                     network_handle,
                     ack_tx,
-                    self_proposal_tx,
+                    consensus_writer: self_proposal_tx,
                 },
             leader_state:
                 LeaderState {

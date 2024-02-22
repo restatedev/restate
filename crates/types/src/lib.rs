@@ -13,8 +13,8 @@
 mod base62_util;
 mod id_util;
 mod macros;
-mod metadata;
 mod node_id;
+mod version;
 
 pub mod deployment;
 pub mod errors;
@@ -28,7 +28,8 @@ pub mod retries;
 pub mod state_mut;
 pub mod subscription;
 pub mod time;
+pub mod timer;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
-pub use metadata::*;
 pub use node_id::*;
+pub use version::*;

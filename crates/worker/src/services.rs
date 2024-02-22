@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::{StateMachineAckCommand, StateMachineCommand};
+//! todo: This service can probably be removed once the admin service can directly write into target partitions
+
 use crate::subscription_integration::SubscriptionControllerHandle;
-use restate_consensus::ProposalSender;
+use restate_core::cancellation_watcher;
 use restate_network::PartitionTableError;
-use restate_task_center::cancellation_watcher;
-use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
 use restate_types::message::PartitionTarget;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use tokio::sync::mpsc;
 use tracing::debug;
+
+// todo: Should become the log writer
+type ConsensusWriter = mpsc::Sender<PartitionTarget<Envelope>>;
 
 /// Commands that can be sent to a worker.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -71,7 +75,7 @@ pub enum Error {
 pub(crate) struct Services<PartitionTable> {
     command_rx: mpsc::Receiver<WorkerCommand>,
 
-    proposal_tx: ProposalSender<PartitionTarget<StateMachineAckCommand>>,
+    consensus_writer: ConsensusWriter,
     partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
@@ -83,7 +87,7 @@ where
     PartitionTable: restate_network::FindPartition,
 {
     pub(crate) fn new(
-        proposal_tx: ProposalSender<PartitionTarget<StateMachineAckCommand>>,
+        consensus_writer: ConsensusWriter,
         subscription_controller_handle: SubscriptionControllerHandle,
         partition_table: PartitionTable,
         channel_size: usize,
@@ -94,7 +98,7 @@ where
             command_rx,
             command_tx: WorkerCommandSender::new(command_tx),
             subscription_controller_handle,
-            proposal_tx,
+            consensus_writer,
             partition_table,
         }
     }
@@ -110,7 +114,7 @@ where
     pub(crate) async fn run(self) -> anyhow::Result<()> {
         let Self {
             mut command_rx,
-            proposal_tx,
+            consensus_writer,
             partition_table,
             ..
         } = self;
@@ -129,16 +133,19 @@ where
                 Some(command) = command_rx.recv() => {
                     match command {
                         WorkerCommand::ExternalStateMutation(mutation) => {
-                            let target_partition_id = partition_table
-                                .find_partition_id(mutation.service_id.partition_key())?;
-                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::ExternalStateMutation(mutation));
-                            proposal_tx.send((target_partition_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
+                            let partition_key = mutation.service_id.partition_key();
+                            let partition_id = partition_table.find_partition_id(partition_key)?;
+                            let header = create_header(partition_key);
+                            let envelope = Envelope::new(header, Command::PatchState(mutation));
+                            consensus_writer.send((partition_id, envelope)).await.map_err(|_| Error::ConsensusClosed)?
                         },
                         WorkerCommand::TerminateInvocation(invocation_termination) => {
-                            let target_partition_id = partition_table
-                                .find_partition_id(invocation_termination.maybe_fid.partition_key())?;
-                            let msg = StateMachineAckCommand::no_ack(StateMachineCommand::TerminateInvocation(invocation_termination));
-                            proposal_tx.send((target_partition_id, msg)).await.map_err(|_| Error::ConsensusClosed)?
+                            let partition_key = invocation_termination.maybe_fid.partition_key();
+                            let partition_id = partition_table.find_partition_id(partition_key)?;
+
+                            let header = create_header(partition_key);
+                            let envelope = Envelope::new(header, Command::TerminateInvocation(invocation_termination));
+                            consensus_writer.send((partition_id, envelope)).await.map_err(|_| Error::ConsensusClosed)?
                         }
                     }
                 }
@@ -146,5 +153,13 @@ where
         }
 
         Ok(())
+    }
+}
+
+fn create_header(partition_key: PartitionKey) -> Header {
+    Header {
+        source: Source::ControlPlane {},
+        dest: Destination::Processor { partition_key },
+        ack_mode: AckMode::None,
     }
 }

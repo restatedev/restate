@@ -10,11 +10,11 @@
 
 use clap::Parser;
 use codederror::CodedError;
+use restate_core::TaskCenterFactory;
+use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_server::build_info;
 use restate_server::Configuration;
-use restate_task_center::TaskCenterFactory;
-use restate_task_center::TaskKind;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
 use std::ops::Div;

@@ -12,6 +12,7 @@ use super::*;
 
 use bytes::{BufMut, BytesMut};
 use prost::Message;
+use restate_core::cancellation_watcher;
 use restate_futures_util::pipe::{
     new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
@@ -19,7 +20,6 @@ use restate_futures_util::pipe::{
 use restate_pb::restate::internal::{
     idempotent_invoke_response, IdempotentInvokeRequest, IdempotentInvokeResponse,
 };
-use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
 use restate_types::{GenerationalNodeId, NodeId};
@@ -361,7 +361,7 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
-    use restate_task_center::{create_test_task_center, TaskKind};
+    use restate_core::{create_test_task_center, TaskKind};
     use test_log::test;
 
     use restate_test_util::{let_assert, matchers::*};
@@ -450,10 +450,10 @@ mod tests {
         let output_message = output_rx.recv().await.unwrap();
 
         let_assert!(
-            IngressDispatcherOutput::Invocation {
-                service_invocation,
+            IngressDispatcherOutput::Envelope(Envelope {
+                command: Command::Invoke(service_invocation),
                 ..
-            } = output_message
+            }) = output_message
         );
         assert_that!(
             service_invocation,

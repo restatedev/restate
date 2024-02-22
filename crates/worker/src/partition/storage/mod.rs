@@ -10,8 +10,7 @@
 
 use crate::metric_definitions::{PARTITION_STORAGE_TX_COMMITTED, PARTITION_STORAGE_TX_CREATED};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::types::TimerKeyWrapper;
-use crate::partition::{CommitError, Committable, TimerValue};
+use crate::partition::{CommitError, Committable};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
@@ -36,6 +35,7 @@ use restate_types::invocation::MaybeFullInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::message::MessageIndex;
+use restate_wal_protocol::timer::{TimerKeyWrapper, TimerValue};
 use std::future::Future;
 use std::ops::RangeInclusive;
 

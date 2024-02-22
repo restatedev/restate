@@ -294,7 +294,7 @@ mod tests {
         // Assert contains outbox message effect
         assert_that!(
             effects,
-            contains(pat!(Effect::OutboxMessage(pat!(
+            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                 OutboxMessage::ServiceInvocation(pat!(ServiceInvocation {
                     fid: eq(expected_greeter_invocation_fid),
                     method_name: displays_as(eq("Greet")),
@@ -311,7 +311,7 @@ mod tests {
         // Assert doesn't contain ingress response
         assert_that!(
             effects,
-            not(contains(pat!(Effect::OutboxMessage(pat!(
+            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                 OutboxMessage::IngressResponse { .. }
             )))))
         );
@@ -342,7 +342,7 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(Effect::OutboxMessage(pat!(
+                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                     OutboxMessage::IngressResponse {
                         full_invocation_id: eq(expected_fid.clone()),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
@@ -356,7 +356,7 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(Effect::DelayedInvoke {
+                contains(pat!(BuiltinServiceEffect::DelayedInvoke {
                     target_fid: pat!(FullInvocationId {
                         service_id: eq(expected_fid.service_id.clone())
                     }),
@@ -386,7 +386,7 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(Effect::OutboxMessage(pat!(
+                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                     OutboxMessage::IngressResponse {
                         full_invocation_id: eq(expected_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
@@ -400,7 +400,7 @@ mod tests {
                         ))))
                     }
                 )))),
-                not(contains(pat!(Effect::OutboxMessage(pat!(
+                not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                     OutboxMessage::ServiceInvocation(_)
                 )))))
             )

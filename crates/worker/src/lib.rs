@@ -17,6 +17,7 @@ use crate::services::Services;
 use codederror::CodedError;
 use partition::shuffle;
 use restate_consensus::Consensus;
+use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{IngressDispatcherOutput, Service as IngressDispatcherService};
 use restate_ingress_grpc::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -29,7 +30,6 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_task_center::{cancellation_watcher, task_center, TaskKind};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
 use restate_types::NodeId;
@@ -80,9 +80,10 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_wal_protocol::Envelope;
 pub use services::WorkerCommandSender;
 
-type PartitionProcessorCommand = partition::StateMachineAckCommand;
+type PartitionProcessorCommand = Envelope;
 type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
@@ -335,7 +336,7 @@ impl Worker {
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
         network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
-        ack_sender: PartitionProcessorSender<partition::StateMachineAckResponse>,
+        ack_sender: PartitionProcessorSender<partition::types::AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         partition_processor_options: partition::Options,

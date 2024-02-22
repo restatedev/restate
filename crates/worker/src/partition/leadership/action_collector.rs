@@ -14,18 +14,22 @@ use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::{Action, ActionCollector};
-use crate::partition::{
-    shuffle, StateMachineAckCommand, StateMachineAckResponse, StateMachineCommand, TimerValue,
-};
-use crate::util::IdentitySender;
+use crate::partition::types::AckResponse;
+use crate::partition::{shuffle, ConsensusWriter};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use prost::Message;
 use restate_errors::NotRunningError;
 use restate_invoker_api::ServiceHandle;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, PartitionLeaderEpoch};
+use restate_types::identifiers::{
+    FullInvocationId, InvocationUuid, PartitionLeaderEpoch, WithPartitionKey,
+};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::CompletionResult;
+use restate_types::NodeId;
+use restate_wal_protocol::effects::BuiltinServiceEffects;
+use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -46,7 +50,7 @@ pub(crate) enum LeaderAwareActionCollectorError {
     #[error(transparent)]
     Invoker(#[from] NotRunningError),
     #[error("failed to send ack response: {0}")]
-    Ack(#[from] mpsc::error::SendError<StateMachineAckResponse>),
+    Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
 impl<'a, I, N> LeaderAwareActionCollector<'a, I, N>
@@ -72,7 +76,7 @@ where
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
-                        &mut follower_state.self_proposal_tx,
+                        &mut follower_state.consensus_writer,
                     )
                     .await?;
                 }
@@ -96,8 +100,8 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker<'a>,
-        ack_tx: &restate_network::PartitionProcessorSender<StateMachineAckResponse>,
-        self_proposal_tx: &mut IdentitySender<StateMachineAckCommand>,
+        ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
+        consensus_writer: &mut ConsensusWriter,
     ) -> Result<(), LeaderAwareActionCollectorError> {
         match action {
             Action::Invoke {
@@ -188,21 +192,21 @@ where
 
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
-                let _ = self_proposal_tx
-                    .send(StateMachineAckCommand::no_ack(
-                        StateMachineCommand::Invocation(ServiceInvocation::new(
-                            FullInvocationId::with_service_id(
-                                target_service,
-                                InvocationUuid::new(),
-                            ),
-                            method_name,
-                            journal_notification_request,
-                            Source::Internal,
-                            None,
-                            SpanRelation::None,
-                        )),
-                    ))
-                    .await;
+                let service_invocation = ServiceInvocation::new(
+                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    method_name,
+                    journal_notification_request,
+                    Source::Internal,
+                    None,
+                    SpanRelation::None,
+                );
+
+                let envelope = Self::wrap_service_invocation_in_envelope(
+                    partition_leader_epoch,
+                    service_invocation,
+                );
+
+                let _ = consensus_writer.send(envelope).await;
             }
             Action::NotifyVirtualJournalKill {
                 target_service,
@@ -211,28 +215,50 @@ where
             } => {
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
-                let _ = self_proposal_tx
-                    .send(StateMachineAckCommand::no_ack(
-                        StateMachineCommand::Invocation(ServiceInvocation::new(
-                            FullInvocationId::with_service_id(
-                                target_service,
-                                InvocationUuid::new(),
-                            ),
-                            method_name,
-                            restate_pb::restate::internal::KillNotificationRequest {
-                                invocation_uuid: invocation_uuid.into(),
-                            }
-                            .encode_to_vec(),
-                            Source::Internal,
-                            None,
-                            SpanRelation::None,
-                        )),
-                    ))
-                    .await;
+                let service_invocation = ServiceInvocation::new(
+                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    method_name,
+                    restate_pb::restate::internal::KillNotificationRequest {
+                        invocation_uuid: invocation_uuid.into(),
+                    }
+                    .encode_to_vec(),
+                    Source::Internal,
+                    None,
+                    SpanRelation::None,
+                );
+
+                let envelope = Self::wrap_service_invocation_in_envelope(
+                    partition_leader_epoch,
+                    service_invocation,
+                );
+
+                let _ = consensus_writer.send(envelope).await;
             }
         }
 
         Ok(())
+    }
+
+    fn wrap_service_invocation_in_envelope(
+        partition_leader_epoch: PartitionLeaderEpoch,
+        service_invocation: ServiceInvocation,
+    ) -> Envelope {
+        let header = Header {
+            ack_mode: AckMode::None,
+            dest: Destination::Processor {
+                partition_key: service_invocation.fid.partition_key(),
+            },
+            source: restate_wal_protocol::Source::Processor {
+                partition_key: Some(service_invocation.fid.partition_key()),
+                partition_id: partition_leader_epoch.0,
+                leader_epoch: partition_leader_epoch.1,
+                // todo: Add support for deduplicating self proposals
+                sequence_number: None,
+                node_id: NodeId::my_node_id().expect("NodeId should be set").id(),
+            },
+        };
+
+        Envelope::new(header, Command::Invoke(service_invocation))
     }
 }
 
@@ -255,8 +281,7 @@ pub(crate) enum ActionEffectStream {
     Leader {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
-        non_deterministic_service_invoker_stream:
-            UnboundedReceiverStream<non_deterministic::Effects>,
+        non_deterministic_service_invoker_stream: UnboundedReceiverStream<BuiltinServiceEffects>,
     },
 }
 
@@ -281,7 +306,7 @@ pub(crate) enum ActionEffect {
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
-    BuiltInInvoker(non_deterministic::Effects),
+    BuiltInInvoker(BuiltinServiceEffects),
 }
 
 impl Stream for ActionEffectStream {

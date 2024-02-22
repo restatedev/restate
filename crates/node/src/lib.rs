@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod metadata;
 mod network_server;
 mod options;
 mod roles;
@@ -25,11 +24,11 @@ use anyhow::bail;
 use codederror::CodedError;
 use tracing::{error, info};
 
-use restate_task_center::{task_center, TaskKind};
+use restate_core::metadata::MetadataManager;
+use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
 
-use self::metadata::MetadataManager;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
 
@@ -134,6 +133,8 @@ impl Node {
         let tc = task_center();
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
+        let is_set = tc.try_set_global_metadata(metadata.clone());
+        debug_assert!(is_set);
 
         // Start metadata manager
         tc.spawn(
@@ -254,7 +255,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(metadata),
+                worker_role.start(),
             )?;
         }
 

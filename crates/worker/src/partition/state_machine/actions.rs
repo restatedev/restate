@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::commands::AckResponse;
-use crate::partition::TimerValue;
+use crate::partition::types::AckResponse;
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_invoker_api::InvokeInputJournal;
@@ -19,6 +18,7 @@ use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid, S
 use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
+use restate_wal_protocol::timer::TimerValue;
 
 #[derive(Debug)]
 pub enum Action {

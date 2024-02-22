@@ -10,8 +10,8 @@
 
 #![allow(clippy::enum_variant_names)]
 
-use crate::TimerKey;
 use pin_project::pin_project;
+use restate_types::timer::TimerKey;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::future;

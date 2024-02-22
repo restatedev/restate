@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use enum_map::Enum;
-use restate_task_center::cancellation_watcher;
+use restate_core::cancellation_watcher;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 

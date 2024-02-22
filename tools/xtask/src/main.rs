@@ -10,9 +10,9 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_core::{create_test_task_center, TaskKind};
 use restate_node_services::node::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
-use restate_task_center::{create_test_task_center, TaskKind};
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;

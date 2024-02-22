@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use restate_task_center::{task_center, TaskKind};
+use restate_core::{task_center, TaskKind};
 
 use crate::bifrost::BifrostInner;
 use crate::options::Options;

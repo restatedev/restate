@@ -12,11 +12,8 @@ use super::Error;
 use std::collections::HashSet;
 
 use crate::partition::services::deterministic;
-use crate::partition::services::non_deterministic::{Effect as NBISEffect, Effects as NBISEffects};
-use crate::partition::state_machine::commands::Command;
 use crate::partition::state_machine::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
-use crate::partition::TimerValue;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -48,6 +45,9 @@ use restate_types::journal::*;
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
+use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
+use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::Command;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
@@ -146,7 +146,7 @@ where
         state: &mut State,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         match command {
-            Command::Invocation(service_invocation) => {
+            Command::Invoke(service_invocation) => {
                 let status = state
                     .get_invocation_status(&service_invocation.fid.service_id)
                     .await?;
@@ -167,7 +167,7 @@ where
                 }
                 Ok((Some(fid), extract_span_relation(&status)))
             }
-            Command::Response(InvocationResponse {
+            Command::InvocationResponse(InvocationResponse {
                 id,
                 entry_index,
                 result,
@@ -179,12 +179,12 @@ where
 
                 Self::handle_completion(id, completion, state, effects).await
             }
-            Command::Invoker(effect) => {
+            Command::InvokerEffect(effect) => {
                 let (related_sid, span_relation) =
                     self.try_invoker_effect(effects, state, effect).await?;
                 Ok((Some(related_sid), span_relation))
             }
-            Command::OutboxTruncation(index) => {
+            Command::TruncateOutbox(index) => {
                 effects.truncate_outbox(index);
                 Ok((None, SpanRelation::None))
             }
@@ -193,13 +193,17 @@ where
                 self.try_terminate_invocation(invocation_termination, state, effects)
                     .await
             }
-            Command::BuiltInInvoker(nbis_effects) => {
-                self.try_built_in_invoker_effect(effects, state, nbis_effects)
+            Command::BuiltInInvokerEffect(builtin_service_effects) => {
+                self.try_built_in_invoker_effect(effects, state, builtin_service_effects)
                     .await
             }
-            Command::ExternalStateMutation(mutation) => {
+            Command::PatchState(mutation) => {
                 self.handle_external_state_mutation(mutation, state, effects)
                     .await
+            }
+            Command::AnnounceLeader(_) => {
+                // no-op :-)
+                Ok((None, SpanRelation::None))
             }
         }
     }
@@ -233,7 +237,7 @@ where
         &mut self,
         effects: &mut Effects,
         state: &mut State,
-        nbis_effects: NBISEffects,
+        nbis_effects: BuiltinServiceEffects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         let (full_invocation_id, nbis_effects) = nbis_effects.into_inner();
         let invocation_status = state
@@ -277,10 +281,10 @@ where
         state: &mut State,
         full_invocation_id: &FullInvocationId,
         invocation_metadata: &InvocationMetadata,
-        nbis_effect: NBISEffect,
+        nbis_effect: BuiltinServiceEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
-            NBISEffect::CreateJournal {
+            BuiltinServiceEffect::CreateJournal {
                 service_id,
                 invocation_uuid,
                 span_context,
@@ -295,7 +299,7 @@ where
                     kill_notification_target,
                 );
             }
-            NBISEffect::StoreEntry {
+            BuiltinServiceEffect::StoreEntry {
                 service_id,
                 entry_index,
                 journal_entry,
@@ -309,13 +313,13 @@ where
                     journal_entry,
                 );
             }
-            NBISEffect::DropJournal {
+            BuiltinServiceEffect::DropJournal {
                 service_id,
                 journal_length,
             } => {
                 effects.drop_journal_and_pop_inbox(service_id, journal_length);
             }
-            NBISEffect::SetState { key, value } => {
+            BuiltinServiceEffect::SetState { key, value } => {
                 effects.set_state(
                     full_invocation_id.service_id.clone(),
                     full_invocation_id.clone().into(),
@@ -324,7 +328,7 @@ where
                     value,
                 );
             }
-            NBISEffect::ClearState(key) => {
+            BuiltinServiceEffect::ClearState(key) => {
                 effects.clear_state(
                     full_invocation_id.service_id.clone(),
                     full_invocation_id.clone().into(),
@@ -332,7 +336,7 @@ where
                     Bytes::from(key.into_owned()),
                 );
             }
-            NBISEffect::DelayedInvoke {
+            BuiltinServiceEffect::DelayedInvoke {
                 target_fid,
                 target_method,
                 argument,
@@ -358,10 +362,10 @@ where
                     ServiceInvocationSpanContext::empty(),
                 );
             }
-            NBISEffect::OutboxMessage(msg) => {
+            BuiltinServiceEffect::OutboxMessage(msg) => {
                 self.send_message(msg, effects);
             }
-            NBISEffect::End(None) => {
+            BuiltinServiceEffect::End(None) => {
                 self.end_invocation(
                     effects,
                     full_invocation_id.clone(),
@@ -369,7 +373,7 @@ where
                 )
                 .await?
             }
-            NBISEffect::End(Some(e)) => {
+            BuiltinServiceEffect::End(Some(e)) => {
                 self.fail_invocation(
                     effects,
                     full_invocation_id.clone(),

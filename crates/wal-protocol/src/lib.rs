@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use assert2::let_assert;
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
@@ -24,10 +25,17 @@ pub mod effects;
 pub mod timer;
 
 /// The primary envelope for all messages in the system.
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Envelope {
     pub header: Header,
     pub command: Command,
+}
+
+impl Envelope {
+    pub fn new(header: Header, command: Command) -> Self {
+        Self { header, command }
+    }
 }
 
 /// Header is set on every message
@@ -132,5 +140,15 @@ pub enum Command {
 impl Command {
     pub fn name(&self) -> &'static str {
         CommandDiscriminants::from(self).into()
+    }
+}
+
+impl WithPartitionKey for Envelope {
+    fn partition_key(&self) -> PartitionKey {
+        let_assert!(
+            Destination::Processor { partition_key } = &self.header.dest,
+            "envelopes are only targeted to partition processors"
+        );
+        *partition_key
     }
 }
