@@ -101,7 +101,7 @@ impl<'a, State: StateReader + Send + Sync> IngressBuiltInService for InvocationC
         }));
 
         // Invoke service
-        self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+        self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             fid,
             request.method,
             argument,
@@ -212,8 +212,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             restate_pb::restate::InvokeResponse { id: anything() }

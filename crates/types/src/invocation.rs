@@ -116,7 +116,7 @@ impl fmt::Display for MaybeFullInvocationId {
 }
 
 /// Representing a response for a caller
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationResponse {
     /// Depending on the source of the response, this can be either the full identifier, or the short one.
@@ -125,7 +125,7 @@ pub struct InvocationResponse {
     pub result: ResponseResult,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ResponseResult {
     Success(Bytes),
@@ -137,6 +137,17 @@ impl From<Result<Bytes, InvocationError>> for ResponseResult {
         match value {
             Ok(v) => ResponseResult::Success(v),
             Err(e) => ResponseResult::from(e),
+        }
+    }
+}
+
+impl From<ResponseResult> for Result<Bytes, InvocationError> {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Ok(bytes),
+            ResponseResult::Failure(error_code, error_msg) => {
+                Err(InvocationError::new(error_code, error_msg))
+            }
         }
     }
 }

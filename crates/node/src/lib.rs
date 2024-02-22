@@ -24,7 +24,7 @@ use anyhow::bail;
 use codederror::CodedError;
 use tracing::{error, info};
 
-use restate_core::metadata::MetadataManager;
+use restate_core::metadata::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
@@ -137,12 +137,7 @@ impl Node {
         debug_assert!(is_set, "Global metadata was already set");
 
         // Start metadata manager
-        tc.spawn(
-            TaskKind::MetadataBackgroundSync,
-            "metadata-manager",
-            None,
-            self.metadata_manager.run(),
-        )?;
+        spawn_metadata_manager(&tc, self.metadata_manager)?;
 
         // If starting in bootstrap mode, we initialize the nodes configuration
         // with a static config.

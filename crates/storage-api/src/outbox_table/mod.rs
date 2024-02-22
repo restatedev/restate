@@ -9,16 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
-use restate_types::identifiers::{FullInvocationId, PartitionId};
-use restate_types::invocation::{
-    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
-};
-use restate_types::GenerationalNodeId;
+use restate_types::identifiers::PartitionId;
+use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
 use std::ops::Range;
 
 /// Types of outbox messages.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OutboxMessage {
     /// Service invocation to send to another partition processor
@@ -26,13 +23,6 @@ pub enum OutboxMessage {
 
     /// Service response to sent to another partition processor
     ServiceResponse(InvocationResponse),
-
-    /// Service response to send to an ingress as a response to an external client request
-    IngressResponse {
-        to_node_id: GenerationalNodeId,
-        full_invocation_id: FullInvocationId,
-        response: ResponseResult,
-    },
 
     /// Terminate invocation to send to another partition processor
     InvocationTermination(InvocationTermination),

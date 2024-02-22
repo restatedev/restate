@@ -25,7 +25,7 @@ pub mod effects;
 pub mod timer;
 
 /// The primary envelope for all messages in the system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Envelope {
     pub header: Header,
@@ -39,7 +39,7 @@ impl Envelope {
 }
 
 /// Header is set on every message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Header {
     pub source: Source,
@@ -48,7 +48,7 @@ pub struct Header {
 }
 
 /// Identifies the source of a message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Source {
     /// Message is sent from another partition processor
@@ -86,7 +86,7 @@ pub enum Source {
 }
 
 /// Identifies the intended destination of the message
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Destination {
     /// Message is sent to partition processor
@@ -95,7 +95,7 @@ pub enum Destination {
 
 /// Defines expectations from the sender on how to respond to this command.
 /// Some commands require an explicit acknowledge.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AckMode {
     /// Acknowledge the command with a response. For partition processor-initiated messages, we
@@ -109,7 +109,9 @@ pub enum AckMode {
 }
 
 /// State machine input commands
-#[derive(Debug, Clone, strum_macros::EnumDiscriminants, strum_macros::VariantNames)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, strum_macros::EnumDiscriminants, strum_macros::VariantNames,
+)]
 #[strum_discriminants(derive(strum_macros::IntoStaticStr))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {

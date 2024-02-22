@@ -21,7 +21,7 @@ use enum_map::{Enum, EnumMap};
 use strum_macros::EnumIter;
 use tokio::sync::{oneshot, watch};
 
-use crate::ShutdownError;
+use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::Version;
 
@@ -155,4 +155,16 @@ impl Default for VersionWatch {
             receive,
         }
     }
+}
+
+pub fn spawn_metadata_manager(
+    tc: &TaskCenter,
+    metadata_manager: MetadataManager,
+) -> Result<TaskId, ShutdownError> {
+    tc.spawn(
+        TaskKind::MetadataBackgroundSync,
+        "metadata-manager",
+        None,
+        metadata_manager.run(),
+    )
 }

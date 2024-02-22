@@ -11,7 +11,7 @@
 use super::*;
 
 use crate::partition::storage::PartitionStorage;
-use crate::partition::types::OutboxMessageExt;
+use crate::partition::types::{create_response_message, OutboxMessageExt, ResponseMessage};
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
 use restate_pb::restate::internal::IdempotentInvokerInvoker;
@@ -23,6 +23,7 @@ use restate_storage_api::status_table::NotificationTarget;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid};
+use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
@@ -356,21 +357,30 @@ impl<S: StateReader> InvocationContext<'_, S> {
             });
     }
 
-    fn send_message(&mut self, msg: OutboxMessage) {
+    fn send_response(&mut self, msg: ResponseMessage) {
+        match msg {
+            ResponseMessage::Outbox(outbox) => self.outbox_message(outbox),
+            ResponseMessage::Ingress(ingress) => self.ingress_response(ingress),
+        }
+    }
+
+    fn outbox_message(&mut self, msg: OutboxMessage) {
         self.effects_buffer
-            .push(BuiltinServiceEffect::OutboxMessage(msg))
+            .push(BuiltinServiceEffect::OutboxMessage(msg));
+    }
+
+    fn ingress_response(&mut self, response: IngressResponse) {
+        self.effects_buffer
+            .push(BuiltinServiceEffect::IngressResponse(response));
     }
 
     fn reply_to_caller(&mut self, res: ResponseResult) {
         if let Some(response_sink) = self.response_sink {
-            self.effects_buffer
-                .push(BuiltinServiceEffect::OutboxMessage(
-                    OutboxMessage::from_response_sink(
-                        self.full_invocation_id,
-                        response_sink.clone(),
-                        res,
-                    ),
-                ));
+            self.send_response(create_response_message(
+                self.full_invocation_id,
+                response_sink.clone(),
+                res,
+            ));
         }
     }
 }

@@ -332,6 +332,8 @@ message ResponseResult {
 // ---------------------------------------------------------------------
 
 message OutboxMessage {
+    // removed OutboxIngressResponse variant
+    reserved 3;
 
     message OutboxServiceInvocation {
         ServiceInvocation service_invocation = 1;
@@ -360,7 +362,6 @@ message OutboxMessage {
     oneof outbox_message {
         OutboxServiceInvocation service_invocation_case = 1;
         OutboxServiceInvocationResponse service_invocation_response = 2;
-        OutboxIngressResponse ingress_response = 3;
         OutboxKill kill = 4;
         OutboxCancel cancel = 5;
     }

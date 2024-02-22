@@ -63,7 +63,7 @@ impl StatusTimestamps {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NotificationTarget {
     pub service: ServiceId,

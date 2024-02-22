@@ -54,30 +54,6 @@ pub trait TargetShuffle {
     fn shuffle_target(&self) -> PeerId;
 }
 
-pub enum ConsensusOrIngressTarget<C, I> {
-    Consensus(C),
-    Ingress(I),
-}
-
-/// Trait for messages that are sent to the consensus module or an ingress
-pub trait TargetConsensusOrIngress<C, I> {
-    /// Returns the target of a message. It can either be an ingress
-    /// or the consensus module.
-    fn into_target(self) -> ConsensusOrIngressTarget<C, I>;
-}
-
-pub enum ConsensusOrShuffleTarget<C, S> {
-    Consensus(C),
-    Shuffle(S),
-}
-
-/// Trait for messages that are sent to the consensus module or a shuffle
-pub trait TargetConsensusOrShuffle<C, S> {
-    /// Returns the target of a message. It can either be the consensus module
-    /// or a shuffle
-    fn into_target(self) -> ConsensusOrShuffleTarget<C, S>;
-}
-
 /// Trait for messages that are sent to a shuffle component or an ingress
 pub enum ShuffleOrIngressTarget<S, I> {
     Shuffle(S),

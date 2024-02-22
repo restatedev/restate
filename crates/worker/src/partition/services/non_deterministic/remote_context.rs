@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::partition::types::create_response_message;
 use assert2::let_assert;
 use bytes::{BufMut, BytesMut};
 use bytestring::ByteString;
@@ -272,7 +273,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     let span_context =
                         ServiceInvocationSpanContext::start(&fid, journal_span_context.as_parent());
 
-                    self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
+                    self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
@@ -331,7 +332,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                         entry_index,
                     )
                 } else {
-                    self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
+                    self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation {
                         fid: fid.clone(),
                         method_name: request.method_name,
                         argument: request.parameter,
@@ -369,7 +370,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
                     .map_err(InvocationError::internal)?
                     .into_inner();
 
-                self.send_message(OutboxMessage::from_awakeable_completion(
+                self.outbox_message(OutboxMessage::from_awakeable_completion(
                     invocation_id.clone(),
                     entry_index,
                     result.into(),
@@ -421,7 +422,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             trace!("Closing the previously listening client with {:?}", res);
             // Because the caller of Start becomes the leading client,
             // if the previous client is waiting on a recv, it must be excluded.
-            self.send_message(OutboxMessage::from_response_sink(
+            self.send_response(create_response_message(
                 &fid,
                 recv_sink,
                 ResponseSerializer::<RecvResponse>::default().serialize_success(RecvResponse {
@@ -444,7 +445,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
             trace!("Closing the previously listening client with {:?}", res);
             // Because the caller of Start becomes the leading client,
             // if the previous client is waiting on a recv, it must be excluded.
-            self.send_message(OutboxMessage::from_response_sink(
+            self.send_response(create_response_message(
                 &fid,
                 get_result_sink,
                 ResponseSerializer::<GetResultResponse>::default().serialize_success(res.clone()),
@@ -461,7 +462,7 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
 
         if let Some((fid, recv_sink)) = self.pop_state(&PENDING_RECV_SINK).await? {
             trace!(restate.protocol.message = ?msg, "Sending message");
-            self.send_message(OutboxMessage::from_response_sink(
+            self.send_response(create_response_message(
                 &fid,
                 recv_sink,
                 ResponseSerializer::<RecvResponse>::default().serialize_success(RecvResponse {
@@ -1095,7 +1096,7 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                                 "Closing the previously listening client with {:?} for inactivity",
                                 response
                             );
-                            self.send_message(OutboxMessage::from_response_sink(
+                            self.send_response(create_response_message(
                                 &fid,
                                 sink,
                                 response.clone(),
@@ -1323,8 +1324,8 @@ mod tests {
                         eq(remote_context_service_id.partition_key())
                     )
                 })),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             StartResponse {
@@ -1419,8 +1420,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid_stream_1.clone()),
                 }
             )))))
@@ -1448,8 +1449,8 @@ mod tests {
         );
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid_stream_1),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
@@ -1461,8 +1462,8 @@ mod tests {
         );
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(start_fid_stream_2),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         StartResponse {
@@ -1511,8 +1512,8 @@ mod tests {
         );
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         StartResponse {
@@ -1668,8 +1669,8 @@ mod tests {
         // No response is expected to recv
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid.clone()),
                 }
             )))))
@@ -1691,8 +1692,8 @@ mod tests {
         // No response is expected to get_result
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(get_result_fid.clone()),
                 }
             )))))
@@ -1733,8 +1734,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(send_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             SendResponse {
@@ -1743,8 +1744,8 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(recv_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             RecvResponse {
@@ -1753,8 +1754,8 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(get_result_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             GetResultResponse {
@@ -1797,8 +1798,8 @@ mod tests {
 
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         SendResponse {
@@ -1846,8 +1847,8 @@ mod tests {
             .unwrap();
         assert_that!(
             send_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         SendResponse {
@@ -1873,8 +1874,8 @@ mod tests {
             .unwrap();
         assert_that!(
             recv_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
@@ -2075,8 +2076,8 @@ mod tests {
             .unwrap();
         assert_that!(
             send_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         SendResponse {
@@ -2102,8 +2103,8 @@ mod tests {
             .unwrap();
         assert_that!(
             recv_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
@@ -2193,8 +2194,8 @@ mod tests {
         // No response is expected to recv
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid.clone()),
                 }
             )))))
@@ -2221,8 +2222,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(send_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             SendResponse {
@@ -2231,8 +2232,8 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(recv_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             RecvResponse {
@@ -2276,8 +2277,8 @@ mod tests {
                 .unwrap();
             assert_that!(
                 send_effects,
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             SendResponse {
@@ -2304,8 +2305,8 @@ mod tests {
             .unwrap();
         assert_that!(
             recv_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
@@ -2350,8 +2351,8 @@ mod tests {
 
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {
@@ -2383,8 +2384,8 @@ mod tests {
 
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         GetResultResponse {
@@ -2423,8 +2424,8 @@ mod tests {
 
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         GetResultResponse {
@@ -2463,8 +2464,8 @@ mod tests {
 
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         GetResultResponse {
@@ -2537,8 +2538,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid.clone()),
                 }
             )))))
@@ -2557,8 +2558,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(get_result_fid.clone()),
                 }
             )))))
@@ -2585,14 +2586,14 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(recv_fid),
                         response: pat!(ResponseResult::Failure(_, _))
                     }
                 ))))),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(get_result_fid),
                         response: pat!(ResponseResult::Failure(_, _))
                     }
@@ -2623,8 +2624,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(recv_fid.clone()),
                 }
             )))))
@@ -2645,8 +2646,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(get_result_fid.clone()),
                 }
             )))))
@@ -2687,8 +2688,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(recv_fid),
                         // No special handling for blocked recv and kill: Once receiving empty bytes,
                         // the client will go through GetResult and get the killed status.
@@ -2699,8 +2700,8 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(get_result_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             GetResultResponse {
@@ -2729,8 +2730,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(get_result_fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         GetResultResponse {
@@ -2757,8 +2758,8 @@ mod tests {
             .unwrap();
         assert_that!(
             effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(start_fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         StartResponse {
@@ -2866,8 +2867,8 @@ mod tests {
             .unwrap();
         assert_that!(
             send_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         SendResponse {
@@ -2895,8 +2896,8 @@ mod tests {
             .unwrap();
         assert_that!(
             recv_effects,
-            contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse {
+            contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse {
                     full_invocation_id: eq(fid),
                     response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                         RecvResponse {

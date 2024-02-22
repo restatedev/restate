@@ -1471,25 +1471,6 @@ pub mod storage {
                                 )?,
                             },
                         ),
-                        outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
-                            restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                                full_invocation_id:
-                                    restate_types::identifiers::FullInvocationId::try_from(
-                                        ingress_response.full_invocation_id.ok_or(
-                                            ConversionError::missing_field("full_invocation_id"),
-                                        )?,
-                                    )?,
-                                to_node_id: ingress_response
-                                    .ingress_node_id
-                                    .ok_or(ConversionError::missing_field("ingress_node_id"))?
-                                    .into(),
-                                response: restate_types::invocation::ResponseResult::try_from(
-                                    ingress_response
-                                        .response_result
-                                        .ok_or(ConversionError::missing_field("response_result"))?,
-                                )?,
-                            }
-                        }
                         outbox_message::OutboxMessage::Kill(outbox_kill) => {
                             let maybe_fid = outbox_kill.maybe_full_invocation_id.ok_or(
                                 ConversionError::missing_field("maybe_full_invocation_id"),
@@ -1545,19 +1526,6 @@ pub mod storage {
                                 )),
                             },
                         ),
-                        restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                            to_node_id: node_id,
-                            full_invocation_id,
-                            response,
-                        } => {
-                            outbox_message::OutboxMessage::IngressResponse(OutboxIngressResponse {
-                                full_invocation_id: Some(FullInvocationId::from(
-                                    full_invocation_id,
-                                )),
-                                ingress_node_id: Some(node_id.into()),
-                                response_result: Some(ResponseResult::from(response)),
-                            })
-                        }
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
                             invocation_termination,
                         ) => match invocation_termination.flavor {

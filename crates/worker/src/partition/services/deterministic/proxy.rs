@@ -26,7 +26,7 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
         );
         trace!(restate.invocation.id = %target_fid, "Proxying");
 
-        self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+        self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             target_fid,
             req.target_method,
             req.input,

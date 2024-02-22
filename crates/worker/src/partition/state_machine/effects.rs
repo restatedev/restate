@@ -28,6 +28,7 @@ use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
     DeploymentId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
+use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
     SpanRelation,
@@ -166,6 +167,8 @@ pub(crate) enum Effect {
 
     // State mutations
     MutateState(ExternalStateMutation),
+
+    IngressResponse(IngressResponse),
 }
 
 macro_rules! debug_if_leader {
@@ -300,20 +303,24 @@ impl Effect {
                 entry_index,
                 failure_msg
             ),
-            Effect::EnqueueIntoOutbox {
-                seq_number,
-                message:
-                    OutboxMessage::IngressResponse {
-                        response: ResponseResult::Success(_),
-                        full_invocation_id,
-                        ..
-                    },
-            } => debug_if_leader!(
+            Effect::IngressResponse(IngressResponse {
+                response: ResponseResult::Success(_),
+                full_invocation_id,
+                ..
+            }) => debug_if_leader!(
                 is_leader,
-                rpc.service = %full_invocation_id.service_id.service_name,
                 restate.invocation.id = %full_invocation_id,
-                restate.outbox.seq = seq_number,
-                "Effect: Send success response to ingress"
+                "Effect: Send response to ingress: Success"),
+            Effect::IngressResponse(IngressResponse {
+                response: ResponseResult::Failure(error_code, error_msg),
+                full_invocation_id,
+                ..
+            }) => debug_if_leader!(
+                is_leader,
+                restate.invocation.id = %full_invocation_id,
+                "Effect: Send response to ingress: Failure(code: {}, msg: {})",
+                error_code,
+                error_msg,
             ),
             Effect::DeleteInboxEntry {
                 service_id,
@@ -326,23 +333,6 @@ impl Effect {
                     "Effect: Delete inbox entry",
                 );
             }
-            Effect::EnqueueIntoOutbox {
-                seq_number,
-                message:
-                    OutboxMessage::IngressResponse {
-                        response: ResponseResult::Failure(failure_code, failure_msg),
-                        full_invocation_id,
-                        ..
-                    },
-            } => debug_if_leader!(
-                is_leader,
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-                restate.outbox.seq = seq_number,
-                "Effect: Send failure code {} response to ingress. Reason: {}",
-                failure_code,
-                failure_msg
-            ),
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
@@ -711,6 +701,10 @@ impl Effects {
             seq_number,
             message,
         })
+    }
+
+    pub(crate) fn send_ingress_response(&mut self, ingress_response: IngressResponse) {
+        self.effects.push(Effect::IngressResponse(ingress_response));
     }
 
     pub(crate) fn set_state(

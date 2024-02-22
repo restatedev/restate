@@ -22,7 +22,7 @@ use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::metadata::Metadata;
+use crate::metadata::{spawn_metadata_manager, Metadata, MetadataManager};
 use crate::{TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
@@ -52,7 +52,15 @@ impl TaskCenterFactory {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn create_test_task_center() -> TaskCenter {
-    TaskCenterFactory::create(tokio::runtime::Handle::current())
+    let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+
+    let metadata_manager = MetadataManager::build();
+    let metadata = metadata_manager.metadata();
+    tc.try_set_global_metadata(metadata);
+
+    spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager should start");
+
+    tc
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.

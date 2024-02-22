@@ -39,7 +39,7 @@ impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
             ),
         };
 
-        self.send_message(OutboxMessage::from_awakeable_completion(
+        self.outbox_message(OutboxMessage::from_awakeable_completion(
             invocation_id,
             entry_index,
             ResponseResult::from(Ok(result)),
@@ -52,7 +52,7 @@ impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
             .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
             .into_inner();
 
-        self.send_message(OutboxMessage::from_awakeable_completion(
+        self.outbox_message(OutboxMessage::from_awakeable_completion(
             invocation_id,
             entry_index,
             ResponseResult::from(Err(InvocationError::new(

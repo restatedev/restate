@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::partition::types::create_response_message;
 use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
@@ -102,7 +103,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
         trace!(restate.invocation.id = %fid, "Invoking target service");
 
         // Invoke service
-        self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+        self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             fid,
             request.method,
             request.argument,
@@ -189,11 +190,11 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             .unwrap_or_default()
             .into_iter()
         {
-            self.send_message(OutboxMessage::from_response_sink(
+            self.send_response(create_response_message(
                 &callee_fid,
                 sink,
                 ResponseResult::Success(encoded_response.clone()),
-            ));
+            ))
         }
 
         Ok(())
@@ -311,8 +312,8 @@ mod tests {
         // Assert doesn't contain ingress response
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse { .. }
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse { .. }
             )))))
         );
 
@@ -342,8 +343,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(expected_fid.clone()),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
@@ -386,8 +387,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(expected_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {

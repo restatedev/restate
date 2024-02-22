@@ -20,6 +20,7 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use prost::Message;
 use restate_errors::NotRunningError;
+use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_invoker_api::ServiceHandle;
 use restate_types::identifiers::{
     FullInvocationId, InvocationUuid, PartitionLeaderEpoch, WithPartitionKey,
@@ -56,7 +57,7 @@ pub(crate) enum LeaderAwareActionCollectorError {
 impl<'a, I, N> LeaderAwareActionCollector<'a, I, N>
 where
     I: ServiceHandle,
-    N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    N: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     pub(crate) async fn send(
         self,
@@ -77,6 +78,7 @@ where
                         &mut leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
                         &mut follower_state.consensus_writer,
+                        &follower_state.ingress_tx,
                     )
                     .await?;
                 }
@@ -102,6 +104,7 @@ where
         non_deterministic_service_invoker: &mut ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: &mut ConsensusWriter,
+        ingress_tx: &IngressDispatcherInputSender,
     ) -> Result<(), LeaderAwareActionCollectorError> {
         match action {
             Action::Invoke {
@@ -233,6 +236,12 @@ where
                 );
 
                 let _ = consensus_writer.send(envelope).await;
+            }
+            Action::IngressResponse(ingress_response) => {
+                // ingress should only be unavailable when shutting down
+                let _ = ingress_tx
+                    .send(IngressDispatcherInput::Response(ingress_response))
+                    .await;
             }
         }
 

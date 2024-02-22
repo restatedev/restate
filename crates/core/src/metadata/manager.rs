@@ -157,7 +157,8 @@ mod tests {
     use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
-    use crate::{TaskCenterFactory, TaskKind};
+    use crate::metadata::spawn_metadata_manager;
+    use crate::TaskCenterFactory;
 
     #[tokio::test]
     async fn test_nodes_config_updates() -> Result<()> {
@@ -174,12 +175,7 @@ mod tests {
         metadata_writer.submit(nodes_config.clone());
 
         // start metadata manager
-        tc.spawn(
-            TaskKind::MetadataBackgroundSync,
-            "metadata-manager",
-            None,
-            metadata_manager.run(),
-        )?;
+        spawn_metadata_manager(&tc, metadata_manager)?;
 
         let version = metadata
             .wait_for_version(MetadataKind::NodesConfiguration, Version::MIN)
@@ -233,12 +229,7 @@ mod tests {
         assert_eq!(Version::MIN, nodes_config.version());
 
         // start metadata manager
-        tc.spawn(
-            TaskKind::MetadataBackgroundSync,
-            "metadata-manager",
-            None,
-            metadata_manager.run(),
-        )?;
+        spawn_metadata_manager(&tc, metadata_manager)?;
 
         let mut watcher1 = metadata.watch(MetadataKind::NodesConfiguration);
         assert_eq!(Version::INVALID, *watcher1.borrow());

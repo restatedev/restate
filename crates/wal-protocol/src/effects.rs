@@ -15,13 +15,14 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::status_table::NotificationTarget;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationUuid, ServiceId};
+use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source as InvocationSource,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::time::MillisSinceEpoch;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BuiltinServiceEffects {
     full_invocation_id: FullInvocationId,
@@ -41,7 +42,7 @@ impl BuiltinServiceEffects {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinServiceEffect {
     CreateJournal {
@@ -82,4 +83,6 @@ pub enum BuiltinServiceEffect {
         // NBIS can optionally fail, depending on the context the error might or might not be used.
         Option<InvocationError>,
     ),
+
+    IngressResponse(IngressResponse),
 }

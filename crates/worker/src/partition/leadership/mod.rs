@@ -30,6 +30,7 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::AckResponse;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_errors::NotRunningError;
+use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_schema_impl::Schemas;
 use restate_storage_api::status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -38,6 +39,7 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch,
 use restate_types::journal::EntryType;
 use restate_types::NodeId;
 use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::Envelope;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
@@ -61,6 +63,7 @@ pub(crate) struct FollowerState<I, N> {
     network_handle: N,
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
     consensus_writer: ConsensusWriter,
+    ingress_tx: IngressDispatcherInputSender,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +90,7 @@ pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
 impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
@@ -99,6 +102,7 @@ where
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: ConsensusWriter,
+        ingress_tx: IngressDispatcherInputSender,
     ) -> (ActionEffectStream, Self) {
         (
             ActionEffectStream::Follower,
@@ -111,6 +115,7 @@ where
                 network_handle,
                 ack_tx,
                 consensus_writer,
+                ingress_tx,
             }),
         )
     }
@@ -333,6 +338,7 @@ where
                     network_handle,
                     ack_tx,
                     consensus_writer: self_proposal_tx,
+                    ingress_tx,
                 },
             leader_state:
                 LeaderState {
@@ -366,6 +372,7 @@ where
                 network_handle,
                 ack_tx,
                 self_proposal_tx,
+                ingress_tx,
             ))
         } else {
             Ok((ActionEffectStream::Follower, self))

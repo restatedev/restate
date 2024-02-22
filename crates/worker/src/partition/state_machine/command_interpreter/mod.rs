@@ -13,7 +13,9 @@ use std::collections::HashSet;
 
 use crate::partition::services::deterministic;
 use crate::partition::state_machine::effects::Effects;
-use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
+use crate::partition::types::{
+    create_response_message, InvokerEffect, InvokerEffectKind, OutboxMessageExt, ResponseMessage,
+};
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -31,6 +33,7 @@ use restate_types::errors::{
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
+use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -363,7 +366,7 @@ where
                 );
             }
             BuiltinServiceEffect::OutboxMessage(msg) => {
-                self.send_message(msg, effects);
+                self.outbox_message(msg, effects);
             }
             BuiltinServiceEffect::End(None) => {
                 self.end_invocation(
@@ -381,6 +384,9 @@ where
                     e,
                 )
                 .await?
+            }
+            BuiltinServiceEffect::IngressResponse(ingress_response) => {
+                self.ingress_response(ingress_response, effects);
             }
         }
 
@@ -645,7 +651,7 @@ where
                             enrichment_result.service_key,
                             enrichment_result.invocation_uuid,
                         );
-                        self.send_message(
+                        self.outbox_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::kill(
                                 target_fid,
                             )),
@@ -693,7 +699,7 @@ where
                             enrichment_result.invocation_uuid,
                         );
 
-                        self.send_message(
+                        self.outbox_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::cancel(
                                 target_fid,
                             )),
@@ -813,7 +819,7 @@ where
                 .await
             }
             Timer::Invoke(service_id, service_invocation) => {
-                self.send_message(
+                self.outbox_message(
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
                 );
@@ -996,8 +1002,8 @@ where
     ) {
         if let Some(response_sink) = response_sink {
             // TODO: We probably only need to send the response if we haven't send a response before
-            self.send_message(
-                OutboxMessage::from_response_sink(
+            self.send_response(
+                create_response_message(
                     full_invocation_id,
                     response_sink,
                     ResponseResult::from(error),
@@ -1036,8 +1042,8 @@ where
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
-                    self.send_message(
-                        OutboxMessage::from_response_sink(
+                    self.send_response(
+                        create_response_message(
                             &full_invocation_id,
                             response_sink.clone(),
                             result.into(),
@@ -1159,7 +1165,7 @@ where
                         Some((full_invocation_id.clone(), entry_index)),
                         span_context.clone(),
                     );
-                    self.send_message(
+                    self.outbox_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
                         effects,
                     );
@@ -1209,7 +1215,7 @@ where
 
                 // 0 is equal to not set, meaning execute now
                 if invoke_time == 0 {
-                    self.send_message(
+                    self.outbox_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
                         effects,
                     );
@@ -1255,7 +1261,7 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
-                self.send_message(
+                self.outbox_message(
                     OutboxMessage::from_awakeable_completion(
                         invocation_id.clone(),
                         *entry_index,
@@ -1419,7 +1425,10 @@ where
         {
             match effect {
                 deterministic::Effect::OutboxMessage(outbox_message) => {
-                    self.send_message(outbox_message, effects)
+                    self.outbox_message(outbox_message, effects)
+                }
+                deterministic::Effect::IngressResponse(ingress_response) => {
+                    self.ingress_response(ingress_response, effects);
                 }
             }
         }
@@ -1454,9 +1463,20 @@ where
         Ok(())
     }
 
-    fn send_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
+    fn send_response(&mut self, response: ResponseMessage, effects: &mut Effects) {
+        match response {
+            ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
+            ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
+        }
+    }
+
+    fn outbox_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
         effects.enqueue_into_outbox(self.outbox_seq_number, message);
         self.outbox_seq_number += 1;
+    }
+
+    fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {
+        effects.send_ingress_response(ingress_response);
     }
 
     fn create_service_invocation(

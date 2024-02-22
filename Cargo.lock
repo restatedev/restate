@@ -5133,6 +5133,7 @@ dependencies = [
  "restate-errors",
  "restate-test-util",
  "restate-types",
+ "restate-wal-protocol",
  "test-log",
  "thiserror",
  "tokio",

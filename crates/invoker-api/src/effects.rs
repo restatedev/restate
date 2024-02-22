@@ -14,14 +14,14 @@ use restate_types::identifiers::{DeploymentId, EntryIndex};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub full_invocation_id: FullInvocationId,
     pub kind: EffectKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EffectKind {
     /// This is sent before any new entry is created by the invoker. This won't be sent if the deployment_id is already set.

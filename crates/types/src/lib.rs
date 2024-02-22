@@ -19,6 +19,7 @@ mod version;
 pub mod deployment;
 pub mod errors;
 pub mod identifiers;
+pub mod ingress;
 pub mod invocation;
 pub mod journal;
 pub mod logs;

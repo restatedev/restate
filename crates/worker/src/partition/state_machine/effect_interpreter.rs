@@ -431,6 +431,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::MutateState(state_mutation) => {
                 Self::mutate_state(state_storage, state_mutation).await?;
             }
+            Effect::IngressResponse(ingress_response) => {
+                collector.collect(Action::IngressResponse(ingress_response));
+            }
         }
 
         Ok(())

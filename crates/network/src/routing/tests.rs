@@ -14,14 +14,15 @@ use restate_core::{create_test_task_center, TaskKind};
 use test_log::test;
 use tokio::sync::mpsc;
 
-use restate_types::identifiers::{PartitionId, WithPartitionKey};
+use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::{PartitionKey, PeerId};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::message::PartitionTarget;
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 
 use crate::{
-    ConsensusOrIngressTarget, ConsensusOrShuffleTarget, FindPartition, Network, NetworkHandle,
-    PartitionTableError, ShuffleOrIngressTarget, TargetConsensusOrIngress,
-    TargetConsensusOrShuffle, TargetShuffle, TargetShuffleOrIngress,
+    FindPartition, Network, NetworkHandle, PartitionTableError, ShuffleOrIngressTarget,
+    TargetShuffle, TargetShuffleOrIngress,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -37,15 +38,6 @@ impl FindPartition for MockPartitionTable {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
-struct ConsensusMsg(u64);
-
-impl WithPartitionKey for ConsensusMsg {
-    fn partition_key(&self) -> PartitionKey {
-        0
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq)]
 struct IngressMsg(u64);
 
@@ -55,36 +47,6 @@ struct ShuffleMsg(u64);
 impl TargetShuffle for ShuffleMsg {
     fn shuffle_target(&self) -> PeerId {
         0
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-enum ShuffleOut {
-    Consensus(ConsensusMsg),
-    Ingress(IngressMsg),
-}
-
-impl TargetConsensusOrIngress<ConsensusMsg, IngressMsg> for ShuffleOut {
-    fn into_target(self) -> ConsensusOrIngressTarget<ConsensusMsg, IngressMsg> {
-        match self {
-            ShuffleOut::Consensus(msg) => ConsensusOrIngressTarget::Consensus(msg),
-            ShuffleOut::Ingress(msg) => ConsensusOrIngressTarget::Ingress(msg),
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-enum IngressOut {
-    Consensus(ConsensusMsg),
-    Shuffle(ShuffleMsg),
-}
-
-impl TargetConsensusOrShuffle<ConsensusMsg, ShuffleMsg> for IngressOut {
-    fn into_target(self) -> ConsensusOrShuffleTarget<ConsensusMsg, ShuffleMsg> {
-        match self {
-            IngressOut::Consensus(msg) => ConsensusOrShuffleTarget::Consensus(msg),
-            IngressOut::Shuffle(msg) => ConsensusOrShuffleTarget::Shuffle(msg),
-        }
     }
 }
 
@@ -103,48 +65,36 @@ impl TargetShuffleOrIngress<ShuffleMsg, IngressMsg> for PPOut {
     }
 }
 
-type MockNetwork = Network<
-    ConsensusMsg,
-    ShuffleMsg,
-    ShuffleOut,
-    ConsensusMsg,
-    IngressMsg,
-    IngressOut,
-    ConsensusMsg,
-    ShuffleMsg,
-    IngressMsg,
-    PPOut,
-    ShuffleMsg,
-    IngressMsg,
-    MockPartitionTable,
->;
+type MockNetwork =
+    Network<ShuffleMsg, IngressMsg, PPOut, ShuffleMsg, IngressMsg, MockPartitionTable>;
 
 fn mock_network() -> (
     MockNetwork,
-    mpsc::Receiver<PartitionTarget<ConsensusMsg>>,
+    mpsc::Receiver<PartitionTarget<Envelope>>,
     mpsc::Receiver<IngressMsg>,
 ) {
     let (consensus_tx, consensus_rx) = mpsc::channel(1);
     let (ingress_tx, ingress_rx) = mpsc::channel(1);
     let partition_table = MockPartitionTable;
 
-    let network = Network::<
-        ConsensusMsg,
-        ShuffleMsg,
-        ShuffleOut,
-        ConsensusMsg,
-        IngressMsg,
-        IngressOut,
-        ConsensusMsg,
-        ShuffleMsg,
-        IngressMsg,
-        PPOut,
-        ShuffleMsg,
-        IngressMsg,
-        _,
-    >::new(consensus_tx, ingress_tx, partition_table, 1);
+    let network = Network::<ShuffleMsg, IngressMsg, PPOut, ShuffleMsg, IngressMsg, _>::new(
+        consensus_tx,
+        ingress_tx,
+        partition_table,
+        1,
+    );
 
     (network, consensus_rx, ingress_rx)
+}
+
+fn create_envelope(partition_key: PartitionKey) -> Envelope {
+    let header = Header {
+        source: Source::ControlPlane {},
+        dest: Destination::Processor { partition_key },
+        ack_mode: AckMode::None,
+    };
+
+    Envelope::new(header, Command::Invoke(ServiceInvocation::mock()))
 }
 
 #[test(tokio::test)]
@@ -159,16 +109,16 @@ async fn no_consensus_message_is_dropped() {
         .spawn(TaskKind::SystemService, "networking", None, network.run())
         .unwrap();
 
-    let msg_1 = (0, ConsensusMsg(0));
-    let msg_2 = (0, ConsensusMsg(1));
-    let msg_3 = (0, ConsensusMsg(2));
+    let msg_1 = (0, create_envelope(0));
+    let msg_2 = (0, create_envelope(1));
+    let msg_3 = (0, create_envelope(2));
 
-    consensus_tx.send(msg_1).await.unwrap();
-    consensus_tx.send(msg_2).await.unwrap();
+    consensus_tx.send(msg_1.clone()).await.unwrap();
+    consensus_tx.send(msg_2.clone()).await.unwrap();
     tokio::task::yield_now().await;
     network_handle.unregister_shuffle(0).await.unwrap();
     tokio::task::yield_now().await;
-    consensus_tx.send(msg_3).await.unwrap();
+    consensus_tx.send(msg_3.clone()).await.unwrap();
 
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_1);
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_2);
@@ -179,15 +129,11 @@ async fn no_consensus_message_is_dropped() {
 
 #[test(tokio::test)]
 async fn no_shuffle_to_consensus_message_is_dropped() {
-    let msg_1 = ConsensusMsg(0);
-    let msg_2 = ConsensusMsg(1);
-    let msg_3 = ConsensusMsg(2);
+    let msg_1 = create_envelope(0);
+    let msg_2 = create_envelope(1);
+    let msg_3 = create_envelope(2);
 
-    let input = [
-        ShuffleOut::Consensus(msg_1),
-        ShuffleOut::Consensus(msg_2),
-        ShuffleOut::Consensus(msg_3),
-    ];
+    let input = [msg_1.clone(), msg_2.clone(), msg_3.clone()];
     let expected_output = [(0, msg_1), (0, msg_2), (0, msg_3)];
 
     let (network, consensus_rx, _ingress_rx) = mock_network();
@@ -198,65 +144,12 @@ async fn no_shuffle_to_consensus_message_is_dropped() {
 }
 
 #[test(tokio::test)]
-async fn no_shuffle_to_ingress_message_is_dropped() {
-    let msg_1 = IngressMsg(0);
-    let msg_2 = IngressMsg(1);
-    let msg_3 = IngressMsg(2);
-
-    let input = [
-        ShuffleOut::Ingress(msg_1),
-        ShuffleOut::Ingress(msg_2),
-        ShuffleOut::Ingress(msg_3),
-    ];
-    let expected_output = [msg_1, msg_2, msg_3];
-
-    let (network, _consensus_rx, ingress_rx) = mock_network();
-
-    let shuffle_tx = network.create_network_handle().create_shuffle_sender();
-
-    run_router_test(network, shuffle_tx, input, ingress_rx, expected_output).await;
-}
-
-#[test(tokio::test)]
-async fn no_ingress_to_shuffle_message_is_dropped() {
-    let msg_1 = ShuffleMsg(0);
-    let msg_2 = ShuffleMsg(1);
-    let msg_3 = ShuffleMsg(2);
-
-    let input = [
-        IngressOut::Shuffle(msg_1),
-        IngressOut::Shuffle(msg_2),
-        IngressOut::Shuffle(msg_3),
-    ];
-    let expected_output = [msg_1, msg_2, msg_3];
-
-    let (network, _consensus_rx, _ingress_rx) = mock_network();
-
-    let network_handle = network.create_network_handle();
-
-    let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
-
-    network_handle
-        .register_shuffle(0, shuffle_tx)
-        .await
-        .unwrap();
-
-    let ingress_tx = network.create_ingress_sender();
-
-    run_router_test(network, ingress_tx, input, shuffle_rx, expected_output).await;
-}
-
-#[test(tokio::test)]
 async fn no_ingress_to_consensus_message_is_dropped() {
-    let msg_1 = ConsensusMsg(0);
-    let msg_2 = ConsensusMsg(1);
-    let msg_3 = ConsensusMsg(2);
+    let msg_1 = create_envelope(0);
+    let msg_2 = create_envelope(1);
+    let msg_3 = create_envelope(2);
 
-    let input = [
-        IngressOut::Consensus(msg_1),
-        IngressOut::Consensus(msg_2),
-        IngressOut::Consensus(msg_3),
-    ];
+    let input = [msg_1.clone(), msg_2.clone(), msg_3.clone()];
     let expected_output = [(0, msg_1), (0, msg_2), (0, msg_3)];
 
     let (network, consensus_rx, _ingress_rx) = mock_network();
@@ -321,7 +214,7 @@ async fn run_router_test<Input, Output>(
     mut rx: mpsc::Receiver<Output>,
     expected_output: [Output; 3],
 ) where
-    Input: Debug + Copy,
+    Input: Debug + Clone,
     Output: PartialEq + Debug,
 {
     let tc = create_test_task_center();
@@ -334,12 +227,12 @@ async fn run_router_test<Input, Output>(
     // we have to yield in order to process register shuffle message
     tokio::task::yield_now().await;
 
-    tx.send(input[0]).await.unwrap();
-    tx.send(input[1]).await.unwrap();
+    tx.send(input[0].clone()).await.unwrap();
+    tx.send(input[1].clone()).await.unwrap();
     tokio::task::yield_now().await;
     network_handle.unregister_shuffle(99).await.unwrap();
     tokio::task::yield_now().await;
-    tx.send(input[2]).await.unwrap();
+    tx.send(input[2].clone()).await.unwrap();
 
     for output in expected_output {
         assert_eq!(rx.recv().await.unwrap(), output);

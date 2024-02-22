@@ -15,7 +15,7 @@ use restate_types::GenerationalNodeId;
 /// leadership announcement. The leader_epoch
 ///
 /// Reserved for future use.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnnounceLeader {
     /// The "generational" node id of the processor that is being announced as leader.
