@@ -10,7 +10,7 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
-import "dev/restate/common/common.proto";
+import "common.proto";
 
 package dev.restate.node;
 
