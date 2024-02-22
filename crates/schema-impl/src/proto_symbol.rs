@@ -190,17 +190,19 @@ impl SymbolsIndex {
         &mut self,
         service_name: &str,
         methods: impl Iterator<Item = String>,
-    ) -> Arc<Vec<String>> {
+    ) -> Option<Arc<Vec<String>>> {
         let service_symbol = self.0.remove(service_name);
-        for method in methods {
-            self.0.remove(&method);
-        }
-        match service_symbol {
-            Some(Symbol::ServiceOrMethod(arc)) => arc,
-            _ => {
-                panic!("The removed symbol should be a ServiceOrMethod!")
+
+        if service_symbol.is_some() {
+            for method in methods {
+                self.0.remove(&method);
             }
         }
+
+        service_symbol.map(|symbol| match symbol {
+            Symbol::ServiceOrMethod(arc) => arc,
+            Symbol::MessageOrEnum(_) => panic!("The removed symbol should be a ServiceOrMethod!"),
+        })
     }
 
     fn remove_message_or_enum(&mut self, symbol_name: &str, file: &str) {
@@ -238,58 +240,48 @@ impl ProtoSymbols {
         deployment_id: &DeploymentId,
         service_desc: &ServiceDescriptor,
     ) {
-        debug_assert!(
-            !self.symbols.contains(service_desc.full_name()),
-            "Cannot add service '{}' because it already exists",
-            service_desc.full_name()
-        );
+        if !self.symbols.contains(service_desc.full_name()) {
+            // Collect all the files belonging to this service
+            let files: HashMap<String, FileDescriptor> =
+                collect_service_related_file_descriptors(service_desc)
+                    .into_iter()
+                    .map(|file_desc| {
+                        (
+                            normalize_file_name(deployment_id, file_desc.name()),
+                            file_desc,
+                        )
+                    })
+                    .collect();
 
-        // Collect all the files belonging to this service
-        let files: HashMap<String, FileDescriptor> =
-            collect_service_related_file_descriptors(service_desc)
-                .into_iter()
-                .map(|file_desc| {
-                    (
-                        normalize_file_name(deployment_id, file_desc.name()),
-                        file_desc,
-                    )
-                })
-                .collect();
+            // Add service to symbols
+            self.symbols.add_service(
+                service_desc.full_name().to_string(),
+                service_desc
+                    .methods()
+                    .map(|m| m.full_name().to_string())
+                    .collect(),
+                files.keys().cloned().collect(),
+            );
 
-        // Add service to symbols
-        self.symbols.add_service(
-            service_desc.full_name().to_string(),
-            service_desc
-                .methods()
-                .map(|m| m.full_name().to_string())
-                .collect(),
-            files.keys().cloned().collect(),
-        );
+            // Process files to register symbols and files
+            for (file_name, file_desc) in files {
+                // Discover all symbols in this file
+                let mut message_or_enum_symbols = HashSet::new();
+                collect_message_or_enum_symbols(&mut message_or_enum_symbols, &file_desc);
 
-        // Process files to register symbols and files
-        for (file_name, file_desc) in files {
-            // Discover all symbols in this file
-            let mut message_or_enum_symbols = HashSet::new();
-            collect_message_or_enum_symbols(&mut message_or_enum_symbols, &file_desc);
+                // Copy the file_symbols in symbols_index
+                for symbol in message_or_enum_symbols.clone() {
+                    self.symbols.add_message_or_enum(symbol, file_name.clone());
+                }
 
-            // Copy the file_symbols in symbols_index
-            for symbol in message_or_enum_symbols.clone() {
-                self.symbols.add_message_or_enum(symbol, file_name.clone());
+                // Add the file descriptor
+                self.files
+                    .add(file_name, deployment_id, file_desc, message_or_enum_symbols);
             }
-
-            // Add the file descriptor
-            self.files
-                .add(file_name, deployment_id, file_desc, message_or_enum_symbols);
         }
     }
 
     pub(super) fn remove_service(&mut self, service_desc: &ServiceDescriptor) {
-        debug_assert!(
-            self.symbols.contains(service_desc.full_name()),
-            "Cannot remove service '{}' because it doesn't exist",
-            service_desc.full_name()
-        );
-
         // Remove the service from the symbols index
         let methods = service_desc.methods();
         let service_related_files = self.symbols.remove_service(
@@ -297,13 +289,15 @@ impl ProtoSymbols {
             methods.map(|m| m.full_name().to_string()),
         );
 
-        // For each file related to the service, remove it
-        for file_name in service_related_files.iter() {
-            // If when removing a file we free it, then we need to remove the related message and symbols as well
-            if let Some(message_or_enum_symbols_to_remove) = self.files.remove(file_name) {
-                for message_or_enum_symbol in message_or_enum_symbols_to_remove {
-                    self.symbols
-                        .remove_message_or_enum(&message_or_enum_symbol, file_name);
+        if let Some(service_related_files) = service_related_files {
+            // For each file related to the service, remove it
+            for file_name in service_related_files.iter() {
+                // If when removing a file we free it, then we need to remove the related message and symbols as well
+                if let Some(message_or_enum_symbols_to_remove) = self.files.remove(file_name) {
+                    for message_or_enum_symbol in message_or_enum_symbols_to_remove {
+                        self.symbols
+                            .remove_message_or_enum(&message_or_enum_symbol, file_name);
+                    }
                 }
             }
         }

@@ -26,20 +26,15 @@ impl SchemasInner {
 
         // Update proto_symbols
         if let ServiceLocation::Deployment {
-            public: old_public_value,
-            latest_deployment,
+            latest_deployment, ..
         } = &schemas.location
         {
-            match (*old_public_value, new_public_value) {
-                (true, false) => {
-                    self.proto_symbols
-                        .remove_service(schemas.service_descriptor());
-                }
-                (false, true) => {
-                    self.proto_symbols
-                        .add_service(latest_deployment, schemas.service_descriptor());
-                }
-                _ => {}
+            if new_public_value {
+                self.proto_symbols
+                    .add_service(latest_deployment, schemas.service_descriptor());
+            } else {
+                self.proto_symbols
+                    .remove_service(schemas.service_descriptor());
             }
         }
 

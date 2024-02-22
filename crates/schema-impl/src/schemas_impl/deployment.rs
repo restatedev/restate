@@ -700,10 +700,13 @@ fn is_map_with(field_descriptor: &FieldDescriptor, key_kind: Kind, value_kind: K
 #[cfg(test)]
 mod tests {
     use super::*;
+    use googletest::assert_that;
+    use googletest::matchers::{contains, eq, not};
 
     use test_log::test;
 
     use restate_schema_api::deployment::{Deployment, DeploymentResolver};
+    use restate_schema_api::proto_symbol::ProtoSymbolResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::{assert, assert_eq, let_assert};
 
@@ -742,7 +745,14 @@ mod tests {
 
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
         schemas.assert_resolves_deployment(GREETER_SERVICE_NAME, deployment_id);
-        assert_eq!(schemas.list_services().first().unwrap().methods.len(), 3);
+        assert_eq!(
+            ServiceMetadataResolver::list_services(&schemas)
+                .first()
+                .unwrap()
+                .methods
+                .len(),
+            3
+        );
     }
 
     #[test]
@@ -798,6 +808,48 @@ mod tests {
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
         schemas.assert_resolves_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+    }
+
+    /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
+    #[test]
+    fn force_deploy_private_service() -> Result<(), SchemasUpdateError> {
+        let schemas = Schemas::default();
+        let deployment = Deployment::mock();
+
+        let initial_deployment_commands = schemas.compute_new_deployment(
+            Some(deployment.id),
+            deployment.metadata.clone(),
+            vec![GREETER_SERVICE_NAME.to_owned()],
+            DESCRIPTOR.clone(),
+            false,
+        )?;
+        schemas.apply_updates(initial_deployment_commands)?;
+
+        let mark_service_private = SchemasUpdateCommand::ModifyService {
+            name: GREETER_SERVICE_NAME.to_owned(),
+            public: false,
+        };
+        schemas.apply_updates(vec![mark_service_private])?;
+        assert_that!(
+            ProtoSymbolResolver::list_services(&schemas),
+            not(contains(eq(GREETER_SERVICE_NAME.to_owned())))
+        );
+
+        let forced_deployment_commands = schemas.compute_new_deployment(
+            Some(deployment.id),
+            deployment.metadata.clone(),
+            vec![GREETER_SERVICE_NAME.to_owned()],
+            DESCRIPTOR.clone(),
+            true,
+        )?;
+
+        schemas.apply_updates(forced_deployment_commands)?;
+        assert_that!(
+            ProtoSymbolResolver::list_services(&schemas),
+            contains(eq(GREETER_SERVICE_NAME.to_owned()))
+        );
+
+        Ok(())
     }
 
     mod change_instance_type {
