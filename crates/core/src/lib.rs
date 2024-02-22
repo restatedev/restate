@@ -10,8 +10,8 @@
 
 pub mod metadata;
 
-mod task_center_types;
 mod task_center;
+mod task_center_types;
 
 pub use task_center::*;
 pub use task_center_types::*;
