@@ -82,7 +82,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_task_center::create_test_task_center;
+    use restate_core::create_test_task_center;
     use tokio::task::JoinHandle;
     use tracing::info;
     use tracing_test::traced_test;

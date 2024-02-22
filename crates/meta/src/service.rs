@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use http::Uri;
-use restate_task_center::cancellation_watcher;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
 use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};

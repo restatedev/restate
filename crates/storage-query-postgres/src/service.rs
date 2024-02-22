@@ -10,8 +10,8 @@
 
 use crate::pgwire_server::HandlerFactory;
 use codederror::CodedError;
+use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_task_center::cancellation_watcher;
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;

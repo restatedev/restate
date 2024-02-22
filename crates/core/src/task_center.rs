@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod types;
-pub use types::*;
-
 use futures::FutureExt;
 use restate_types::identifiers::PartitionId;
 use std::collections::HashMap;
@@ -24,6 +21,8 @@ use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, warn};
+
+use crate::{TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 const EXIT_CODE_FAILURE: i32 = 1;

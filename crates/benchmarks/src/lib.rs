@@ -18,13 +18,13 @@ use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
 use tokio::runtime::Runtime;
 
+use restate_core::{TaskCenter, TaskCenterFactory};
 use restate_node::Node;
 use restate_node::{
     MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
 };
 use restate_server::config::ConfigurationBuilder;
 use restate_server::Configuration;
-use restate_task_center::{TaskCenter, TaskCenterFactory};
 use restate_types::retries::RetryPolicy;
 
 pub mod counter {

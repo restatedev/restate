@@ -10,7 +10,7 @@
 
 use std::fmt::Debug;
 
-use restate_task_center::{create_test_task_center, TaskKind};
+use restate_core::{create_test_task_center, TaskKind};
 use test_log::test;
 use tokio::sync::mpsc;
 

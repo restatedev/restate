@@ -12,8 +12,8 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

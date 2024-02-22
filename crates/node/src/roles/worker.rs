@@ -15,6 +15,8 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
+use restate_core::task_center;
+use restate_core::TaskKind;
 use restate_network::utils::create_grpc_channel_from_network_address;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
@@ -23,8 +25,6 @@ use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_task_center::task_center;
-use restate_task_center::TaskKind;
 use restate_types::nodes_config::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
 use restate_types::NodeId;

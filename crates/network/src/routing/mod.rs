@@ -16,7 +16,7 @@ use crate::{
     NetworkCommand, TargetConsensusOrIngress, TargetConsensusOrShuffle, TargetShuffle,
     TargetShuffleOrIngress, UnboundedNetworkHandle,
 };
-use restate_task_center::cancellation_watcher;
+use restate_core::cancellation_watcher;
 use restate_types::identifiers::PeerId;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PartitionTarget;

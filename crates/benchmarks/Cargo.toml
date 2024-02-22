@@ -12,9 +12,9 @@ default = []
 frame-pointer = ["pprof/frame-pointer"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-node = { workspace = true }
 restate-server = { workspace = true }
-restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

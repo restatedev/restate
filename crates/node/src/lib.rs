@@ -25,7 +25,7 @@ use anyhow::bail;
 use codederror::CodedError;
 use tracing::{error, info};
 
-use restate_task_center::{task_center, TaskKind};
+use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
 

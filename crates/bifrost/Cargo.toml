@@ -12,7 +12,7 @@ options_schema = ["dep:schemars"]
 memory_loglet = []
 
 [dependencies]
-restate-task-center = { workspace = true }
+restate-core = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -37,8 +37,8 @@ tracing = { workspace = true }
 
 
 [dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
-restate-task-center = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 test-log = { workspace = true }

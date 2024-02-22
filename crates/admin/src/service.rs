@@ -12,14 +12,14 @@ use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
-use restate_task_center::cancellation_watcher;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
+use tracing::info;
 
+use restate_core::cancellation_watcher;
 use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::node::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
-use tracing::info;
 
 use crate::{rest_api, state, storage_query};
 use crate::{Error, Options};

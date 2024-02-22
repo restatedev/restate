@@ -265,7 +265,7 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
-    use restate_task_center::{create_test_task_center, task_center};
+    use restate_core::{create_test_task_center, task_center};
     use restate_types::logs::SequenceNumber;
     use tracing::info;
     use tracing_test::traced_test;

@@ -12,12 +12,12 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
-restate-task-center = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 

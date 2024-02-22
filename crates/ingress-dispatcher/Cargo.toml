@@ -12,10 +12,10 @@ default = []
 mocks = ["dep:restate-test-util"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-pb = { workspace = true, features = ["restate-types"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
-restate-task-center = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
@@ -31,7 +31,7 @@ tracing = { workspace = true }
 
 
 [dev-dependencies]
-restate-task-center = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["mocks"] }
 

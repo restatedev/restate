@@ -1,5 +1,5 @@
 [package]
-name = "restate-task-center"
+name = "restate-core"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

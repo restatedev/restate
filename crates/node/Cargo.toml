@@ -20,6 +20,7 @@ options_schema = [
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-cluster-controller = { workspace = true }
+restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-meta = { workspace = true }
 restate-network = { workspace = true }
@@ -28,7 +29,6 @@ restate-schema-api = { workspace = true }
 restate-schema-impl = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
-restate-task-center = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 restate-worker-api = { workspace = true }
