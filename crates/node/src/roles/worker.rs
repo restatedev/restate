@@ -15,6 +15,7 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
+use restate_core::metadata::Metadata;
 use restate_core::task_center;
 use restate_core::TaskKind;
 use restate_network::utils::create_grpc_channel_from_network_address;
@@ -32,7 +33,6 @@ use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
 use tracing::info;
 
-use crate::metadata::Metadata;
 use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]

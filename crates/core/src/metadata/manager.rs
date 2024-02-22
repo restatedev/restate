@@ -8,140 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// todo: Remove after implementation is complete
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
-use enum_map::EnumMap;
-use restate_core::ShutdownError;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use tracing::info;
 
-use restate_core::cancellation_watcher;
+use crate::cancellation_watcher;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::MetadataKind;
-use restate_types::Version;
 
-type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
-type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
+use super::Metadata;
+use super::MetadataContainer;
+use super::MetadataInner;
+use super::MetadataKind;
+use super::MetadataWriter;
 
-// todo
-struct PartitionTable;
+pub(super) type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
+pub(super) type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
 
-/// Handle to access locally cached metadata, request metadata updates, and more.
-#[derive(Clone)]
-pub struct Metadata {
-    sender: CommandSender,
-    inner: Arc<MetadataInner>,
-}
-
-pub enum MetadataContainer {
-    NodesConfiguration(NodesConfiguration),
-}
-
-impl MetadataContainer {
-    pub fn kind(&self) -> MetadataKind {
-        match self {
-            MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
-        }
-    }
-}
-
-impl From<NodesConfiguration> for MetadataContainer {
-    fn from(value: NodesConfiguration) -> Self {
-        MetadataContainer::NodesConfiguration(value)
-    }
-}
-
-impl Metadata {
-    fn new(inner: Arc<MetadataInner>, sender: CommandSender) -> Self {
-        Self { inner, sender }
-    }
-
-    /// Panics if nodes configuration is not loaded yet.
-    pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
-        self.inner.nodes_config.load_full().unwrap()
-    }
-
-    /// Returns Version::INVALID if nodes configuration has not been loaded yet.
-    pub fn nodes_config_version(&self) -> Version {
-        let c = self.inner.nodes_config.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
-    }
-
-    // Returns when the metadata kind is at the provided version (or newer)
-    pub async fn wait_for_version(
-        &self,
-        metadata_kind: MetadataKind,
-        min_version: Version,
-    ) -> Result<Version, ShutdownError> {
-        let mut recv = self.inner.write_watches[metadata_kind].receive.clone();
-        let v = recv
-            .wait_for(|v| *v >= min_version)
-            .await
-            .map_err(|_| ShutdownError)?;
-        Ok(*v)
-    }
-
-    // Watch for version updates of this metadata kind.
-    pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
-        self.inner.write_watches[metadata_kind].receive.clone()
-    }
-}
-
-enum Command {
+pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
 }
 
-#[derive(Default)]
-struct MetadataInner {
-    nodes_config: ArcSwapOption<NodesConfiguration>,
-    write_watches: EnumMap<MetadataKind, VersionWatch>,
-}
-
-/// Can send updates to metadata manager. This should be accessible by the rpc handler layer to
-/// handle incoming metadata updates from the network, or to handle updates coming from metadata
-/// service if it's running on this node. MetadataManager ensures that writes are monotonic
-/// so it's safe to call update_* without checking the current version.
-#[derive(Clone)]
-pub struct MetadataWriter {
-    sender: CommandSender,
-}
-
-impl MetadataWriter {
-    fn new(sender: CommandSender) -> Self {
-        Self { sender }
-    }
-
-    // Returns when the nodes configuration update is performed.
-    pub async fn update(&self, value: impl Into<MetadataContainer>) -> Result<(), ShutdownError> {
-        let (callback, recv) = oneshot::channel();
-        let o = self
-            .sender
-            .send(Command::UpdateMetadata(value.into(), Some(callback)));
-        if o.is_ok() {
-            let _ = recv.await;
-            Ok(())
-        } else {
-            Err(ShutdownError)
-        }
-    }
-
-    // Fire and forget update
-    pub fn submit(&self, value: impl Into<MetadataContainer>) {
-        // Ignore the error, task-center takes care of safely shutting down the
-        // system if metadata manager failed
-        let _ = self
-            .sender
-            .send(Command::UpdateMetadata(value.into(), None));
-    }
-}
-
+/// Handle to access locally cached metadata, request metadata updates, and more.
 /// What is metadata manager?
 ///
 /// MetadataManager is a long-running task that monitors shared metadata needed by
@@ -257,21 +145,6 @@ impl MetadataManager {
     }
 }
 
-struct VersionWatch {
-    sender: watch::Sender<Version>,
-    receive: watch::Receiver<Version>,
-}
-
-impl Default for VersionWatch {
-    fn default() -> Self {
-        let (send, receive) = watch::channel(Version::INVALID);
-        Self {
-            sender: send,
-            receive,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -280,10 +153,11 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_core::{TaskCenterFactory, TaskKind};
     use restate_test_util::assert_eq;
     use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, Role};
-    use restate_types::GenerationalNodeId;
+    use restate_types::{GenerationalNodeId, Version};
+
+    use crate::{TaskCenterFactory, TaskKind};
 
     #[tokio::test]
     async fn test_nodes_config_updates() -> Result<()> {

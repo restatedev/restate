@@ -4846,7 +4846,9 @@ name = "restate-core"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "derive_more",
+ "enum-map",
  "futures",
  "googletest",
  "restate-test-util",

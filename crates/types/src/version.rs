@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use enum_map::Enum;
-use strum_macros::EnumIter;
 /// A type used for versioned metadata.
 #[derive(
     Debug,
@@ -37,13 +35,4 @@ impl Default for Version {
     fn default() -> Self {
         Self::MIN
     }
-}
-
-/// The kind of versioned metadata that can be synchronized across nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Enum, EnumIter)]
-pub enum MetadataKind {
-    NodesConfiguration,
-    Schema,
-    PartitionTable,
-    Logs,
 }
