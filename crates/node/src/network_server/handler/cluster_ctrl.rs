@@ -11,12 +11,12 @@
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
+use restate_core::metadata::Metadata;
 use restate_meta::MetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_node_services::cluster_ctrl::{AttachmentRequest, AttachmentResponse};
 use restate_node_services::cluster_ctrl::{FetchSchemasRequest, FetchSchemasResponse};
 
-use crate::metadata::Metadata;
 use crate::network_server::AdminDependencies;
 
 pub struct ClusterCtrlSvcHandler {
