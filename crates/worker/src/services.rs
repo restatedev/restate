@@ -11,8 +11,8 @@
 //! todo: This service can probably be removed once the admin service can directly write into target partitions
 
 use crate::subscription_integration::SubscriptionControllerHandle;
+use restate_core::cancellation_watcher;
 use restate_network::PartitionTableError;
-use restate_task_center::cancellation_watcher;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
 use restate_types::message::PartitionTarget;

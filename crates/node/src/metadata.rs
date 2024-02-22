@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use enum_map::EnumMap;
-use restate_task_center::ShutdownError;
+use restate_core::ShutdownError;
 use tokio::sync::{oneshot, watch};
 use tracing::info;
 
-use restate_task_center::cancellation_watcher;
+use restate_core::cancellation_watcher;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::MetadataKind;
 use restate_types::Version;
@@ -280,7 +280,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_task_center::{TaskCenterFactory, TaskKind};
+    use restate_core::{TaskCenterFactory, TaskKind};
     use restate_test_util::assert_eq;
     use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, Role};
     use restate_types::GenerationalNodeId;

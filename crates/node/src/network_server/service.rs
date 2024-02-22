@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use restate_cluster_controller::ClusterControllerHandle;
+use restate_core::cancellation_watcher;
 use restate_meta::FileMetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_node_services::node::node_svc_server::NodeSvcServer;
@@ -23,7 +24,6 @@ use restate_node_services::{cluster_ctrl, common, node};
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_task_center::cancellation_watcher;
 use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
 
 use crate::metadata::{Metadata, MetadataWriter};

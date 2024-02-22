@@ -25,12 +25,12 @@ options_schema = [
 [dependencies]
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
+restate-core = { workspace = true }
 restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-node = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
-restate-task-center = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }

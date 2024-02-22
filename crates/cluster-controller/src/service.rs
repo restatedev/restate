@@ -10,7 +10,7 @@
 
 use crate::options::Options;
 use codederror::CodedError;
-use restate_task_center::cancellation_watcher;
+use restate_core::cancellation_watcher;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {

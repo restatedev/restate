@@ -16,9 +16,9 @@ use tracing::info;
 
 use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
+use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_node_services::node::{StateMutationRequest, TerminationRequest};
-use restate_task_center::{task_center, TaskKind};
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
