@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod metadata;
 mod network_server;
 mod options;
 mod roles;
@@ -25,11 +24,11 @@ use anyhow::bail;
 use codederror::CodedError;
 use tracing::{error, info};
 
+use restate_core::metadata::MetadataManager;
 use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
 
-use self::metadata::MetadataManager;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
 
