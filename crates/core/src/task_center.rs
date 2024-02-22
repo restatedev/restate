@@ -13,7 +13,7 @@ use restate_types::identifiers::PartitionId;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::Future;
@@ -22,6 +22,7 @@ use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::metadata::Metadata;
 use crate::{TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
@@ -43,6 +44,7 @@ impl TaskCenterFactory {
                 shutdown_requested: AtomicBool::new(false),
                 current_exit_code: AtomicI32::new(0),
                 tasks: Mutex::new(HashMap::new()),
+                global_metadata: OnceLock::new(),
             }),
         }
     }
@@ -100,6 +102,12 @@ impl TaskCenter {
         info!("** Shutdown completed in {:?}", start.elapsed());
     }
 
+    /// Attempt to set the global metadata handle. This should be called once
+    /// at the startup of the node.
+    pub fn try_set_global_metadata(&self, metadata: Metadata) -> bool {
+        self.inner.global_metadata.set(metadata).is_ok()
+    }
+
     #[track_caller]
     fn spawn_inner<F>(
         &self,
@@ -124,14 +132,20 @@ impl TaskCenter {
         });
 
         inner.tasks.lock().unwrap().insert(id, Arc::clone(&task));
+        let metadata = inner.global_metadata.get().cloned();
 
         let mut handle_mut = task.join_handle.lock().unwrap();
 
         let task_cloned = Arc::clone(&task);
-        let join_handle =
-            inner
-                .runtime
-                .spawn(wrapper(self.clone(), id, kind, task_cloned, cancel, future));
+        let join_handle = inner.runtime.spawn(wrapper(
+            self.clone(),
+            id,
+            kind,
+            task_cloned,
+            cancel,
+            metadata,
+            future,
+        ));
         *handle_mut = Some(join_handle);
         drop(handle_mut);
 
@@ -450,6 +464,7 @@ struct TaskCenterInner {
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
     tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
+    global_metadata: OnceLock<Metadata>,
 }
 
 pub struct Task {
@@ -475,6 +490,9 @@ task_local! {
 
     // Current task center
     static CURRENT_TASK_CENTER: TaskCenter;
+
+    // Metadata handle
+    static METADATA: Option<Metadata>;
 }
 
 /// This wrapper function runs in a newly-spawned task. It initializes the
@@ -485,6 +503,7 @@ async fn wrapper<F>(
     kind: TaskKind,
     task: Arc<Task>,
     cancel_token: CancellationToken,
+    metadata: Option<Metadata>,
     future: F,
 ) where
     F: Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -496,12 +515,15 @@ async fn wrapper<F>(
             task_center.clone(),
             CANCEL_TOKEN.scope(
                 cancel_token,
-                CURRENT_TASK.scope(task, {
-                    // We use AssertUnwindSafe here so that the wrapped function
-                    // doesn't need to be UnwindSafe. We should not do anything after
-                    // unwinding that'd risk us being in unwind-unsafe behavior.
-                    AssertUnwindSafe(future).catch_unwind()
-                }),
+                CURRENT_TASK.scope(
+                    task,
+                    METADATA.scope(metadata, {
+                        // We use AssertUnwindSafe here so that the wrapped function
+                        // doesn't need to be UnwindSafe. We should not do anything after
+                        // unwinding that'd risk us being in unwind-unsafe behavior.
+                        AssertUnwindSafe(future).catch_unwind()
+                    }),
+                ),
             ),
         )
         .await;
@@ -518,6 +540,14 @@ pub fn current_task_kind() -> Option<TaskKind> {
 /// of a task-center task.
 pub fn current_task_id() -> Option<TaskId> {
     CURRENT_TASK.try_with(|ct| ct.id).ok()
+}
+
+/// Access to global metadata handle. This available in task-center tasks only!
+pub fn metadata() -> Metadata {
+    METADATA
+        .try_with(|m| m.clone())
+        .expect("metadata() called outside task-center scope")
+        .expect("metadata() called before global metadata was set")
 }
 
 /// The current partition Id associated to the running task-center task.

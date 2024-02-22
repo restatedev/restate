@@ -133,6 +133,8 @@ impl Node {
         let tc = task_center();
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
+        let is_set = tc.try_set_global_metadata(metadata.clone());
+        debug_assert!(is_set, "Global metadata was already set");
 
         // Start metadata manager
         tc.spawn(
@@ -253,7 +255,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(metadata),
+                worker_role.start(),
             )?;
         }
 
