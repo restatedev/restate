@@ -10,6 +10,7 @@
 
 use super::proxy::{Proxy, ProxyConnector};
 
+use crate::utils::ErrorExt;
 use futures::future::Either;
 use hyper::client::HttpConnector;
 use hyper::http::uri::PathAndQuery;
@@ -211,4 +212,15 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
+}
+
+impl HttpError {
+    /// Retryable errors are those which can be caused by transient faults and where
+    /// retrying can succeed.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            HttpError::Hyper(err) => err.is_retryable(),
+            HttpError::Http(err) => err.is_retryable(),
+        }
+    }
 }
