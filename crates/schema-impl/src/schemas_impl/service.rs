@@ -26,8 +26,7 @@ impl SchemasInner {
 
         // Update proto_symbols
         if let ServiceLocation::Deployment {
-            latest_deployment,
-            ..
+            latest_deployment, ..
         } = &schemas.location
         {
             if new_public_value {
