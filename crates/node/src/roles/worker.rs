@@ -15,9 +15,8 @@ use tonic::transport::Channel;
 use tracing::debug;
 use tracing::subscriber::NoSubscriber;
 
-use restate_core::metadata::Metadata;
-use restate_core::task_center;
 use restate_core::TaskKind;
+use restate_core::{metadata, task_center};
 use restate_network::utils::create_grpc_channel_from_network_address;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
@@ -118,11 +117,11 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn start(self, metadata: Metadata) -> anyhow::Result<()> {
+    pub async fn start(self) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
-        let admin_address = metadata
+        let admin_address = metadata()
             .nodes_config()
             .get_admin_node()
             .expect("at least one admin node")
