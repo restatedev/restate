@@ -11,6 +11,12 @@ syntax = "proto3";
 
 package dev.restate.common;
 
+enum ProtocolVersion {
+  ProtocolVersion_UNKNOWN = 0;
+  BASIC_HANDSHAKE = 1;
+  MAX_PROTOCOL_VERSION = 2;
+}
+
 message NodeId {
   uint32 id = 1;
   optional uint32 generation = 2;

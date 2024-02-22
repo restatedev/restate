@@ -5188,7 +5188,6 @@ dependencies = [
  "bytes",
  "prost 0.12.3",
  "prost-types",
- "restate-pb",
  "restate-types",
  "thiserror",
  "tonic 0.10.2",

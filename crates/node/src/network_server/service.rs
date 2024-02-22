@@ -19,7 +19,7 @@ use restate_cluster_controller::ClusterControllerHandle;
 use restate_meta::FileMetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_node_services::node::node_svc_server::NodeSvcServer;
-use restate_node_services::{cluster_ctrl, node};
+use restate_node_services::{cluster_ctrl, common, node};
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -106,7 +106,8 @@ impl NetworkServer {
 
         // -- GRPC Service Setup
         let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(node::FILE_DESCRIPTOR_SET);
+            .register_encoded_file_descriptor_set(node::FILE_DESCRIPTOR_SET)
+            .register_encoded_file_descriptor_set(common::FILE_DESCRIPTOR_SET);
 
         if self.admin_deps.is_some() {
             reflection_service_builder = reflection_service_builder

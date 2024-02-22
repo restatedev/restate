@@ -13,22 +13,27 @@ use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    tonic_build::configure()
+        .bytes(["."])
+        .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile(&["./proto/common.proto"], &["proto"])?;
+
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(
-            &["./proto/cluster_ctrl_svc.proto"],
-            &["proto", "../pb/proto"],
-        )?;
+        .compile(&["./proto/cluster_ctrl_svc.proto"], &["proto"])?;
 
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/node_svc.proto"], &["proto", "../pb/proto"])?;
+        .compile(&["./proto/node_svc.proto"], &["proto"])?;
 
     Ok(())
 }

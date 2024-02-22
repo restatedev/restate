@@ -10,7 +10,6 @@ publish = false
 [features]
 default = []
 builtin-service = ["restate-types"]
-common = ["restate-types"]
 mocks = []
 
 [dependencies]
