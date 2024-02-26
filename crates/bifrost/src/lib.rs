@@ -20,6 +20,8 @@ mod types;
 mod watchdog;
 
 use std::collections::HashMap;
+use std::future::Future;
+use tokio::task_local;
 
 pub use bifrost::Bifrost;
 pub use error::Error;
@@ -46,4 +48,24 @@ pub(crate) fn create_static_metadata(opts: &Options, num_partitions: u64) -> Log
     });
 
     Logs::new(Version::MIN, log_chain)
+}
+
+task_local! {
+    static BIFROST: Bifrost;
+}
+
+/// Sets the bifrost handle as a task local variable so that the future can access Bifrost more easily.
+pub fn with_bifrost<F>(future: F, bifrost: Bifrost) -> impl Future<Output = anyhow::Result<()>>
+where
+    F: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    BIFROST.scope(bifrost, future)
+}
+
+/// Access the global bifrost handle. This is only available if the task was started [`with_bifrost`].
+#[track_caller]
+pub fn bifrost() -> Bifrost {
+    BIFROST
+        .try_with(|bifrost| bifrost.clone())
+        .expect("bifrost() called w/o running in a bifrost scope.")
 }
