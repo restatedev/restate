@@ -22,7 +22,7 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
-use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
 
@@ -40,6 +40,17 @@ fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone())
+}
+
+fn to_service_status(
+    partition_key: PartitionKey,
+    pb_status: storage::v1::ServiceStatus,
+) -> Result<ServiceStatus> {
+    let invocation_uuid = InvocationUuid::try_from(pb_status).map_err(StorageError::from)?;
+    Ok(ServiceStatus::Locked(InvocationId::new(
+        partition_key,
+        invocation_uuid,
+    )))
 }
 
 fn put_service_status<S: StorageAccess>(
@@ -75,7 +86,7 @@ fn get_service_status<S: StorageAccess>(
         let v = v.unwrap();
         let proto = storage::v1::ServiceStatus::decode(v)
             .map_err(|err| StorageError::Generic(err.into()))?;
-        ServiceStatus::try_from(proto).map_err(StorageError::from)
+        to_service_status(service_id.partition_key(), proto)
     })
 }
 
@@ -123,7 +134,8 @@ impl RocksDBStorage {
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
             let state_value = storage::v1::ServiceStatus::decode(value).unwrap();
-            let state_value = ServiceStatus::try_from(state_value).unwrap();
+            let state_value =
+                to_service_status(state_key.partition_key.unwrap(), state_value).unwrap();
             OwnedServiceStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 service: state_key.service_name.unwrap(),

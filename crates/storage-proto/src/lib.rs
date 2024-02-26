@@ -36,7 +36,6 @@ pub mod storage {
             use crate::storage::v1::service_invocation_response_sink::{
                 Ingress, NewInvocation, PartitionProcessor, ResponseSink,
             };
-            use crate::storage::v1::service_status::{Locked, Status};
             use crate::storage::v1::{
                 enriched_entry_header, inbox_entry, invocation_resolution_result,
                 invocation_status, maybe_full_invocation_id, outbox_message, response_result,
@@ -52,6 +51,7 @@ pub mod storage {
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
+            use restate_types::identifiers::InvocationUuid;
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
@@ -84,7 +84,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceStatus> for restate_storage_api::service_status_table::ServiceStatus {
+            impl TryFrom<ServiceStatus> for InvocationUuid {
                 type Error = ConversionError;
 
                 fn try_from(value: ServiceStatus) -> Result<Self, Self::Error> {
@@ -93,10 +93,8 @@ pub mod storage {
                             .status
                             .ok_or(ConversionError::missing_field("status"))?
                         {
-                            Status::Locked(locked) => {
-                                restate_storage_api::service_status_table::ServiceStatus::Locked(
-                                    try_bytes_into_invocation_uuid(locked.invocation_uuid)?,
-                                )
+                            service_status::Status::Locked(locked) => {
+                                try_bytes_into_invocation_uuid(locked.invocation_uuid)?
                             }
                         },
                     )
@@ -109,8 +107,12 @@ pub mod storage {
                         restate_storage_api::service_status_table::ServiceStatus::Locked(
                             invocation_id,
                         ) => ServiceStatus {
-                            status: Some(service_status::Status::Locked(Locked {
-                                invocation_uuid: invocation_id.to_bytes().to_vec().into(),
+                            status: Some(service_status::Status::Locked(service_status::Locked {
+                                invocation_uuid: invocation_id
+                                    .invocation_uuid()
+                                    .to_bytes()
+                                    .to_vec()
+                                    .into(),
                             })),
                         },
                         restate_storage_api::service_status_table::ServiceStatus::Unlocked => {

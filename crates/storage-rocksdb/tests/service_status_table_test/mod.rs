@@ -10,7 +10,7 @@
 
 use restate_storage_api::service_status_table::{ServiceStatus, ServiceStatusTable};
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationUuid, ServiceId};
+use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 
 const FIXTURE_INVOCATION: InvocationUuid =
     InvocationUuid::from_parts(1706027034946, 12345678900001);
@@ -18,13 +18,13 @@ const FIXTURE_INVOCATION: InvocationUuid =
 async fn populate_data<T: ServiceStatusTable>(txn: &mut T) {
     txn.put_service_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        ServiceStatus::Locked(FIXTURE_INVOCATION),
+        ServiceStatus::Locked(InvocationId::new(1337, FIXTURE_INVOCATION)),
     )
     .await;
 
     txn.put_service_status(
         &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-        ServiceStatus::Locked(FIXTURE_INVOCATION),
+        ServiceStatus::Locked(InvocationId::new(1337, FIXTURE_INVOCATION)),
     )
     .await;
 }
@@ -35,7 +35,10 @@ async fn verify_point_lookups<T: ServiceStatusTable>(txn: &mut T) {
         .await
         .expect("should not fail");
 
-    assert_eq!(status, ServiceStatus::Locked(FIXTURE_INVOCATION));
+    assert_eq!(
+        status,
+        ServiceStatus::Locked(InvocationId::new(1337, FIXTURE_INVOCATION))
+    );
 }
 
 pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {

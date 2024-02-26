@@ -49,8 +49,13 @@ impl StateReaderMock {
     }
 
     fn lock_service(&mut self, service_id: ServiceId) {
-        self.services
-            .insert(service_id, ServiceStatus::Locked(InvocationUuid::new()));
+        self.services.insert(
+            service_id.clone(),
+            ServiceStatus::Locked(InvocationId::new(
+                service_id.partition_key(),
+                InvocationUuid::new(),
+            )),
+        );
     }
 
     fn register_invoked_status_and_locked(
@@ -63,7 +68,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            ServiceStatus::Locked(invocation_id.invocation_uuid()),
+            ServiceStatus::Locked(invocation_id.clone()),
         );
         self.register_invocation_status(
             invocation_id,
@@ -86,7 +91,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            ServiceStatus::Locked(invocation_id.invocation_uuid()),
+            ServiceStatus::Locked(invocation_id.clone()),
         );
         self.register_invocation_status(
             invocation_id,

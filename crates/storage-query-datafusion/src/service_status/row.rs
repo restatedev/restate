@@ -12,7 +12,6 @@ use crate::service_status::schema::ServiceStatusBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::service_status_table::ServiceStatus;
 use restate_storage_rocksdb::service_status_table::OwnedServiceStatusRow;
-use restate_types::identifiers::InvocationId;
 
 #[inline]
 pub(crate) fn append_service_status_row(
@@ -30,11 +29,8 @@ pub(crate) fn append_service_status_row(
 
     // Invocation id
     if row.is_invocation_id_defined() {
-        if let ServiceStatus::Locked(invocation_uuid) = status_row.service_status {
-            row.invocation_id(format_using(
-                output,
-                &InvocationId::new(status_row.partition_key, invocation_uuid),
-            ));
+        if let ServiceStatus::Locked(invocation_id) = status_row.service_status {
+            row.invocation_id(format_using(output, &invocation_id));
         }
     }
 }

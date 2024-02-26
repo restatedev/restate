@@ -538,7 +538,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_storage
             .store_service_status(
                 &service_invocation.fid.service_id,
-                ServiceStatus::Locked(service_invocation.fid.invocation_uuid),
+                ServiceStatus::Locked(invocation_id.clone()),
             )
             .await?;
         state_storage

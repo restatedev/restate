@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
-use restate_types::identifiers::{InvocationUuid, ServiceId};
+use restate_types::identifiers::{InvocationId, ServiceId};
 use std::future::Future;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum ServiceStatus {
-    Locked(InvocationUuid),
+    Locked(InvocationId),
     #[default]
     Unlocked,
 }
