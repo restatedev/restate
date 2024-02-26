@@ -42,13 +42,13 @@ mod remote_context;
 pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
 pub(crate) type EffectsReceiver = mpsc::UnboundedReceiver<BuiltinServiceEffects>;
 
-pub(crate) struct ServiceInvoker<'a> {
+pub(crate) struct ServiceInvoker {
     storage: PartitionStorage<RocksDBStorage>,
     effects_tx: EffectsSender,
-    schemas: &'a Schemas,
+    schemas: Schemas,
 }
 
-impl<'a> ServiceInvoker<'a> {
+impl ServiceInvoker {
     pub(crate) fn is_supported(service_name: &str) -> bool {
         // The reason we just check for the prefix is the following:
         //
@@ -60,7 +60,7 @@ impl<'a> ServiceInvoker<'a> {
 
     pub(crate) fn new(
         storage: PartitionStorage<RocksDBStorage>,
-        schemas: &'a Schemas,
+        schemas: Schemas,
     ) -> (Self, EffectsReceiver) {
         let (effects_tx, effects_rx) = mpsc::unbounded_channel();
 
@@ -88,7 +88,7 @@ impl<'a> ServiceInvoker<'a> {
             full_invocation_id: &full_invocation_id,
             span_context: &span_context,
             state_reader: &mut self.storage,
-            schemas: self.schemas,
+            schemas: &self.schemas,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
             state_and_journal_transitions: &mut state_and_journal_transitions,

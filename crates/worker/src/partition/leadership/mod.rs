@@ -44,14 +44,14 @@ use restate_wal_protocol::Envelope;
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
 
-pub(crate) struct LeaderState<'a> {
+pub(crate) struct LeaderState {
     leader_epoch: LeaderEpoch,
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: HintSender,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
     actions_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService>>,
-    non_deterministic_service_invoker: non_deterministic::ServiceInvoker<'a>,
+    non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
 }
 
 pub(crate) struct FollowerState<I, N> {
@@ -78,16 +78,16 @@ pub(crate) enum Error {
     Storage(#[from] restate_storage_api::StorageError),
 }
 
-pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
+pub(crate) enum LeadershipState<InvokerInputSender, NetworkHandle> {
     Follower(FollowerState<InvokerInputSender, NetworkHandle>),
 
     Leader {
         follower_state: FollowerState<InvokerInputSender, NetworkHandle>,
-        leader_state: LeaderState<'a>,
+        leader_state: LeaderState,
     },
 }
 
-impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
+impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
     NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
@@ -129,11 +129,11 @@ where
         leader_epoch: LeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &mut PartitionStorage,
-        schemas: &'a Schemas,
+        schemas: Schemas,
     ) -> Result<
         (
             ActionEffectStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
+            LeadershipState<InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -164,11 +164,11 @@ where
         leader_epoch: LeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &mut PartitionStorage,
-        schemas: &'a Schemas,
+        schemas: Schemas,
     ) -> Result<
         (
             ActionEffectStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
+            LeadershipState<InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -243,7 +243,7 @@ where
 
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerInputSender,
-        built_in_service_invoker: &mut non_deterministic::ServiceInvoker<'_>,
+        built_in_service_invoker: &mut non_deterministic::ServiceInvoker,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &mut PartitionStorage,
@@ -323,7 +323,7 @@ where
     ) -> Result<
         (
             ActionEffectStream,
-            LeadershipState<'a, InvokerInputSender, NetworkHandle>,
+            LeadershipState<InvokerInputSender, NetworkHandle>,
         ),
         Error,
     > {
@@ -393,7 +393,7 @@ where
 
     pub(crate) fn into_message_collector(
         self,
-    ) -> LeaderAwareActionCollector<'a, InvokerInputSender, NetworkHandle> {
+    ) -> LeaderAwareActionCollector<InvokerInputSender, NetworkHandle> {
         match self {
             LeadershipState::Follower(follower_state) => {
                 LeaderAwareActionCollector::Follower(follower_state)

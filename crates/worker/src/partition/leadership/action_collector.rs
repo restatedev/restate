@@ -36,10 +36,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tracing::trace;
 
-pub(crate) enum LeaderAwareActionCollector<'a, I, N> {
+pub(crate) enum LeaderAwareActionCollector<I, N> {
     Leader {
         follower_state: FollowerState<I, N>,
-        leader_state: LeaderState<'a>,
+        leader_state: LeaderState,
     },
     Follower(FollowerState<I, N>),
 }
@@ -52,14 +52,14 @@ pub(crate) enum LeaderAwareActionCollectorError {
     Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
-impl<'a, I, N> LeaderAwareActionCollector<'a, I, N>
+impl<I, N> LeaderAwareActionCollector<I, N>
 where
     I: ServiceHandle,
     N: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     pub(crate) async fn send(
         self,
-    ) -> Result<LeadershipState<'a, I, N>, LeaderAwareActionCollectorError> {
+    ) -> Result<LeadershipState<I, N>, LeaderAwareActionCollectorError> {
         match self {
             LeaderAwareActionCollector::Leader {
                 mut follower_state,
@@ -99,7 +99,7 @@ where
         invoker_tx: &mut I,
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
-        non_deterministic_service_invoker: &mut ServiceInvoker<'a>,
+        non_deterministic_service_invoker: &mut ServiceInvoker,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: &mut ConsensusWriter,
         ingress_tx: &IngressDispatcherInputSender,
@@ -269,7 +269,7 @@ where
     }
 }
 
-impl<'a, I, N> ActionCollector for LeaderAwareActionCollector<'a, I, N> {
+impl<I, N> ActionCollector for LeaderAwareActionCollector<I, N> {
     fn collect(&mut self, message: Action) {
         match self {
             LeaderAwareActionCollector::Leader {

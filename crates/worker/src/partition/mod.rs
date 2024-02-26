@@ -206,7 +206,7 @@ where
                                     leader_epoch,
                                     partition_key_range.clone(),
                                     &mut partition_storage,
-                                    &schemas,
+                                    schemas.clone(),
 
                                 )
                                 .await?;
