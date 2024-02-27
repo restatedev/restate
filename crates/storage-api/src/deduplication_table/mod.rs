@@ -20,22 +20,24 @@ pub enum SequenceNumberSource {
     Ingress(ByteString),
 }
 
-pub trait DeduplicationTable {
+pub trait ReadOnlyDeduplicationTable {
     fn get_sequence_number(
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
     ) -> impl Future<Output = Result<Option<u64>>> + Send;
 
+    fn get_all_sequence_numbers(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send;
+}
+
+pub trait DeduplicationTable: ReadOnlyDeduplicationTable {
     fn put_sequence_number(
         &mut self,
         partition_id: PartitionId,
         source: SequenceNumberSource,
         sequence_number: u64,
     ) -> impl Future<Output = ()> + Send;
-
-    fn get_all_sequence_numbers(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send;
 }
