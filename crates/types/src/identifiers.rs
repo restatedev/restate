@@ -532,7 +532,7 @@ impl From<FullInvocationId> for EncodedInvocationId {
 }
 
 /// Incremental id defining the service revision.
-pub type ServiceRevision = u32;
+pub type ComponentRevision = u32;
 
 mod partitioner {
     use super::PartitionKey;
