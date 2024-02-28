@@ -8,18 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schemas_impl::SchemasInner;
+use crate::schemas_impl::{HandlerSchemas, SchemasInner};
 use arc_swap::ArcSwap;
+use bytes::Bytes;
 use http::Uri;
 use prost_reflect::{DescriptorPool, ServiceDescriptor};
+use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
+use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod component;
 mod deployment;
 mod json;
 mod json_key_conversion;
@@ -64,14 +68,14 @@ pub struct DiscoveredMethodMetadata {
 
 /// Insert (or replace) service
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InsertServiceUpdateCommand {
+pub struct OldInsertServiceUpdateCommand {
     pub name: String,
     pub revision: ComponentRevision,
     pub instance_type: DiscoveredInstanceType,
     pub methods: HashMap<String, DiscoveredMethodMetadata>,
 }
 
-impl InsertServiceUpdateCommand {
+impl OldInsertServiceUpdateCommand {
     pub fn as_service_metadata(
         &self,
         latest_deployment_id: DeploymentId,
@@ -90,19 +94,66 @@ impl InsertServiceUpdateCommand {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DiscoveredHandlerMetadata {
+    name: String,
+    input_schema: Option<Bytes>,
+    output_schema: Option<Bytes>,
+}
+
+impl DiscoveredHandlerMetadata {
+    pub fn as_handler_metadata(&self) -> HandlerMetadata {
+        HandlerMetadata {
+            name: self.name.clone(),
+            input_description: self
+                .clone()
+                .input_schema
+                .map(HandlerSchemas::schema_to_description),
+            output_description: self
+                .clone()
+                .output_schema
+                .map(HandlerSchemas::schema_to_description),
+        }
+    }
+}
+
+/// Insert (or replace) component
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InsertComponentUpdateCommand {
+    pub name: String,
+    pub revision: ComponentRevision,
+    pub ty: ComponentType,
+    pub deployment_id: DeploymentId,
+    pub handlers: Vec<DiscoveredHandlerMetadata>,
+}
+
+impl InsertComponentUpdateCommand {
+    pub fn as_component_metadata(&self) -> ComponentMetadata {
+        ComponentMetadata {
+            name: self.name.clone(),
+            handlers: self
+                .handlers
+                .iter()
+                .map(DiscoveredHandlerMetadata::as_handler_metadata)
+                .collect(),
+            ty: self.ty,
+            deployment_id: self.deployment_id,
+            revision: self.revision,
+            public: true,
+        }
+    }
+}
+
 /// Represents an update command to update the [`Schemas`] object. See [`Schemas::apply_updates`] for more info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchemasUpdateCommand {
     /// Insert (or replace) deployment
-    InsertDeployment {
+    OldInsertDeployment {
         deployment_id: DeploymentId,
         metadata: DeploymentMetadata,
-        services: Vec<InsertServiceUpdateCommand>,
+        services: Vec<OldInsertServiceUpdateCommand>,
         #[serde(with = "descriptor_pool_serde")]
         descriptor_pool: DescriptorPool,
-    },
-    RemoveDeployment {
-        deployment_id: DeploymentId,
     },
     /// Remove only if the revision is matching
     RemoveService {
@@ -110,6 +161,23 @@ pub enum SchemasUpdateCommand {
         revision: ComponentRevision,
     },
     ModifyService {
+        name: String,
+        public: bool,
+    },
+    /// Insert (or replace) deployment
+    InsertDeployment {
+        deployment_id: DeploymentId,
+        metadata: DeploymentMetadata,
+    },
+    InsertComponent(InsertComponentUpdateCommand),
+    RemoveDeployment {
+        deployment_id: DeploymentId,
+    },
+    RemoveComponent {
+        name: String,
+        revision: ComponentRevision,
+    },
+    ModifyComponent {
         name: String,
         public: bool,
     },
@@ -162,9 +230,15 @@ pub enum SchemasUpdateError {
     #[error("service {0} does not exist in the registry")]
     #[code(restate_errors::META0005)]
     UnknownService(String),
+    #[error("component {0} does not exist in the registry")]
+    #[code(restate_errors::META0005)]
+    UnknownComponent(String),
     #[error("cannot insert/modify service {0} as it's a reserved name")]
     #[code(restate_errors::META0005)]
     ModifyInternalService(String),
+    #[error("cannot insert/modify component {0} as it contains a reserved name")]
+    #[code(restate_errors::META0005)]
+    ReservedName(String),
     #[error("unknown deployment id {0}")]
     UnknownDeployment(DeploymentId),
     #[error("unknown subscription id {0}")]
@@ -204,7 +278,7 @@ impl Schemas {
     ///
     /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
     /// as one change set might depend on the previously computed change set.
-    pub fn compute_new_deployment(
+    pub fn old_compute_new_deployment(
         &self,
         deployment_id: Option<DeploymentId>,
         deployment_metadata: DeploymentMetadata,
@@ -212,13 +286,40 @@ impl Schemas {
         descriptor_pool: DescriptorPool,
         force: bool,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().compute_new_deployment(
+        self.0.load().old_compute_new_deployment(
             deployment_id,
             deployment_metadata,
             services,
             descriptor_pool,
             force,
         )
+    }
+
+    /// Compute the commands to update the schema registry with a new deployment.
+    /// This method doesn't execute any in-memory update of the registry.
+    /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
+    ///
+    /// If `allow_override` is true, this method compares the deployment registered services with the given `components`,
+    /// and generates remove commands for services no longer available at that deployment.
+    ///
+    /// If `deployment_id` is set, it's assumed that:
+    ///   - This ID should be used if it's is a new deployment
+    ///   - or if conflicting/existing deployment exists, it must match.
+    /// Otherwise, a new deployment id is generated for this deployment, or the existing
+    /// deployment_id will be reused.
+    ///
+    /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
+    /// as one change set might depend on the previously computed change set.
+    pub fn compute_new_deployment(
+        &self,
+        deployment_id: Option<DeploymentId>,
+        deployment_metadata: DeploymentMetadata,
+        components: Vec<schema::Component>,
+        force: bool,
+    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
+        self.0
+            .load()
+            .compute_new_deployment(deployment_id, deployment_metadata, components, force)
     }
 
     pub fn compute_modify_service(
@@ -229,6 +330,16 @@ impl Schemas {
         self.0
             .load()
             .compute_modify_service_updates(service_name, public)
+    }
+
+    pub fn compute_modify_component(
+        &self,
+        service_name: String,
+        public: bool,
+    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
+        self.0
+            .load()
+            .compute_modify_component_updates(service_name, public)
     }
 
     pub fn compute_remove_deployment(
@@ -295,6 +406,7 @@ impl Schemas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use restate_schema_api::component::ComponentMetadataResolver;
 
     use restate_schema_api::deployment::DeploymentResolver;
     use restate_schema_api::service::ServiceMetadataResolver;
@@ -331,6 +443,46 @@ mod tests {
                     .id,
                 deployment_id
             );
+        }
+
+        #[track_caller]
+        pub(crate) fn assert_component_handler(&self, component_name: &str, handler_name: &str) {
+            assert!(self
+                .resolve_latest_component_handler(component_name, handler_name)
+                .is_some());
+        }
+
+        #[track_caller]
+        pub(crate) fn assert_component_revision(
+            &self,
+            component_name: &str,
+            revision: ComponentRevision,
+        ) {
+            assert_eq!(
+                self.resolve_latest_component(component_name)
+                    .unwrap()
+                    .revision,
+                revision
+            );
+        }
+
+        #[track_caller]
+        pub(crate) fn assert_component_deployment(
+            &self,
+            component_name: &str,
+            deployment_id: DeploymentId,
+        ) {
+            assert_eq!(
+                self.resolve_latest_component(component_name)
+                    .unwrap()
+                    .deployment_id,
+                deployment_id
+            );
+        }
+
+        #[track_caller]
+        pub(crate) fn assert_component(&self, component_name: &str) -> ComponentMetadata {
+            self.resolve_latest_component(component_name).unwrap()
         }
     }
 

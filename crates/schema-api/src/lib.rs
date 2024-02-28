@@ -348,6 +348,16 @@ pub mod component {
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct HandlerMetadata {
         pub name: String,
+
+        // # Human readable input description
+        //
+        // If empty, no schema was provided by the user at discovery time.
+        pub input_description: Option<String>,
+
+        // # Human readable output description
+        //
+        // If empty, no schema was provided by the user at discovery time.
+        pub output_description: Option<String>,
     }
 
     #[derive(Debug, Clone)]
@@ -449,6 +459,8 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
+                            input_description: None,
+                            output_description: None,
                         })
                         .collect(),
                     ty: ComponentType::Service,
@@ -468,6 +480,8 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
+                            input_description: None,
+                            output_description: None,
                         })
                         .collect(),
                     ty: ComponentType::VirtualObject,

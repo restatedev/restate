@@ -5435,6 +5435,7 @@ dependencies = [
  "restate-pb",
  "restate-schema-api",
  "restate-serde-util",
+ "restate-service-protocol",
  "restate-test-util",
  "restate-types",
  "serde",
