@@ -23,23 +23,28 @@ use restate_types::config::HttpOptions;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
-
 type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    client: hyper::Client<Connector, Body>,
+    alpn_client: hyper::Client<Connector, Body>,
+    h2_client: hyper::Client<Connector, Body>,
 }
 
 impl HttpClient {
-    pub fn new(client: hyper::Client<Connector, Body>) -> Self {
-        Self { client }
+    pub fn new(
+        alpn_client: hyper::Client<Connector, Body>,
+        h2_client: hyper::Client<Connector, Body>,
+    ) -> Self {
+        Self {
+            alpn_client,
+            h2_client,
+        }
     }
 
     pub fn from_options(options: &HttpOptions) -> HttpClient {
         let mut builder = hyper::Client::builder();
         builder
-            .http2_only(true)
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
 
@@ -48,15 +53,20 @@ impl HttpClient {
         http_connector.set_nodelay(true);
         http_connector.set_connect_timeout(Some(options.connect_timeout.into()));
 
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .wrap_connector(http_connector);
+
+        let proxy_connector = ProxyConnector::new(options.http_proxy.clone(), https_connector);
+
         HttpClient::new(
-            builder.build::<_, hyper::Body>(ProxyConnector::new(
-                options.http_proxy.clone(),
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .wrap_connector(http_connector),
-            )),
+            builder.clone().build::<_, Body>(proxy_connector.clone()), // h1 client with alpn upgrade support
+            {
+                builder.http2_only(true);
+                builder.build::<_, hyper::Body>(proxy_connector) // h2-prior knowledge client
+            },
         )
     }
 
@@ -117,7 +127,12 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let fut = self.client.request(request);
+        let client = match request.version() {
+            Version::HTTP_2 => &self.h2_client,
+            _ => &self.alpn_client,
+        };
+
+        let fut = client.request(request);
 
         Either::Left(async move { Ok(fut.await?) })
     }

@@ -10,11 +10,12 @@
 
 use bytes::Bytes;
 use codederror::CodedError;
+
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap, StatusCode};
+use hyper::{Body, HeaderMap, StatusCode, Version};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013};
@@ -32,6 +33,7 @@ use restate_types::service_protocol::{
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Display;
 use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
@@ -313,8 +315,26 @@ impl ServiceDiscovery {
         build_request: impl Fn() -> Request<Body>,
         mut retry_iter: RetryIter,
     ) -> Result<(ResponseParts, Bytes), DiscoveryError> {
+        let mut try_http1 = false;
         loop {
-            let response_fut = client.call(build_request());
+            let req = build_request();
+            let req = if try_http1 {
+                let (mut parts, body) = req.into_parts();
+
+                parts.address = match parts.address {
+                    Endpoint::Http(uri, Version::HTTP_2) => Endpoint::Http(uri, Version::HTTP_11),
+                    other => other,
+                };
+
+                // only try once; if we see another possible http2 error, we can try again
+                try_http1 = false;
+
+                Request::new(parts, body)
+            } else {
+                req
+            };
+
+            let response_fut = client.call(req);
             let response = async {
                 let (parts, body) = response_fut
                     .await
@@ -341,11 +361,24 @@ impl ServiceDiscovery {
                 Err(e) => e,
             };
 
+            if is_possible_h1_only_error(&e) {
+                if let Some(next_retry_interval) = retry_iter.next() {
+                    warn!(
+                        "Detected possible HTTP1.1 endpoint when discovering deployment at address '{}'. Retrying with HTTP1.1 in {} seconds",
+                        address,
+                        next_retry_interval.as_secs(),
+                    );
+                    try_http1 = true;
+                    tokio::time::sleep(next_retry_interval).await;
+                    continue;
+                }
+            }
+
             // Discovery failed
             if e.is_retryable() {
                 if let Some(next_retry_interval) = retry_iter.next() {
                     warn!(
-                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
+                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {:?}",
                         address,
                         next_retry_interval.as_secs(),
                         e
@@ -357,6 +390,24 @@ impl ServiceDiscovery {
 
             return Err(e);
         }
+    }
+}
+
+fn is_possible_h1_only_error(err: &DiscoveryError) -> bool {
+    if let DiscoveryError::Client(ServiceClientError::Http(
+        restate_service_client::http::HttpError::Hyper(err),
+    )) = err
+    {
+        // there is a race condition in hyper; sometimes we see the proper h2 FRAME_SIZE_ERROR
+        // other times we just see a generic 'canceled' error
+        return err.is_canceled()
+            || err
+                .source()
+                .and_then(|err| err.downcast_ref::<h2::Error>())
+                .and_then(|err| err.reason())
+                == Some(h2::Reason::FRAME_SIZE_ERROR);
+    } else {
+        false
     }
 }
 

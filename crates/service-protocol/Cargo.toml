@@ -28,6 +28,7 @@ bytes = { workspace = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
+h2 = { version = "0.3.20" }
 itertools = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true, optional = true }

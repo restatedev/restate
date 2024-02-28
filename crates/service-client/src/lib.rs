@@ -30,8 +30,8 @@ use std::sync::Arc;
 pub use crate::lambda::AssumeRoleCacheMode;
 use crate::request_identity::SignRequest;
 
-mod http;
-mod lambda;
+pub mod http;
+pub mod lambda;
 mod proxy;
 mod request_identity;
 mod utils;
@@ -206,13 +206,13 @@ pub struct Parts {
     method: Method,
 
     /// The request's target address
-    address: Endpoint,
+    pub address: Endpoint,
 
     /// The request's path, for example /discover or /invoke/xyz/abc
-    path: PathAndQuery,
+    pub path: PathAndQuery,
 
     /// The request's headers - in lambda case, mapped to apigatewayevent.headers
-    headers: HeaderMap<HeaderValue>,
+    pub headers: HeaderMap<HeaderValue>,
 }
 
 impl Parts {

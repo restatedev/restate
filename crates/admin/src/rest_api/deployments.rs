@@ -52,7 +52,7 @@ pub async fn create_deployment<V>(
             dry_run,
         } => (
             DiscoverEndpoint::new(
-                Endpoint::Http(uri, Default::default()),
+                Endpoint::Http(uri, http::Version::HTTP_2), // default to http2 discovery
                 additional_headers.unwrap_or_default().into(),
             ),
             force,
