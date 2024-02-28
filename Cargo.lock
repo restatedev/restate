@@ -5245,6 +5245,7 @@ name = "restate-network"
 version = "0.8.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "drain",
  "futures",
@@ -5252,9 +5253,11 @@ dependencies = [
  "pin-project",
  "restate-core",
  "restate-errors",
+ "restate-node-protocol",
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",
+ "static_assertions",
  "test-log",
  "thiserror",
  "tokio",
