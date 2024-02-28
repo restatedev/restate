@@ -39,6 +39,11 @@ message StartMessage {
   // protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
   repeated StateEntry state_map = 4;
   bool partial_state = 5;
+
+  repeated Header headers = 6;
+
+  // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
+  string key = 7;
 }
 
 // Type: 0x0000 + 1
@@ -196,6 +201,11 @@ message InvokeEntryMessage {
 
   bytes parameter = 3;
 
+  repeated Header headers = 4;
+
+  // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
+  string key = 5;
+
   oneof result {
     bytes value = 14;
     Failure failure = 15;
@@ -216,6 +226,11 @@ message BackgroundInvokeEntryMessage {
   // If this value is not set, equal to 0, or past in time,
   // the runtime will execute this BackgroundInvoke as soon as possible.
   uint64 invoke_time = 4;
+
+  repeated Header headers = 5;
+
+  // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
+  string key = 6;
 }
 
 // Completable: Yes
@@ -254,4 +269,9 @@ message Failure {
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
+}
+
+message Header {
+  string key = 1;
+  string value = 2;
 }
