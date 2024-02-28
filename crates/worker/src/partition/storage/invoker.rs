@@ -11,11 +11,13 @@
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
 use restate_invoker_api::{EagerState, JournalMetadata};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadOnlyInvocationStatusTable,
+};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
-use restate_storage_api::status_table::{InvocationStatus, ReadOnlyStatusTable};
-use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{FullInvocationId, InvocationId};
 use restate_types::journal::raw::PlainRawEntry;
 use std::vec::IntoIter;
 
@@ -38,7 +40,7 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> restate_invoker_api::JournalReader for InvokerStorageReader<Storage>
 where
-    for<'a> Storage: ReadOnlyJournalTable + ReadOnlyStatusTable + Send + 'a,
+    for<'a> Storage: ReadOnlyJournalTable + ReadOnlyInvocationStatusTable + Send + 'a,
 {
     type JournalStream = stream::Iter<IntoIter<PlainRawEntry>>;
     type Error = InvokerStorageReaderError;
@@ -47,9 +49,12 @@ where
         &'a mut self,
         fid: &'a FullInvocationId,
     ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-        let invocation_status = self.0.get_invocation_status(&fid.service_id).await?;
+        let invocation_status = self
+            .0
+            .get_invocation_status(&InvocationId::from(fid))
+            .await?;
 
-        if let Some(InvocationStatus::Invoked(invoked_status)) = invocation_status {
+        if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             let journal_metadata = JournalMetadata::new(
                 invoked_status.journal_metadata.length,
                 invoked_status.journal_metadata.span_context,
@@ -58,7 +63,7 @@ where
             );
             let journal_stream = self
                 .0
-                .get_journal(&fid.service_id, journal_metadata.length)
+                .get_journal(&InvocationId::from(fid), journal_metadata.length)
                 .map(|entry| {
                     entry
                         .map_err(InvokerStorageReaderError::Storage)

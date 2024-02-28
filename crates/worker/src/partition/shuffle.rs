@@ -12,13 +12,10 @@ use crate::partition::shuffle::state_machine::StateMachine;
 use async_channel::{TryRecvError, TrySendError};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{
-    FullInvocationId, LeaderEpoch, PartitionId, PartitionKey, PeerId, WithPartitionKey,
-};
-use restate_types::invocation::{
-    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+    LeaderEpoch, PartitionId, PartitionKey, PeerId, WithPartitionKey,
 };
 use restate_types::message::{AckKind, MessageIndex};
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::NodeId;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use std::future::Future;
 use std::time::Duration;
@@ -56,137 +53,56 @@ impl OutboxTruncation {
 #[derive(Debug, Clone)]
 pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
-#[derive(Debug, Clone)]
-pub(crate) enum PartitionProcessorMessage {
-    Invocation(ServiceInvocation),
-    Response(InvocationResponse),
-    InvocationTermination(InvocationTermination),
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct IngressResponse {
-    pub(crate) _to_node_id: GenerationalNodeId,
-    pub(crate) full_invocation_id: FullInvocationId,
-    pub(crate) response: ResponseResult,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ShuffleOutput {
-    Envelope(Envelope),
-    Ingress {
-        shuffle_id: PeerId,
-        seq_number: MessageIndex,
-        response: IngressResponse,
-    },
-}
-
-impl ShuffleOutput {
-    fn from_outbox_message(
-        outbox_message: OutboxMessage,
-        seq_number: MessageIndex,
-        shuffle_metadata: &ShuffleMetadata,
-    ) -> Self {
-        match outbox_message {
-            OutboxMessage::IngressResponse {
-                full_invocation_id,
-                response,
-                to_node_id,
-            } => ShuffleOutput::Ingress {
-                shuffle_id: shuffle_metadata.peer_id,
+pub(crate) fn wrap_outbox_message_in_envelope(
+    message: OutboxMessage,
+    seq_number: MessageIndex,
+    shuffle_metadata: &ShuffleMetadata,
+) -> Envelope {
+    match message {
+        OutboxMessage::ServiceInvocation(service_invocation) => {
+            let header = create_header(
+                service_invocation.fid.partition_key(),
                 seq_number,
-                response: IngressResponse {
-                    full_invocation_id,
-                    response,
-                    _to_node_id: to_node_id,
-                },
-            },
-            OutboxMessage::ServiceInvocation(service_invocation) => {
-                let header = Self::create_header(
-                    service_invocation.fid.partition_key(),
-                    seq_number,
-                    shuffle_metadata,
-                );
-                let envelope = Envelope::new(header, Command::Invoke(service_invocation));
-                ShuffleOutput::Envelope(envelope)
-            }
-            OutboxMessage::ServiceResponse(invocation_response) => {
-                let header = Self::create_header(
-                    invocation_response.id.partition_key(),
-                    seq_number,
-                    shuffle_metadata,
-                );
-                let envelope =
-                    Envelope::new(header, Command::InvocationResponse(invocation_response));
-                ShuffleOutput::Envelope(envelope)
-            }
-            OutboxMessage::InvocationTermination(invocation_termination) => {
-                let header = Self::create_header(
-                    invocation_termination.maybe_fid.partition_key(),
-                    seq_number,
-                    shuffle_metadata,
-                );
-                let envelope =
-                    Envelope::new(header, Command::TerminateInvocation(invocation_termination));
-                ShuffleOutput::Envelope(envelope)
-            }
+                shuffle_metadata,
+            );
+            Envelope::new(header, Command::Invoke(service_invocation))
         }
-    }
-
-    fn create_header(
-        dest_partition_key: PartitionKey,
-        seq_number: MessageIndex,
-        shuffle_metadata: &ShuffleMetadata,
-    ) -> Header {
-        Header {
-            source: Source::Processor {
-                partition_id: shuffle_metadata.partition_id,
-                partition_key: None,
-                sequence_number: Some(seq_number),
-                leader_epoch: shuffle_metadata.leader_epoch,
-                node_id: shuffle_metadata.node_id.id(),
-            },
-            dest: Destination::Processor {
-                partition_key: dest_partition_key,
-            },
-            ack_mode: AckMode::Dedup,
+        OutboxMessage::ServiceResponse(invocation_response) => {
+            let header = create_header(
+                invocation_response.id.partition_key(),
+                seq_number,
+                shuffle_metadata,
+            );
+            Envelope::new(header, Command::InvocationResponse(invocation_response))
+        }
+        OutboxMessage::InvocationTermination(invocation_termination) => {
+            let header = create_header(
+                invocation_termination.maybe_fid.partition_key(),
+                seq_number,
+                shuffle_metadata,
+            );
+            Envelope::new(header, Command::TerminateInvocation(invocation_termination))
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum ShuffleMessageDestination {
-    PartitionProcessor(PartitionProcessorMessage),
-    Ingress(IngressResponse),
-}
-
-impl From<OutboxMessage> for ShuffleMessageDestination {
-    fn from(value: OutboxMessage) -> Self {
-        match value {
-            OutboxMessage::IngressResponse {
-                to_node_id,
-                full_invocation_id,
-                response,
-            } => ShuffleMessageDestination::Ingress(IngressResponse {
-                _to_node_id: to_node_id,
-                full_invocation_id,
-                response,
-            }),
-            OutboxMessage::ServiceResponse(response) => {
-                ShuffleMessageDestination::PartitionProcessor(PartitionProcessorMessage::Response(
-                    response,
-                ))
-            }
-            OutboxMessage::ServiceInvocation(invocation) => {
-                ShuffleMessageDestination::PartitionProcessor(
-                    PartitionProcessorMessage::Invocation(invocation),
-                )
-            }
-            OutboxMessage::InvocationTermination(invocation_termination) => {
-                ShuffleMessageDestination::PartitionProcessor(
-                    PartitionProcessorMessage::InvocationTermination(invocation_termination),
-                )
-            }
-        }
+fn create_header(
+    dest_partition_key: PartitionKey,
+    seq_number: MessageIndex,
+    shuffle_metadata: &ShuffleMetadata,
+) -> Header {
+    Header {
+        source: Source::Processor {
+            partition_id: shuffle_metadata.partition_id,
+            partition_key: None,
+            sequence_number: Some(seq_number),
+            leader_epoch: shuffle_metadata.leader_epoch,
+            node_id: shuffle_metadata.node_id.id(),
+        },
+        dest: Destination::Processor {
+            partition_key: dest_partition_key,
+        },
+        ack_mode: AckMode::Dedup,
     }
 }
 
@@ -287,7 +203,7 @@ pub(super) struct Shuffle<OR> {
     outbox_reader: OR,
 
     // used to send messages to different partitions
-    network_tx: mpsc::Sender<ShuffleOutput>,
+    network_tx: mpsc::Sender<Envelope>,
 
     network_in_rx: mpsc::Receiver<ShuffleInput>,
 
@@ -308,7 +224,7 @@ where
     pub(super) fn new(
         metadata: ShuffleMetadata,
         outbox_reader: OR,
-        network_tx: mpsc::Sender<ShuffleOutput>,
+        network_tx: mpsc::Sender<Envelope>,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
         channel_size: usize,
     ) -> Self {
@@ -393,11 +309,13 @@ where
 mod state_machine {
     use crate::partition::shuffle;
     use crate::partition::shuffle::{
-        NewOutboxMessage, OutboxReaderError, ShuffleInput, ShuffleMetadata, ShuffleOutput,
+        wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError, ShuffleInput,
+        ShuffleMetadata,
     };
     use pin_project::pin_project;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::message::{AckKind, MessageIndex};
+    use restate_wal_protocol::Envelope;
     use std::cmp::Ordering;
     use std::future::Future;
     use std::pin::Pin;
@@ -463,8 +381,8 @@ mod state_machine {
 
     impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
     where
-        SendFuture: Future<Output = Result<(), mpsc::error::SendError<ShuffleOutput>>>,
-        SendOp: Fn(ShuffleOutput) -> SendFuture,
+        SendFuture: Future<Output = Result<(), mpsc::error::SendError<Envelope>>>,
+        SendOp: Fn(Envelope) -> SendFuture,
         OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
@@ -510,7 +428,7 @@ mod state_machine {
                             match seq_number.cmp(this.current_sequence_number) {
                                 Ordering::Equal => {
                                     let send_future =
-                                        (this.send_operation)(ShuffleOutput::from_outbox_message(
+                                        (this.send_operation)(wrap_outbox_message_in_envelope(
                                             message,
                                             seq_number,
                                             this.metadata,
@@ -544,7 +462,7 @@ mod state_machine {
                                 *this.current_sequence_number = seq_number;
 
                                 let send_future =
-                                    (this.send_operation)(ShuffleOutput::from_outbox_message(
+                                    (this.send_operation)(wrap_outbox_message_in_envelope(
                                         message,
                                         seq_number,
                                         this.metadata,

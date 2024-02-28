@@ -14,10 +14,10 @@ use prost::Message;
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{EventReceiverServiceInstanceType, Sink, Subscription};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, PeerId, WithPartitionKey};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
-use restate_types::message::{AckKind, MessageIndex};
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::message::MessageIndex;
+use restate_types::GenerationalNodeId;
 use std::fmt::Display;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +28,8 @@ mod event_remapping;
 mod service;
 
 pub use event_remapping::Error as EventError;
+use restate_core::metadata;
+use restate_types::ingress::IngressResponse;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 pub use service::Error as ServiceError;
 pub use service::Service;
@@ -36,8 +38,8 @@ pub use service::Service;
 
 pub type IngressRequestSender = mpsc::UnboundedSender<IngressRequest>;
 pub type IngressRequestReceiver = mpsc::UnboundedReceiver<IngressRequest>;
-pub type IngressResponseSender = oneshot::Sender<IngressResponse>;
-pub type IngressResponseReceiver = oneshot::Receiver<IngressResponse>;
+pub type IngressResponseSender = oneshot::Sender<ExpiringIngressResponse>;
+pub type IngressResponseReceiver = oneshot::Receiver<ExpiringIngressResponse>;
 pub type AckSender = oneshot::Sender<()>;
 pub type AckReceiver = oneshot::Receiver<()>;
 
@@ -64,24 +66,24 @@ pub struct IngressRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct IngressResponse {
+pub struct ExpiringIngressResponse {
     idempotency_expiry_time: Option<String>,
     result: Result<Bytes, InvocationError>,
 }
 
-impl IngressResponse {
+impl ExpiringIngressResponse {
     pub fn idempotency_expire_time(&self) -> Option<&String> {
         self.idempotency_expiry_time.as_ref()
     }
 }
 
-impl From<IngressResponse> for Result<Bytes, InvocationError> {
-    fn from(value: IngressResponse) -> Self {
+impl From<ExpiringIngressResponse> for Result<Bytes, InvocationError> {
+    fn from(value: ExpiringIngressResponse) -> Self {
         value.result
     }
 }
 
-impl From<Result<Bytes, InvocationError>> for IngressResponse {
+impl From<Result<Bytes, InvocationError>> for ExpiringIngressResponse {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         Self {
             idempotency_expiry_time: None,
@@ -184,7 +186,7 @@ impl IngressRequest {
         } = subscription.sink();
 
         // Generate fid
-        let target_fid = FullInvocationId::generate(
+        let target_fid = FullInvocationId::generate(ServiceId::new(
             &**name,
             // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
             match instance_type {
@@ -206,7 +208,7 @@ impl IngressRequest {
                 }
                 EventReceiverServiceInstanceType::Singleton => Bytes::new(),
             },
-        );
+        ));
 
         // Generate span context
         let span_context = ServiceInvocationSpanContext::start(&target_fid, related_span);
@@ -220,8 +222,10 @@ impl IngressRequest {
 
         Ok(if let Some(proxying_key) = proxying_key {
             // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
-            let proxy_fid =
-                FullInvocationId::generate(restate_pb::PROXY_SERVICE_NAME, proxying_key);
+            let proxy_fid = FullInvocationId::generate(ServiceId::new(
+                restate_pb::PROXY_SERVICE_NAME,
+                proxying_key,
+            ));
 
             (
                 IngressRequest {
@@ -265,38 +269,9 @@ impl IngressRequest {
 pub type IngressDispatcherInputReceiver = mpsc::Receiver<IngressDispatcherInput>;
 pub type IngressDispatcherInputSender = mpsc::Sender<IngressDispatcherInput>;
 
-#[derive(Debug, Clone)]
-pub struct IngressResponseMessage {
-    pub full_invocation_id: FullInvocationId,
-    pub result: Result<Bytes, InvocationError>,
-    pub ack_target: AckTarget,
-}
-
-#[derive(Debug, Clone)]
-pub struct AckTarget {
-    pub shuffle_target: PeerId,
-    pub msg_index: MessageIndex,
-}
-
-impl AckTarget {
-    pub fn new(shuffle_target: PeerId, msg_index: MessageIndex) -> Self {
-        Self {
-            shuffle_target,
-            msg_index,
-        }
-    }
-
-    fn acknowledge(self) -> AckResponse {
-        AckResponse {
-            shuffle_target: self.shuffle_target,
-            kind: AckKind::Acknowledge(self.msg_index),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum IngressDispatcherInput {
-    Response(IngressResponseMessage),
+    Response(IngressResponse),
     MessageAck(MessageIndex),
     DedupMessageAck(String, MessageIndex),
 }
@@ -310,56 +285,37 @@ impl IngressDispatcherInput {
         IngressDispatcherInput::DedupMessageAck(dedup_name, seq_number)
     }
 
-    pub fn response(response: IngressResponseMessage) -> Self {
+    pub fn response(response: IngressResponse) -> Self {
         IngressDispatcherInput::Response(response)
     }
 }
 
-#[derive(Debug)]
-pub enum IngressDispatcherOutput {
-    Envelope(Envelope),
-    Ack(AckResponse),
-}
+pub fn wrap_service_invocation_in_envelope(
+    service_invocation: ServiceInvocation,
+    from_node_id: GenerationalNodeId,
+    deduplication_source: Option<String>,
+    msg_index: MessageIndex,
+) -> Envelope {
+    let ack_mode = if deduplication_source.is_some() {
+        AckMode::Dedup
+    } else {
+        AckMode::Ack
+    };
 
-#[derive(Debug)]
-pub struct AckResponse {
-    pub shuffle_target: PeerId,
-    pub kind: AckKind,
-}
+    let header = Header {
+        source: Source::Ingress {
+            node_id: from_node_id,
+            sequence_number: msg_index,
+            dedup_key: deduplication_source,
+            nodes_config_version: metadata().nodes_config_version(),
+        },
+        dest: Destination::Processor {
+            partition_key: service_invocation.fid.partition_key(),
+        },
+        ack_mode,
+    };
 
-impl IngressDispatcherOutput {
-    pub fn service_invocation(
-        service_invocation: ServiceInvocation,
-        from_node_id: GenerationalNodeId,
-        deduplication_source: Option<String>,
-        msg_index: MessageIndex,
-    ) -> Self {
-        let ack_mode = if deduplication_source.is_some() {
-            AckMode::Dedup
-        } else {
-            AckMode::Ack
-        };
-
-        let header = Header {
-            source: Source::Ingress {
-                node_id: from_node_id,
-                sequence_number: msg_index,
-                dedup_key: deduplication_source,
-                // todo: Retrieve proper node config version
-                nodes_config_version: Version::MIN,
-            },
-            dest: Destination::Processor {
-                partition_key: service_invocation.fid.partition_key(),
-            },
-            ack_mode,
-        };
-
-        Self::Envelope(Envelope::new(header, Command::Invoke(service_invocation)))
-    }
-
-    pub fn shuffle_ack(ack_response: AckResponse) -> Self {
-        Self::Ack(ack_response)
-    }
+    Envelope::new(header, Command::Invoke(service_invocation))
 }
 
 #[cfg(feature = "mocks")]

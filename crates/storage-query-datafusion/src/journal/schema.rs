@@ -16,8 +16,7 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(journal(
     partition_key: DataType::UInt64,
-    service: DataType::LargeUtf8,
-    service_key: DataType::LargeUtf8,
+    invocation_id: DataType::LargeUtf8,
     index: DataType::UInt32,
     entry_type: DataType::LargeUtf8,
     completed: DataType::Boolean,

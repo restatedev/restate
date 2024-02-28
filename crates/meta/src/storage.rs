@@ -20,7 +20,7 @@ type StorageFormatVersion = u32;
 
 /// Storage format version used by the [`FileMetaStorage`] to store schema information. This value
 /// must be incremented whenever you introduce a breaking change to the schema information.
-const STORAGE_FORMAT_VERSION: StorageFormatVersion = 1;
+const STORAGE_FORMAT_VERSION: StorageFormatVersion = 2;
 
 /// Name of the file which contains the storage format version.
 const STORAGE_FORMAT_VERSION_FILE_NAME: &str = ".meta_format_version";

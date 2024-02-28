@@ -18,12 +18,13 @@ use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap};
+use hyper::{Body, HeaderMap, StatusCode};
 use prost::{DecodeError, Message};
 use prost_reflect::{DescriptorError, DescriptorPool};
+use tracing::warn;
 
 use codederror::CodedError;
-use restate_errors::{warn_it, META0003};
+use restate_errors::META0003;
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 
@@ -141,12 +142,34 @@ pub enum ServiceDiscoveryError {
     Descriptor(#[from] DescriptorError),
 
     // Network related retryable errors
-    #[error("retry limit exhausted. Last bad status code: {0}")]
+    #[error("bad status code: {0}")]
     #[code(META0003)]
     BadStatusCode(u16),
-    #[error("retry limit exhausted. Last client error: {0}")]
+    #[error("client error: {0}")]
     #[code(META0003)]
     Client(#[from] ServiceClientError),
+}
+
+impl ServiceDiscoveryError {
+    /// Retryable errors are those which can be caused by transient faults and where
+    /// retrying can succeed.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ServiceDiscoveryError::BadStatusCode(status) => matches!(
+                StatusCode::from_u16(*status).expect("should be valid status code"),
+                StatusCode::REQUEST_TIMEOUT
+                    | StatusCode::TOO_MANY_REQUESTS
+                    | StatusCode::INTERNAL_SERVER_ERROR
+                    | StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT
+            ),
+            ServiceDiscoveryError::Client(client_error) => client_error.is_retryable(),
+            ServiceDiscoveryError::BadResponse(_)
+            | ServiceDiscoveryError::Decode(_)
+            | ServiceDiscoveryError::Descriptor(_) => false,
+        }
+    }
 }
 
 impl ServiceDiscovery {
@@ -231,18 +254,20 @@ impl ServiceDiscovery {
             };
 
             // Discovery failed
-            if let Some(next_retry_interval) = retry_iter.next() {
-                warn_it!(
-                    e,
-                    "Error when discovering deployment at address '{}'. Retrying in {} seconds",
-                    address,
-                    next_retry_interval.as_secs()
-                );
-                tokio::time::sleep(next_retry_interval).await;
-            } else {
-                warn_it!(e, "Error when discovering deployment '{}'", address);
-                return Err(e);
+            if e.is_retryable() {
+                if let Some(next_retry_interval) = retry_iter.next() {
+                    warn!(
+                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
+                        address,
+                        next_retry_interval.as_secs(),
+                        e
+                    );
+                    tokio::time::sleep(next_retry_interval).await;
+                    continue;
+                }
             }
+
+            return Err(e);
         }
     }
 }

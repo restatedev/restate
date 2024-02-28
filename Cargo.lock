@@ -5133,6 +5133,7 @@ dependencies = [
  "restate-errors",
  "restate-test-util",
  "restate-types",
+ "restate-wal-protocol",
  "test-log",
  "thiserror",
  "tokio",
@@ -5275,6 +5276,7 @@ dependencies = [
  "arc-swap",
  "bytes",
  "codederror",
+ "googletest",
  "http 0.2.11",
  "itertools 0.11.0",
  "once_cell",
@@ -5592,6 +5594,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "tonic 0.9.2",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -6589,7 +6592,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemalloc-sys"
 version = "0.5.4+5.3.0-patched"
-source = "git+https://github.com/restatedev/jemallocator?rev=f7adfca5aff272b43fd3ad896252b57fbbd9c72a#f7adfca5aff272b43fd3ad896252b57fbbd9c72a"
+source = "git+https://github.com/restatedev/jemallocator?rev=7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0#7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0"
 dependencies = [
  "cc",
  "libc",
@@ -6598,7 +6601,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemallocator"
 version = "0.5.4"
-source = "git+https://github.com/restatedev/jemallocator?rev=f7adfca5aff272b43fd3ad896252b57fbbd9c72a#f7adfca5aff272b43fd3ad896252b57fbbd9c72a"
+source = "git+https://github.com/restatedev/jemallocator?rev=7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0#7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",

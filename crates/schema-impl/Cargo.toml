@@ -34,6 +34,7 @@ restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 
+googletest = { workspace = true }
 prost-reflect = { workspace = true }
 test-log = { workspace = true }
 tracing = { workspace = true }

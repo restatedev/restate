@@ -32,6 +32,7 @@ mod http;
 mod lambda;
 mod options;
 mod proxy;
+mod utils;
 
 #[derive(Debug, Clone)]
 pub struct ServiceClient {
@@ -77,6 +78,17 @@ pub enum ServiceClientError {
     Http(#[from] http::HttpError),
     #[error(transparent)]
     Lambda(#[from] lambda::LambdaError),
+}
+
+impl ServiceClientError {
+    /// Retryable errors are those which can be caused by transient faults and where
+    /// retrying can succeed.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ServiceClientError::Http(http_error) => http_error.is_retryable(),
+            ServiceClientError::Lambda(lambda_error) => lambda_error.is_retryable(),
+        }
+    }
 }
 
 pub struct Request<B> {

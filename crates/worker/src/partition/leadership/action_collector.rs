@@ -19,14 +19,13 @@ use crate::partition::{shuffle, ConsensusWriter};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use prost::Message;
+use restate_core::metadata;
 use restate_errors::NotRunningError;
+use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_invoker_api::ServiceHandle;
-use restate_types::identifiers::{
-    FullInvocationId, InvocationUuid, PartitionLeaderEpoch, WithPartitionKey,
-};
+use restate_types::identifiers::{FullInvocationId, PartitionLeaderEpoch, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::CompletionResult;
-use restate_types::NodeId;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header};
@@ -56,7 +55,7 @@ pub(crate) enum LeaderAwareActionCollectorError {
 impl<'a, I, N> LeaderAwareActionCollector<'a, I, N>
 where
     I: ServiceHandle,
-    N: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    N: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     pub(crate) async fn send(
         self,
@@ -77,6 +76,7 @@ where
                         &mut leader_state.non_deterministic_service_invoker,
                         &follower_state.ack_tx,
                         &mut follower_state.consensus_writer,
+                        &follower_state.ingress_tx,
                     )
                     .await?;
                 }
@@ -102,6 +102,7 @@ where
         non_deterministic_service_invoker: &mut ServiceInvoker<'a>,
         ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: &mut ConsensusWriter,
+        ingress_tx: &IngressDispatcherInputSender,
     ) -> Result<(), LeaderAwareActionCollectorError> {
         match action {
             Action::Invoke {
@@ -170,12 +171,12 @@ where
             Action::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
-                invocation_uuid,
+                invocation_id,
                 completion,
             } => {
                 let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
                     entry_index: completion.entry_index,
-                    invocation_uuid: invocation_uuid.into(),
+                    invocation_uuid: invocation_id.invocation_uuid().into(),
                     result: Some(match completion.result {
                         CompletionResult::Empty =>
                             restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
@@ -193,7 +194,7 @@ where
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
                 let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    FullInvocationId::generate(target_service),
                     method_name,
                     journal_notification_request,
                     Source::Internal,
@@ -211,15 +212,15 @@ where
             Action::NotifyVirtualJournalKill {
                 target_service,
                 method_name,
-                invocation_uuid,
+                invocation_id,
             } => {
                 // We need this to agree on the invocation uuid, which is randomly generated
                 // We could get rid of it if invocation uuids are deterministically generated.
                 let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::with_service_id(target_service, InvocationUuid::new()),
+                    FullInvocationId::generate(target_service),
                     method_name,
                     restate_pb::restate::internal::KillNotificationRequest {
-                        invocation_uuid: invocation_uuid.into(),
+                        invocation_uuid: invocation_id.invocation_uuid().into(),
                     }
                     .encode_to_vec(),
                     Source::Internal,
@@ -233,6 +234,12 @@ where
                 );
 
                 let _ = consensus_writer.send(envelope).await;
+            }
+            Action::IngressResponse(ingress_response) => {
+                // ingress should only be unavailable when shutting down
+                let _ = ingress_tx
+                    .send(IngressDispatcherInput::Response(ingress_response))
+                    .await;
             }
         }
 
@@ -254,7 +261,7 @@ where
                 leader_epoch: partition_leader_epoch.1,
                 // todo: Add support for deduplicating self proposals
                 sequence_number: None,
-                node_id: NodeId::my_node_id().expect("NodeId should be set").id(),
+                node_id: metadata().my_node_id().as_plain(),
             },
         };
 

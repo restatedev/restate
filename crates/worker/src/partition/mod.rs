@@ -44,6 +44,7 @@ use restate_wal_protocol::Envelope;
 
 type ConsensusReader = mpsc::Receiver<restate_consensus::Command<Envelope>>;
 type ConsensusWriter = IdentitySender<Envelope>;
+use restate_ingress_dispatcher::IngressDispatcherInputSender;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
@@ -69,6 +70,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
 
     options: Options,
 
+    ingress_tx: IngressDispatcherInputSender,
+
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
@@ -77,7 +80,7 @@ impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -94,6 +97,7 @@ where
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         options: Options,
+        ingress_tx: IngressDispatcherInputSender,
     ) -> Self {
         Self {
             peer_id,
@@ -110,6 +114,7 @@ where
             rocksdb_storage,
             schemas,
             options,
+            ingress_tx,
         }
     }
 
@@ -129,6 +134,7 @@ where
             rocksdb_storage,
             schemas,
             options,
+            ingress_tx,
             ..
         } = self;
 
@@ -147,6 +153,7 @@ where
             network_handle,
             ack_tx,
             consensus_writer.clone(),
+            ingress_tx,
         );
 
         let mut state_machine =

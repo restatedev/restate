@@ -18,7 +18,7 @@ use restate_schema_api::service::InstanceType;
 use restate_schema_api::subscription::{
     EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
 };
-use restate_types::identifiers::{DeploymentId, ServiceRevision};
+use restate_types::identifiers::{ComponentRevision, DeploymentId};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
@@ -116,7 +116,7 @@ impl MethodSchemas {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ServiceSchemas {
-    pub(crate) revision: ServiceRevision,
+    pub(crate) revision: ComponentRevision,
     pub(crate) methods: HashMap<String, MethodSchemas>,
     pub(crate) instance_type: InstanceTypeMetadata,
     pub(crate) location: ServiceLocation,
@@ -191,7 +191,7 @@ impl TryFrom<&InstanceTypeMetadata> for InstanceType {
 
 impl ServiceSchemas {
     pub(crate) fn new(
-        revision: ServiceRevision,
+        revision: ComponentRevision,
         methods: HashMap<String, MethodSchemas>,
         instance_type: InstanceTypeMetadata,
         latest_deployment: DeploymentId,

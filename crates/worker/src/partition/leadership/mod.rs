@@ -12,6 +12,7 @@ use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage, ConsensusWriter};
 use assert2::let_assert;
 use futures::{future, StreamExt};
+use restate_core::metadata;
 use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
@@ -30,14 +31,15 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::AckResponse;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
 use restate_errors::NotRunningError;
+use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_schema_impl::Schemas;
-use restate_storage_api::status_table::InvocationStatus;
+use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::EntryType;
-use restate_types::NodeId;
 use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::Envelope;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
@@ -61,6 +63,7 @@ pub(crate) struct FollowerState<I, N> {
     network_handle: N,
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
     consensus_writer: ConsensusWriter,
+    ingress_tx: IngressDispatcherInputSender,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -87,7 +90,7 @@ pub(crate) enum LeadershipState<'a, InvokerInputSender, NetworkHandle> {
 impl<'a, InvokerInputSender, NetworkHandle> LeadershipState<'a, InvokerInputSender, NetworkHandle>
 where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
@@ -99,6 +102,7 @@ where
         network_handle: NetworkHandle,
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: ConsensusWriter,
+        ingress_tx: IngressDispatcherInputSender,
     ) -> (ActionEffectStream, Self) {
         (
             ActionEffectStream::Follower,
@@ -111,6 +115,7 @@ where
                 network_handle,
                 ack_tx,
                 consensus_writer,
+                ingress_tx,
             }),
         )
     }
@@ -194,7 +199,7 @@ where
                     follower_state.peer_id,
                     follower_state.partition_id,
                     leader_epoch,
-                    NodeId::my_node_id().expect("NodeId should be set"),
+                    metadata().my_node_id().into(),
                 ),
                 partition_storage.clone(),
                 follower_state.network_handle.create_shuffle_sender(),
@@ -279,7 +284,7 @@ where
 
         for full_invocation_id in built_in_invoked_services {
             let input_entry = partition_storage
-                .load_journal_entry(&full_invocation_id.service_id, 0)
+                .load_journal_entry(&InvocationId::from(&full_invocation_id), 0)
                 .await?
                 .expect("first journal entry must be present; if not, this indicates a bug.");
 
@@ -291,7 +296,7 @@ where
             );
 
             let status = partition_storage
-                .get_invocation_status(&full_invocation_id.service_id)
+                .get_invocation_status(&InvocationId::from(&full_invocation_id))
                 .await?;
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
@@ -333,6 +338,7 @@ where
                     network_handle,
                     ack_tx,
                     consensus_writer: self_proposal_tx,
+                    ingress_tx,
                 },
             leader_state:
                 LeaderState {
@@ -366,6 +372,7 @@ where
                 network_handle,
                 ack_tx,
                 self_proposal_tx,
+                ingress_tx,
             ))
         } else {
             Ok((ActionEffectStream::Follower, self))

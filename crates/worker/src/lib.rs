@@ -18,7 +18,9 @@ use codederror::CodedError;
 use partition::shuffle;
 use restate_consensus::Consensus;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
-use restate_ingress_dispatcher::{IngressDispatcherOutput, Service as IngressDispatcherService};
+use restate_ingress_dispatcher::{
+    IngressDispatcherInputSender, Service as IngressDispatcherService,
+};
 use restate_ingress_grpc::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
@@ -32,7 +34,6 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
-use restate_types::NodeId;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -89,7 +90,7 @@ type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
     InvokerChannelServiceHandle,
-    UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+    UnboundedNetworkHandle<shuffle::ShuffleInput, Envelope>,
 >;
 type ExternalClientIngress = HyperServerIngress<Schemas>;
 
@@ -205,7 +206,7 @@ pub struct Worker {
     >,
     ingress_dispatcher_service: IngressDispatcherService,
     external_client_ingress: ExternalClientIngress,
-    network_ingress_sender: mpsc::Sender<IngressDispatcherOutput>,
+    network_ingress_sender: mpsc::Sender<Envelope>,
     ingress_kafka: IngressKafkaService,
     services: Services<FixedConsecutivePartitions>,
     rocksdb_writer: RocksDBWriter,
@@ -297,6 +298,7 @@ impl Worker {
                     rocksdb_storage.clone(),
                     schemas.clone(),
                     partition_processor_options.clone(),
+                    ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
                 )
             })
             .unzip();
@@ -335,11 +337,12 @@ impl Worker {
         channel_size: usize,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
-        network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, shuffle::ShuffleOutput>,
+        network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, Envelope>,
         ack_sender: PartitionProcessorSender<partition::types::AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         partition_processor_options: partition::Options,
+        ingress_tx: IngressDispatcherInputSender,
     ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
         let (command_tx, command_rx) = mpsc::channel(channel_size);
         let processor = PartitionProcessor::new(
@@ -356,6 +359,7 @@ impl Worker {
             rocksdb_storage,
             schemas,
             partition_processor_options,
+            ingress_tx,
         );
 
         ((peer_id, command_tx), processor)
@@ -379,7 +383,6 @@ impl Worker {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
-        let my_node_id = NodeId::my_node_id().expect("my node ID is set");
         let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
@@ -398,7 +401,7 @@ impl Worker {
             "ingress-dispatcher",
             None,
             self.ingress_dispatcher_service
-                .run(my_node_id, self.network_ingress_sender),
+                .run(self.network_ingress_sender),
         )?;
 
         // Ingress RPC server

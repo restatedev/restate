@@ -13,9 +13,9 @@ serde = ["dep:serde", "dep:bincode", "enum-map/serde", "bytestring/serde", "rest
 options_schema = ["dep:schemars"]
 
 [dependencies]
-restate-types = { workspace = true }
-restate-storage-api = { workspace = true }
 restate-invoker-api = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 assert2 = { workspace = true }

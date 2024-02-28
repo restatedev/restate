@@ -14,12 +14,13 @@ mod deployment;
 mod generic_table;
 mod inbox;
 mod invocation_state;
+mod invocation_status;
 mod journal;
 mod options;
 mod physical_optimizer;
 mod service;
+mod service_status;
 mod state;
-mod status;
 mod table_macro;
 mod table_util;
 

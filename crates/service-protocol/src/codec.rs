@@ -230,6 +230,7 @@ mod mocks {
                                 })
                             }
                         }),
+                        ..InvokeEntryMessage::default()
                     }
                     .encode_to_vec()
                     .into(),
@@ -243,6 +244,7 @@ mod mocks {
                         method_name: entry.request.method_name.into(),
                         parameter: entry.request.parameter,
                         invoke_time: entry.invoke_time,
+                        ..BackgroundInvokeEntryMessage::default()
                     }
                     .encode_to_vec()
                     .into(),

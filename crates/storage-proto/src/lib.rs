@@ -39,17 +39,19 @@ pub mod storage {
             use crate::storage::v1::{
                 enriched_entry_header, inbox_entry, invocation_resolution_result,
                 invocation_status, maybe_full_invocation_id, outbox_message, response_result,
-                source, span_relation, timer, BackgroundCallResolutionResult, EnrichedEntryHeader,
-                FullInvocationId, InboxEntry, InvocationResolutionResult, InvocationStatus,
-                JournalEntry, JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage,
-                ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationResponseSink,
-                Source, SpanContext, SpanRelation, StateMutation, Timer,
+                service_status, source, span_relation, timer, BackgroundCallResolutionResult,
+                EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
+                InvocationStatus, JournalEntry, JournalMeta, KvPair, MaybeFullInvocationId,
+                OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
+                ServiceInvocationResponseSink, ServiceStatus, Source, SpanContext, SpanRelation,
+                StateMutation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
+            use restate_types::identifiers::InvocationUuid;
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
@@ -82,7 +84,45 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<InvocationStatus> for restate_storage_api::status_table::InvocationStatus {
+            impl TryFrom<ServiceStatus> for InvocationUuid {
+                type Error = ConversionError;
+
+                fn try_from(value: ServiceStatus) -> Result<Self, Self::Error> {
+                    Ok(
+                        match value
+                            .status
+                            .ok_or(ConversionError::missing_field("status"))?
+                        {
+                            service_status::Status::Locked(locked) => {
+                                try_bytes_into_invocation_uuid(locked.invocation_uuid)?
+                            }
+                        },
+                    )
+                }
+            }
+
+            impl From<restate_storage_api::service_status_table::ServiceStatus> for ServiceStatus {
+                fn from(value: restate_storage_api::service_status_table::ServiceStatus) -> Self {
+                    match value {
+                        restate_storage_api::service_status_table::ServiceStatus::Locked(
+                            invocation_id,
+                        ) => ServiceStatus {
+                            status: Some(service_status::Status::Locked(service_status::Locked {
+                                invocation_uuid: invocation_id
+                                    .invocation_uuid()
+                                    .to_bytes()
+                                    .to_vec()
+                                    .into(),
+                            })),
+                        },
+                        restate_storage_api::service_status_table::ServiceStatus::Unlocked => {
+                            unreachable!("Nothing should be stored for unlocked")
+                        }
+                    }
+                }
+            }
+
+            impl TryFrom<InvocationStatus> for restate_storage_api::invocation_status_table::InvocationStatus {
                 type Error = ConversionError;
 
                 fn try_from(value: InvocationStatus) -> Result<Self, Self::Error> {
@@ -92,30 +132,28 @@ pub mod storage {
                     {
                         invocation_status::Status::Invoked(invoked) => {
                             let invocation_metadata =
-                                restate_storage_api::status_table::InvocationMetadata::try_from(
+                                restate_storage_api::invocation_status_table::InvocationMetadata::try_from(
                                     invoked,
                                 )?;
-                            restate_storage_api::status_table::InvocationStatus::Invoked(
+                            restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
                                 invocation_metadata,
                             )
                         }
                         invocation_status::Status::Suspended(suspended) => {
                             let (metadata, waiting_for_completed_entries) = suspended.try_into()?;
-                            restate_storage_api::status_table::InvocationStatus::Suspended {
+                            restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
                                 metadata,
                                 waiting_for_completed_entries,
                             }
                         }
                         invocation_status::Status::Virtual(r#virtual) => {
                             let (
-                                invocation_uuid,
                                 journal_metadata,
                                 completion_notification_target,
                                 kill_notification_target,
                                 timestamps,
                             ) = r#virtual.try_into()?;
-                            restate_storage_api::status_table::InvocationStatus::Virtual {
-                                invocation_uuid,
+                            restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
                                 journal_metadata,
                                 completion_notification_target,
                                 kill_notification_target,
@@ -123,7 +161,7 @@ pub mod storage {
                             }
                         }
                         invocation_status::Status::Free(_) => {
-                            restate_storage_api::status_table::InvocationStatus::Free
+                            restate_storage_api::invocation_status_table::InvocationStatus::Free
                         }
                     };
 
@@ -131,33 +169,33 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_storage_api::status_table::InvocationStatus> for InvocationStatus {
-                fn from(value: restate_storage_api::status_table::InvocationStatus) -> Self {
+            impl From<restate_storage_api::invocation_status_table::InvocationStatus> for InvocationStatus {
+                fn from(
+                    value: restate_storage_api::invocation_status_table::InvocationStatus,
+                ) -> Self {
                     let status = match value {
-                        restate_storage_api::status_table::InvocationStatus::Invoked(
+                        restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
                             invoked_status,
                         ) => invocation_status::Status::Invoked(Invoked::from(invoked_status)),
-                        restate_storage_api::status_table::InvocationStatus::Suspended {
+                        restate_storage_api::invocation_status_table::InvocationStatus::Suspended {
                             metadata,
                             waiting_for_completed_entries,
                         } => invocation_status::Status::Suspended(Suspended::from((
                             metadata,
                             waiting_for_completed_entries,
                         ))),
-                        restate_storage_api::status_table::InvocationStatus::Virtual {
-                            invocation_uuid,
+                        restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
                             journal_metadata,
                             completion_notification_target,
                             kill_notification_target,
                             timestamps,
                         } => invocation_status::Status::Virtual(Virtual::from((
-                            invocation_uuid,
                             journal_metadata,
                             completion_notification_target,
                             kill_notification_target,
                             timestamps,
                         ))),
-                        restate_storage_api::status_table::InvocationStatus::Free => {
+                        restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
                         }
                     };
@@ -168,11 +206,14 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Invoked> for restate_storage_api::status_table::InvocationMetadata {
+            impl TryFrom<Invoked> for restate_storage_api::invocation_status_table::InvocationMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
-                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
+                    let service_id = value
+                        .service_id
+                        .ok_or(ConversionError::missing_field("service_id"))?
+                        .try_into()?;
 
                     let method_name = value.method_name.try_into().map_err(|e| {
                         ConversionError::InvalidData(anyhow!(
@@ -189,7 +230,7 @@ pub mod storage {
                     });
 
                     let journal_metadata =
-                        restate_storage_api::status_table::JournalMetadata::try_from(
+                        restate_storage_api::invocation_status_table::JournalMetadata::try_from(
                             value
                                 .journal_meta
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
@@ -208,25 +249,29 @@ pub mod storage {
                             .ok_or(ConversionError::missing_field("source"))?,
                     )?;
 
-                    Ok(restate_storage_api::status_table::InvocationMetadata::new(
-                        invocation_uuid,
-                        journal_metadata,
-                        deployment_id,
-                        method_name,
-                        response_sink,
-                        restate_storage_api::status_table::StatusTimestamps::new(
-                            MillisSinceEpoch::new(value.creation_time),
-                            MillisSinceEpoch::new(value.modification_time),
+                    Ok(
+                        restate_storage_api::invocation_status_table::InvocationMetadata::new(
+                            service_id,
+                            journal_metadata,
+                            deployment_id,
+                            method_name,
+                            response_sink,
+                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                                MillisSinceEpoch::new(value.creation_time),
+                                MillisSinceEpoch::new(value.modification_time),
+                            ),
+                            source,
                         ),
-                        source,
-                    ))
+                    )
                 }
             }
 
-            impl From<restate_storage_api::status_table::InvocationMetadata> for Invoked {
-                fn from(value: restate_storage_api::status_table::InvocationMetadata) -> Self {
-                    let restate_storage_api::status_table::InvocationMetadata {
-                        invocation_uuid,
+            impl From<restate_storage_api::invocation_status_table::InvocationMetadata> for Invoked {
+                fn from(
+                    value: restate_storage_api::invocation_status_table::InvocationMetadata,
+                ) -> Self {
+                    let restate_storage_api::invocation_status_table::InvocationMetadata {
+                        service_id,
                         deployment_id,
                         method,
                         response_sink,
@@ -236,8 +281,8 @@ pub mod storage {
                     } = value;
 
                     Invoked {
+                        service_id: Some(service_id.into()),
                         response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
-                        invocation_uuid: invocation_uuid.into(),
                         method_name: method.into_bytes(),
                         deployment_id: Some(match deployment_id {
                             None => invocation_status::invoked::DeploymentId::None(()),
@@ -255,14 +300,17 @@ pub mod storage {
 
             impl TryFrom<Suspended>
                 for (
-                    restate_storage_api::status_table::InvocationMetadata,
+                    restate_storage_api::invocation_status_table::InvocationMetadata,
                     HashSet<restate_types::identifiers::EntryIndex>,
                 )
             {
                 type Error = ConversionError;
 
                 fn try_from(value: Suspended) -> Result<Self, Self::Error> {
-                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
+                    let service_id = value
+                        .service_id
+                        .ok_or(ConversionError::missing_field("service_id"))?
+                        .try_into()?;
 
                     let method_name = value.method_name.try_into().map_err(|e| {
                         ConversionError::InvalidData(anyhow!(
@@ -277,7 +325,7 @@ pub mod storage {
                     });
 
                     let journal_metadata =
-                        restate_storage_api::status_table::JournalMetadata::try_from(
+                        restate_storage_api::invocation_status_table::JournalMetadata::try_from(
                             value
                                 .journal_meta
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
@@ -300,13 +348,13 @@ pub mod storage {
                     )?;
 
                     Ok((
-                        restate_storage_api::status_table::InvocationMetadata::new(
-                            invocation_uuid,
+                        restate_storage_api::invocation_status_table::InvocationMetadata::new(
+                            service_id,
                             journal_metadata,
                             deployment_id.map(|d| d.parse().expect("valid deployment id")),
                             method_name,
                             response_sink,
-                            restate_storage_api::status_table::StatusTimestamps::new(
+                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
                                 MillisSinceEpoch::new(value.modification_time),
                             ),
@@ -319,24 +367,23 @@ pub mod storage {
 
             impl
                 From<(
-                    restate_storage_api::status_table::InvocationMetadata,
+                    restate_storage_api::invocation_status_table::InvocationMetadata,
                     HashSet<restate_types::identifiers::EntryIndex>,
                 )> for Suspended
             {
                 fn from(
                     (metadata, waiting_for_completed_entries): (
-                        restate_storage_api::status_table::InvocationMetadata,
+                        restate_storage_api::invocation_status_table::InvocationMetadata,
                         HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
-                    let invocation_uuid: Bytes = metadata.invocation_uuid.into();
                     let response_sink = ServiceInvocationResponseSink::from(metadata.response_sink);
                     let journal_meta = JournalMeta::from(metadata.journal_metadata);
                     let waiting_for_completed_entries =
                         waiting_for_completed_entries.into_iter().collect();
 
                     Suspended {
-                        invocation_uuid,
+                        service_id: Some(metadata.service_id.into()),
                         response_sink: Some(response_sink),
                         journal_meta: Some(journal_meta),
                         method_name: metadata.method.into_bytes(),
@@ -358,25 +405,23 @@ pub mod storage {
 
             impl TryFrom<Virtual>
                 for (
-                    restate_types::identifiers::InvocationUuid,
-                    restate_storage_api::status_table::JournalMetadata,
-                    restate_storage_api::status_table::NotificationTarget,
-                    restate_storage_api::status_table::NotificationTarget,
-                    restate_storage_api::status_table::StatusTimestamps,
+                    restate_storage_api::invocation_status_table::JournalMetadata,
+                    restate_storage_api::invocation_status_table::NotificationTarget,
+                    restate_storage_api::invocation_status_table::NotificationTarget,
+                    restate_storage_api::invocation_status_table::StatusTimestamps,
                 )
             {
                 type Error = ConversionError;
 
                 fn try_from(value: Virtual) -> Result<Self, Self::Error> {
-                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let journal_metadata =
-                        restate_storage_api::status_table::JournalMetadata::try_from(
+                        restate_storage_api::invocation_status_table::JournalMetadata::try_from(
                             value
                                 .journal_meta
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
                     let completion_notification_target =
-                        restate_storage_api::status_table::NotificationTarget {
+                        restate_storage_api::invocation_status_table::NotificationTarget {
                             service: restate_types::identifiers::ServiceId::new(
                                 value.completion_notification_target_service_name,
                                 value.completion_notification_target_service_key,
@@ -384,20 +429,20 @@ pub mod storage {
                             method: value.completion_notification_target_method,
                         };
                     let kill_notification_target =
-                        restate_storage_api::status_table::NotificationTarget {
+                        restate_storage_api::invocation_status_table::NotificationTarget {
                             service: restate_types::identifiers::ServiceId::new(
                                 value.kill_notification_target_service_name,
                                 value.kill_notification_target_service_key,
                             ),
                             method: value.kill_notification_target_method,
                         };
-                    let timestamps = restate_storage_api::status_table::StatusTimestamps::new(
-                        MillisSinceEpoch::new(value.creation_time),
-                        MillisSinceEpoch::new(value.modification_time),
-                    );
+                    let timestamps =
+                        restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                        );
 
                     Ok((
-                        invocation_uuid,
                         journal_metadata,
                         completion_notification_target,
                         kill_notification_target,
@@ -408,33 +453,28 @@ pub mod storage {
 
             impl
                 From<(
-                    restate_types::identifiers::InvocationUuid,
-                    restate_storage_api::status_table::JournalMetadata,
-                    restate_storage_api::status_table::NotificationTarget,
-                    restate_storage_api::status_table::NotificationTarget,
-                    restate_storage_api::status_table::StatusTimestamps,
+                    restate_storage_api::invocation_status_table::JournalMetadata,
+                    restate_storage_api::invocation_status_table::NotificationTarget,
+                    restate_storage_api::invocation_status_table::NotificationTarget,
+                    restate_storage_api::invocation_status_table::StatusTimestamps,
                 )> for Virtual
             {
                 fn from(
                     (
-                        invocation_uuid,
                         journal_metadata,
                         completion_notification_target,
                         kill_notification_target,
                         timestamps,
                     ): (
-                        restate_types::identifiers::InvocationUuid,
-                        restate_storage_api::status_table::JournalMetadata,
-                        restate_storage_api::status_table::NotificationTarget,
-                        restate_storage_api::status_table::NotificationTarget,
-                        restate_storage_api::status_table::StatusTimestamps,
+                        restate_storage_api::invocation_status_table::JournalMetadata,
+                        restate_storage_api::invocation_status_table::NotificationTarget,
+                        restate_storage_api::invocation_status_table::NotificationTarget,
+                        restate_storage_api::invocation_status_table::StatusTimestamps,
                     ),
                 ) -> Self {
-                    let invocation_uuid: Bytes = invocation_uuid.into();
                     let journal_meta = JournalMeta::from(journal_metadata);
 
                     Virtual {
-                        invocation_uuid,
                         journal_meta: Some(journal_meta),
                         completion_notification_target_service_name: completion_notification_target
                             .service
@@ -457,7 +497,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<JournalMeta> for restate_storage_api::status_table::JournalMetadata {
+            impl TryFrom<JournalMeta> for restate_storage_api::invocation_status_table::JournalMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: JournalMeta) -> Result<Self, Self::Error> {
@@ -468,16 +508,20 @@ pub mod storage {
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?;
-                    Ok(restate_storage_api::status_table::JournalMetadata {
-                        length,
-                        span_context,
-                    })
+                    Ok(
+                        restate_storage_api::invocation_status_table::JournalMetadata {
+                            length,
+                            span_context,
+                        },
+                    )
                 }
             }
 
-            impl From<restate_storage_api::status_table::JournalMetadata> for JournalMeta {
-                fn from(value: restate_storage_api::status_table::JournalMetadata) -> Self {
-                    let restate_storage_api::status_table::JournalMetadata {
+            impl From<restate_storage_api::invocation_status_table::JournalMetadata> for JournalMeta {
+                fn from(
+                    value: restate_storage_api::invocation_status_table::JournalMetadata,
+                ) -> Self {
+                    let restate_storage_api::invocation_status_table::JournalMetadata {
                         span_context,
                         length,
                     } = value;
@@ -1471,25 +1515,6 @@ pub mod storage {
                                 )?,
                             },
                         ),
-                        outbox_message::OutboxMessage::IngressResponse(ingress_response) => {
-                            restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                                full_invocation_id:
-                                    restate_types::identifiers::FullInvocationId::try_from(
-                                        ingress_response.full_invocation_id.ok_or(
-                                            ConversionError::missing_field("full_invocation_id"),
-                                        )?,
-                                    )?,
-                                to_node_id: ingress_response
-                                    .ingress_node_id
-                                    .ok_or(ConversionError::missing_field("ingress_node_id"))?
-                                    .into(),
-                                response: restate_types::invocation::ResponseResult::try_from(
-                                    ingress_response
-                                        .response_result
-                                        .ok_or(ConversionError::missing_field("response_result"))?,
-                                )?,
-                            }
-                        }
                         outbox_message::OutboxMessage::Kill(outbox_kill) => {
                             let maybe_fid = outbox_kill.maybe_full_invocation_id.ok_or(
                                 ConversionError::missing_field("maybe_full_invocation_id"),
@@ -1545,19 +1570,6 @@ pub mod storage {
                                 )),
                             },
                         ),
-                        restate_storage_api::outbox_table::OutboxMessage::IngressResponse {
-                            to_node_id: node_id,
-                            full_invocation_id,
-                            response,
-                        } => {
-                            outbox_message::OutboxMessage::IngressResponse(OutboxIngressResponse {
-                                full_invocation_id: Some(FullInvocationId::from(
-                                    full_invocation_id,
-                                )),
-                                ingress_node_id: Some(node_id.into()),
-                                response_result: Some(ResponseResult::from(response)),
-                            })
-                        }
                         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
                             invocation_termination,
                         ) => match invocation_termination.flavor {

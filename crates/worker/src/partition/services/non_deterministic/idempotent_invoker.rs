@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::partition::types::create_response_message;
 use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
@@ -102,16 +103,13 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
         trace!(restate.invocation.id = %fid, "Invoking target service");
 
         // Invoke service
-        self.send_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+        self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             fid,
             request.method,
             request.argument,
             Source::Service(self.full_invocation_id.clone()),
             Some(ServiceInvocationResponseSink::NewInvocation {
-                target: FullInvocationId::with_service_id(
-                    self.full_invocation_id.service_id.clone(),
-                    InvocationUuid::new(),
-                ),
+                target: FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
                 method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
             }),
@@ -169,10 +167,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
 
         // Set response timer
         self.delay_invoke(
-            FullInvocationId::with_service_id(
-                self.full_invocation_id.service_id.clone(),
-                InvocationUuid::new(),
-            ),
+            FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
             restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
             Source::Service(self.full_invocation_id.clone()),
@@ -189,11 +184,11 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             .unwrap_or_default()
             .into_iter()
         {
-            self.send_message(OutboxMessage::from_response_sink(
+            self.send_response(create_response_message(
                 &callee_fid,
                 sink,
                 ResponseResult::Success(encoded_response.clone()),
-            ));
+            ))
         }
 
         Ok(())
@@ -241,10 +236,10 @@ mod tests {
             Bytes::copy_from_slice(b"123456"),
         ));
 
-        let expected_greeter_invocation_fid = FullInvocationId::generate(
+        let expected_greeter_invocation_fid = FullInvocationId::generate(ServiceId::new(
             restate_pb::mocks::GREETER_SERVICE_NAME,
             Bytes::copy_from_slice(b"654321"),
-        );
+        ));
         let expected_req = restate_pb::mocks::greeter::GreetingRequest {
             person: "Francesco".to_string(),
         };
@@ -311,8 +306,8 @@ mod tests {
         // Assert doesn't contain ingress response
         assert_that!(
             effects,
-            not(contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                OutboxMessage::IngressResponse { .. }
+            not(contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                IngressResponse { .. }
             )))))
         );
 
@@ -342,8 +337,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(expected_fid.clone()),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
@@ -386,8 +381,8 @@ mod tests {
         assert_that!(
             effects,
             all!(
-                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
-                    OutboxMessage::IngressResponse {
+                contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
+                    IngressResponse {
                         full_invocation_id: eq(expected_fid),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {

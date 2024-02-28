@@ -8,15 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[cfg(test)]
-use arc_swap::ArcSwap;
-use std::sync::OnceLock;
-
-#[cfg(not(test))]
-static MY_NODE_ID: OnceLock<NodeId> = OnceLock::new();
-#[cfg(test)]
-static MY_NODE_ID: OnceLock<ArcSwap<NodeId>> = OnceLock::new();
-
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
 ///
@@ -54,41 +45,12 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
 #[display(fmt = "N{}", _0)]
 pub struct PlainNodeId(#[cfg_attr(feature = "serde_schema", schemars(default))] u32);
 
-pub struct MyNodeIdWriter {}
-impl MyNodeIdWriter {
-    #[cfg(not(test))]
-    pub fn set_as_my_node_id(node_id: NodeId) {
-        debug_assert!(node_id.as_generational().is_some());
-        if let Err(e) = MY_NODE_ID.set(node_id) {
-            panic!("My NodeId can only be set once, it's already set to {}", e);
-        }
-    }
-
-    #[cfg(test)]
-    pub fn set_as_my_node_id(node_id: NodeId) {
-        use std::sync::Arc;
-
-        let n = MY_NODE_ID.get_or_init(|| ArcSwap::from_pointee(node_id));
-        n.store(Arc::new(node_id))
-    }
-}
-
 impl NodeId {
     pub fn new(id: u32, generation: Option<u32>) -> NodeId {
         match generation {
             Some(generation) => Self::new_generational(id, generation),
             None => Self::new_plain(id),
         }
-    }
-
-    #[cfg(not(test))]
-    pub fn my_node_id() -> Option<NodeId> {
-        MY_NODE_ID.get().copied()
-    }
-
-    #[cfg(test)]
-    pub fn my_node_id() -> Option<NodeId> {
-        MY_NODE_ID.get().map(|n| *n.load().as_ref())
     }
 
     pub fn new_plain(id: u32) -> NodeId {

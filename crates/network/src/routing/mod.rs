@@ -12,14 +12,11 @@ use crate::routing::consensus::ConsensusForwarder;
 use crate::routing::ingress::IngressRouter;
 use crate::routing::partition_processor::PartitionProcessorRouter;
 use crate::routing::shuffle::ShuffleRouter;
-use crate::{
-    NetworkCommand, TargetConsensusOrIngress, TargetConsensusOrShuffle, TargetShuffle,
-    TargetShuffleOrIngress, UnboundedNetworkHandle,
-};
+use crate::{NetworkCommand, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle};
 use restate_core::cancellation_watcher;
 use restate_types::identifiers::PeerId;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PartitionTarget;
+use restate_wal_protocol::Envelope;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -60,32 +57,18 @@ pub enum TerminationCause {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<
-    ConsensusMsg,
-    ShuffleIn,
-    ShuffleOut,
-    ShuffleToCon,
-    ShuffleToIngress,
-    IngressOut,
-    IngressToCon,
-    IngressToShuffle,
-    IngressIn,
-    PPOut,
-    PPToShuffle,
-    PPToIngress,
-    PartitionTable,
-> {
+pub struct Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable> {
     /// Receiver for messages from the consensus module
-    consensus_in_rx: mpsc::Receiver<PartitionTarget<ConsensusMsg>>,
+    consensus_in_rx: mpsc::Receiver<PartitionTarget<Envelope>>,
 
     /// Sender for messages to the consensus module
-    consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
+    consensus_tx: mpsc::Sender<PartitionTarget<Envelope>>,
 
     network_command_rx: mpsc::UnboundedReceiver<NetworkCommand<ShuffleIn>>,
 
-    shuffle_rx: mpsc::Receiver<ShuffleOut>,
+    shuffle_rx: mpsc::Receiver<Envelope>,
 
-    ingress_in_rx: mpsc::Receiver<IngressOut>,
+    ingress_in_rx: mpsc::Receiver<Envelope>,
 
     ingress_tx: mpsc::Sender<IngressIn>,
 
@@ -94,65 +77,26 @@ pub struct Network<
     partition_table: PartitionTable,
 
     // used for creating the ConsensusSender
-    consensus_in_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
+    consensus_in_tx: mpsc::Sender<PartitionTarget<Envelope>>,
 
     // used for creating the network handle
     network_command_tx: mpsc::UnboundedSender<NetworkCommand<ShuffleIn>>,
-    shuffle_tx: mpsc::Sender<ShuffleOut>,
+    shuffle_tx: mpsc::Sender<Envelope>,
 
     // used for creating the ingress sender
-    ingress_in_tx: mpsc::Sender<IngressOut>,
+    ingress_in_tx: mpsc::Sender<Envelope>,
 
     // used for creating the partition processor sender
     partition_processor_tx: mpsc::Sender<PPOut>,
 
-    _shuffle_to_ingress: PhantomData<ShuffleToIngress>,
-    _shuffle_to_con: PhantomData<ShuffleToCon>,
     _partition_processor_to_ingress: PhantomData<PPToIngress>,
     _partition_processor_to_shuffle: PhantomData<PPToShuffle>,
-    _ingress_to_shuffle: PhantomData<IngressToShuffle>,
-    _ingress_to_consensus: PhantomData<IngressToCon>,
 }
 
-impl<
-        ConsensusMsg,
-        ShuffleIn,
-        ShuffleOut,
-        ShuffleToCon,
-        ShuffleToIngress,
-        IngressOut,
-        IngressToCon,
-        IngressToShuffle,
-        IngressIn,
-        PPOut,
-        PPToShuffle,
-        PPToIngress,
-        PartitionTable,
-    >
-    Network<
-        ConsensusMsg,
-        ShuffleIn,
-        ShuffleOut,
-        ShuffleToCon,
-        ShuffleToIngress,
-        IngressOut,
-        IngressToCon,
-        IngressToShuffle,
-        IngressIn,
-        PPOut,
-        PPToShuffle,
-        PPToIngress,
-        PartitionTable,
-    >
+impl<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable>
+    Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable>
 where
-    ConsensusMsg: Debug + Send + Sync + 'static,
     ShuffleIn: Debug + Send + Sync + 'static,
-    ShuffleOut: TargetConsensusOrIngress<ShuffleToCon, ShuffleToIngress>,
-    ShuffleToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
-    ShuffleToIngress: Into<IngressIn> + Debug,
-    IngressOut: TargetConsensusOrShuffle<IngressToCon, IngressToShuffle>,
-    IngressToCon: WithPartitionKey + Into<ConsensusMsg> + Debug,
-    IngressToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     IngressIn: Debug + Send + Sync + 'static,
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
@@ -160,7 +104,7 @@ where
     PartitionTable: crate::FindPartition + Clone,
 {
     pub fn new(
-        consensus_tx: mpsc::Sender<PartitionTarget<ConsensusMsg>>,
+        consensus_tx: mpsc::Sender<PartitionTarget<Envelope>>,
         ingress_tx: mpsc::Sender<IngressIn>,
         partition_table: PartitionTable,
         channel_size: usize,
@@ -185,24 +129,20 @@ where
             partition_processor_rx,
             partition_processor_tx,
             partition_table,
-            _shuffle_to_con: Default::default(),
-            _shuffle_to_ingress: Default::default(),
             _partition_processor_to_ingress: Default::default(),
             _partition_processor_to_shuffle: Default::default(),
-            _ingress_to_consensus: Default::default(),
-            _ingress_to_shuffle: Default::default(),
         }
     }
 
-    pub fn create_consensus_sender(&self) -> ConsensusSender<ConsensusMsg> {
+    pub fn create_consensus_sender(&self) -> ConsensusSender<Envelope> {
         self.consensus_in_tx.clone()
     }
 
-    pub fn create_network_handle(&self) -> UnboundedNetworkHandle<ShuffleIn, ShuffleOut> {
+    pub fn create_network_handle(&self) -> UnboundedNetworkHandle<ShuffleIn, Envelope> {
         UnboundedNetworkHandle::new(self.network_command_tx.clone(), self.shuffle_tx.clone())
     }
 
-    pub fn create_ingress_sender(&self) -> IngressSender<IngressOut> {
+    pub fn create_ingress_sender(&self) -> IngressSender<Envelope> {
         self.ingress_in_tx.clone()
     }
 
@@ -230,18 +170,10 @@ where
             Arc::new(Mutex::new(HashMap::new()));
 
         let consensus_forwarder = ConsensusForwarder::new(consensus_in_rx, consensus_tx.clone());
-        let shuffle_router = ShuffleRouter::new(
-            shuffle_rx,
-            consensus_tx.clone(),
-            ingress_tx.clone(),
-            partition_table.clone(),
-        );
-        let ingress_router = IngressRouter::new(
-            ingress_in_rx,
-            consensus_tx.clone(),
-            Arc::clone(&shuffles),
-            partition_table.clone(),
-        );
+        let shuffle_router =
+            ShuffleRouter::new(shuffle_rx, consensus_tx.clone(), partition_table.clone());
+        let ingress_router =
+            IngressRouter::new(ingress_in_rx, consensus_tx.clone(), partition_table.clone());
         let partition_processor_router = PartitionProcessorRouter::new(
             partition_processor_rx,
             ingress_tx.clone(),

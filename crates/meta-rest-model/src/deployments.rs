@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::services::ServiceRevision;
+use super::services::ComponentRevision;
 use std::time::SystemTime;
 
 use restate_schema_api::service::ServiceMetadata;
@@ -157,7 +157,7 @@ pub enum RegisterDeploymentRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServiceNameRevPair {
     pub name: String,
-    pub revision: ServiceRevision,
+    pub revision: ComponentRevision,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

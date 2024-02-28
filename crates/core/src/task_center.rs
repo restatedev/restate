@@ -20,9 +20,9 @@ use futures::Future;
 use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::metadata::Metadata;
+use crate::metadata::{spawn_metadata_manager, Metadata, MetadataManager};
 use crate::{TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
@@ -52,7 +52,15 @@ impl TaskCenterFactory {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn create_test_task_center() -> TaskCenter {
-    TaskCenterFactory::create(tokio::runtime::Handle::current())
+    let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+
+    let metadata_manager = MetadataManager::build();
+    let metadata = metadata_manager.metadata();
+    tc.try_set_global_metadata(metadata);
+
+    spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager should start");
+
+    tc
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.
@@ -132,7 +140,12 @@ impl TaskCenter {
         });
 
         inner.tasks.lock().unwrap().insert(id, Arc::clone(&task));
-        let metadata = inner.global_metadata.get().cloned();
+        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
+        let metadata = METADATA
+            .try_with(|m| m.clone())
+            .ok()
+            .flatten()
+            .or_else(|| inner.global_metadata.get().cloned());
 
         let mut handle_mut = task.join_handle.lock().unwrap();
 
@@ -316,7 +329,7 @@ impl TaskCenter {
         future: F,
     ) -> O
     where
-        F: Future<Output = O> + Send + 'static,
+        F: Future<Output = O> + Send,
     {
         let cancel_token = CancellationToken::new();
         let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst));
@@ -328,10 +341,19 @@ impl TaskCenter {
             cancel: cancel_token.clone(),
             join_handle: Mutex::new(None),
         });
-        CURRENT_TASK_CENTER
+        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
+        let metadata = METADATA
+            .try_with(|m| m.clone())
+            .ok()
+            .flatten()
+            .or_else(|| self.inner.global_metadata.get().cloned());
+        METADATA
             .scope(
-                self.clone(),
-                CANCEL_TOKEN.scope(cancel_token, CURRENT_TASK.scope(task, future)),
+                metadata,
+                CURRENT_TASK_CENTER.scope(
+                    self.clone(),
+                    CANCEL_TOKEN.scope(cancel_token, CURRENT_TASK.scope(task, future)),
+                ),
             )
             .await
     }
@@ -357,8 +379,16 @@ impl TaskCenter {
             cancel: cancel_token.clone(),
             join_handle: Mutex::new(None),
         });
-        CURRENT_TASK_CENTER.sync_scope(self.clone(), || {
-            CANCEL_TOKEN.sync_scope(cancel_token, || CURRENT_TASK.sync_scope(task, f))
+        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
+        let metadata = METADATA
+            .try_with(|m| m.clone())
+            .ok()
+            .flatten()
+            .or_else(|| self.inner.global_metadata.get().cloned());
+        METADATA.sync_scope(metadata, || {
+            CURRENT_TASK_CENTER.sync_scope(self.clone(), || {
+                CANCEL_TOKEN.sync_scope(cancel_token, || CURRENT_TASK.sync_scope(task, f))
+            })
         })
     }
 
@@ -417,7 +447,7 @@ impl TaskCenter {
         {
             match result {
                 Ok(Ok(())) => {
-                    debug!(kind = ?kind, name = ?task.name, "Task {} exited normally", task_id);
+                    trace!(kind = ?kind, name = ?task.name, "Task {} exited normally", task_id);
                 }
                 Ok(Err(err)) => {
                     if err.root_cause().downcast_ref::<ShutdownError>().is_some() {
@@ -542,7 +572,8 @@ pub fn current_task_id() -> Option<TaskId> {
     CURRENT_TASK.try_with(|ct| ct.id).ok()
 }
 
-/// Access to global metadata handle. This available in task-center tasks only!
+/// Accepss to global metadata handle. This available in task-center tasks only!
+#[track_caller]
 pub fn metadata() -> Metadata {
     METADATA
         .try_with(|m| m.clone())

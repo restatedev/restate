@@ -33,6 +33,7 @@ use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::errors::InvocationError;
+use restate_types::identifiers::ServiceId;
 use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
@@ -332,7 +333,7 @@ where
                     })?;
 
 
-                let fid = FullInvocationId::generate(service_name, key);
+                let fid = FullInvocationId::generate(ServiceId::new(service_name, key));
                 let span_relation = SpanRelation::Parent(ingress_span_context);
 
                 // Check if Idempotency-Key is available

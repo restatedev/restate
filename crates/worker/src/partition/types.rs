@@ -12,6 +12,7 @@ use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::identifiers::{FullInvocationId, PeerId};
+use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
@@ -43,12 +44,6 @@ pub struct IngressAckResponse {
 
 // Extension methods to the OutboxMessage type
 pub(crate) trait OutboxMessageExt {
-    fn from_response_sink(
-        callee: &FullInvocationId,
-        response_sink: ServiceInvocationResponseSink,
-        result: ResponseResult,
-    ) -> OutboxMessage;
-
     fn from_awakeable_completion(
         invocation_id: InvocationId,
         entry_index: EntryIndex,
@@ -57,49 +52,6 @@ pub(crate) trait OutboxMessageExt {
 }
 
 impl OutboxMessageExt for OutboxMessage {
-    fn from_response_sink(
-        callee: &FullInvocationId,
-        response_sink: ServiceInvocationResponseSink,
-        result: ResponseResult,
-    ) -> OutboxMessage {
-        match response_sink {
-            ServiceInvocationResponseSink::PartitionProcessor {
-                entry_index,
-                caller,
-            } => OutboxMessage::ServiceResponse(InvocationResponse {
-                id: MaybeFullInvocationId::Full(caller),
-                entry_index,
-                result,
-            }),
-            ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
-                OutboxMessage::IngressResponse {
-                    to_node_id: ingress_dispatcher_id,
-                    full_invocation_id: callee.clone(),
-                    response: result,
-                }
-            }
-            ServiceInvocationResponseSink::NewInvocation {
-                target,
-                method,
-                caller_context,
-            } => {
-                OutboxMessage::ServiceInvocation(ServiceInvocation::new(
-                    target,
-                    method,
-                    // Methods receiving responses MUST accept this input type
-                    restate_pb::restate::internal::ServiceInvocationSinkRequest {
-                        response: Some(result.into()),
-                        caller_context,
-                    }
-                    .encode_to_vec(),
-                    Source::Service(callee.clone()),
-                    None,
-                    SpanRelation::None,
-                ))
-            }
-        }
-    }
-
     fn from_awakeable_completion(
         invocation_id: InvocationId,
         entry_index: EntryIndex,
@@ -111,4 +63,52 @@ impl OutboxMessageExt for OutboxMessage {
             id: MaybeFullInvocationId::Partial(invocation_id),
         })
     }
+}
+
+pub fn create_response_message(
+    callee: &FullInvocationId,
+    response_sink: ServiceInvocationResponseSink,
+    result: ResponseResult,
+) -> ResponseMessage {
+    match response_sink {
+        ServiceInvocationResponseSink::PartitionProcessor {
+            entry_index,
+            caller,
+        } => ResponseMessage::Outbox(OutboxMessage::ServiceResponse(InvocationResponse {
+            id: MaybeFullInvocationId::Full(caller),
+            entry_index,
+            result,
+        })),
+        ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
+            ResponseMessage::Ingress(IngressResponse {
+                target_node: ingress_dispatcher_id,
+                full_invocation_id: callee.clone(),
+                response: result,
+            })
+        }
+        ServiceInvocationResponseSink::NewInvocation {
+            target,
+            method,
+            caller_context,
+        } => {
+            ResponseMessage::Outbox(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+                target,
+                method,
+                // Methods receiving responses MUST accept this input type
+                restate_pb::restate::internal::ServiceInvocationSinkRequest {
+                    response: Some(result.into()),
+                    caller_context,
+                }
+                .encode_to_vec(),
+                Source::Service(callee.clone()),
+                None,
+                SpanRelation::None,
+            )))
+        }
+    }
+}
+
+pub enum ResponseMessage {
+    Outbox(OutboxMessage),
+    Ingress(IngressResponse),
 }

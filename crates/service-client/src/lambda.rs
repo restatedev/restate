@@ -12,6 +12,7 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-smithy-client/src/conns.rs
 //! License Apache-2.0
 
+use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
@@ -319,6 +320,22 @@ pub enum LambdaError {
     Base64Error(base64::DecodeError),
     #[error("function returned neither a payload or an error")]
     MissingResponse,
+}
+
+impl LambdaError {
+    /// Retryable errors are those which can be caused by transient faults and where
+    /// retrying can succeed.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            LambdaError::Body(err) => err.is_retryable(),
+            LambdaError::SdkError(err) => err.is_retryable(),
+            LambdaError::FunctionError(_) => false,
+            LambdaError::SerializationError(_) => false,
+            LambdaError::DeserializationError(_) => false,
+            LambdaError::Base64Error(_) => false,
+            LambdaError::MissingResponse => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

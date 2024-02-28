@@ -22,7 +22,10 @@ use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
 use pretty::Pretty;
+use std::env;
 use std::fmt::Display;
+use std::str::FromStr;
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tracing::{warn, Level};
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
@@ -122,7 +125,8 @@ impl TracingOptions {
             let exporter = SpanExporterBuilder::from(
                 opentelemetry_otlp::new_exporter()
                     .tonic()
-                    .with_endpoint(endpoint),
+                    .with_endpoint(endpoint)
+                    .with_metadata(parse_headers_from_env()),
             )
             .build_span_exporter()?;
             tracer_provider_builder =
@@ -164,6 +168,42 @@ impl TracingOptions {
             .with_tracer(tracer)
             .with_filter(EnvFilter::try_new(&self.filter)?))
     }
+}
+
+// Until https://github.com/open-telemetry/opentelemetry-rust/pull/1377 is released, we copy its logic
+// here to include trace headers in OTLP requests
+fn parse_headers_from_env() -> MetadataMap {
+    env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        .or_else(|_| env::var("OTEL_EXPORTER_OTLP_HEADERS"))
+        .map(|input| {
+            let iter = parse_header_string(&input).filter_map(|(key, value)| {
+                Some((
+                    MetadataKey::from_str(key).ok()?,
+                    MetadataValue::try_from(value).ok()?,
+                ))
+            });
+            let (_, upper) = iter.size_hint();
+            let mut map = MetadataMap::with_capacity(upper.unwrap_or_default());
+            iter.for_each(|(key, value)| {
+                map.insert(key, value);
+            });
+            map
+        })
+        .unwrap_or_default()
+}
+
+fn parse_header_string(value: &str) -> impl Iterator<Item = (&str, &str)> {
+    value
+        .split_terminator(',')
+        .map(str::trim)
+        .filter_map(parse_header_key_value_string)
+}
+
+fn parse_header_key_value_string(key_value_string: &str) -> Option<(&str, &str)> {
+    key_value_string
+        .split_once('=')
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .filter(|(key, value)| !key.is_empty() && !value.is_empty())
 }
 
 /// # Log format

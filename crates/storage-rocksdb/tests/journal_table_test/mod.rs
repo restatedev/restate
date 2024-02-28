@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use std::pin::pin;
 
@@ -24,36 +24,22 @@ const MOCK_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::n
     Bytes::new(),
 ));
 
+const MOCK_INVOCATION_ID_1: InvocationId =
+    InvocationId::from_parts(1, InvocationUuid::from_parts(1706027034946, 12345678900001));
+
 async fn populate_data<T: JournalTable>(txn: &mut T) {
-    txn.put_journal_entry(
-        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        0,
-        MOCK_JOURNAL_ENTRY,
-    )
-    .await;
-    txn.put_journal_entry(
-        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        1,
-        MOCK_JOURNAL_ENTRY,
-    )
-    .await;
-    txn.put_journal_entry(
-        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        2,
-        MOCK_JOURNAL_ENTRY,
-    )
-    .await;
-    txn.put_journal_entry(
-        &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-        3,
-        MOCK_JOURNAL_ENTRY,
-    )
-    .await;
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, MOCK_JOURNAL_ENTRY)
+        .await;
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, MOCK_JOURNAL_ENTRY)
+        .await;
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, MOCK_JOURNAL_ENTRY)
+        .await;
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, MOCK_JOURNAL_ENTRY)
+        .await;
 }
 
 async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
-    let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
-    let mut journal = pin!(txn.get_journal(service_id, 4));
+    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 4));
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -63,8 +49,7 @@ async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
-    let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
-    let mut journal = pin!(txn.get_journal(service_id, 2));
+    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 2));
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
@@ -75,17 +60,14 @@ async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
 
 async fn point_lookups<T: JournalTable>(txn: &mut T) {
     let result = txn
-        .get_journal_entry(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 2)
+        .get_journal_entry(&MOCK_INVOCATION_ID_1, 2)
         .await
         .expect("should not fail");
 
     assert!(result.is_some());
 
     let result = txn
-        .get_journal_entry(
-            &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            10000,
-        )
+        .get_journal_entry(&MOCK_INVOCATION_ID_1, 10000)
         .await
         .expect("should not fail");
 
@@ -93,14 +75,13 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), 4)
-        .await;
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 4).await;
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
     for i in 0..4 {
         let result = txn
-            .get_journal_entry(&ServiceId::with_partition_key(1337, "svc-1", "key-1"), i)
+            .get_journal_entry(&MOCK_INVOCATION_ID_1, i)
             .await
             .expect("should not fail");
 
