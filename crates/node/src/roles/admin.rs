@@ -10,7 +10,7 @@
 
 use anyhow::Context;
 use codederror::CodedError;
-use restate_node_services::node::node_svc_client::NodeSvcClient;
+use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
 use tracing::info;
 
@@ -18,7 +18,7 @@ use restate_admin::service::AdminService;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
-use restate_node_services::node::{StateMutationRequest, TerminationRequest};
+use restate_node_services::node_svc::{StateMutationRequest, TerminationRequest};
 use restate_types::invocation::InvocationTermination;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
