@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::info;
 
@@ -22,8 +23,8 @@ use super::MetadataInner;
 use super::MetadataKind;
 use super::MetadataWriter;
 
-pub(super) type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
-pub(super) type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
+pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
+pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
 pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
@@ -70,11 +71,11 @@ impl MetadataManager {
     }
 
     pub fn writer(&self) -> MetadataWriter {
-        MetadataWriter::new(self.self_sender.clone())
+        MetadataWriter::new(self.self_sender.clone(), self.inner.clone())
     }
 
     /// Start and wait for shutdown signal.
-    pub async fn run(mut self /*, network_sender: NetworkSender*/) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         info!("Metadata manager started");
 
         loop {
