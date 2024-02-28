@@ -40,6 +40,7 @@ restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-grpc = { path = "crates/ingress-grpc" }
+restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }

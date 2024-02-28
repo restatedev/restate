@@ -64,6 +64,7 @@ pub enum TaskKind {
     RpcServer,
     RoleRunner,
     SystemService,
+    Ingress,
     PartitionProcessor,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system

@@ -1,0 +1,65 @@
+[package]
+name = "restate-ingress-http"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = ["dep:schemars"]
+
+[dependencies]
+# Restate
+restate-core = { workspace = true }
+restate-errors = { workspace = true }
+restate-ingress-dispatcher = { workspace = true }
+restate-schema-api = { workspace = true, features = ["component"]}
+restate-types = { workspace = true }
+
+# Encoding/Decoding
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Futures
+futures = { workspace = true }
+restate-futures-util = { workspace = true }
+
+# Tokio + Hyper
+hyper = { version = "1", features = ["server"] }
+tokio = { workspace = true }
+http = "1.0"
+http-body = "1.0"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["http1", "http2", "server"] }
+
+# Tracing
+opentelemetry = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+# Other
+anyhow = { workspace = true }
+codederror = { workspace = true }
+derive_builder = { workspace = true }
+metrics = { workspace = true }
+schemars = { workspace = true, optional = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+urlencoding = "2.1"
+
+[dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
+restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
+restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["mocks"]}
+
+hyper = { version = "1.0", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+
+tracing-test = { workspace = true }
+tracing-subscriber = { workspace = true }
