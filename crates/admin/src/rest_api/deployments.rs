@@ -16,7 +16,7 @@ use restate_meta::{ApplyMode, Force};
 use restate_meta_rest_model::deployments::*;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_service_client::Endpoint;
-use restate_service_protocol::discovery::DiscoverEndpoint;
+use restate_service_protocol::old_discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
 
 use crate::rest_api::notify_worker_about_schema_changes;
@@ -95,7 +95,7 @@ pub async fn create_deployment<W>(
     let force = if force { Force::Yes } else { Force::No };
     let registration_result = state
         .meta_handle()
-        .register_deployment(discover_endpoint, force, apply_changes)
+        .old_register_deployment(discover_endpoint, force, apply_changes)
         .await?;
 
     notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;

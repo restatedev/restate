@@ -17,7 +17,7 @@ use hyper::Uri;
 use test_log::test;
 
 use restate_service_client::{AssumeRoleCacheMode, Endpoint, Options as ServiceClientOptions};
-use restate_service_protocol::discovery::*;
+use restate_service_protocol::old_discovery::*;
 use restate_types::retries::RetryPolicy;
 
 #[ignore]
