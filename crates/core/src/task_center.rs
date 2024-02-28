@@ -52,10 +52,15 @@ impl TaskCenterFactory {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn create_test_task_center() -> TaskCenter {
+    use restate_types::GenerationalNodeId;
+
     let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
 
     let metadata_manager = MetadataManager::build();
     let metadata = metadata_manager.metadata();
+    metadata_manager
+        .writer()
+        .set_my_node_id(GenerationalNodeId::new(1, 1));
     tc.try_set_global_metadata(metadata);
 
     spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager should start");
