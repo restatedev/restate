@@ -56,7 +56,7 @@ message Source {
 message InvocationStatus {
 
     message Invoked {
-        bytes invocation_uuid = 1;
+        ServiceId service_id = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -70,7 +70,7 @@ message InvocationStatus {
     }
 
     message Suspended {
-        bytes invocation_uuid = 1;
+        ServiceId service_id = 1;
         JournalMeta journal_meta = 2;
         ServiceInvocationResponseSink response_sink = 3;
         uint64 creation_time = 4;
@@ -88,7 +88,6 @@ message InvocationStatus {
     }
 
     message Virtual {
-        bytes invocation_uuid = 1;
         JournalMeta journal_meta = 2;
         string completion_notification_target_service_name = 3;
         bytes completion_notification_target_service_key = 4;
@@ -105,6 +104,16 @@ message InvocationStatus {
         Suspended suspended = 2;
         Free free = 3;
         Virtual virtual = 4;
+    }
+}
+
+message ServiceStatus {
+    message Locked {
+        bytes invocation_uuid = 1;
+    }
+
+    oneof status {
+        Locked locked = 1;
     }
 }
 

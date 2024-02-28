@@ -13,7 +13,7 @@ use bytestring::ByteString;
 use futures::Stream;
 use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
+use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
@@ -24,10 +24,11 @@ use tempfile::tempdir;
 use tokio_stream::StreamExt;
 
 mod inbox_table_test;
+mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
+mod service_status_table_test;
 mod state_table_test;
-mod status_table_test;
 mod timer_table_test;
 
 fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
@@ -69,7 +70,8 @@ async fn test_read_write() {
     journal_table_test::run_tests(rocksdb.clone()).await;
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
-    status_table_test::run_tests(rocksdb.clone()).await;
+    invocation_status_table_test::run_tests(rocksdb.clone()).await;
+    service_status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
 
     close.await;
@@ -77,7 +79,7 @@ async fn test_read_write() {
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     ServiceInvocation::new(
-        FullInvocationId::with_service_id(service_id, InvocationUuid::new()),
+        FullInvocationId::generate(service_id),
         ByteString::from_static("service"),
         Bytes::new(),
         Source::Ingress,

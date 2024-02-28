@@ -32,9 +32,9 @@ pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareA
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_schema_impl::Schemas;
-use restate_storage_api::status_table::InvocationStatus;
+use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::EntryType;
 use restate_types::NodeId;
@@ -284,7 +284,7 @@ where
 
         for full_invocation_id in built_in_invoked_services {
             let input_entry = partition_storage
-                .load_journal_entry(&full_invocation_id.service_id, 0)
+                .load_journal_entry(&InvocationId::from(&full_invocation_id), 0)
                 .await?
                 .expect("first journal entry must be present; if not, this indicates a bug.");
 
@@ -296,7 +296,7 @@ where
             );
 
             let status = partition_storage
-                .get_invocation_status(&full_invocation_id.service_id)
+                .get_invocation_status(&InvocationId::from(&full_invocation_id))
                 .await?;
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);

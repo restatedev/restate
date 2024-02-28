@@ -281,7 +281,7 @@ pub async fn count_deployment_active_inv(
     Ok(client
         .run_count_agg_query(format!(
             "SELECT COUNT(id) AS inv_count \
-            FROM sys_status \
+            FROM sys_invocation_status \
             WHERE pinned_deployment_id = '{}' \
             GROUP BY pinned_deployment_id",
             deployment_id
@@ -393,7 +393,7 @@ pub async fn count_deployment_active_inv_by_method(
             service,
             method,
             COUNT(id) AS inv_count
-            FROM sys_status
+            FROM sys_invocation_status
             WHERE pinned_deployment_id = '{}'
             GROUP BY pinned_deployment_id, service, method",
         deployment_id
@@ -480,7 +480,7 @@ pub async fn get_services_status(
                 END AS combined_status,
                 ss.id,
                 ss.created_at
-            FROM sys_status ss
+            FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
             WHERE ss.service IN {}
             )
@@ -627,7 +627,7 @@ pub async fn get_locked_keys_status(
                 sis.last_attempt_deployment_id,
                 sis.next_retry_at,
                 sis.last_start_at
-            FROM sys_status ss
+            FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
             WHERE ss.service IN {}
             )
@@ -737,7 +737,7 @@ pub async fn find_active_invocations(
             svc.deployment_id as svc_latest_deployment,
             dp.id as known_deployment_id,
             ss.trace_id
-        FROM sys_status ss
+        FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
         LEFT JOIN sys_service svc ON svc.name = ss.service
         LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
@@ -973,12 +973,9 @@ pub async fn get_invocation_journal(
             sj.invoked_method,
             sj.invoked_service_key,
             sj.sleep_wakeup_at
-        FROM sys_status ss
-        LEFT JOIN sys_journal sj
-            ON ss.service_key = sj.service_key
-            AND ss.service = sj.service
+        FROM sys_journal sj
         WHERE
-            ss.id = '{}'
+            sj.invocation_id = '{}'
         ORDER BY index DESC
         LIMIT {}",
         invocation_id, JOURNAL_QUERY_LIMIT,

@@ -30,11 +30,10 @@ pub(crate) fn append_journal_row(
 ) {
     let mut row = builder.row();
 
-    row.partition_key(journal_row.partition_key);
-    row.service(&journal_row.service);
-    row.service_key(
-        std::str::from_utf8(&journal_row.service_key).expect("The key must be a string!"),
-    );
+    row.partition_key(journal_row.invocation_id.partition_key());
+    if row.is_invocation_id_defined() {
+        row.invocation_id(format_using(output, &journal_row.invocation_id));
+    }
 
     row.index(journal_row.journal_index);
 

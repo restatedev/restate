@@ -62,7 +62,8 @@ impl Options {
         } = self;
 
         let ctx = QueryContext::new(memory_limit, temp_folder, query_parallelism);
-        crate::status::register_self(&ctx, rocksdb.clone())?;
+        crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
+        crate::service_status::register_self(&ctx, rocksdb.clone())?;
         crate::state::register_self(&ctx, rocksdb.clone())?;
         crate::journal::register_self(&ctx, rocksdb.clone())?;
         crate::invocation_state::register_self(&ctx, status)?;

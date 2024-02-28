@@ -14,19 +14,9 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(status(
+define_table!(service_status(
     partition_key: DataType::UInt64,
     service: DataType::LargeUtf8,
-    method: DataType::LargeUtf8,
     service_key: DataType::LargeUtf8,
-    status: DataType::LargeUtf8,
-    id: DataType::LargeUtf8,
-    invoked_by: DataType::LargeUtf8,
-    invoked_by_service: DataType::LargeUtf8,
-    invoked_by_id: DataType::LargeUtf8,
-    pinned_deployment_id: DataType::LargeUtf8,
-    trace_id: DataType::LargeUtf8,
-    journal_size: DataType::UInt32,
-    created_at: DataType::Date64,
-    modified_at: DataType::Date64,
+    invocation_id: DataType::LargeUtf8,
 ));

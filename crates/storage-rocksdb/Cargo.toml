@@ -39,7 +39,7 @@ log = "0.4.20"
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
-restate-types = { workspace = true, features = ["mocks", "test-utils"] }
+restate-types = { workspace = true, features = ["mocks"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }

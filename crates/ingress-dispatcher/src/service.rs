@@ -268,10 +268,10 @@ impl DispatcherLoopHandler {
 
                 (
                     ServiceInvocation {
-                        fid: FullInvocationId::generate(
+                        fid: FullInvocationId::generate(ServiceId::new(
                             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
                             idempotency_fid_key.freeze(),
-                        ),
+                        )),
                         method_name: restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME
                             .to_string()
                             .into(),
@@ -375,7 +375,7 @@ mod tests {
             .unwrap();
 
         // Ask for a response, then drop the receiver
-        let fid = FullInvocationId::generate("MySvc", "MyKey");
+        let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
         let (invocation, response_rx) = IngressRequest::invocation(
             fid.clone(),
             "pippo",
@@ -420,7 +420,7 @@ mod tests {
         .unwrap();
 
         // Ask for a response, then drop the receiver
-        let fid = FullInvocationId::generate("MySvc", "MyKey");
+        let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
         let argument = Bytes::from_static(b"nbfjksdfs");
         let idempotency_key = Bytes::copy_from_slice(b"123");
         let (invocation, res) = IngressRequest::invocation(

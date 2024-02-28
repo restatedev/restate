@@ -12,7 +12,7 @@ use crate::Result;
 use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, InvocationUuid, PartitionKey, ServiceId,
+    DeploymentId, EntryIndex, FullInvocationId, InvocationId, PartitionKey, ServiceId,
 };
 use restate_types::invocation::{
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -70,7 +70,7 @@ pub struct NotificationTarget {
     pub method: String,
 }
 
-/// Status of a service instance.
+/// Status of an invocation.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum InvocationStatus {
     Invoked(InvocationMetadata),
@@ -79,7 +79,6 @@ pub enum InvocationStatus {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
     Virtual {
-        invocation_uuid: InvocationUuid,
         journal_metadata: JournalMetadata,
         timestamps: StatusTimestamps,
         completion_notification_target: NotificationTarget,
@@ -92,14 +91,11 @@ pub enum InvocationStatus {
 
 impl InvocationStatus {
     #[inline]
-    pub fn invocation_uuid(&self) -> Option<InvocationUuid> {
+    pub fn service_id(&self) -> Option<ServiceId> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata.invocation_uuid),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata.invocation_uuid),
-            InvocationStatus::Virtual {
-                invocation_uuid, ..
-            } => Some(*invocation_uuid),
-            InvocationStatus::Free => None,
+            InvocationStatus::Invoked(metadata) => Some(metadata.service_id.clone()),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata.service_id.clone()),
+            _ => None,
         }
     }
 
@@ -181,7 +177,7 @@ impl JournalMetadata {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvocationMetadata {
-    pub invocation_uuid: InvocationUuid,
+    pub service_id: ServiceId,
     pub journal_metadata: JournalMetadata,
     pub deployment_id: Option<DeploymentId>,
     pub method: ByteString,
@@ -192,7 +188,7 @@ pub struct InvocationMetadata {
 
 impl InvocationMetadata {
     pub fn new(
-        invocation_uuid: InvocationUuid,
+        service_id: ServiceId,
         journal_metadata: JournalMetadata,
         deployment_id: Option<DeploymentId>,
         method: ByteString,
@@ -201,7 +197,7 @@ impl InvocationMetadata {
         source: Source,
     ) -> Self {
         Self {
-            invocation_uuid,
+            service_id,
             journal_metadata,
             deployment_id,
             method,
@@ -212,35 +208,29 @@ impl InvocationMetadata {
     }
 }
 
-pub trait StatusTable: ReadOnlyStatusTable {
-    fn put_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-        status: InvocationStatus,
-    ) -> impl Future<Output = ()> + Send;
-
-    fn delete_invocation_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = ()> + Send;
-}
-
-pub trait ReadOnlyStatusTable {
+pub trait ReadOnlyInvocationStatusTable {
     fn get_invocation_status(
         &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<Option<InvocationStatus>>> + Send;
-
-    fn get_invocation_status_from(
-        &mut self,
-        partition_key: PartitionKey,
-        invocation_uuid: InvocationUuid,
-    ) -> impl Future<Output = Result<Option<(ServiceId, InvocationStatus)>>> + Send;
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<FullInvocationId>> + Send;
+}
+
+pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
+    fn put_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+        status: InvocationStatus,
+    ) -> impl Future<Output = ()> + Send;
+
+    fn delete_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 #[cfg(any(test, feature = "mocks"))]
@@ -250,7 +240,7 @@ mod mocks {
     impl InvocationMetadata {
         pub fn mock() -> Self {
             InvocationMetadata {
-                invocation_uuid: InvocationUuid::new(),
+                service_id: ServiceId::new("MyService", "MyKey"),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 deployment_id: None,
                 method: ByteString::from("mock"),

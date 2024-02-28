@@ -9,24 +9,18 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::status_table::{InvocationStatus, JournalMetadata, NotificationTarget};
-use restate_types::identifiers::WithPartitionKey;
-use restate_types::journal::{Completion, CompletionResult};
-use std::collections::HashSet;
-use std::fmt;
-use std::vec::Drain;
-use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
-
+use restate_storage_api::invocation_status_table::InvocationMetadata;
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, JournalMetadata, NotificationTarget,
+};
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::status_table::InvocationMetadata;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
+    DeploymentId, EntryIndex, FullInvocationId, InvocationId, ServiceId,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -34,22 +28,27 @@ use restate_types::invocation::{
     SpanRelation,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::{Completion, CompletionResult};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerValue;
+use std::collections::HashSet;
+use std::fmt;
+use std::vec::Drain;
+use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 
 #[derive(Debug)]
 pub(crate) enum Effect {
     // service status changes
     InvokeService(ServiceInvocation),
     ResumeService {
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         metadata: InvocationMetadata,
     },
     SuspendService {
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
@@ -64,8 +63,12 @@ pub(crate) enum Effect {
         message: OutboxMessage,
     },
     TruncateOutbox(MessageIndex),
+    DropJournal {
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    },
     DropJournalAndPopInbox {
-        service_id: ServiceId,
+        full_invocation_id: FullInvocationId,
         journal_length: EntryIndex,
     },
     DeleteInboxEntry {
@@ -102,12 +105,12 @@ pub(crate) enum Effect {
 
     // Journal operations
     StoreDeploymentId {
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         deployment_id: DeploymentId,
         metadata: InvocationMetadata,
     },
     AppendJournalEntry {
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
         // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
         // by using a merge operator in rocksdb.
@@ -116,18 +119,18 @@ pub(crate) enum Effect {
         journal_entry: EnrichedRawEntry,
     },
     StoreCompletion {
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     },
     ForwardCompletion {
+        // TODO this can be invocation_id once the invoker uses only InvocationId
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
 
     // Virtual journal
     CreateVirtualJournal {
-        service_id: ServiceId,
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         completion_notification_target: NotificationTarget,
         kill_notification_target: NotificationTarget,
@@ -136,14 +139,14 @@ pub(crate) enum Effect {
         target_service: ServiceId,
         method_name: String,
         // TODO perhaps we should rename this type JournalId
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
         completion: Completion,
     },
     NotifyVirtualJournalKill {
         target_service: ServiceId,
         method_name: String,
         // TODO perhaps we should rename this type JournalId
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
     },
 
     // Effects used only for tracing purposes
@@ -223,7 +226,7 @@ impl Effect {
                 "Effect: Resume service"
             ),
             Effect::SuspendService {
-                service_id,
+                invocation_id,
                 metadata,
                 waiting_for_completed_entries,
                 ..
@@ -234,8 +237,7 @@ impl Effect {
                     metadata.journal_metadata.span_context.as_parent(),
                     "suspend",
                     restate.journal.length = metadata.journal_metadata.length,
-                    rpc.service = %service_id.service_name,
-                    restate.invocation.id = %FullInvocationId::with_service_id(service_id.clone(), metadata.invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                 );
                 debug_if_leader!(
                     is_leader,
@@ -335,6 +337,13 @@ impl Effect {
             }
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
+            }
+            Effect::DropJournal { journal_length, .. } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.journal.length = journal_length,
+                    "Effect: Drop journal"
+                );
             }
             Effect::DropJournalAndPopInbox { journal_length, .. } => {
                 debug_if_leader!(
@@ -461,10 +470,12 @@ impl Effect {
             Effect::AppendJournalEntry {
                 journal_entry,
                 entry_index,
+                invocation_id,
                 ..
             } => debug_if_leader!(
                 is_leader,
                 restate.journal.index = entry_index,
+                restate.invocation.id = %invocation_id,
                 "Effect: Write journal entry {:?} to storage",
                 journal_entry.header().as_entry_type()
             ),
@@ -494,15 +505,10 @@ impl Effect {
                 "Effect: Forward completion {} to deployment",
                 CompletionResultFmt(result)
             ),
-            Effect::CreateVirtualJournal {
-                service_id,
-                invocation_uuid,
-                ..
-            } => {
+            Effect::CreateVirtualJournal { invocation_id, .. } => {
                 debug_if_leader!(
                     is_leader,
-                    restate.service.id = ?service_id,
-                    restate.invocation.id = %InvocationId::new(service_id.partition_key(), *invocation_uuid),
+                    restate.invocation.id = %invocation_id,
                     "Effect: Create virtual journal"
                 )
             }
@@ -658,21 +664,25 @@ impl Effects {
         self.effects.push(Effect::InvokeService(service_invocation));
     }
 
-    pub(crate) fn resume_service(&mut self, service_id: ServiceId, metadata: InvocationMetadata) {
+    pub(crate) fn resume_service(
+        &mut self,
+        invocation_id: InvocationId,
+        metadata: InvocationMetadata,
+    ) {
         self.effects.push(Effect::ResumeService {
-            service_id,
+            invocation_id,
             metadata,
         });
     }
 
     pub(crate) fn suspend_service(
         &mut self,
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
-            service_id,
+            invocation_id,
             metadata,
             waiting_for_completed_entries,
         })
@@ -769,12 +779,12 @@ impl Effects {
 
     pub(crate) fn store_chosen_deployment(
         &mut self,
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         deployment_id: DeploymentId,
         metadata: InvocationMetadata,
     ) {
         self.effects.push(Effect::StoreDeploymentId {
-            service_id,
+            invocation_id,
             deployment_id,
             metadata,
         })
@@ -782,13 +792,13 @@ impl Effects {
 
     pub(crate) fn append_journal_entry(
         &mut self,
-        service_id: ServiceId,
+        invocation_id: InvocationId,
         previous_invocation_status: InvocationStatus,
         entry_index: EntryIndex,
         journal_entry: EnrichedRawEntry,
     ) {
         self.effects.push(Effect::AppendJournalEntry {
-            service_id,
+            invocation_id,
             previous_invocation_status,
             entry_index,
             journal_entry,
@@ -800,13 +810,9 @@ impl Effects {
             .push(Effect::TruncateOutbox(outbox_sequence_number));
     }
 
-    pub(crate) fn store_completion(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        completion: Completion,
-    ) {
+    pub(crate) fn store_completion(&mut self, invocation_id: InvocationId, completion: Completion) {
         self.effects.push(Effect::StoreCompletion {
-            full_invocation_id,
+            invocation_id,
             completion,
         });
     }
@@ -824,15 +830,13 @@ impl Effects {
 
     pub(crate) fn create_virtual_journal(
         &mut self,
-        service_id: ServiceId,
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
         completion_notification_target: NotificationTarget,
         kill_notification_target: NotificationTarget,
     ) {
         self.effects.push(Effect::CreateVirtualJournal {
-            service_id,
-            invocation_uuid,
+            invocation_id,
             span_context,
             completion_notification_target,
             kill_notification_target,
@@ -843,13 +847,13 @@ impl Effects {
         &mut self,
         target_service: ServiceId,
         method_name: String,
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
         completion: Completion,
     ) {
         self.effects.push(Effect::NotifyVirtualJournalCompletion {
             target_service,
             method_name,
-            invocation_uuid,
+            invocation_id,
             completion,
         });
     }
@@ -858,22 +862,29 @@ impl Effects {
         &mut self,
         target_service: ServiceId,
         method_name: String,
-        invocation_uuid: InvocationUuid,
+        invocation_id: InvocationId,
     ) {
         self.effects.push(Effect::NotifyVirtualJournalKill {
             target_service,
             method_name,
-            invocation_uuid,
+            invocation_id,
+        });
+    }
+
+    pub(crate) fn drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex) {
+        self.effects.push(Effect::DropJournal {
+            invocation_id,
+            journal_length,
         });
     }
 
     pub(crate) fn drop_journal_and_pop_inbox(
         &mut self,
-        service_id: ServiceId,
+        full_invocation_id: FullInvocationId,
         journal_length: EntryIndex,
     ) {
         self.effects.push(Effect::DropJournalAndPopInbox {
-            service_id,
+            full_invocation_id,
             journal_length,
         });
     }
