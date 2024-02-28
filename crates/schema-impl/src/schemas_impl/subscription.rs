@@ -1,4 +1,5 @@
 use super::*;
+use restate_schema_api::subscription::EventReceiverComponentType;
 
 impl SchemasInner {
     pub(crate) fn compute_add_subscription<V: SubscriptionValidator>(
@@ -136,13 +137,43 @@ impl SchemasInner {
                     instance_type,
                 }
             }
-            _ => {
-                return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
-                    "sink URI must have a scheme segment, with supported schemes: {:?}. Was '{}'",
-                    ["service"],
-                    sink
-                )))
+            Some("component") => {
+                let component_name = sink.authority().ok_or_else(|| SchemasUpdateError::InvalidSink(sink.clone(),
+                    "sink URI of component type must have a authority segment containing the component name",
+                ))?.as_str();
+                let handler_name = &sink.path()[1..];
+
+                // Retrieve component and handler in the schema registry
+                let component_schemas = self.components.get(component_name).ok_or_else(|| {
+                    SchemasUpdateError::InvalidSink(
+                        sink.clone(),
+                        "cannot find component specified in the sink URI",
+                    )
+                })?;
+                if !component_schemas.handlers.contains_key(handler_name) {
+                    return Err(SchemasUpdateError::InvalidSink(
+                        sink,
+                        "cannot find service method specified in the sink URI",
+                    ));
+                }
+
+                let ty = match component_schemas.ty {
+                    ComponentType::VirtualObject => EventReceiverComponentType::VirtualObject {
+                        ordering_key_is_key: false,
+                    },
+                    ComponentType::Service => EventReceiverComponentType::Service,
+                };
+
+                Sink::Component {
+                    name: component_name.to_owned(),
+                    handler: handler_name.to_owned(),
+                    ty,
+                }
             }
+            _ => return Err(SchemasUpdateError::InvalidSink(
+                sink,
+                "sink URI must have a scheme segment, with supported schemes: [service, component]",
+            )),
         };
 
         let subscription = validator

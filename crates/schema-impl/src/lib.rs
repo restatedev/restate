@@ -246,6 +246,9 @@ pub enum SchemasUpdateError {
     #[error("invalid subscription: {0}")]
     #[code(restate_errors::META0009)]
     InvalidSubscription(anyhow::Error),
+    #[error("invalid subscription sink '{0}': {1}")]
+    #[code(restate_errors::META0009)]
+    InvalidSink(Uri, &'static str),
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(SubscriptionId),
     #[error(transparent)]
@@ -303,7 +306,7 @@ impl Schemas {
     /// and generates remove commands for services no longer available at that deployment.
     ///
     /// If `deployment_id` is set, it's assumed that:
-    ///   - This ID should be used if it's is a new deployment
+    ///   - This ID should be used if it's a new deployment
     ///   - or if conflicting/existing deployment exists, it must match.
     /// Otherwise, a new deployment id is generated for this deployment, or the existing
     /// deployment_id will be reused.
