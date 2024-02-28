@@ -16,15 +16,13 @@ use restate_types::message::MessageIndex;
 
 mod actions;
 mod command_interpreter;
-mod dedup;
 mod effect_interpreter;
 mod effects;
 
 pub use actions::Action;
 pub use command_interpreter::StateReader;
-pub use dedup::DeduplicatingStateMachine;
+pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
-pub use effect_interpreter::{ActionCollector, InterpretationResult};
 pub use effects::Effects;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
@@ -47,20 +45,17 @@ impl<Codec> StateMachine<Codec> {
 }
 
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
-    pub async fn apply<
-        TransactionType: restate_storage_api::Transaction + Send,
-        Collector: ActionCollector,
-    >(
+    pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
         effects: &mut Effects,
-        mut transaction: Transaction<TransactionType>,
-        message_collector: Collector,
+        transaction: &mut Transaction<TransactionType>,
+        action_collector: &mut ActionCollector,
         is_leader: bool,
-    ) -> Result<InterpretationResult<Transaction<TransactionType>, Collector>, Error> {
+    ) -> Result<(), Error> {
         // Handle the command, returns the span_relation to use to log effects
         let command_type = command.name();
-        let (fid, span_relation) = self.0.on_apply(command, effects, &mut transaction).await?;
+        let (fid, span_relation) = self.0.on_apply(command, effects, transaction).await?;
         counter!(PARTITION_APPLY_COMMAND, "command" => command_type).increment(1);
 
         // Log the effects
@@ -70,7 +65,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         effect_interpreter::EffectInterpreter::<Codec>::interpret_effects(
             effects,
             transaction,
-            message_collector,
+            action_collector,
         )
         .await
     }
@@ -116,14 +111,6 @@ mod tests {
     use tempfile::tempdir;
     use test_log::test;
     use tracing::info;
-
-    type VecActionCollector = Vec<Action>;
-
-    impl ActionCollector for VecActionCollector {
-        fn collect(&mut self, message: Action) {
-            self.push(message)
-        }
-    }
 
     // Test utility to test the StateMachine
     pub struct MockStateMachine {
@@ -171,24 +158,26 @@ mod tests {
 
         pub async fn apply(&mut self, command: Command) -> Vec<Action> {
             let partition_id = self.partition_id();
-            let transaction = self.rocksdb_storage.transaction();
+            let mut transaction = crate::partition::storage::Transaction::new(
+                partition_id,
+                0..=PartitionKey::MAX,
+                self.rocksdb_storage.transaction(),
+            );
+            let mut action_collector = ActionCollector::default();
             self.state_machine
                 .apply(
                     command,
                     &mut self.effects_buffer,
-                    crate::partition::storage::Transaction::new(
-                        partition_id,
-                        0..=PartitionKey::MAX,
-                        transaction,
-                    ),
-                    VecActionCollector::default(),
+                    &mut transaction,
+                    &mut action_collector,
                     true,
                 )
                 .await
-                .unwrap()
-                .commit()
-                .await
-                .unwrap()
+                .unwrap();
+
+            transaction.commit().await.unwrap();
+
+            action_collector.into_inner()
         }
 
         pub fn storage(&mut self) -> &mut RocksDBStorage {

@@ -14,7 +14,7 @@ use crate::partition::{CommitError, Committable};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
-use restate_storage_api::deduplication_table::SequenceNumberSource;
+use restate_storage_api::deduplication_table::ReadOnlyDeduplicationTable;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::inbox_table::{
     InboxEntry, SequenceNumberInboxEntry, SequenceNumberInvocation,
@@ -30,6 +30,7 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
+use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
@@ -37,6 +38,7 @@ use restate_types::identifiers::{
 use restate_types::invocation::MaybeFullInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
+use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::{TimerKeyWrapper, TimerValue};
 use std::future::Future;
@@ -126,6 +128,21 @@ where
             self.partition_id,
             fsm_variable::OUTBOX_SEQ_NUMBER,
         )
+    }
+
+    pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {
+        let bytes = self
+            .storage
+            .get(self.partition_id, fsm_variable::APPLIED_LSN)
+            .await?;
+
+        Ok(if let Some(bytes) = bytes {
+            let (lsn, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                .map_err(|err| StorageError::Generic(err.into()))?;
+            Some(lsn)
+        } else {
+            None
+        })
     }
 
     pub fn scan_invoked_invocations(
@@ -225,29 +242,43 @@ where
         seq_number: MessageIndex,
         state_id: u64,
     ) -> Result<(), StorageError> {
-        let bytes = Bytes::copy_from_slice(&seq_number.to_be_bytes());
-        self.inner.put(self.partition_id, state_id, &bytes).await;
+        let bytes = &seq_number.to_be_bytes();
+        self.inner
+            .put(self.partition_id, state_id, bytes.as_slice())
+            .await;
 
         Ok(())
     }
 
-    pub(super) async fn load_dedup_seq_number(
+    pub async fn load_dedup_sequence_number(
         &mut self,
-        source: SequenceNumberSource,
-    ) -> Result<Option<MessageIndex>, StorageError> {
+        producer_id: &ProducerId,
+    ) -> Result<Option<DedupSequenceNumber>, StorageError> {
         self.inner
-            .get_sequence_number(self.partition_id, source)
+            .get_dedup_sequence_number(self.partition_id, producer_id)
             .await
     }
 
-    pub(super) async fn store_dedup_seq_number(
+    pub async fn store_dedup_sequence_number(
         &mut self,
-        source: SequenceNumberSource,
-        dedup_seq_number: MessageIndex,
+        producer_id: ProducerId,
+        dedup_seq_number: DedupSequenceNumber,
     ) {
         self.inner
-            .put_sequence_number(self.partition_id, source, dedup_seq_number)
+            .put_dedup_seq_number(self.partition_id, producer_id, dedup_seq_number)
             .await
+    }
+
+    pub async fn store_applied_lsn(&mut self, lsn: Lsn) -> StorageResult<()> {
+        // todo: Rethink serialization of lsn
+        let bytes = bincode::serde::encode_to_vec(lsn, bincode::config::standard())
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        self.inner
+            .put(self.partition_id, fsm_variable::APPLIED_LSN, bytes)
+            .await;
+
+        Ok(())
     }
 }
 
@@ -559,6 +590,8 @@ where
 mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
+
+    pub(crate) const APPLIED_LSN: u64 = 2;
 }
 
 impl<TransactionType> Committable for Transaction<TransactionType>
@@ -628,5 +661,40 @@ where
             .await
             // TODO: Extend TimerReader to return errors: See https://github.com/restatedev/restate/issues/274
             .expect("timer deserialization should not fail")
+    }
+}
+
+pub trait DedupSequenceNumberResolver {
+    fn get_dedup_sequence_number(
+        &mut self,
+        producer_id: &ProducerId,
+    ) -> impl Future<Output = StorageResult<Option<DedupSequenceNumber>>> + Send;
+}
+
+impl<Storage> DedupSequenceNumberResolver for PartitionStorage<Storage>
+where
+    Storage: ReadOnlyDeduplicationTable + Send + 'static,
+{
+    async fn get_dedup_sequence_number(
+        &mut self,
+        producer_id: &ProducerId,
+    ) -> StorageResult<Option<DedupSequenceNumber>> {
+        self.storage
+            .get_dedup_sequence_number(self.partition_id, producer_id)
+            .await
+    }
+}
+
+impl<TransactionType> DedupSequenceNumberResolver for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction,
+{
+    async fn get_dedup_sequence_number(
+        &mut self,
+        producer_id: &ProducerId,
+    ) -> StorageResult<Option<DedupSequenceNumber>> {
+        self.inner
+            .get_dedup_sequence_number(self.partition_id, producer_id)
+            .await
     }
 }

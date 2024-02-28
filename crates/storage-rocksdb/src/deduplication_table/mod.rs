@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
@@ -15,53 +16,60 @@ use crate::{
 };
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::deduplication_table::{
-    DeduplicationTable, ReadOnlyDeduplicationTable, SequenceNumberSource,
-};
+use prost::Message;
+use restate_storage_api::deduplication_table::{DeduplicationTable, ReadOnlyDeduplicationTable};
 use restate_storage_api::{Result, StorageError};
+use restate_types::dedup::{DedupInformation, DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 
 define_table_key!(
     Deduplication,
-    DeduplicationKey(partition_id: PartitionId, source: SequenceNumberSource)
+    DeduplicationKey(partition_id: PartitionId, producer_id: ProducerId)
 );
 
-fn get_sequence_number<S: StorageAccess>(
+fn get_dedup_sequence_number<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-    source: SequenceNumberSource,
-) -> Result<Option<u64>> {
+    producer_id: &ProducerId,
+) -> Result<Option<DedupSequenceNumber>> {
     let key = DeduplicationKey::default()
         .partition_id(partition_id)
-        .source(source);
+        .producer_id(producer_id.clone());
 
-    storage.get_blocking(key, move |_k, maybe_sequence_number_slice| {
-        let maybe_sequence_number = maybe_sequence_number_slice.map(|slice| {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(slice.as_ref());
-            u64::from_be_bytes(buf)
-        });
-
-        Ok(maybe_sequence_number)
+    storage.get_blocking(key, move |_k, maybe_dedup_sequence_number| {
+        if let Some(bytes) = maybe_dedup_sequence_number {
+            Ok(Some(DedupSequenceNumber::try_from(
+                restate_storage_proto::storage::v1::DedupSequenceNumber::decode(bytes)
+                    .map_err(|error| StorageError::Conversion(error.into()))?,
+            )?))
+        } else {
+            Ok(None)
+        }
     })
 }
 
 fn get_all_sequence_numbers<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
+) -> impl Stream<Item = Result<DedupInformation>> + Send {
     stream::iter(storage.for_each_key_value_in_place(
         TableScan::Partition::<DeduplicationKey>(partition_id),
         move |k, v| {
-            let key = DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.source);
+            let key =
+                DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
 
-            let res = if let Ok(Some(source)) = key {
-                // read out the value
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(v);
-                let sequence_number = u64::from_be_bytes(buf);
-                Ok((source, sequence_number))
+            let res = if let Ok(Some(producer_id)) = key {
+                restate_storage_proto::storage::v1::DedupSequenceNumber::decode(v)
+                    .map_err(|err| StorageError::Conversion(err.into()))
+                    .and_then(|sequence_number| {
+                        DedupSequenceNumber::try_from(sequence_number)
+                            .map_err(|err| StorageError::Conversion(err.into()))
+                    })
+                    .map(|sequence_number| DedupInformation {
+                        producer_id,
+                        sequence_number,
+                    })
             } else {
                 Err(StorageError::DataIntegrityError)
             };
@@ -71,49 +79,56 @@ fn get_all_sequence_numbers<S: StorageAccess>(
 }
 
 impl ReadOnlyDeduplicationTable for RocksDBStorage {
-    async fn get_sequence_number(
+    async fn get_dedup_sequence_number(
         &mut self,
         partition_id: PartitionId,
-        source: SequenceNumberSource,
-    ) -> Result<Option<u64>> {
-        get_sequence_number(self, partition_id, source)
+        producer_id: &ProducerId,
+    ) -> Result<Option<DedupSequenceNumber>> {
+        get_dedup_sequence_number(self, partition_id, producer_id)
     }
 
     fn get_all_sequence_numbers(
         &mut self,
         partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
+    ) -> impl Stream<Item = Result<DedupInformation>> + Send {
         get_all_sequence_numbers(self, partition_id)
     }
 }
 
 impl<'a> ReadOnlyDeduplicationTable for RocksDBTransaction<'a> {
-    async fn get_sequence_number(
+    async fn get_dedup_sequence_number(
         &mut self,
         partition_id: PartitionId,
-        source: SequenceNumberSource,
-    ) -> Result<Option<u64>> {
-        get_sequence_number(self, partition_id, source)
+        producer_id: &ProducerId,
+    ) -> Result<Option<DedupSequenceNumber>> {
+        get_dedup_sequence_number(self, partition_id, producer_id)
     }
 
     fn get_all_sequence_numbers(
         &mut self,
         partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(SequenceNumberSource, u64)>> + Send {
+    ) -> impl Stream<Item = Result<DedupInformation>> + Send {
         get_all_sequence_numbers(self, partition_id)
     }
 }
 
 impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
-    async fn put_sequence_number(
+    async fn put_dedup_seq_number(
         &mut self,
         partition_id: PartitionId,
-        source: SequenceNumberSource,
-        sequence_number: u64,
+        producer_id: ProducerId,
+        dedup_sequence_number: DedupSequenceNumber,
     ) {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
-            .source(source);
-        self.put_kv(key, sequence_number);
+            .producer_id(producer_id);
+        self.put_kv(
+            key,
+            ProtoValue(
+                restate_storage_proto::storage::v1::DedupSequenceNumber::from(
+                    dedup_sequence_number,
+                ),
+            ),
+        );
     }
 }

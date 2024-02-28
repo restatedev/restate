@@ -20,6 +20,7 @@ pub mod storage {
 
         #[cfg(feature = "conversion")]
         pub mod pb_conversion {
+            use crate::storage::v1::dedup_sequence_number::Variant;
             use crate::storage::v1::enriched_entry_header::{
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
                 GetState, GetStateKeys, Invoke, OutputStream, PollInputStream, SetState, Sleep,
@@ -40,11 +41,11 @@ pub mod storage {
                 enriched_entry_header, inbox_entry, invocation_resolution_result,
                 invocation_status, maybe_full_invocation_id, outbox_message, response_result,
                 service_status, source, span_relation, timer, BackgroundCallResolutionResult,
-                EnrichedEntryHeader, FullInvocationId, InboxEntry, InvocationResolutionResult,
-                InvocationStatus, JournalEntry, JournalMeta, KvPair, MaybeFullInvocationId,
-                OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
-                ServiceInvocationResponseSink, ServiceStatus, Source, SpanContext, SpanRelation,
-                StateMutation, Timer,
+                DedupSequenceNumber, EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId,
+                InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
+                JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage, ResponseResult,
+                ServiceId, ServiceInvocation, ServiceInvocationResponseSink, ServiceStatus, Source,
+                SpanContext, SpanRelation, StateMutation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
@@ -1687,6 +1688,65 @@ pub mod storage {
                             value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
                     }
+                }
+            }
+
+            impl From<restate_types::dedup::DedupSequenceNumber> for DedupSequenceNumber {
+                fn from(value: restate_types::dedup::DedupSequenceNumber) -> Self {
+                    match value {
+                        restate_types::dedup::DedupSequenceNumber::Sn(sn) => DedupSequenceNumber {
+                            variant: Some(Variant::SequenceNumber(sn)),
+                        },
+                        restate_types::dedup::DedupSequenceNumber::Esn(esn) => {
+                            DedupSequenceNumber {
+                                variant: Some(Variant::EpochSequenceNumber(
+                                    EpochSequenceNumber::from(esn),
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+
+            impl TryFrom<DedupSequenceNumber> for restate_types::dedup::DedupSequenceNumber {
+                type Error = ConversionError;
+
+                fn try_from(value: DedupSequenceNumber) -> Result<Self, Self::Error> {
+                    Ok(
+                        match value
+                            .variant
+                            .ok_or(ConversionError::missing_field("variant"))?
+                        {
+                            Variant::SequenceNumber(sn) => {
+                                restate_types::dedup::DedupSequenceNumber::Sn(sn)
+                            }
+                            Variant::EpochSequenceNumber(esn) => {
+                                restate_types::dedup::DedupSequenceNumber::Esn(
+                                    restate_types::dedup::EpochSequenceNumber::try_from(esn)?,
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+
+            impl From<restate_types::dedup::EpochSequenceNumber> for EpochSequenceNumber {
+                fn from(value: restate_types::dedup::EpochSequenceNumber) -> Self {
+                    EpochSequenceNumber {
+                        leader_epoch: value.leader_epoch.into(),
+                        sequence_number: value.sequence_number,
+                    }
+                }
+            }
+
+            impl TryFrom<EpochSequenceNumber> for restate_types::dedup::EpochSequenceNumber {
+                type Error = ConversionError;
+
+                fn try_from(value: EpochSequenceNumber) -> Result<Self, Self::Error> {
+                    Ok(restate_types::dedup::EpochSequenceNumber {
+                        leader_epoch: value.leader_epoch.into(),
+                        sequence_number: value.sequence_number,
+                    })
                 }
             }
         }

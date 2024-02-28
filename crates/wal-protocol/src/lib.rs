@@ -18,6 +18,7 @@ use restate_types::Version;
 use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerValue;
+use restate_types::dedup::DedupInformation;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub mod control;
@@ -90,7 +91,10 @@ pub enum Source {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Destination {
     /// Message is sent to partition processor
-    Processor { partition_key: PartitionKey },
+    Processor {
+        partition_key: PartitionKey,
+        dedup: Option<DedupInformation>,
+    },
 }
 
 /// Defines expectations from the sender on how to respond to this command.
@@ -148,7 +152,7 @@ impl Command {
 impl WithPartitionKey for Envelope {
     fn partition_key(&self) -> PartitionKey {
         let_assert!(
-            Destination::Processor { partition_key } = &self.header.dest,
+            Destination::Processor { partition_key, .. } = &self.header.dest,
             "envelopes are only targeted to partition processors"
         );
         *partition_key

@@ -91,7 +91,10 @@ fn mock_network() -> (
 fn create_envelope(partition_key: PartitionKey) -> Envelope {
     let header = Header {
         source: Source::ControlPlane {},
-        dest: Destination::Processor { partition_key },
+        dest: Destination::Processor {
+            partition_key,
+            dedup: None,
+        },
         ack_mode: AckMode::None,
     };
 

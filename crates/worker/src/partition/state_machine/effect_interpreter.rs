@@ -34,10 +34,37 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::future::Future;
 use std::marker::PhantomData;
+use std::vec::Drain;
 use tracing::{debug, warn};
 
-pub trait ActionCollector {
-    fn collect(&mut self, message: Action);
+#[derive(Debug, Default)]
+pub struct ActionCollector {
+    actions: Vec<Action>,
+}
+
+impl ActionCollector {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            actions: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.actions.clear()
+    }
+
+    pub(crate) fn drain(&mut self) -> Drain<'_, Action> {
+        self.actions.drain(..)
+    }
+
+    fn collect(&mut self, action: Action) {
+        self.actions.push(action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_inner(self) -> Vec<Action> {
+        self.actions
+    }
 }
 
 pub trait StateStorage {
@@ -188,6 +215,10 @@ where
         Ok(collector)
     }
 
+    pub fn transaction_mut(&mut self) -> &mut Txn {
+        &mut self.txn
+    }
+
     pub fn into_inner(self) -> (Txn, Collector) {
         (self.txn, self.collector)
     }
@@ -198,22 +229,22 @@ pub(crate) struct EffectInterpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable, C: ActionCollector>(
+    pub(crate) async fn interpret_effects<S: StateStorage + Committable>(
         effects: &mut Effects,
-        mut state_storage: S,
-        mut message_collector: C,
-    ) -> Result<InterpretationResult<S, C>, Error> {
+        state_storage: &mut S,
+        action_collector: &mut ActionCollector,
+    ) -> Result<(), Error> {
         for effect in effects.drain() {
-            Self::interpret_effect(effect, &mut state_storage, &mut message_collector).await?;
+            Self::interpret_effect(effect, state_storage, action_collector).await?;
         }
 
-        Ok(InterpretationResult::new(state_storage, message_collector))
+        Ok(())
     }
 
-    async fn interpret_effect<S: StateStorage, C: ActionCollector>(
+    async fn interpret_effect<S: StateStorage>(
         effect: Effect,
         state_storage: &mut S,
-        collector: &mut C,
+        collector: &mut ActionCollector,
     ) -> Result<(), Error> {
         match effect {
             Effect::InvokeService(service_invocation) => {
@@ -454,14 +485,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         Ok(())
     }
 
-    async fn pop_from_inbox<S, C>(
+    async fn pop_from_inbox<S>(
         state_storage: &mut S,
-        collector: &mut C,
+        collector: &mut ActionCollector,
         service_id: &ServiceId,
     ) -> Result<(), Error>
     where
         S: StateStorage,
-        C: ActionCollector,
     {
         // pop until we find the first invocation that we can invoke
         while let Some(inbox_entry) = state_storage.pop_inbox(service_id).await? {
@@ -524,9 +554,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         Ok(())
     }
 
-    async fn invoke_service<S: StateStorage, C: ActionCollector>(
+    async fn invoke_service<S: StateStorage>(
         state_storage: &mut S,
-        collector: &mut C,
+        collector: &mut ActionCollector,
         service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
         let journal_metadata = JournalMetadata::new(

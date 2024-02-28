@@ -395,3 +395,24 @@ message SequencedTimer {
     uint64 seq_number = 1;
     Timer timer = 2;
 }
+
+// ---------------------------------------------------------------------
+// Deduplication
+// ---------------------------------------------------------------------
+
+// Sequence number which is prefixed by the epoch of the producer. Epoch sequence
+// numbers sort lexicographically based on (leader_epoch, sequence_number).
+message EpochSequenceNumber {
+    uint64 leader_epoch = 1;
+    uint64 sequence_number = 2;
+}
+
+// Sequence number which is used for deduplicating incoming messages.
+message DedupSequenceNumber {
+    oneof variant {
+        // Variant which is used for deduplicating messages across epoch/leadership changes
+        uint64 sequence_number = 1;
+        // Variant which is used for guarding against messages from previous epochs/leaders
+        EpochSequenceNumber epoch_sequence_number = 2;
+    }
+}

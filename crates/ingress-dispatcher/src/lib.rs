@@ -31,6 +31,7 @@ mod service;
 
 pub use event_remapping::Error as EventError;
 use restate_core::metadata;
+use restate_types::dedup::DedupInformation;
 use restate_types::ingress::IngressResponse;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 pub use service::Error as ServiceError;
@@ -341,11 +342,12 @@ pub fn wrap_service_invocation_in_envelope(
         source: Source::Ingress {
             node_id: from_node_id,
             sequence_number: msg_index,
-            dedup_key: deduplication_source,
+            dedup_key: deduplication_source.clone(),
             nodes_config_version: metadata().nodes_config_version(),
         },
         dest: Destination::Processor {
             partition_key: service_invocation.fid.partition_key(),
+            dedup: deduplication_source.map(|src| DedupInformation::ingress(src, msg_index)),
         },
         ack_mode,
     };

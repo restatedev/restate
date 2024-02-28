@@ -16,28 +16,35 @@ use restate_core::metadata;
 use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
+use std::ops::{Deref, RangeInclusive};
 
+use bytes::Bytes;
+use prost::Message;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::task;
 use tokio::task::JoinError;
+use tracing::trace;
 
 mod action_collector;
 
+use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::services::non_deterministic;
+use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::Action;
 use crate::partition::types::AckResponse;
-pub(crate) use action_collector::{ActionEffect, ActionEffectStream, LeaderAwareActionCollector};
+pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_errors::NotRunningError;
-use restate_ingress_dispatcher::IngressDispatcherInputSender;
+use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_schema_impl::Schemas;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::dedup::EpochSequenceNumber;
+use restate_types::identifiers::{FullInvocationId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
-use restate_types::journal::EntryType;
+use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
+use restate_types::journal::{CompletionResult, EntryType};
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::Envelope;
 
@@ -49,9 +56,9 @@ pub(crate) struct LeaderState {
     shutdown_signal: drain::Signal,
     shuffle_hint_tx: HintSender,
     shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
-    actions_buffer: Vec<Action>,
     timer_service: Pin<Box<TimerService>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
+    action_effect_handler: ActionEffectHandler,
 }
 
 pub(crate) struct FollowerState<I, N> {
@@ -64,6 +71,7 @@ pub(crate) struct FollowerState<I, N> {
     ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
     consensus_writer: ConsensusWriter,
     ingress_tx: IngressDispatcherInputSender,
+    partition_key_range: RangeInclusive<PartitionKey>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +84,8 @@ pub(crate) enum Error {
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error("failed to send ack response: {0}")]
+    Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
 pub(crate) enum LeadershipState<InvokerInputSender, NetworkHandle> {
@@ -96,6 +106,7 @@ where
     pub(crate) fn follower(
         peer_id: PeerId,
         partition_id: PartitionId,
+        partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
@@ -103,12 +114,12 @@ where
         ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: ConsensusWriter,
         ingress_tx: IngressDispatcherInputSender,
-    ) -> (ActionEffectStream, Self) {
+    ) -> (Self, ActionEffectStream) {
         (
-            ActionEffectStream::Follower,
             Self::Follower(FollowerState {
                 peer_id,
                 partition_id,
+                partition_key_range,
                 timer_service_options,
                 channel_size,
                 invoker_tx,
@@ -117,6 +128,7 @@ where
                 consensus_writer,
                 ingress_tx,
             }),
+            ActionEffectStream::Follower,
         )
     }
 
@@ -126,61 +138,39 @@ where
 
     pub(crate) async fn become_leader(
         self,
-        leader_epoch: LeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
         schemas: Schemas,
-    ) -> Result<
-        (
-            ActionEffectStream,
-            LeadershipState<InvokerInputSender, NetworkHandle>,
-        ),
-        Error,
-    > {
+    ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(
-                leader_epoch,
-                partition_key_range,
-                partition_storage,
-                schemas,
-            )
-            .await
+            self.unchecked_become_leader(epoch_sequence_number, partition_storage, schemas)
+                .await
         } else {
-            let (_, follower_state) = self.become_follower().await?;
+            let (follower_state, _) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(
-                    leader_epoch,
-                    partition_key_range,
-                    partition_storage,
-                    schemas,
-                )
+                .unchecked_become_leader(epoch_sequence_number, partition_storage, schemas)
                 .await
         }
     }
 
     async fn unchecked_become_leader(
         self,
-        leader_epoch: LeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
+        epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
         schemas: Schemas,
-    ) -> Result<
-        (
-            ActionEffectStream,
-            LeadershipState<InvokerInputSender, NetworkHandle>,
-        ),
-        Error,
-    > {
+    ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (mut service_invoker, service_invoker_output_rx) =
                 non_deterministic::ServiceInvoker::new(partition_storage.clone(), schemas);
+
+            let leader_epoch = epoch_sequence_number.leader_epoch;
 
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,
                 &mut service_invoker,
                 (follower_state.partition_id, leader_epoch),
-                partition_key_range,
+                follower_state.partition_key_range.clone(),
                 partition_storage,
                 follower_state.channel_size,
             )
@@ -219,8 +209,14 @@ where
 
             let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
 
+            let action_effect_handler = ActionEffectHandler::new(
+                follower_state.partition_id,
+                epoch_sequence_number,
+                follower_state.partition_key_range.clone(),
+                follower_state.consensus_writer.clone(),
+            );
+
             Ok((
-                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
                 LeadershipState::Leader {
                     follower_state,
                     leader_state: LeaderState {
@@ -229,12 +225,11 @@ where
                         shuffle_hint_tx,
                         shuffle_handle,
                         timer_service,
+                        action_effect_handler,
                         non_deterministic_service_invoker: service_invoker,
-                        // The max number of actuator messages should be 2 atm (e.g. RegisterTimer and
-                        // AckStoredEntry)
-                        actions_buffer: Vec::with_capacity(2),
                     },
                 },
+                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
             ))
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -318,20 +313,13 @@ where
         Ok(invoker_rx)
     }
 
-    pub(crate) async fn become_follower(
-        self,
-    ) -> Result<
-        (
-            ActionEffectStream,
-            LeadershipState<InvokerInputSender, NetworkHandle>,
-        ),
-        Error,
-    > {
+    pub(crate) async fn become_follower(self) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Leader {
             follower_state:
                 FollowerState {
                     peer_id,
                     partition_id,
+                    partition_key_range,
                     channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
@@ -366,6 +354,7 @@ where
             Ok(Self::follower(
                 peer_id,
                 partition_id,
+                partition_key_range,
                 num_in_memory_timers,
                 channel_size,
                 invoker_tx,
@@ -375,7 +364,7 @@ where
                 ingress_tx,
             ))
         } else {
-            Ok((ActionEffectStream::Follower, self))
+            Ok((self, ActionEffectStream::Follower))
         }
     }
 
@@ -388,26 +377,6 @@ where
             Ok(())
         } else {
             result.unwrap()
-        }
-    }
-
-    pub(crate) fn into_message_collector(
-        self,
-    ) -> LeaderAwareActionCollector<InvokerInputSender, NetworkHandle> {
-        match self {
-            LeadershipState::Follower(follower_state) => {
-                LeaderAwareActionCollector::Follower(follower_state)
-            }
-            LeadershipState::Leader {
-                follower_state,
-                mut leader_state,
-            } => {
-                leader_state.actions_buffer.clear();
-                LeaderAwareActionCollector::Leader {
-                    follower_state,
-                    leader_state,
-                }
-            }
         }
     }
 
@@ -454,6 +423,199 @@ where
                     error: TaskError::Error(err.into()),
                 })
                 .unwrap_or(TokioTaskResult::TerminatedTask(name))
+        }
+    }
+
+    pub async fn handle_actions(
+        &mut self,
+        actions: impl Iterator<Item = Action>,
+    ) -> Result<(), Error> {
+        match self {
+            LeadershipState::Follower(_) => {
+                // nothing to do :-)
+            }
+            LeadershipState::Leader {
+                follower_state,
+                leader_state,
+            } => {
+                for action in actions {
+                    trace!(?action, "Apply action");
+                    Self::handle_action(
+                        action,
+                        (follower_state.partition_id, leader_state.leader_epoch),
+                        &mut follower_state.invoker_tx,
+                        &leader_state.shuffle_hint_tx,
+                        leader_state.timer_service.as_mut(),
+                        &mut leader_state.non_deterministic_service_invoker,
+                        &follower_state.ack_tx,
+                        &mut leader_state.action_effect_handler,
+                        &follower_state.ingress_tx,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_action(
+        action: Action,
+        partition_leader_epoch: PartitionLeaderEpoch,
+        invoker_tx: &mut InvokerInputSender,
+        shuffle_hint_tx: &HintSender,
+        mut timer_service: Pin<&mut TimerService>,
+        non_deterministic_service_invoker: &mut ServiceInvoker,
+        ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
+        action_effect_handler: &mut ActionEffectHandler,
+        ingress_tx: &IngressDispatcherInputSender,
+    ) -> Result<(), Error> {
+        match action {
+            Action::Invoke {
+                full_invocation_id,
+                invoke_input_journal,
+            } => invoker_tx
+                .invoke(
+                    partition_leader_epoch,
+                    full_invocation_id,
+                    invoke_input_journal,
+                )
+                .await
+                .map_err(Error::Invoker)?,
+            Action::NewOutboxMessage {
+                seq_number,
+                message,
+            } => shuffle_hint_tx.send(shuffle::NewOutboxMessage::new(seq_number, message)),
+            Action::RegisterTimer { timer_value } => timer_service.as_mut().add_timer(timer_value),
+            Action::DeleteTimer { timer_key } => {
+                timer_service.as_mut().remove_timer(timer_key.into())
+            }
+            Action::AckStoredEntry {
+                full_invocation_id,
+                entry_index,
+            } => {
+                invoker_tx
+                    .notify_stored_entry_ack(
+                        partition_leader_epoch,
+                        full_invocation_id,
+                        entry_index,
+                    )
+                    .await
+                    .map_err(Error::Invoker)?;
+            }
+            Action::ForwardCompletion {
+                full_invocation_id,
+                completion,
+            } => invoker_tx
+                .notify_completion(partition_leader_epoch, full_invocation_id, completion)
+                .await
+                .map_err(Error::Invoker)?,
+            Action::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
+            Action::AbortInvocation(full_invocation_id) => invoker_tx
+                .abort_invocation(partition_leader_epoch, full_invocation_id)
+                .await
+                .map_err(Error::Invoker)?,
+            Action::InvokeBuiltInService {
+                full_invocation_id,
+                span_context,
+                response_sink,
+                method,
+                argument,
+            } => {
+                non_deterministic_service_invoker
+                    .invoke(
+                        full_invocation_id,
+                        method.deref(),
+                        span_context,
+                        response_sink,
+                        argument,
+                    )
+                    .await;
+            }
+            Action::NotifyVirtualJournalCompletion {
+                target_service,
+                method_name,
+                invocation_id,
+                completion,
+            } => {
+                let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
+                    entry_index: completion.entry_index,
+                    invocation_uuid: invocation_id.invocation_uuid().into(),
+                    result: Some(match completion.result {
+                        CompletionResult::Empty =>
+                            restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
+                        CompletionResult::Success(s) =>
+                            restate_pb::restate::internal::journal_completion_notification_request::Result::Success(s),
+                        CompletionResult::Failure(code, msg) =>               restate_pb::restate::internal::journal_completion_notification_request::Result::Failure(
+                            restate_pb::restate::internal::InvocationFailure {
+                                code: code.into(),
+                                message: msg.to_string(),
+                            }
+                        ),
+                    }),
+                }.encode_to_vec());
+
+                // We need this to agree on the invocation uuid, which is randomly generated
+                // We could get rid of it if invocation uuids are deterministically generated.
+                let service_invocation = ServiceInvocation::new(
+                    FullInvocationId::generate(target_service),
+                    method_name,
+                    journal_notification_request,
+                    Source::Internal,
+                    None,
+                    SpanRelation::None,
+                );
+
+                action_effect_handler
+                    .handle(ActionEffect::Invocation(service_invocation))
+                    .await;
+            }
+            Action::NotifyVirtualJournalKill {
+                target_service,
+                method_name,
+                invocation_id,
+            } => {
+                // We need this to agree on the invocation uuid, which is randomly generated
+                // We could get rid of it if invocation uuids are deterministically generated.
+                let service_invocation = ServiceInvocation::new(
+                    FullInvocationId::generate(target_service),
+                    method_name,
+                    restate_pb::restate::internal::KillNotificationRequest {
+                        invocation_uuid: invocation_id.invocation_uuid().into(),
+                    }
+                    .encode_to_vec(),
+                    Source::Internal,
+                    None,
+                    SpanRelation::None,
+                );
+
+                action_effect_handler
+                    .handle(ActionEffect::Invocation(service_invocation))
+                    .await;
+            }
+            Action::IngressResponse(ingress_response) => {
+                // ingress should only be unavailable when shutting down
+                let _ = ingress_tx
+                    .send(IngressDispatcherInput::Response(ingress_response))
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_action_effect(&mut self, action_effect: ActionEffect) {
+        match self {
+            LeadershipState::Follower(_) => {
+                // nothing to do :-)
+            }
+            LeadershipState::Leader { leader_state, .. } => {
+                leader_state
+                    .action_effect_handler
+                    .handle(action_effect)
+                    .await
+            }
         }
     }
 }

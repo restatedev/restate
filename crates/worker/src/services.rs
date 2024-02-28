@@ -158,7 +158,10 @@ impl Services {
 fn create_header(partition_key: PartitionKey) -> Header {
     Header {
         source: Source::ControlPlane {},
-        dest: Destination::Processor { partition_key },
+        dest: Destination::Processor {
+            partition_key,
+            dedup: None,
+        },
         ack_mode: AckMode::None,
     }
 }

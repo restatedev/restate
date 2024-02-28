@@ -15,6 +15,7 @@ use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::services::Services;
 use codederror::CodedError;
 use partition::shuffle;
+use restate_bifrost::{bifrost, with_bifrost};
 use restate_consensus::Consensus;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{
@@ -37,7 +38,6 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::debug;
-use util::IdentitySender;
 
 mod invoker_integration;
 mod metric_definitions;
@@ -76,6 +76,7 @@ pub use restate_storage_query_datafusion::{
 };
 
 pub use crate::subscription_integration::SubscriptionControllerHandle;
+use crate::util::IdentitySender;
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
@@ -459,7 +460,7 @@ impl Worker {
                 TaskKind::PartitionProcessor,
                 "partition-processor",
                 Some(processor.partition_id),
-                processor.run(networking),
+                with_bifrost(processor.run(networking), bifrost()),
             )?;
         }
 

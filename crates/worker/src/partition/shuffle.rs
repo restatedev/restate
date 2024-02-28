@@ -11,6 +11,7 @@
 use crate::partition::shuffle::state_machine::StateMachine;
 use async_channel::{TryRecvError, TrySendError};
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_types::dedup::DedupInformation;
 use restate_types::identifiers::{
     LeaderEpoch, PartitionId, PartitionKey, PeerId, WithPartitionKey,
 };
@@ -101,6 +102,10 @@ fn create_header(
         },
         dest: Destination::Processor {
             partition_key: dest_partition_key,
+            dedup: Some(DedupInformation::cross_partition(
+                shuffle_metadata.partition_id,
+                seq_number,
+            )),
         },
         ack_mode: AckMode::Dedup,
     }

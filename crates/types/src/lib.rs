@@ -16,6 +16,7 @@ mod macros;
 mod node_id;
 mod version;
 
+pub mod dedup;
 pub mod deployment;
 pub mod errors;
 pub mod identifiers;

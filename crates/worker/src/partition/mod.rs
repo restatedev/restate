@@ -9,24 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_HANDLED};
-use crate::partition::action_effect_handler::ActionEffectHandler;
-use crate::partition::leadership::{ActionEffect, ActionEffectStream, LeadershipState, TaskResult};
-use crate::partition::state_machine::{DeduplicatingStateMachine, Effects};
-use crate::partition::storage::{PartitionStorage, Transaction};
+use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
+use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
+use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 use crate::util::IdentitySender;
+use assert2::let_assert;
 use futures::StreamExt;
 use metrics::counter;
+use restate_core::metadata;
 use restate_network::Networking;
 use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBTransaction};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument, trace};
 
 mod action_effect_handler;
 mod leadership;
@@ -39,12 +39,18 @@ pub mod types;
 
 use crate::partition::types::AckResponse;
 pub use options::Options;
-use restate_wal_protocol::Envelope;
+use restate_bifrost::{bifrost, LogReadStream, LogRecord, Record};
+use restate_core::cancellation_watcher;
+use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 type ConsensusReader = mpsc::Receiver<restate_consensus::Command<Envelope>>;
 type ConsensusWriter = IdentitySender<Envelope>;
 use restate_ingress_dispatcher::IngressDispatcherInputSender;
-use restate_network::PartitionProcessorSender;
+use restate_types::dedup::{
+    DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
+};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_wal_protocol::control::AnnounceLeader;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
@@ -80,7 +86,7 @@ impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
+    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -126,7 +132,6 @@ where
             partition_key_range,
             timer_service_options,
             channel_size,
-            mut consensus_reader,
             invoker_tx,
             network_handle,
             consensus_writer,
@@ -141,15 +146,22 @@ where
         let mut partition_storage =
             PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
-        let state_machine =
+        let mut state_machine =
             Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
-        let mut inner = Inner::new_as_follower(
-            state_machine,
+        let last_applied_lsn = partition_storage.load_applied_lsn().await?;
+        let mut log_reader = LogReader::new(
+            LogId::from(partition_id),
+            last_applied_lsn.unwrap_or(Lsn::OLDEST),
+        );
+
+        let mut action_collector = ActionCollector::with_capacity(128);
+        let mut effects_buffer = Effects::with_capacity(128);
+
+        let (mut state, mut action_effect_stream) = LeadershipState::follower(
             peer_id,
             partition_id,
-            partition_key_range,
-            schemas,
+            partition_key_range.clone(),
             timer_service_options,
             channel_size,
             invoker_tx,
@@ -157,260 +169,262 @@ where
             ack_tx,
             consensus_writer,
             ingress_tx,
-            options.max_batch_duration.map(Into::into),
         );
 
         loop {
             tokio::select! {
-                mut next_command = consensus_reader.recv() => {
-                    if next_command.is_none() {
-                        break;
-                    }
+                _ = cancellation_watcher() => break,
+                record = log_reader.read_next() => {
+                    let record = record?;
 
-                    while let Some(command) = next_command.take() {
-                        match command {
-                            restate_consensus::Command::Apply(command) => {
-                                next_command = inner.apply_command(command, &mut consensus_reader, partition_storage.create_transaction()).await?;
-                            }
-                            restate_consensus::Command::BecomeLeader(leader_epoch) => {
-                                inner.become_leader(leader_epoch, &mut partition_storage).await?;
-                            }
-                            restate_consensus::Command::BecomeFollower => {
-                                inner.become_follower().await?
-                            },
-                            restate_consensus::Command::ApplySnapshot => {
-                                unimplemented!("Not supported yet.");
-                            }
-                            restate_consensus::Command::CreateSnapshot => {
-                                unimplemented!("Not supported yet.");
-                            }
+                    let mut transaction = partition_storage.create_transaction();
+
+                    let leadership_change = Self::apply_available_records_until_leadership_change(
+                        &mut state_machine,
+                        record,
+                        &mut log_reader,
+                        &mut transaction,
+                        &mut effects_buffer,
+                        &mut action_collector,
+                        &partition_key_range,
+                        state.is_leader())
+                        .await?;
+
+                    if let Some(announce_leader) = leadership_change {
+                        let new_esn = EpochSequenceNumber::new(announce_leader.leader_epoch);
+
+                        // update our own epoch sequence number to filter out messages from previous leaders
+                        transaction.store_dedup_sequence_number(ProducerId::self_producer(), DedupSequenceNumber::Esn(new_esn)).await;
+                        // commit all changes so far, this is important so that the actuators see all changes
+                        // when becoming leader.
+                        transaction.commit().await?;
+
+                        // We can ignore all actions collected so far because as a new leader we have to instruct the
+                        // actuators afresh.
+                        action_collector.clear();
+
+                        if announce_leader.node_id == metadata().my_node_id() {
+                            (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage, schemas.clone()).await?;
+                        } else {
+                            (state, action_effect_stream) = state.become_follower().await?;
+                        }
+                    } else {
+                        // Commit our changes and notify actuators about actions if we are the leader
+                        transaction.commit().await?;
+                        state.handle_actions(action_collector.drain()).await?;
+                    }
+                },
+                action_effect = action_effect_stream.next() => {
+                    counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
+                    let action_effect = action_effect.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
+                    state.handle_action_effect(action_effect).await;
+                },
+                task_result = state.run_tasks() => {
+                    match task_result {
+                        TaskResult::Timer(timer) => {
+                            counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
+                            state.handle_action_effect(ActionEffect::Timer(timer)).await;
+                        },
+                        TaskResult::TerminatedTask(result) => {
+                            Err(result)?
                         }
                     }
                 },
-                result = inner.poll_actions() => {
-                    result?;
-                }
             }
         }
 
         debug!(%peer_id, %partition_id, "Shutting partition processor down.");
-        let _ = inner.become_follower().await;
+        let _ = state.become_follower().await;
 
         Ok(())
     }
 
     async fn create_state_machine<Codec>(
         partition_storage: &mut PartitionStorage<RocksDBStorage>,
-    ) -> Result<DeduplicatingStateMachine<Codec>, restate_storage_api::StorageError>
+    ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     {
         let inbox_seq_number = partition_storage.load_inbox_seq_number().await?;
         let outbox_seq_number = partition_storage.load_outbox_seq_number().await?;
 
-        let state_machine = DeduplicatingStateMachine::new(inbox_seq_number, outbox_seq_number);
+        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
 
         Ok(state_machine)
     }
-}
 
-struct Inner<C, I, N> {
-    peer_id: PeerId,
-    partition_id: PartitionId,
-    partition_key_range: RangeInclusive<PartitionKey>,
-    schemas: Schemas,
-    state_machine: DeduplicatingStateMachine<C>,
-    leadership_state: Option<LeadershipState<I, N>>,
-    action_effect_stream: ActionEffectStream,
-    action_effect_handler: Option<ActionEffectHandler>,
-    effects_buffer: Effects,
-    consensus_writer: ConsensusWriter,
-    max_batch_duration: Option<Duration>,
-}
-
-impl<C, I, N> Inner<C, I, N>
-where
-    C: restate_types::journal::raw::RawEntryCodec + Default + Debug,
-    I: restate_invoker_api::ServiceHandle + Clone,
-    N: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
-{
     #[allow(clippy::too_many_arguments)]
-    fn new_as_follower(
-        state_machine: DeduplicatingStateMachine<C>,
-        peer_id: PeerId,
-        partition_id: PartitionId,
-        partition_key_range: RangeInclusive<PartitionKey>,
-        schemas: Schemas,
-        timer_service_options: restate_timer::Options,
-        channel_size: usize,
-        invoker_tx: I,
-        network_handle: N,
-        ack_tx: PartitionProcessorSender<AckResponse>,
-        consensus_writer: ConsensusWriter,
-        ingress_tx: IngressDispatcherInputSender,
-        max_batch_duration: Option<Duration>,
-    ) -> Self {
-        let (action_effect_stream, leadership_state) = LeadershipState::follower(
-            peer_id,
-            partition_id,
-            timer_service_options,
-            channel_size,
-            invoker_tx,
-            network_handle,
-            ack_tx,
-            consensus_writer.clone(),
-            ingress_tx,
+    async fn apply_available_records_until_leadership_change<Codec>(
+        state_machine: &mut StateMachine<Codec>,
+        record: (Lsn, Envelope),
+        log_reader: &mut LogReader,
+        transaction: &mut Transaction<RocksDBTransaction<'_>>,
+        effects: &mut Effects,
+        action_collector: &mut ActionCollector,
+        partition_key_range: &RangeInclusive<PartitionKey>,
+        is_leader: bool,
+    ) -> anyhow::Result<Option<AnnounceLeader>>
+    where
+        Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
+    {
+        action_collector.clear();
+
+        // only return the currently available records --> no waiting
+        let available_records = futures::stream::once(futures::future::ready(Ok(record))).chain(
+            futures::stream::unfold(log_reader, |log_reader| async {
+                log_reader
+                    .read_next_opt()
+                    .await
+                    .transpose()
+                    .map(|record| (record, log_reader))
+            }),
         );
+        tokio::pin!(available_records);
 
-        Inner {
-            peer_id,
-            partition_id,
-            partition_key_range,
-            schemas,
-            state_machine,
-            leadership_state: Some(leadership_state),
-            action_effect_stream,
-            consensus_writer,
-            action_effect_handler: None,
-            effects_buffer: Effects::with_capacity(128),
-            max_batch_duration,
-        }
-    }
+        // todo: add maximum duration for batches
+        while let Some(record) = available_records.next().await {
+            let (lsn, envelope) = record?;
+            transaction.store_applied_lsn(lsn).await?;
 
-    async fn become_leader(
-        &mut self,
-        leader_epoch: LeaderEpoch,
-        partition_storage: &mut PartitionStorage<RocksDBStorage>,
-    ) -> anyhow::Result<()> {
-        debug!(restate.partition.peer = %self.peer_id, restate.partition.id = %self.partition_id, restate.partition.leader_epoch = %leader_epoch, "Become leader");
+            if let Some(dedup_information) =
+                is_targeted_to_me(&envelope.header, partition_key_range)
+            {
+                // deduplicate if deduplication information has been provided
+                if let Some(dedup_information) = dedup_information {
+                    if is_outdated_or_duplicate(dedup_information, transaction).await? {
+                        continue;
+                    } else {
+                        transaction
+                            .store_dedup_sequence_number(
+                                dedup_information.producer_id.clone(),
+                                dedup_information.sequence_number,
+                            )
+                            .await;
+                    }
+                }
 
-        let (action_effect_stream, leadership_state) = self
-            .leadership_state
-            .take()
-            .expect("leadership state must be set")
-            .become_leader(
-                leader_epoch,
-                self.partition_key_range.clone(),
-                partition_storage,
-                self.schemas.clone(),
-            )
-            .await?;
+                if let Command::AnnounceLeader(announce_leader) = envelope.command {
+                    let last_known_esn = transaction
+                        .get_dedup_sequence_number(&ProducerId::self_producer())
+                        .await?
+                        .map(|dedup_sn| {
+                            let_assert!(
+                                DedupSequenceNumber::Esn(esn) = dedup_sn,
+                                "self producer must store epoch sequence numbers!"
+                            );
+                            esn
+                        });
 
-        self.action_effect_stream = action_effect_stream;
-        self.leadership_state = Some(leadership_state);
-
-        self.action_effect_handler = Some(ActionEffectHandler::new(
-            self.partition_id,
-            leader_epoch,
-            self.partition_key_range.clone(),
-            self.consensus_writer.clone(),
-        ));
-
-        Ok(())
-    }
-
-    async fn become_follower(&mut self) -> anyhow::Result<()> {
-        info!(restate.partition.peer = %self.peer_id, restate.partition.id = %self.partition_id, "Become follower");
-        let (action_effect_stream, leadership_state) = self
-            .leadership_state
-            .take()
-            .expect("leadership state must be set")
-            .become_follower()
-            .await?;
-
-        self.action_effect_stream = action_effect_stream;
-        self.leadership_state = Some(leadership_state);
-        self.action_effect_handler = None;
-
-        Ok(())
-    }
-
-    async fn apply_command(
-        &mut self,
-        command: Envelope,
-        consensus_reader: &mut ConsensusReader,
-        transaction: Transaction<RocksDBTransaction<'_>>,
-    ) -> anyhow::Result<Option<restate_consensus::Command<Envelope>>> {
-        self.effects_buffer.clear();
-
-        let leadership_state = self
-            .leadership_state
-            .take()
-            .expect("leadership state must be present");
-        let is_leader = leadership_state.is_leader();
-        let message_collector = leadership_state.into_message_collector();
-
-        let max_batch_duration_start = self
-            .max_batch_duration
-            .map(|duration| (duration, Instant::now()));
-
-        // Apply state machine
-        let mut application_result = self
-            .state_machine
-            .apply(
-                command,
-                &mut self.effects_buffer,
-                transaction,
-                message_collector,
-                is_leader,
-            )
-            .await?;
-
-        let mut next_command = None;
-
-        while max_batch_duration_start
-            .map(|(max_duration, start)| start.elapsed() < max_duration)
-            .unwrap_or(true)
-        {
-            if let Ok(command) = consensus_reader.try_recv() {
-                if let restate_consensus::Command::Apply(envelope) = command {
-                    let (transaction, message_collector) = application_result.into_inner();
-                    application_result = self
-                        .state_machine
+                    if last_known_esn
+                        .map(|last_known_esn| {
+                            last_known_esn.leader_epoch < announce_leader.leader_epoch
+                        })
+                        .unwrap_or(true)
+                    {
+                        // leadership change detected, let's finish our transaction here
+                        return Ok(Some(announce_leader));
+                    } else {
+                        trace!("Ignoring outdated leadership announcement.");
+                    }
+                } else {
+                    effects.clear();
+                    state_machine
                         .apply(
-                            envelope,
-                            &mut self.effects_buffer,
+                            envelope.command,
+                            effects,
                             transaction,
-                            message_collector,
+                            action_collector,
                             is_leader,
                         )
                         .await?;
-                } else {
-                    next_command = Some(command);
-                    break;
                 }
-            } else {
-                break;
             }
         }
 
-        let message_collector = application_result.commit().await?;
-        self.leadership_state = Some(message_collector.send().await?);
+        Ok(None)
+    }
+}
 
-        Ok(next_command)
+fn is_targeted_to_me<'a>(
+    header: &'a Header,
+    partition_key_range: &RangeInclusive<PartitionKey>,
+) -> Option<&'a Option<DedupInformation>> {
+    match &header.dest {
+        Destination::Processor {
+            partition_key,
+            dedup,
+        } if partition_key_range.contains(partition_key) => Some(dedup),
+        _ => None,
+    }
+}
+
+async fn is_outdated_or_duplicate(
+    dedup_information: &DedupInformation,
+    dedup_resolver: &mut impl DedupSequenceNumberResolver,
+) -> anyhow::Result<bool> {
+    let last_dsn = dedup_resolver
+        .get_dedup_sequence_number(&dedup_information.producer_id)
+        .await?;
+
+    // Check whether we have seen this message before
+    let is_duplicate = if let Some(last_dsn) = last_dsn {
+        match (last_dsn, &dedup_information.sequence_number) {
+            (DedupSequenceNumber::Esn(last_esn), DedupSequenceNumber::Esn(esn)) => last_esn >= *esn,
+            (DedupSequenceNumber::Sn(last_sn), DedupSequenceNumber::Sn(sn)) => last_sn >= *sn,
+            (last_dsn, dsn) => panic!("sequence number types do not match: last sequence number '{:?}', received sequence number '{:?}'", last_dsn, dsn),
+        }
+    } else {
+        false
+    };
+
+    Ok(is_duplicate)
+}
+
+struct LogReader {
+    log_reader: LogReadStream,
+}
+
+impl LogReader {
+    fn new(log_id: LogId, lsn: Lsn) -> Self {
+        Self {
+            log_reader: bifrost().create_reader(log_id, lsn),
+        }
     }
 
-    async fn poll_actions(&mut self) -> anyhow::Result<()> {
-        tokio::select! {
-            actuator_output = self.action_effect_stream.next() => {
-                    counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
-                    let actuator_output = actuator_output.ok_or_else(|| anyhow::anyhow!("actuator stream is closed"))?;
-                    self.action_effect_handler.as_ref().expect("actuator output handler must be present when being leader").handle(actuator_output).await;
-                },
-            task_result = self.leadership_state.as_mut().expect("leadership state must be set").run_tasks() => {
-                match task_result {
-                    TaskResult::Timer(timer) => {
-                        counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
-                        self.action_effect_handler.as_ref().expect("actuator output handler must be present when being leader").handle(ActionEffect::Timer(timer)).await;
-                    },
-                    TaskResult::TerminatedTask(result) => {
-                        Err(result)?
-                    }
-                }
-            },
-        }
+    async fn read_next(&mut self) -> anyhow::Result<(Lsn, Envelope)> {
+        let LogRecord { record, offset } = self.log_reader.read_next().await?;
 
-        Ok(())
+        Self::deserialize_record(record).map(|envelope| (offset, envelope))
+    }
+
+    async fn read_next_opt(&mut self) -> anyhow::Result<Option<(Lsn, Envelope)>> {
+        let maybe_log_record = self.log_reader.read_next_opt().await?;
+
+        maybe_log_record
+            .map(|log_record| {
+                Self::deserialize_record(log_record.record)
+                    .map(|envelope| (log_record.offset, envelope))
+            })
+            .transpose()
+    }
+
+    fn deserialize_record(record: Record) -> anyhow::Result<Envelope> {
+        match record {
+            Record::Data(payload) => {
+                // todo: Replace bincode with protobuf or something similar
+                let (envelope, _) = bincode::serde::decode_from_slice(
+                    payload.as_ref(),
+                    bincode::config::standard(),
+                )?;
+                Ok(envelope)
+            }
+            Record::TrimGap(_) => {
+                unimplemented!("Currently not supported")
+            }
+            Record::Seal(_) => {
+                unimplemented!("Currently not supported")
+            }
+        }
     }
 }
 

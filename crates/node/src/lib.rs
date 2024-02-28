@@ -14,7 +14,7 @@ mod roles;
 
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
-use restate_bifrost::BifrostService;
+use restate_bifrost::{with_bifrost, BifrostService};
 use restate_core::network::MessageRouterBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
@@ -252,6 +252,8 @@ impl Node {
         metadata_writer.set_my_node_id(my_node_id);
         info!("My Node ID is {}", my_node_id);
 
+        let bifrost = self.bifrost.handle();
+
         // Ensures bifrost has initial metadata synced up before starting the worker.
         self.bifrost.start().await?;
 
@@ -269,7 +271,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(),
+                with_bifrost(worker_role.start(), bifrost),
             )?;
         }
 

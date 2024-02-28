@@ -11,7 +11,8 @@
 use super::leadership::ActionEffect;
 use crate::partition::ConsensusWriter;
 use restate_core::metadata;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use std::ops::RangeInclusive;
@@ -19,7 +20,7 @@ use std::ops::RangeInclusive;
 /// Responsible for proposing [ActionEffect].
 pub(super) struct ActionEffectHandler {
     partition_id: PartitionId,
-    leader_epoch: LeaderEpoch,
+    epoch_sequence_number: EpochSequenceNumber,
     partition_key_range: RangeInclusive<PartitionKey>,
     consensus_writer: ConsensusWriter,
 }
@@ -27,19 +28,19 @@ pub(super) struct ActionEffectHandler {
 impl ActionEffectHandler {
     pub(super) fn new(
         partition_id: PartitionId,
-        leader_epoch: LeaderEpoch,
+        epoch_sequence_number: EpochSequenceNumber,
         partition_key_range: RangeInclusive<PartitionKey>,
         consensus_writer: ConsensusWriter,
     ) -> Self {
         Self {
             partition_id,
-            leader_epoch,
+            epoch_sequence_number,
             partition_key_range,
             consensus_writer,
         }
     }
 
-    pub(super) async fn handle(&self, actuator_output: ActionEffect) {
+    pub(super) async fn handle(&mut self, actuator_output: ActionEffect) {
         match actuator_output {
             ActionEffect::Invoker(invoker_output) => {
                 let header = self.create_header(invoker_output.full_invocation_id.partition_key());
@@ -100,18 +101,32 @@ impl ActionEffectHandler {
                         .await;
                 }
             }
+            ActionEffect::Invocation(service_invocation) => {
+                let header = self.create_header(service_invocation.fid.partition_key());
+                // Err only if the consensus module is shutting down
+                let _ = self
+                    .consensus_writer
+                    .send(Envelope::new(header, Command::Invoke(service_invocation)))
+                    .await;
+            }
         };
     }
 
-    /// Creates a header with itself as the source and destination and w/o acking.
-    fn create_header(&self, partition_key: PartitionKey) -> Header {
+    /// Creates a header with itself as the source and destination.
+    fn create_header(&mut self, partition_key: PartitionKey) -> Header {
+        let esn = self.epoch_sequence_number.next();
+        self.epoch_sequence_number = esn;
+
         Header {
             ack_mode: AckMode::None,
-            dest: Destination::Processor { partition_key },
+            dest: Destination::Processor {
+                partition_key,
+                dedup: Some(DedupInformation::self_proposal(esn)),
+            },
             source: Source::Processor {
                 partition_id: self.partition_id,
                 partition_key: Some(partition_key),
-                leader_epoch: self.leader_epoch,
+                leader_epoch: self.epoch_sequence_number.leader_epoch,
                 // todo: Add support for deduplicating self proposals
                 sequence_number: None,
                 node_id: metadata().my_node_id().as_plain(),
