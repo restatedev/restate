@@ -5231,7 +5231,6 @@ dependencies = [
  "restate-fs-util",
  "restate-futures-util",
  "restate-meta-rest-model",
- "restate-pb",
  "restate-schema-api",
  "restate-schema-impl",
  "restate-serde-util",

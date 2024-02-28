@@ -17,7 +17,6 @@ restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
-restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["component", "service", "deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
@@ -44,7 +43,6 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 

@@ -291,12 +291,35 @@ mod tests {
 
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
+    use restate_schema_api::deployment::Deployment;
+    use restate_schema_impl::Schemas;
+    use restate_service_protocol::discovery::schema;
     use tempfile::tempdir;
     use test_log::test;
 
-    use restate_pb::mocks;
-    use restate_schema_api::deployment::Deployment;
-    use restate_schema_impl::Schemas;
+    fn greeter_service() -> schema::Component {
+        schema::Component {
+            component_type: schema::ComponentType::Service,
+            fully_qualified_component_name: "greeter".parse().unwrap(),
+            handlers: vec![schema::Handler {
+                name: "greet".parse().unwrap(),
+                input_schema: None,
+                output_schema: None,
+            }],
+        }
+    }
+
+    fn another_greeter_service() -> schema::Component {
+        schema::Component {
+            component_type: schema::ComponentType::Service,
+            fully_qualified_component_name: "another-greeter".parse().unwrap(),
+            handlers: vec![schema::Handler {
+                name: "another_greeter".parse().unwrap(),
+                input_schema: None,
+                output_schema: None,
+            }],
+        }
+    }
 
     #[test(tokio::test)]
     async fn reload_in_order() {
@@ -308,11 +331,10 @@ mod tests {
         // Generate some commands for a new deployment, with new services
         let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
         let commands_1 = schemas
-            .old_compute_new_deployment(
+            .compute_new_deployment(
                 Some(deployment_1.id),
                 deployment_1.metadata,
-                vec![mocks::GREETER_SERVICE_NAME.to_owned()],
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![greeter_service()],
                 false,
             )
             .unwrap();
@@ -324,14 +346,10 @@ mod tests {
         schemas.apply_updates(commands_1.clone()).unwrap();
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
         let commands_2 = schemas
-            .old_compute_new_deployment(
+            .compute_new_deployment(
                 Some(deployment_2.id),
                 deployment_2.metadata,
-                vec![
-                    mocks::GREETER_SERVICE_NAME.to_owned(),
-                    mocks::ANOTHER_GREETER_SERVICE_NAME.to_owned(),
-                ],
-                mocks::DESCRIPTOR_POOL.clone(),
+                vec![greeter_service(), another_greeter_service()],
                 false,
             )
             .unwrap();
@@ -375,27 +393,19 @@ mod tests {
         fn eq(&self, other: &Self) -> bool {
             match (&self.0, &other.0) {
                 (
-                    SchemasUpdateCommand::OldInsertDeployment {
+                    SchemasUpdateCommand::InsertDeployment {
                         deployment_id: self_deployment_id,
-                        services: self_services,
                         ..
                     },
-                    SchemasUpdateCommand::OldInsertDeployment {
+                    SchemasUpdateCommand::InsertDeployment {
                         deployment_id: other_deployment_id,
-                        services: other_services,
                         ..
                     },
-                ) => self_deployment_id == other_deployment_id && self_services == other_services,
+                ) => self_deployment_id == other_deployment_id,
                 (
-                    SchemasUpdateCommand::RemoveService {
-                        name: self_name,
-                        revision: self_revision,
-                    },
-                    SchemasUpdateCommand::RemoveService {
-                        name: other_name,
-                        revision: other_revision,
-                    },
-                ) => self_name == other_name && self_revision == other_revision,
+                    SchemasUpdateCommand::InsertComponent(self_component),
+                    SchemasUpdateCommand::InsertComponent(other_component),
+                ) => self_component == other_component,
                 _ => false,
             }
         }
