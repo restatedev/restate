@@ -308,7 +308,7 @@ mod tests {
         // Generate some commands for a new deployment, with new services
         let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
         let commands_1 = schemas
-            .compute_new_deployment(
+            .old_compute_new_deployment(
                 Some(deployment_1.id),
                 deployment_1.metadata,
                 vec![mocks::GREETER_SERVICE_NAME.to_owned()],
@@ -324,7 +324,7 @@ mod tests {
         schemas.apply_updates(commands_1.clone()).unwrap();
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
         let commands_2 = schemas
-            .compute_new_deployment(
+            .old_compute_new_deployment(
                 Some(deployment_2.id),
                 deployment_2.metadata,
                 vec![
@@ -375,12 +375,12 @@ mod tests {
         fn eq(&self, other: &Self) -> bool {
             match (&self.0, &other.0) {
                 (
-                    SchemasUpdateCommand::InsertDeployment {
+                    SchemasUpdateCommand::OldInsertDeployment {
                         deployment_id: self_deployment_id,
                         services: self_services,
                         ..
                     },
-                    SchemasUpdateCommand::InsertDeployment {
+                    SchemasUpdateCommand::OldInsertDeployment {
                         deployment_id: other_deployment_id,
                         services: other_services,
                         ..

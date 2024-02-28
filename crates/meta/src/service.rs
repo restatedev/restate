@@ -100,7 +100,7 @@ pub struct OldDiscoverDeploymentResponse {
 
 pub struct DiscoverDeploymentResponse {
     pub deployment: DeploymentId,
-    pub services: Vec<ComponentMetadata>,
+    pub components: Vec<ComponentMetadata>,
 }
 
 enum MetaHandleResponse {
@@ -386,7 +386,7 @@ where
         };
 
         // Compute the diff with the current state of Schemas
-        let schemas_update_commands = self.schemas.compute_new_deployment(
+        let schemas_update_commands = self.schemas.old_compute_new_deployment(
             None, /* requested_deployment_id */
             deployment_metadata,
             discovered_metadata.services,
@@ -434,16 +434,13 @@ where
             }
         };
 
-        // TODO
-        let schemas_update_commands = vec![];
         // Compute the diff with the current state of Schemas
-        // let schemas_update_commands = self.schemas.compute_new_deployment(
-        //     None, /* requested_deployment_id */
-        //     deployment_metadata,
-        //     discovered_metadata.services,
-        //     discovered_metadata.descriptor_pool,
-        //     force.force_enabled(),
-        // )?;
+        let schemas_update_commands = self.schemas.compute_new_deployment(
+            None, /* requested_deployment_id */
+            deployment_metadata,
+            discovered_metadata.components,
+            force.force_enabled(),
+        )?;
 
         // Compute the response
         let discovery_response =
@@ -528,41 +525,30 @@ where
     fn infer_discovery_response_from_update_commands(
         commands: &[SchemasUpdateCommand],
     ) -> DiscoverDeploymentResponse {
-        // for schema_update_command in commands {
-        //     if let SchemasUpdateCommand::InsertDeployment {
-        //         deployment_id,
-        //         metadata: _,
-        //         services,
-        //         descriptor_pool,
-        //     } = schema_update_command
-        //     {
-        //         return DiscoverDeploymentResponse {
-        //             deployment: *deployment_id,
-        //             services: services
-        //                 .iter()
-        //                 .map(|update_command| {
-        //                     let service_descriptor = descriptor_pool
-        //                         .get_service_by_name(&update_command.name)
-        //                         .expect(
-        //                             "A service descriptor must be present in the descriptor pool",
-        //                         );
-        //                     update_command
-        //                         .as_service_metadata(*deployment_id, &service_descriptor)
-        //                         .expect("Discovered services cannot be built-in services")
-        //                 })
-        //                 .collect(),
-        //         };
-        //     }
-        // }
+        let mut res = DiscoverDeploymentResponse {
+            deployment: Default::default(),
+            components: vec![],
+        };
+        for schema_update_command in commands {
+            match schema_update_command {
+                SchemasUpdateCommand::InsertDeployment { deployment_id, .. } => {
+                    res.deployment = *deployment_id
+                }
+                SchemasUpdateCommand::InsertComponent(cmd) => {
+                    res.components.push(cmd.as_component_metadata())
+                }
+                _ => {}
+            }
+        }
 
-        panic!("Expecting a SchemasUpdateCommand::InsertDeployment command. This looks like a bug");
+        res
     }
 
     fn old_infer_discovery_response_from_update_commands(
         commands: &[SchemasUpdateCommand],
     ) -> OldDiscoverDeploymentResponse {
         for schema_update_command in commands {
-            if let SchemasUpdateCommand::InsertDeployment {
+            if let SchemasUpdateCommand::OldInsertDeployment {
                 deployment_id,
                 metadata: _,
                 services,
