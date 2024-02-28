@@ -57,6 +57,7 @@ impl ProtocolMessage {
                 .into_iter()
                 .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
                 .collect(),
+            ..pb::protocol::StartMessage::default()
         })
     }
 
