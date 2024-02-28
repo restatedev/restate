@@ -14,7 +14,7 @@ use bytes::Bytes;
 use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_schema_api::service::ServiceMetadata;
-use restate_types::identifiers::{DeploymentId, ServiceRevision};
+use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
 impl DeploymentResolver for Schemas {
     fn resolve_latest_deployment_for_service(
@@ -72,7 +72,7 @@ impl DeploymentResolver for Schemas {
         })
     }
 
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
         let schemas = self.0.load();
         schemas
             .deployments

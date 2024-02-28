@@ -53,7 +53,7 @@ impl SchemasInner {
     pub(crate) fn apply_remove_service(
         &mut self,
         name: String,
-        revision: ServiceRevision,
+        revision: ComponentRevision,
     ) -> Result<(), SchemasUpdateError> {
         let entry = self.services.entry(name);
         match entry {

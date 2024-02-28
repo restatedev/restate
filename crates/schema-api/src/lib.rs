@@ -17,7 +17,7 @@ pub mod deployment {
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
-    use restate_types::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
+    use restate_types::identifiers::{ComponentRevision, DeploymentId, LambdaARN};
     use restate_types::time::MillisSinceEpoch;
     use std::collections::HashMap;
     use std::fmt;
@@ -179,7 +179,7 @@ pub mod deployment {
             deployment_id: &DeploymentId,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
-        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
+        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -276,7 +276,7 @@ pub mod deployment {
                     })
             }
 
-            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
+            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
                 self.deployments
                     .iter()
                     .map(|(id, metadata)| {
@@ -294,10 +294,196 @@ pub mod deployment {
     }
 }
 
+#[cfg(feature = "component")]
+pub mod component {
+    use restate_types::identifiers::{ComponentRevision, DeploymentId};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum ComponentType {
+        Service,
+        VirtualObject,
+    }
+
+    impl ComponentType {
+        pub fn requires_key(&self) -> bool {
+            matches!(self, ComponentType::VirtualObject)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct ComponentMetadata {
+        /// # Name
+        ///
+        /// Fully qualified name of the component
+        pub name: String,
+
+        pub handlers: Vec<HandlerMetadata>,
+
+        pub ty: ComponentType,
+
+        /// # Deployment Id
+        ///
+        /// Deployment exposing the latest revision of the component.
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        pub deployment_id: DeploymentId,
+
+        /// # Revision
+        ///
+        /// Latest revision of the component.
+        pub revision: ComponentRevision,
+
+        /// # Public
+        ///
+        /// If true, the component can be invoked through the ingress.
+        /// If false, the component can be invoked only from another Restate service.
+        pub public: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct HandlerMetadata {
+        pub name: String,
+    }
+
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct BasicComponentMetadata {
+        pub public: bool,
+        pub ty: ComponentType,
+    }
+
+    /// This API will return components registered by the user.
+    pub trait ComponentMetadataResolver {
+        /// Returns None if the component handler doesn't exist, Some(basic_component_metadata) otherwise.
+        fn resolve_latest_component_handler(
+            &self,
+            component_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> Option<BasicComponentMetadata>;
+
+        fn resolve_latest_component_type(
+            &self,
+            component_name: impl AsRef<str>,
+        ) -> Option<ComponentType>;
+
+        fn resolve_latest_component(
+            &self,
+            component_name: impl AsRef<str>,
+        ) -> Option<ComponentMetadata>;
+
+        fn list_components(&self) -> Vec<ComponentMetadata>;
+    }
+
+    #[cfg(feature = "mocks")]
+    #[allow(dead_code)]
+    pub mod mocks {
+        use super::*;
+
+        use std::collections::HashMap;
+
+        #[derive(Debug, Default, Clone)]
+        pub struct MockComponentMetadataResolver(HashMap<String, ComponentMetadata>);
+
+        impl MockComponentMetadataResolver {
+            pub fn add(&mut self, component_metadata: ComponentMetadata) {
+                self.0
+                    .insert(component_metadata.name.clone(), component_metadata);
+            }
+        }
+
+        impl ComponentMetadataResolver for MockComponentMetadataResolver {
+            fn resolve_latest_component_handler(
+                &self,
+                component_name: impl AsRef<str>,
+                handler_name: impl AsRef<str>,
+            ) -> Option<BasicComponentMetadata> {
+                let component = self.0.get(component_name.as_ref());
+                if let Some(meta) = component {
+                    if meta
+                        .handlers
+                        .iter()
+                        .any(|m| m.name == handler_name.as_ref())
+                    {
+                        return Some(BasicComponentMetadata {
+                            public: meta.public,
+                            ty: meta.ty,
+                        });
+                    }
+                }
+                None
+            }
+
+            fn resolve_latest_component_type(
+                &self,
+                component_name: impl AsRef<str>,
+            ) -> Option<ComponentType> {
+                self.0.get(component_name.as_ref()).map(|c| c.ty)
+            }
+
+            fn resolve_latest_component(
+                &self,
+                component_name: impl AsRef<str>,
+            ) -> Option<ComponentMetadata> {
+                self.0.get(component_name.as_ref()).cloned()
+            }
+
+            fn list_components(&self) -> Vec<ComponentMetadata> {
+                self.0.values().cloned().collect()
+            }
+        }
+
+        impl ComponentMetadata {
+            pub fn mock_service(
+                name: impl AsRef<str>,
+                handlers: impl IntoIterator<Item = impl AsRef<str>>,
+            ) -> Self {
+                Self {
+                    name: name.as_ref().to_string(),
+                    handlers: handlers
+                        .into_iter()
+                        .map(|s| HandlerMetadata {
+                            name: s.as_ref().to_string(),
+                        })
+                        .collect(),
+                    ty: ComponentType::Service,
+                    deployment_id: Default::default(),
+                    revision: 0,
+                    public: true,
+                }
+            }
+
+            pub fn mock_virtual_object(
+                name: impl AsRef<str>,
+                handlers: impl IntoIterator<Item = impl AsRef<str>>,
+            ) -> Self {
+                Self {
+                    name: name.as_ref().to_string(),
+                    handlers: handlers
+                        .into_iter()
+                        .map(|s| HandlerMetadata {
+                            name: s.as_ref().to_string(),
+                        })
+                        .collect(),
+                    ty: ComponentType::VirtualObject,
+                    deployment_id: Default::default(),
+                    revision: 0,
+                    public: true,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(feature = "service")]
 pub mod service {
     use bytes::Bytes;
-    use restate_types::identifiers::{DeploymentId, ServiceRevision};
+    use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -323,7 +509,7 @@ pub mod service {
         /// # Revision
         ///
         /// Latest revision of the service.
-        pub revision: ServiceRevision,
+        pub revision: ComponentRevision,
         /// # Public
         ///
         /// If true, the service can be invoked through the ingress.

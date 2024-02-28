@@ -15,7 +15,7 @@ use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
+use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,7 +66,7 @@ pub struct DiscoveredMethodMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InsertServiceUpdateCommand {
     pub name: String,
-    pub revision: ServiceRevision,
+    pub revision: ComponentRevision,
     pub instance_type: DiscoveredInstanceType,
     pub methods: HashMap<String, DiscoveredMethodMetadata>,
 }
@@ -107,7 +107,7 @@ pub enum SchemasUpdateCommand {
     /// Remove only if the revision is matching
     RemoveService {
         name: String,
-        revision: ServiceRevision,
+        revision: ComponentRevision,
     },
     ModifyService {
         name: String,
@@ -310,7 +310,7 @@ mod tests {
         }
 
         #[track_caller]
-        pub(crate) fn assert_service_revision(&self, svc_name: &str, revision: ServiceRevision) {
+        pub(crate) fn assert_service_revision(&self, svc_name: &str, revision: ComponentRevision) {
             assert_eq!(
                 self.resolve_latest_service_metadata(svc_name)
                     .unwrap()
