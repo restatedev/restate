@@ -59,7 +59,6 @@ impl Default for Options {
 impl Options {
     pub fn build(self) -> HttpClient {
         let mut builder = hyper::Client::builder();
-        builder.http2_only(true);
 
         if let Some(keep_alive_options) = self.keep_alive_options {
             builder
@@ -73,6 +72,7 @@ impl Options {
                 hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
                     .https_or_http()
+                    .enable_http1()
                     .enable_http2()
                     .build(),
             )),
