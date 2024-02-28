@@ -18,6 +18,7 @@ use crate::partition::storage::{PartitionStorage, Transaction};
 use crate::util::IdentitySender;
 use futures::StreamExt;
 use metrics::counter;
+use restate_core::NetworkSender;
 use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
@@ -25,6 +26,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, instrument};
@@ -119,7 +121,7 @@ where
     }
 
     #[instrument(level = "trace", skip_all, fields(peer_id = %self.peer_id, partition_id = %self.partition_id))]
-    pub(super) async fn run(self) -> anyhow::Result<()> {
+    pub(super) async fn run(self, _networking: Arc<dyn NetworkSender>) -> anyhow::Result<()> {
         let PartitionProcessor {
             peer_id,
             partition_id,
