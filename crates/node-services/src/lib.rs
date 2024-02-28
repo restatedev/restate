@@ -65,4 +65,13 @@ pub mod common {
             }
         }
     }
+
+    impl From<restate_types::GenerationalNodeId> for NodeId {
+        fn from(node_id: restate_types::GenerationalNodeId) -> Self {
+            NodeId {
+                id: node_id.raw_id(),
+                generation: Some(node_id.generation()),
+            }
+        }
+    }
 }

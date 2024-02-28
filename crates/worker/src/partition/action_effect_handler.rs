@@ -10,8 +10,8 @@
 
 use super::leadership::ActionEffect;
 use crate::partition::ConsensusWriter;
+use restate_core::metadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::NodeId;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use std::ops::RangeInclusive;
@@ -114,7 +114,7 @@ impl ActionEffectHandler {
                 leader_epoch: self.leader_epoch,
                 // todo: Add support for deduplicating self proposals
                 sequence_number: None,
-                node_id: NodeId::my_node_id().expect("NodeId should be set").id(),
+                node_id: metadata().my_node_id().as_plain(),
             },
         }
     }
