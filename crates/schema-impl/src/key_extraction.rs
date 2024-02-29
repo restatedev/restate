@@ -61,11 +61,6 @@ pub(crate) mod extract_impls {
                     .ok_or_else(|| Error::NotFound)?,
                 key_structure,
             ),
-            InstanceTypeMetadata::Unsupported => {
-                // We return NotFound here because one of the few reasons this error might pop up
-                // is that if a user invokes a service only exposed in the ingress.
-                Err(Error::NotFound)
-            }
             InstanceTypeMetadata::Custom {
                 structure_per_method,
             } => {

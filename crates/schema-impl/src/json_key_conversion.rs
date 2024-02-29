@@ -90,7 +90,6 @@ fn key_to_json(
             String::from_utf8(key.as_ref().to_vec()).expect("Must be a valid UTF-8 string"),
         )),
         InstanceTypeMetadata::Singleton => Ok(Value::Object(Map::new())),
-        InstanceTypeMetadata::Unsupported => Err(Error::NotFound),
         // TODO add support for Custom json_key_conversion
         InstanceTypeMetadata::Custom { .. } => Err(Error::NotFound),
     }
