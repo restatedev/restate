@@ -4938,23 +4938,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-consensus"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "futures",
- "futures-sink",
- "pin-project",
- "restate-test-util",
- "restate-types",
- "test-log",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "restate-core"
 version = "0.9.0"
 dependencies = [
@@ -5891,7 +5874,6 @@ dependencies = [
  "prost 0.12.3",
  "prost-reflect",
  "restate-bifrost",
- "restate-consensus",
  "restate-core",
  "restate-errors",
  "restate-ingress-dispatcher",

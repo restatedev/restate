@@ -14,7 +14,6 @@ use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use codederror::CodedError;
 use restate_bifrost::{bifrost, with_bifrost};
-use restate_consensus::Consensus;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{
     IngressDispatcherInputSender, Service as IngressDispatcherService,
@@ -71,7 +70,6 @@ pub use restate_storage_query_datafusion::{
 };
 
 pub use crate::subscription_integration::SubscriptionControllerHandle;
-use crate::util::IdentitySender;
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
@@ -80,7 +78,6 @@ use restate_types::partition_table::FixedPartitionTable;
 use restate_types::Version;
 use restate_wal_protocol::Envelope;
 
-type PartitionProcessorCommand = Envelope;
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
 type ExternalClientIngress = HyperServerIngress<Schemas>;
@@ -180,7 +177,6 @@ impl Error {
 }
 
 pub struct Worker {
-    consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
     networking: Networking,
     network: network_integration::Network,
@@ -219,7 +215,7 @@ impl Worker {
             ..
         } = opts;
 
-        let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
+        let (raft_in_tx, _raft_in_rx) = mpsc::channel(channel_size);
 
         let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
 
@@ -248,8 +244,6 @@ impl Worker {
             Arc::new(partition_table),
             channel_size,
         );
-
-        let consensus = Consensus::new(raft_in_rx, network.create_consensus_sender(), channel_size);
 
         let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
@@ -287,7 +281,6 @@ impl Worker {
             .collect();
 
         Ok(Self {
-            consensus,
             processors,
             networking,
             network,
@@ -396,14 +389,6 @@ impl Worker {
             "kafka-ingress",
             None,
             self.ingress_kafka.run(),
-        )?;
-
-        // Consensus Service
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "consensus",
-            None,
-            self.consensus.run(),
         )?;
 
         // Create partition processors

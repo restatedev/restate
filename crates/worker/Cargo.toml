@@ -22,7 +22,6 @@ options_schema = [
 
 [dependencies]
 restate-bifrost = { workspace = true }
-restate-consensus = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }

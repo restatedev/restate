@@ -33,7 +33,6 @@ restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cluster-controller = { path = "crates/cluster-controller" }
-restate-consensus = { path = "crates/consensus" }
 restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
