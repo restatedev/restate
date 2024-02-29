@@ -10,31 +10,16 @@
 
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::identifiers::{FullInvocationId, PeerId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
 };
-use restate_types::message::AckKind;
-use restate_types::GenerationalNodeId;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
-
-#[derive(Debug)]
-pub struct ShuffleAckResponse {
-    pub(crate) shuffle_target: PeerId,
-    pub(crate) kind: AckKind,
-}
-
-#[derive(Debug)]
-pub struct IngressAckResponse {
-    pub(crate) _from_node_id: GenerationalNodeId,
-    pub(crate) dedup_source: Option<String>,
-    pub(crate) kind: AckKind,
-}
 
 // Extension methods to the OutboxMessage type
 pub(crate) trait OutboxMessageExt {

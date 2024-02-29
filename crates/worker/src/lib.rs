@@ -31,13 +31,10 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use std::ops::RangeInclusive;
-use std::sync::Arc;
-use tokio::sync::mpsc;
 use tracing::debug;
 
 mod invoker_integration;
 mod metric_definitions;
-mod network_integration;
 mod partition;
 mod subscription_integration;
 
@@ -76,7 +73,6 @@ pub use restate_storage_query_postgres::{
 };
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::Version;
-use restate_wal_protocol::Envelope;
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
@@ -179,7 +175,6 @@ impl Error {
 pub struct Worker {
     processors: Vec<PartitionProcessor>,
     networking: Networking,
-    network: network_integration::Network,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
@@ -215,8 +210,6 @@ impl Worker {
             ..
         } = opts;
 
-        let (raft_in_tx, _raft_in_rx) = mpsc::channel(channel_size);
-
         let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
 
         // ingress_grpc
@@ -237,13 +230,6 @@ impl Worker {
         // todo: Fix once we support dynamic partition tables
         let partition_table = FixedPartitionTable::new(Version::MIN, opts.partitions);
         let partitioner = partition_table.partitioner();
-
-        let network = network_integration::Network::new(
-            raft_in_tx,
-            ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
-            Arc::new(partition_table),
-            channel_size,
-        );
 
         let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
@@ -283,7 +269,6 @@ impl Worker {
         Ok(Self {
             processors,
             networking,
-            network,
             storage_query_context,
             storage_query_postgres,
             invoker,
@@ -366,14 +351,6 @@ impl Worker {
 
         // Invoker service
         tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
-
-        // Networking
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "networking-legacy",
-            None,
-            self.network.run(),
-        )?;
 
         // Postgres external server
         tc.spawn_child(
