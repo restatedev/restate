@@ -34,7 +34,7 @@ tokio = { workspace = true }
 http = "1.0"
 http-body = "1.0"
 http-body-util = "0.1"
-hyper-util = { version = "0.1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
 
 # Tracing
 opentelemetry = { workspace = true }
