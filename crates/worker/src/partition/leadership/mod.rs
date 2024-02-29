@@ -12,6 +12,7 @@ use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage, ConsensusWriter};
 use assert2::let_assert;
 use futures::{future, StreamExt};
+use restate_core::metadata;
 use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
@@ -37,7 +38,6 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
 use restate_types::journal::EntryType;
-use restate_types::NodeId;
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::Envelope;
 
@@ -199,7 +199,7 @@ where
                     follower_state.peer_id,
                     follower_state.partition_id,
                     leader_epoch,
-                    NodeId::my_node_id().expect("NodeId should be set"),
+                    metadata().my_node_id().into(),
                 ),
                 partition_storage.clone(),
                 follower_state.network_handle.create_shuffle_sender(),

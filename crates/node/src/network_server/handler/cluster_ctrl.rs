@@ -11,7 +11,6 @@
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
-use restate_core::metadata::Metadata;
 use restate_meta::MetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_node_services::cluster_ctrl::{AttachmentRequest, AttachmentResponse};
@@ -21,15 +20,11 @@ use crate::network_server::AdminDependencies;
 
 pub struct ClusterCtrlSvcHandler {
     admin_deps: AdminDependencies,
-    _metadata: Metadata,
 }
 
 impl ClusterCtrlSvcHandler {
-    pub fn new(admin_deps: AdminDependencies, metadata: Metadata) -> Self {
-        Self {
-            admin_deps,
-            _metadata: metadata,
-        }
+    pub fn new(admin_deps: AdminDependencies) -> Self {
+        Self { admin_deps }
     }
 }
 
