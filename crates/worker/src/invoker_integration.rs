@@ -10,10 +10,10 @@
 
 use assert2::let_assert;
 use bytes::Bytes;
-use restate_schema_api::key::extraction;
+use restate_schema_api::component::ComponentType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{InvocationError, UserErrorCode};
-use restate_types::identifiers::{FullInvocationId, InvocationUuid};
+use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -25,24 +25,24 @@ use std::marker::PhantomData;
 use std::str::FromStr;
 
 #[derive(Debug, Clone)]
-pub(super) struct EntryEnricher<KeyExtractor, Codec> {
-    key_extractor: KeyExtractor,
+pub(super) struct EntryEnricher<Schemas, Codec> {
+    schemas: Schemas,
 
     _codec: PhantomData<Codec>,
 }
 
-impl<KeyExtractor, Codec> EntryEnricher<KeyExtractor, Codec> {
-    pub(super) fn new(key_extractor: KeyExtractor) -> Self {
+impl<Schemas, Codec> EntryEnricher<Schemas, Codec> {
+    pub(super) fn new(schemas: Schemas) -> Self {
         Self {
-            key_extractor,
+            schemas,
             _codec: Default::default(),
         }
     }
 }
 
-impl<KeyExtractor, Codec> EntryEnricher<KeyExtractor, Codec>
+impl<Schemas, Codec> EntryEnricher<Schemas, Codec>
 where
-    KeyExtractor: restate_schema_api::key::KeyExtractor,
+    Schemas: restate_schema_api::component::ComponentMetadataResolver,
     Codec: RawEntryCodec,
 {
     fn resolve_service_invocation_target(
@@ -56,19 +56,22 @@ where
             .map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
-        let service_key = match self.key_extractor.extract(
-            &request.service_name,
-            &request.method_name,
-            request.parameter,
-        ) {
-            Ok(k) => k,
-            Err(extraction::Error::NotFound) => {
+        let service_id = match self
+            .schemas
+            .resolve_latest_component_handler(&request.service_name, &request.method_name)
+        {
+            Some(meta) => match meta.ty {
+                ComponentType::Service => ServiceId::unkeyed(request.service_name.clone()),
+                ComponentType::VirtualObject => {
+                    ServiceId::new(request.service_name.clone(), request.key.into_bytes())
+                }
+            },
+            None => {
                 return Err(InvocationError::service_method_not_found(
                     &request.service_name,
                     &request.method_name,
                 ))
             }
-            Err(e) => return Err(InvocationError::internal(e)),
         };
 
         let invocation_id = InvocationUuid::new();
@@ -76,8 +79,8 @@ where
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(
             &FullInvocationId::new(
-                request.service_name.clone(),
-                service_key.clone(),
+                service_id.service_name.clone(),
+                service_id.key.clone(),
                 invocation_id,
             ),
             span_relation,
@@ -85,16 +88,16 @@ where
 
         Ok(InvokeEnrichmentResult {
             invocation_uuid: invocation_id,
-            service_key,
-            service_name: request.service_name,
+            service_key: service_id.key,
+            service_name: service_id.service_name,
             span_context,
         })
     }
 }
 
-impl<KeyExtractor, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<KeyExtractor, Codec>
+impl<Schemas, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<Schemas, Codec>
 where
-    KeyExtractor: restate_schema_api::key::KeyExtractor,
+    Schemas: restate_schema_api::component::ComponentMetadataResolver,
     Codec: RawEntryCodec,
 {
     fn enrich_entry(
