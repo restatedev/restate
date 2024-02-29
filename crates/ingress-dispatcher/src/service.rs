@@ -340,7 +340,8 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
-    use restate_core::{create_test_task_center, TaskKind};
+    use restate_core::TaskKind;
+    use restate_core::TestCoreEnv;
     use test_log::test;
 
     use restate_test_util::{let_assert, matchers::*};
@@ -349,7 +350,8 @@ mod tests {
 
     #[test(tokio::test)]
     async fn test_closed_handler() {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         let (output_tx, _output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher = Service::new(1);
@@ -394,7 +396,8 @@ mod tests {
 
     #[test(tokio::test)]
     async fn idempotent_invoke() {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         let (output_tx, mut output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher = Service::new(1);

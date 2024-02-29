@@ -609,7 +609,7 @@ mod tests {
     use super::mocks::*;
     use super::*;
 
-    use restate_core::create_test_task_center;
+    use restate_core::TestCoreEnv;
     use tokio::sync::mpsc;
     use tracing_test::traced_test;
 
@@ -1001,10 +1001,10 @@ mod tests {
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
         <B as http_body::Body>::Data: Send + Sync + 'static,
     {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
-        let handler_fut = tc.run_in_scope(
+        let handler_fut = node_env.tc.run_in_scope(
             "ingress",
             None,
             Handler::new(

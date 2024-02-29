@@ -166,7 +166,8 @@ mod tests {
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_core::{create_test_task_center, TaskCenter, TaskKind};
+    use restate_core::TestCoreEnv;
+    use restate_core::{TaskCenter, TaskKind};
     use serde_json::json;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -333,7 +334,8 @@ mod tests {
     }
 
     async fn bootstrap_test() -> (SocketAddr, JoinHandle<Option<IngressRequest>>, TestHandle) {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
