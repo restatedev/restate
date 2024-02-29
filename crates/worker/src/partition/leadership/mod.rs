@@ -33,7 +33,6 @@ use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::Action;
-use crate::partition::types::AckResponse;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
@@ -46,7 +45,6 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch,
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::{CompletionResult, EntryType};
 use restate_wal_protocol::timer::TimerValue;
-use restate_wal_protocol::Envelope;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
@@ -61,14 +59,12 @@ pub(crate) struct LeaderState {
     action_effect_handler: ActionEffectHandler,
 }
 
-pub(crate) struct FollowerState<I, N> {
+pub(crate) struct FollowerState<I> {
     peer_id: PeerId,
     partition_id: PartitionId,
     timer_service_options: restate_timer::Options,
     channel_size: usize,
     invoker_tx: I,
-    network_handle: N,
-    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
     consensus_writer: ConsensusWriter,
     ingress_tx: IngressDispatcherInputSender,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -78,29 +74,24 @@ pub(crate) struct FollowerState<I, N> {
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Invoker(NotRunningError),
-    #[error("network is unreachable. This indicates a bug or the system is shutting down: {0}")]
-    Network(NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
     FailedShuffleTask(#[from] anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error("failed to send ack response: {0}")]
-    Ack(#[from] mpsc::error::SendError<AckResponse>),
 }
 
-pub(crate) enum LeadershipState<InvokerInputSender, NetworkHandle> {
-    Follower(FollowerState<InvokerInputSender, NetworkHandle>),
+pub(crate) enum LeadershipState<InvokerInputSender> {
+    Follower(FollowerState<InvokerInputSender>),
 
     Leader {
-        follower_state: FollowerState<InvokerInputSender, NetworkHandle>,
+        follower_state: FollowerState<InvokerInputSender>,
         leader_state: LeaderState,
     },
 }
 
-impl<InvokerInputSender, NetworkHandle> LeadershipState<InvokerInputSender, NetworkHandle>
+impl<InvokerInputSender> LeadershipState<InvokerInputSender>
 where
     InvokerInputSender: restate_invoker_api::ServiceHandle,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
@@ -110,8 +101,6 @@ where
         timer_service_options: restate_timer::Options,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
-        network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         consensus_writer: ConsensusWriter,
         ingress_tx: IngressDispatcherInputSender,
     ) -> (Self, ActionEffectStream) {
@@ -123,8 +112,6 @@ where
                 timer_service_options,
                 channel_size,
                 invoker_tx,
-                network_handle,
-                ack_tx,
                 consensus_writer,
                 ingress_tx,
             }),
@@ -316,8 +303,6 @@ where
                     channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
-                    network_handle,
-                    ack_tx,
                     consensus_writer: self_proposal_tx,
                     ingress_tx,
                 },
@@ -333,14 +318,12 @@ where
             // trigger shut down of all leadership tasks
             shutdown_signal.drain().await;
 
-            let (shuffle_result, abort_result, network_unregister_result) = tokio::join!(
+            let (shuffle_result, abort_result) = tokio::join!(
                 shuffle_handle,
                 invoker_tx.abort_all_partition((partition_id, leader_epoch)),
-                network_handle.unregister_shuffle(peer_id),
             );
 
             abort_result.map_err(Error::Invoker)?;
-            network_unregister_result.map_err(Error::Network)?;
 
             Self::unwrap_task_result(shuffle_result)?;
 
@@ -351,8 +334,6 @@ where
                 num_in_memory_timers,
                 channel_size,
                 invoker_tx,
-                network_handle,
-                ack_tx,
                 self_proposal_tx,
                 ingress_tx,
             ))
@@ -440,7 +421,6 @@ where
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
-                        &follower_state.ack_tx,
                         &mut leader_state.action_effect_handler,
                         &follower_state.ingress_tx,
                     )
@@ -460,7 +440,6 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker,
-        ack_tx: &restate_network::PartitionProcessorSender<AckResponse>,
         action_effect_handler: &mut ActionEffectHandler,
         ingress_tx: &IngressDispatcherInputSender,
     ) -> Result<(), Error> {
@@ -504,7 +483,6 @@ where
                 .notify_completion(partition_leader_epoch, full_invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::SendAckResponse(ack_response) => ack_tx.send(ack_response).await?,
             Action::AbortInvocation(full_invocation_id) => invoker_tx
                 .abort_invocation(partition_leader_epoch, full_invocation_id)
                 .await

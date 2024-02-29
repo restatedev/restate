@@ -10,7 +10,6 @@
 
 use crate::metric_definitions::{PARTITION_STORAGE_TX_COMMITTED, PARTITION_STORAGE_TX_CREATED};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use crate::partition::{CommitError, Committable};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
@@ -248,15 +247,6 @@ where
             .await;
 
         Ok(())
-    }
-
-    pub async fn load_dedup_sequence_number(
-        &mut self,
-        producer_id: &ProducerId,
-    ) -> Result<Option<DedupSequenceNumber>, StorageError> {
-        self.inner
-            .get_dedup_sequence_number(self.partition_id, producer_id)
-            .await
     }
 
     pub async fn store_dedup_sequence_number(
@@ -592,15 +582,6 @@ mod fsm_variable {
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
 
     pub(crate) const APPLIED_LSN: u64 = 2;
-}
-
-impl<TransactionType> Committable for Transaction<TransactionType>
-where
-    TransactionType: restate_storage_api::Transaction,
-{
-    async fn commit(self) -> Result<(), CommitError> {
-        self.commit().await.map_err(CommitError::with_source)
-    }
 }
 
 impl<Storage> OutboxReader for PartitionStorage<Storage>

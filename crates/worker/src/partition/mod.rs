@@ -22,10 +22,9 @@ use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use tokio::sync::mpsc;
+use std::time::{Duration, Instant};
 use tracing::{debug, instrument, trace};
 
 mod action_effect_handler;
@@ -37,13 +36,11 @@ mod state_machine;
 pub mod storage;
 pub mod types;
 
-use crate::partition::types::AckResponse;
 pub use options::Options;
 use restate_bifrost::{bifrost, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
-type ConsensusReader = mpsc::Receiver<restate_consensus::Command<Envelope>>;
 type ConsensusWriter = IdentitySender<Envelope>;
 use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_types::dedup::{
@@ -53,7 +50,7 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::control::AnnounceLeader;
 
 #[derive(Debug)]
-pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle> {
+pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     peer_id: PeerId,
     pub partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -61,14 +58,9 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     timer_service_options: restate_timer::Options,
     channel_size: usize,
 
-    consensus_reader: ConsensusReader,
     consensus_writer: ConsensusWriter,
 
     invoker_tx: InvokerInputSender,
-
-    network_handle: NetworkHandle,
-
-    ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
 
     rocksdb_storage: RocksDBStorage,
 
@@ -81,12 +73,10 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkH
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
-impl<RawEntryCodec, InvokerInputSender, NetworkHandle>
-    PartitionProcessor<RawEntryCodec, InvokerInputSender, NetworkHandle>
+impl<RawEntryCodec, InvokerInputSender> PartitionProcessor<RawEntryCodec, InvokerInputSender>
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
-    NetworkHandle: restate_network::NetworkHandle<shuffle::ShuffleInput, Envelope> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -95,11 +85,8 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
-        consensus_reader: ConsensusReader,
         consensus_writer: ConsensusWriter,
         invoker_tx: InvokerInputSender,
-        network_handle: NetworkHandle,
-        ack_tx: restate_network::PartitionProcessorSender<AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         options: Options,
@@ -111,11 +98,8 @@ where
             partition_key_range,
             timer_service_options,
             channel_size,
-            consensus_reader,
             consensus_writer,
             invoker_tx,
-            network_handle,
-            ack_tx,
             _entry_codec: Default::default(),
             rocksdb_storage,
             schemas,
@@ -133,9 +117,7 @@ where
             timer_service_options,
             channel_size,
             invoker_tx,
-            network_handle,
             consensus_writer,
-            ack_tx,
             rocksdb_storage,
             schemas,
             options,
@@ -165,8 +147,6 @@ where
             timer_service_options,
             channel_size,
             invoker_tx,
-            network_handle,
-            ack_tx,
             consensus_writer,
             ingress_tx,
         );
@@ -180,14 +160,16 @@ where
                     let mut transaction = partition_storage.create_transaction();
 
                     let leadership_change = Self::apply_available_records_until_leadership_change(
-                        &mut state_machine,
-                        record,
-                        &mut log_reader,
-                        &mut transaction,
-                        &mut effects_buffer,
-                        &mut action_collector,
-                        &partition_key_range,
-                        state.is_leader())
+                            &mut state_machine,
+                            record,
+                            &mut log_reader,
+                            &mut transaction,
+                            &mut effects_buffer,
+                            &mut action_collector,
+                            &partition_key_range,
+                            state.is_leader(),
+                            options.max_batch_duration.map(Into::into),
+                        )
                         .await?;
 
                     if let Some(announce_leader) = leadership_change {
@@ -263,21 +245,36 @@ where
         action_collector: &mut ActionCollector,
         partition_key_range: &RangeInclusive<PartitionKey>,
         is_leader: bool,
+        max_duration: Option<Duration>,
     ) -> anyhow::Result<Option<AnnounceLeader>>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     {
         action_collector.clear();
 
+        let batch_start = max_duration.map(|duration| (duration, Instant::now()));
+
         // only return the currently available records --> no waiting
         let available_records = futures::stream::once(futures::future::ready(Ok(record))).chain(
-            futures::stream::unfold(log_reader, |log_reader| async {
-                log_reader
-                    .read_next_opt()
-                    .await
-                    .transpose()
-                    .map(|record| (record, log_reader))
-            }),
+            futures::stream::unfold(
+                (log_reader, batch_start),
+                |(log_reader, batch_start)| async move {
+                    if batch_start
+                        .map(|(duration, start)| start.elapsed() < duration)
+                        .unwrap_or(true)
+                    {
+                        log_reader
+                            // todo: Check whether a truely synchronous variant would work better because
+                            //  right now we can be waiting for remote reads
+                            .read_next_opt()
+                            .await
+                            .transpose()
+                            .map(|record| (record, (log_reader, batch_start)))
+                    } else {
+                        None
+                    }
+                },
+            ),
         );
         tokio::pin!(available_records);
 
@@ -426,22 +423,4 @@ impl LogReader {
             }
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("failed committing results: {source:?}")]
-pub struct CommitError {
-    source: Option<anyhow::Error>,
-}
-
-impl CommitError {
-    pub fn with_source(source: impl Into<anyhow::Error>) -> Self {
-        CommitError {
-            source: Some(source.into()),
-        }
-    }
-}
-
-pub trait Committable {
-    fn commit(self) -> impl Future<Output = Result<(), CommitError>> + Send;
 }

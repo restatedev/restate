@@ -14,7 +14,6 @@ use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::services::Services;
 use codederror::CodedError;
-use partition::shuffle;
 use restate_bifrost::{bifrost, with_bifrost};
 use restate_consensus::Consensus;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
@@ -26,7 +25,7 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
-use restate_network::{Networking, PartitionProcessorSender, UnboundedNetworkHandle};
+use restate_network::Networking;
 use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
@@ -87,13 +86,9 @@ use restate_wal_protocol::Envelope;
 pub use services::WorkerCommandSender;
 
 type PartitionProcessorCommand = Envelope;
-type ConsensusCommand = restate_consensus::Command<PartitionProcessorCommand>;
 type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
-type PartitionProcessor = partition::PartitionProcessor<
-    ProtobufRawEntryCodec,
-    InvokerChannelServiceHandle,
-    UnboundedNetworkHandle<shuffle::ShuffleInput, Envelope>,
->;
+type PartitionProcessor =
+    partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
 type ExternalClientIngress = HyperServerIngress<Schemas>;
 
 /// # Worker options
@@ -265,10 +260,7 @@ impl Worker {
         );
         let network_ingress_sender = network.create_ingress_sender();
 
-        let mut consensus =
-            Consensus::new(raft_in_rx, network.create_consensus_sender(), channel_size);
-
-        let network_handle = network.create_network_handle();
+        let consensus = Consensus::new(raft_in_rx, network.create_consensus_sender(), channel_size);
 
         let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
@@ -287,7 +279,7 @@ impl Worker {
         )?;
         let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
 
-        let (command_senders, processors): (Vec<_>, Vec<_>) = partitioner
+        let processors = partitioner
             .map(|(idx, partition_range)| {
                 let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.handle();
@@ -299,17 +291,13 @@ impl Worker {
                     channel_size,
                     proposal_sender,
                     invoker_sender,
-                    network_handle.clone(),
-                    network.create_partition_processor_sender(),
                     rocksdb_storage.clone(),
                     schemas.clone(),
                     partition_processor_options.clone(),
                     ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
                 )
             })
-            .unzip();
-
-        consensus.register_state_machines(command_senders);
+            .collect();
 
         let services = Services::new(
             consensus.create_proposal_sender(),
@@ -343,32 +331,24 @@ impl Worker {
         channel_size: usize,
         proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
-        network_handle: UnboundedNetworkHandle<shuffle::ShuffleInput, Envelope>,
-        ack_sender: PartitionProcessorSender<partition::types::AckResponse>,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
         partition_processor_options: partition::Options,
         ingress_tx: IngressDispatcherInputSender,
-    ) -> ((PeerId, mpsc::Sender<ConsensusCommand>), PartitionProcessor) {
-        let (command_tx, command_rx) = mpsc::channel(channel_size);
-        let processor = PartitionProcessor::new(
+    ) -> PartitionProcessor {
+        PartitionProcessor::new(
             peer_id,
             peer_id,
             partition_key_range,
             timer_service_options,
             channel_size,
-            command_rx,
             IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,
-            network_handle,
-            ack_sender,
             rocksdb_storage,
             schemas,
             partition_processor_options,
             ingress_tx,
-        );
-
-        ((peer_id, command_tx), processor)
+        )
     }
 
     pub fn worker_command_tx(&self) -> WorkerCommandSender {

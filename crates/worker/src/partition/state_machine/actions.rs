@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::types::AckResponse;
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_invoker_api::InvokeInputJournal;
@@ -63,7 +62,6 @@ pub enum Action {
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
-    SendAckResponse(AckResponse),
     AbortInvocation(FullInvocationId),
     IngressResponse(IngressResponse),
 }

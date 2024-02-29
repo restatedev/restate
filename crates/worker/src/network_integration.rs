@@ -11,7 +11,6 @@
 //! This module contains the glue code for converting the various messages into their
 //! required formats when routing them through the network.
 
-use crate::partition;
 use crate::partition::shuffle;
 use restate_types::partition_table::FixedPartitionTable;
 use std::sync::Arc;
@@ -19,37 +18,15 @@ use std::sync::Arc;
 pub(super) type Network = restate_network::Network<
     shuffle::ShuffleInput,
     restate_ingress_dispatcher::IngressDispatcherInput,
-    partition::types::AckResponse,
-    partition::types::ShuffleAckResponse,
-    partition::types::IngressAckResponse,
     Arc<FixedPartitionTable>,
 >;
 
 mod partition_integration {
     use crate::partition;
     use crate::partition::shuffle;
-    use restate_network::{ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress};
+    use restate_network::TargetShuffle;
     use restate_types::identifiers::PeerId;
     use restate_types::message::AckKind;
-
-    impl
-        TargetShuffleOrIngress<
-            partition::types::ShuffleAckResponse,
-            partition::types::IngressAckResponse,
-        > for partition::types::AckResponse
-    {
-        fn into_target(
-            self,
-        ) -> ShuffleOrIngressTarget<
-            partition::types::ShuffleAckResponse,
-            partition::types::IngressAckResponse,
-        > {
-            match self {
-                partition::types::AckResponse::Shuffle(ack) => ShuffleOrIngressTarget::Shuffle(ack),
-                partition::types::AckResponse::Ingress(ack) => ShuffleOrIngressTarget::Ingress(ack),
-            }
-        }
-    }
 
     impl From<partition::types::ShuffleAckResponse> for shuffle::ShuffleInput {
         fn from(value: partition::types::ShuffleAckResponse) -> Self {

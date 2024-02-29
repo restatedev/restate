@@ -24,12 +24,6 @@ pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
 
 #[derive(Debug)]
-pub enum AckResponse {
-    Shuffle(ShuffleAckResponse),
-    Ingress(IngressAckResponse),
-}
-
-#[derive(Debug)]
 pub struct ShuffleAckResponse {
     pub(crate) shuffle_target: PeerId,
     pub(crate) kind: AckKind,

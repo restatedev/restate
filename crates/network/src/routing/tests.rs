@@ -22,9 +22,7 @@ use restate_types::message::PartitionTarget;
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 
-use crate::{
-    Network, NetworkHandle, ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress,
-};
+use crate::{Network, NetworkHandle, TargetShuffle};
 
 #[derive(Debug, Default, Clone)]
 struct MockPartitionTable;
@@ -51,23 +49,7 @@ impl TargetShuffle for ShuffleMsg {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-enum PPOut {
-    Shuffle(ShuffleMsg),
-    Ingress(IngressMsg),
-}
-
-impl TargetShuffleOrIngress<ShuffleMsg, IngressMsg> for PPOut {
-    fn into_target(self) -> ShuffleOrIngressTarget<ShuffleMsg, IngressMsg> {
-        match self {
-            PPOut::Shuffle(msg) => ShuffleOrIngressTarget::Shuffle(msg),
-            PPOut::Ingress(msg) => ShuffleOrIngressTarget::Ingress(msg),
-        }
-    }
-}
-
-type MockNetwork =
-    Network<ShuffleMsg, IngressMsg, PPOut, ShuffleMsg, IngressMsg, MockPartitionTable>;
+type MockNetwork = Network<ShuffleMsg, IngressMsg, MockPartitionTable>;
 
 fn mock_network() -> (
     MockNetwork,
@@ -78,12 +60,8 @@ fn mock_network() -> (
     let (ingress_tx, ingress_rx) = mpsc::channel(1);
     let partition_table = MockPartitionTable;
 
-    let network = Network::<ShuffleMsg, IngressMsg, PPOut, ShuffleMsg, IngressMsg, _>::new(
-        consensus_tx,
-        ingress_tx,
-        partition_table,
-        1,
-    );
+    let network =
+        Network::<ShuffleMsg, IngressMsg, _>::new(consensus_tx, ingress_tx, partition_table, 1);
 
     (network, consensus_rx, ingress_rx)
 }
@@ -167,54 +145,6 @@ async fn no_ingress_to_consensus_message_is_dropped() {
     let ingress_tx = network.create_ingress_sender();
 
     run_router_test(network, ingress_tx, input, consensus_rx, expected_output).await;
-}
-
-#[test(tokio::test)]
-async fn no_pp_to_shuffle_message_is_dropped() {
-    let msg_1 = ShuffleMsg(0);
-    let msg_2 = ShuffleMsg(1);
-    let msg_3 = ShuffleMsg(2);
-
-    let input = [
-        PPOut::Shuffle(msg_1),
-        PPOut::Shuffle(msg_2),
-        PPOut::Shuffle(msg_3),
-    ];
-    let expected_output = [msg_1, msg_2, msg_3];
-
-    let (network, _consensus_rx, _ingress_rx) = mock_network();
-
-    let network_handle = network.create_network_handle();
-
-    let (shuffle_tx, shuffle_rx) = mpsc::channel(1);
-    network_handle
-        .register_shuffle(0, shuffle_tx)
-        .await
-        .unwrap();
-
-    let pp_tx = network.create_partition_processor_sender();
-
-    run_router_test(network, pp_tx, input, shuffle_rx, expected_output).await;
-}
-
-#[test(tokio::test)]
-async fn no_pp_to_ingress_message_is_dropped() {
-    let msg_1 = IngressMsg(0);
-    let msg_2 = IngressMsg(1);
-    let msg_3 = IngressMsg(2);
-
-    let input = [
-        PPOut::Ingress(msg_1),
-        PPOut::Ingress(msg_2),
-        PPOut::Ingress(msg_3),
-    ];
-    let expected_output = [msg_1, msg_2, msg_3];
-
-    let (network, _consensus_rx, ingress_rx) = mock_network();
-
-    let pp_tx = network.create_partition_processor_sender();
-
-    run_router_test(network, pp_tx, input, ingress_rx, expected_output).await;
 }
 
 async fn run_router_test<Input, Output>(

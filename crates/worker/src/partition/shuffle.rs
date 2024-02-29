@@ -261,7 +261,10 @@ where
             metadata,
             outbox_reader,
             |msg| async move {
-                let_assert!(Destination::Processor { partition_key, .. } = &msg.header.dest, "shuffle can only send messages to a partition processor");
+                let_assert!(
+                    Destination::Processor { partition_key, .. } = &msg.header.dest,
+                    "shuffle can only send messages to a partition processor"
+                );
 
                 let partition_id = restate_core::metadata()
                     .partition_table()
@@ -301,8 +304,7 @@ where
 mod state_machine {
     use crate::partition::shuffle;
     use crate::partition::shuffle::{
-        wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError,
-        ShuffleMetadata,
+        wrap_outbox_message_in_envelope, NewOutboxMessage, OutboxReaderError, ShuffleMetadata,
     };
     use pin_project::pin_project;
     use restate_storage_api::outbox_table::OutboxMessage;
@@ -395,7 +397,9 @@ mod state_machine {
             }
         }
 
-        pub(super) async fn shuffle_next_message(self: Pin<&mut Self>) -> Result<MessageIndex, anyhow::Error> {
+        pub(super) async fn shuffle_next_message(
+            self: Pin<&mut Self>,
+        ) -> Result<MessageIndex, anyhow::Error> {
             let mut this = self.project();
             loop {
                 match this.state.as_mut().project() {
@@ -443,16 +447,16 @@ mod state_machine {
                         *this.outbox_reader = Some(outbox_reader);
 
                         if let Some((seq_number, message)) = reading_result? {
-                            assert!(seq_number >= *this.current_sequence_number, "message sequence numbers must not decrease");
+                            assert!(
+                                seq_number >= *this.current_sequence_number,
+                                "message sequence numbers must not decrease"
+                            );
 
                             *this.current_sequence_number = seq_number;
 
-                            let send_future =
-                                (this.send_operation)(wrap_outbox_message_in_envelope(
-                                    message,
-                                    seq_number,
-                                    this.metadata,
-                                ));
+                            let send_future = (this.send_operation)(
+                                wrap_outbox_message_in_envelope(message, seq_number, this.metadata),
+                            );
 
                             this.state.set(State::Sending(send_future));
                         } else {
@@ -473,7 +477,7 @@ mod state_machine {
                         ));
                         this.state.set(State::ReadingOutbox);
 
-                        return Ok(successfully_shuffled_sequence_number)
+                        return Ok(successfully_shuffled_sequence_number);
                     }
                 }
             }

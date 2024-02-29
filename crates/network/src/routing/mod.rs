@@ -10,9 +10,8 @@
 
 use crate::routing::consensus::ConsensusForwarder;
 use crate::routing::ingress::IngressRouter;
-use crate::routing::partition_processor::PartitionProcessorRouter;
 use crate::routing::shuffle::ShuffleRouter;
-use crate::{NetworkCommand, TargetShuffle, TargetShuffleOrIngress, UnboundedNetworkHandle};
+use crate::{NetworkCommand, UnboundedNetworkHandle};
 use restate_core::cancellation_watcher;
 use restate_types::identifiers::PeerId;
 use restate_types::message::PartitionTarget;
@@ -20,14 +19,12 @@ use restate_types::partition_table::FindPartition;
 use restate_wal_protocol::Envelope;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
 mod consensus;
 mod ingress;
-mod partition_processor;
 mod shuffle;
 
 pub type ConsensusSender<T> = mpsc::Sender<PartitionTarget<T>>;
@@ -58,7 +55,7 @@ pub enum TerminationCause {
 
 /// Component which is responsible for routing messages from different components.
 #[derive(Debug)]
-pub struct Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable> {
+pub struct Network<ShuffleIn, IngressIn, PartitionTable> {
     /// Receiver for messages from the consensus module
     consensus_in_rx: mpsc::Receiver<PartitionTarget<Envelope>>,
 
@@ -73,8 +70,6 @@ pub struct Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, Partit
 
     ingress_tx: mpsc::Sender<IngressIn>,
 
-    partition_processor_rx: mpsc::Receiver<PPOut>,
-
     partition_table: PartitionTable,
 
     // used for creating the ConsensusSender
@@ -86,22 +81,12 @@ pub struct Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, Partit
 
     // used for creating the ingress sender
     ingress_in_tx: mpsc::Sender<Envelope>,
-
-    // used for creating the partition processor sender
-    partition_processor_tx: mpsc::Sender<PPOut>,
-
-    _partition_processor_to_ingress: PhantomData<PPToIngress>,
-    _partition_processor_to_shuffle: PhantomData<PPToShuffle>,
 }
 
-impl<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable>
-    Network<ShuffleIn, IngressIn, PPOut, PPToShuffle, PPToIngress, PartitionTable>
+impl<ShuffleIn, IngressIn, PartitionTable> Network<ShuffleIn, IngressIn, PartitionTable>
 where
     ShuffleIn: Debug + Send + Sync + 'static,
     IngressIn: Debug + Send + Sync + 'static,
-    PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
-    PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
-    PPToIngress: Into<IngressIn> + Debug,
     PartitionTable: FindPartition + Clone,
 {
     pub fn new(
@@ -113,7 +98,6 @@ where
         let (consensus_in_tx, consensus_in_rx) = mpsc::channel(channel_size);
         let (shuffle_tx, shuffle_rx) = mpsc::channel(channel_size);
         let (ingress_in_tx, ingress_in_rx) = mpsc::channel(channel_size);
-        let (partition_processor_tx, partition_processor_rx) = mpsc::channel(channel_size);
         let (network_command_tx, network_command_rx) = mpsc::unbounded_channel();
 
         Self {
@@ -127,11 +111,7 @@ where
             ingress_in_rx,
             ingress_tx,
             ingress_in_tx,
-            partition_processor_rx,
-            partition_processor_tx,
             partition_table,
-            _partition_processor_to_ingress: Default::default(),
-            _partition_processor_to_shuffle: Default::default(),
         }
     }
 
@@ -147,19 +127,13 @@ where
         self.ingress_in_tx.clone()
     }
 
-    pub fn create_partition_processor_sender(&self) -> PartitionProcessorSender<PPOut> {
-        self.partition_processor_tx.clone()
-    }
-
     pub async fn run(self) -> anyhow::Result<()> {
         let Network {
             consensus_in_rx,
             consensus_tx,
-            ingress_tx,
             mut network_command_rx,
             shuffle_rx,
             ingress_in_rx,
-            partition_processor_rx,
             partition_table,
             ..
         } = self;
@@ -175,23 +149,16 @@ where
             ShuffleRouter::new(shuffle_rx, consensus_tx.clone(), partition_table.clone());
         let ingress_router =
             IngressRouter::new(ingress_in_rx, consensus_tx.clone(), partition_table.clone());
-        let partition_processor_router = PartitionProcessorRouter::new(
-            partition_processor_rx,
-            ingress_tx.clone(),
-            Arc::clone(&shuffles),
-        );
 
         let consensus_forwarder = consensus_forwarder.run();
         let shuffle_router = shuffle_router.run();
         let ingress_router = ingress_router.run();
-        let partition_processor_router = partition_processor_router.run();
 
         tokio::pin!(
             shutdown,
             consensus_forwarder,
             shuffle_router,
-            ingress_router,
-            partition_processor_router
+            ingress_router
         );
 
         loop {
@@ -204,9 +171,6 @@ where
                 },
                 result = &mut ingress_router => {
                     Err(RoutingError::IngressRouter(Self::result_into_termination_cause(result)))?;
-                },
-                result = &mut partition_processor_router => {
-                    Err(RoutingError::PartitionProcessorRouter(Self::result_into_termination_cause(result)))?;
                 },
                 command = network_command_rx.recv() => {
                     let command = command.expect("Network owns the command sender, that's why the receiver will never be closed.");
@@ -238,22 +202,6 @@ where
             .map_err(|err| TerminationCause::Error(err.into()))
             .err()
             .unwrap_or(TerminationCause::Unexpected)
-    }
-}
-
-async fn send_to_shuffle<M: TargetShuffle + Into<S> + Debug, S>(
-    message: M,
-    shuffle_txs: &Arc<Mutex<HashMap<PeerId, mpsc::Sender<S>>>>,
-) {
-    let shuffle_target = message.shuffle_target();
-    let shuffle_tx = shuffle_txs.lock().unwrap().get(&shuffle_target).cloned();
-
-    if let Some(shuffle_tx) = shuffle_tx {
-        trace!(?message, "Routing partition processor message to shuffle.");
-        // can fail if the shuffle was deregistered in the meantime
-        let _ = shuffle_tx.send(message.into()).await;
-    } else {
-        debug!("Unknown shuffle target {shuffle_target}. Ignoring message {message:?}.");
     }
 }
 

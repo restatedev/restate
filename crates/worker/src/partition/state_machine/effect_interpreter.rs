@@ -13,7 +13,6 @@ use super::{Effects, Error};
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
-use crate::partition::{CommitError, Committable};
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
 use restate_invoker_api::InvokeInputJournal;
@@ -194,42 +193,12 @@ pub trait StateStorage {
     ) -> impl Future<Output = StorageResult<()>> + Send;
 }
 
-#[must_use = "Don't forget to commit the interpretation result"]
-pub struct InterpretationResult<Txn, Collector> {
-    txn: Txn,
-    collector: Collector,
-}
-
-impl<Txn, Collector> InterpretationResult<Txn, Collector>
-where
-    Txn: Committable,
-{
-    pub(crate) fn new(txn: Txn, collector: Collector) -> Self {
-        Self { txn, collector }
-    }
-
-    pub async fn commit(self) -> Result<Collector, CommitError> {
-        let Self { txn, collector } = self;
-
-        txn.commit().await?;
-        Ok(collector)
-    }
-
-    pub fn transaction_mut(&mut self) -> &mut Txn {
-        &mut self.txn
-    }
-
-    pub fn into_inner(self) -> (Txn, Collector) {
-        (self.txn, self.collector)
-    }
-}
-
 pub(crate) struct EffectInterpreter<Codec> {
     _codec: PhantomData<Codec>,
 }
 
 impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage + Committable>(
+    pub(crate) async fn interpret_effects<S: StateStorage>(
         effects: &mut Effects,
         state_storage: &mut S,
         action_collector: &mut ActionCollector,
