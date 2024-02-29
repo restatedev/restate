@@ -12,7 +12,7 @@
 
 #[cfg(feature = "deployment")]
 pub mod deployment {
-    use super::service::ServiceMetadata;
+    use crate::component::ComponentMetadata;
     use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
@@ -177,7 +177,7 @@ pub mod deployment {
         fn get_deployment_and_services(
             &self,
             deployment_id: &DeploymentId,
-        ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
+        ) -> Option<(Deployment, Vec<ComponentMetadata>)>;
 
         fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)>;
     }
@@ -261,7 +261,7 @@ pub mod deployment {
             fn get_deployment_and_services(
                 &self,
                 deployment_id: &DeploymentId,
-            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+            ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
                 self.deployments
                     .get(deployment_id)
                     .cloned()
