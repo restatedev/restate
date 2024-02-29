@@ -14,7 +14,7 @@
 mod manager;
 pub use manager::MetadataManager;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwapOption;
 use enum_map::{Enum, EnumMap};
@@ -23,7 +23,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::Version;
+use restate_types::{GenerationalNodeId, Version};
 
 /// The kind of versioned metadata that can be synchronized across nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Enum, EnumIter)]
@@ -64,8 +64,14 @@ impl Metadata {
     }
 
     /// Panics if nodes configuration is not loaded yet.
+    #[track_caller]
     pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
         self.inner.nodes_config.load_full().unwrap()
+    }
+
+    #[track_caller]
+    pub fn my_node_id(&self) -> GenerationalNodeId {
+        *self.inner.my_node_id.get().expect("my_node_id is set")
     }
 
     /// Returns Version::INVALID if nodes configuration has not been loaded yet.
@@ -77,7 +83,7 @@ impl Metadata {
         }
     }
 
-    // Returns when the metadata kind is at the provided version (or newer)
+    /// Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
         metadata_kind: MetadataKind,
@@ -91,7 +97,7 @@ impl Metadata {
         Ok(*v)
     }
 
-    // Watch for version updates of this metadata kind.
+    /// Watch for version updates of this metadata kind.
     pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
         self.inner.write_watches[metadata_kind].receive.clone()
     }
@@ -99,6 +105,7 @@ impl Metadata {
 
 #[derive(Default)]
 struct MetadataInner {
+    my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: ArcSwapOption<NodesConfiguration>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
@@ -110,11 +117,14 @@ struct MetadataInner {
 #[derive(Clone)]
 pub struct MetadataWriter {
     sender: manager::CommandSender,
+    /// strictly used to set my node id. Do not use this to update metadata
+    /// directly to avoid race conditions.
+    inner: Arc<MetadataInner>,
 }
 
 impl MetadataWriter {
-    fn new(sender: manager::CommandSender) -> Self {
-        Self { sender }
+    fn new(sender: manager::CommandSender, inner: Arc<MetadataInner>) -> Self {
+        Self { sender, inner }
     }
 
     // Returns when the nodes configuration update is performed.
@@ -130,6 +140,11 @@ impl MetadataWriter {
         } else {
             Err(ShutdownError)
         }
+    }
+
+    /// Should be called once on node startup. Updates are ignored after the initial value is set.
+    pub fn set_my_node_id(&self, id: GenerationalNodeId) {
+        let _ = self.inner.my_node_id.set(id);
     }
 
     // Fire and forget update
