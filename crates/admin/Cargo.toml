@@ -19,7 +19,7 @@ restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
-restate-node-services = { workspace = true }
+restate-node-services = { workspace = true, features = ["servers"] }
 restate-pb = { workspace = true }
 restate-schema-api = { workspace = true, features = ["service", "deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
