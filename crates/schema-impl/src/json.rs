@@ -102,7 +102,6 @@ mod tests {
     };
     use prost_reflect::{MethodDescriptor, ServiceDescriptor};
     use restate_types::identifiers::DeploymentId;
-    use serde::Serialize;
     use serde_json::json;
 
     fn greeter_service_descriptor() -> ServiceDescriptor {
@@ -163,61 +162,6 @@ mod tests {
             restate_pb::mocks::greeter::GreetingRequest::decode(protobuf).unwrap(),
             restate_pb::mocks::greeter::GreetingRequest {
                 person: "Francesco".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn decode_invoke_json() {
-        let schemas = schemas_mock();
-
-        let json_payload = json!({
-            "service": "greeter.Greeter",
-            "method": "Greet",
-            "argument": {
-                "person": "Francesco"
-            }
-        });
-
-        let (decoder, _) = schemas
-            .resolve_json_mapper_for_service("dev.restate.Ingress", "Invoke")
-            .unwrap();
-        let protobuf = decoder
-            .json_to_protobuf(
-                json_payload.to_string().into(),
-                &DeserializeOptions::default(),
-            )
-            .unwrap();
-
-        let mut dynamic_message_greeting_request =
-            DynamicMessage::new(greeter_greet_method_descriptor().input());
-        dynamic_message_greeting_request
-            .transcode_from(&restate_pb::mocks::greeter::GreetingRequest {
-                person: "Francesco".to_string(),
-            })
-            .unwrap();
-        let json_greeting_request = dynamic_message_greeting_request
-            .serialize(serde_json::value::Serializer)
-            .unwrap();
-        let struct_greeting_request: prost_reflect::prost_types::Struct =
-            DynamicMessage::deserialize(
-                prost_reflect::DescriptorPool::global()
-                    .get_message_by_name("google.protobuf.Struct")
-                    .unwrap(),
-                json_greeting_request,
-            )
-            .unwrap()
-            .transcode_to()
-            .unwrap();
-
-        assert_eq!(
-            restate_pb::restate::InvokeRequest::decode(protobuf).unwrap(),
-            restate_pb::restate::InvokeRequest {
-                service: "greeter.Greeter".to_string(),
-                method: "Greet".to_string(),
-                argument: Some(restate_pb::restate::invoke_request::Argument::Json(
-                    struct_greeting_request
-                )),
             }
         );
     }

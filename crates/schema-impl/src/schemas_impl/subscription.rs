@@ -122,7 +122,7 @@ impl SchemasInner {
                     }
                     InstanceTypeMetadata::Unkeyed => EventReceiverServiceInstanceType::Unkeyed,
                     InstanceTypeMetadata::Singleton => EventReceiverServiceInstanceType::Singleton,
-                    InstanceTypeMetadata::Unsupported | InstanceTypeMetadata::Custom { .. } => {
+                     InstanceTypeMetadata::Custom { .. } => {
                         return Err(SchemasUpdateError::InvalidSubscription(anyhow!(
                             "trying to use a built-in service as sink {}. This is currently unsupported.",
                             sink
