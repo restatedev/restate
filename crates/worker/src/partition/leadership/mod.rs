@@ -192,16 +192,9 @@ where
                     metadata().my_node_id().into(),
                 ),
                 partition_storage.clone(),
-                follower_state.network_handle.create_shuffle_sender(),
                 shuffle_tx,
                 follower_state.channel_size,
             );
-
-            follower_state
-                .network_handle
-                .register_shuffle(shuffle.peer_id(), shuffle.create_network_sender())
-                .await
-                .map_err(Error::Network)?;
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
+use bytes::Bytes;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
@@ -36,6 +37,17 @@ pub struct Envelope {
 impl Envelope {
     pub fn new(header: Header, command: Command) -> Self {
         Self { header, command }
+    }
+
+    pub fn encode_with_bincode(&self) -> Result<Bytes, bincode::error::EncodeError> {
+        bincode::serde::encode_to_vec(self, bincode::config::standard()).map(Into::into)
+    }
+
+    pub fn decode_with_bincode(
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
+            .map(|(envelope, _)| envelope)
     }
 }
 
