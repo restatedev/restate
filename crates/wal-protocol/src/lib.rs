@@ -60,7 +60,6 @@ impl Envelope {
 pub struct Header {
     pub source: Source,
     pub dest: Destination,
-    pub ack_mode: AckMode,
 }
 
 /// Identifies the source of a message
@@ -110,21 +109,6 @@ pub enum Destination {
         partition_key: PartitionKey,
         dedup: Option<DedupInformation>,
     },
-}
-
-/// Defines expectations from the sender on how to respond to this command.
-/// Some commands require an explicit acknowledge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum AckMode {
-    /// Acknowledge the command with a response. For partition processor-initiated messages, we
-    /// respond by writing on their WAL (bifrost log). For ingress, we respond acknowledge by
-    /// directly sending a response to the node over the node-to-node stream.
-    Ack,
-    /// Received should deduplicate this message.
-    Dedup,
-    /// No acknowledgement is expected.
-    None,
 }
 
 /// State machine input commands

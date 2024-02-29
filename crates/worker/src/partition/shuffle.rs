@@ -21,7 +21,7 @@ use restate_types::logs::{LogId, Payload};
 use restate_types::message::{AckKind, MessageIndex};
 use restate_types::partition_table::FindPartition;
 use restate_types::NodeId;
-use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -110,7 +110,6 @@ fn create_header(
                 seq_number,
             )),
         },
-        ack_mode: AckMode::Dedup,
     }
 }
 

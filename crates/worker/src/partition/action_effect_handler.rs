@@ -14,7 +14,7 @@ use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::{
-    append_envelope_to_log, AckMode, Command, Destination, Envelope, Header, Source,
+    append_envelope_to_log, Command, Destination, Envelope, Header, Source,
 };
 use std::ops::RangeInclusive;
 
@@ -101,7 +101,6 @@ impl ActionEffectHandler {
         self.epoch_sequence_number = esn;
 
         Header {
-            ack_mode: AckMode::None,
             dest: Destination::Processor {
                 partition_key,
                 dedup: Some(DedupInformation::self_proposal(esn)),
@@ -110,7 +109,6 @@ impl ActionEffectHandler {
                 partition_id: self.partition_id,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
-                // todo: Add support for deduplicating self proposals
                 sequence_number: None,
                 node_id: metadata().my_node_id().as_plain(),
             },

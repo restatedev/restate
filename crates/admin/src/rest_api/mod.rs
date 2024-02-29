@@ -25,7 +25,7 @@ use restate_meta::{FileMetaReader, MetaReader};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_node_services::node_svc::UpdateSchemaRequest;
 use restate_types::identifiers::PartitionKey;
-use restate_wal_protocol::{AckMode, Destination, Header, Source};
+use restate_wal_protocol::{Destination, Header, Source};
 use tonic::transport::Channel;
 use tracing::debug;
 
@@ -142,6 +142,5 @@ fn create_envelope_header(partition_key: PartitionKey) -> Header {
             partition_key,
             dedup: None,
         },
-        ack_mode: AckMode::None,
     }
 }

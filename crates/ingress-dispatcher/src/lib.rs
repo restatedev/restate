@@ -33,7 +33,7 @@ pub use event_remapping::Error as EventError;
 use restate_core::metadata;
 use restate_types::dedup::DedupInformation;
 use restate_types::ingress::IngressResponse;
-use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 pub use service::Error as ServiceError;
 pub use service::Service;
 
@@ -332,12 +332,6 @@ pub fn wrap_service_invocation_in_envelope(
     deduplication_source: Option<String>,
     msg_index: MessageIndex,
 ) -> Envelope {
-    let ack_mode = if deduplication_source.is_some() {
-        AckMode::Dedup
-    } else {
-        AckMode::Ack
-    };
-
     let header = Header {
         source: Source::Ingress {
             node_id: from_node_id,
@@ -349,7 +343,6 @@ pub fn wrap_service_invocation_in_envelope(
             partition_key: service_invocation.fid.partition_key(),
             dedup: deduplication_source.map(|src| DedupInformation::ingress(src, msg_index)),
         },
-        ack_mode,
     };
 
     Envelope::new(header, Command::Invoke(service_invocation))
