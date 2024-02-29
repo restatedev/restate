@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use super::leadership::ActionEffect;
-use crate::partition::ConsensusWriter;
 use restate_core::metadata;
 use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_wal_protocol::effects::BuiltinServiceEffects;
-use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{
+    append_envelope_to_log, AckMode, Command, Destination, Envelope, Header, Source,
+};
 use std::ops::RangeInclusive;
 
 /// Responsible for proposing [ActionEffect].
@@ -22,7 +23,6 @@ pub(super) struct ActionEffectHandler {
     partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     partition_key_range: RangeInclusive<PartitionKey>,
-    consensus_writer: ConsensusWriter,
 }
 
 impl ActionEffectHandler {
@@ -30,50 +30,38 @@ impl ActionEffectHandler {
         partition_id: PartitionId,
         epoch_sequence_number: EpochSequenceNumber,
         partition_key_range: RangeInclusive<PartitionKey>,
-        consensus_writer: ConsensusWriter,
     ) -> Self {
         Self {
             partition_id,
             epoch_sequence_number,
             partition_key_range,
-            consensus_writer,
         }
     }
 
-    pub(super) async fn handle(&mut self, actuator_output: ActionEffect) {
+    pub(super) async fn handle(&mut self, actuator_output: ActionEffect) -> anyhow::Result<()> {
         match actuator_output {
             ActionEffect::Invoker(invoker_output) => {
                 let header = self.create_header(invoker_output.full_invocation_id.partition_key());
-                // Err only if the consensus module is shutting down
-                let _ = self
-                    .consensus_writer
-                    .send(Envelope::new(
-                        header,
-                        Command::InvokerEffect(invoker_output),
-                    ))
-                    .await;
+                append_envelope_to_log(Envelope::new(
+                    header,
+                    Command::InvokerEffect(invoker_output),
+                ))
+                .await?;
             }
             ActionEffect::Shuffle(outbox_truncation) => {
                 // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                 //  specific destination messages that are identified by a partition_id
                 let header = self.create_header(*self.partition_key_range.start());
-                // Err only if the consensus module is shutting down
-                let _ = self
-                    .consensus_writer
-                    .send(Envelope::new(
-                        header,
-                        Command::TruncateOutbox(outbox_truncation.index()),
-                    ))
-                    .await;
+                append_envelope_to_log(Envelope::new(
+                    header,
+                    Command::TruncateOutbox(outbox_truncation.index()),
+                ))
+                .await?;
             }
             ActionEffect::Timer(timer) => {
                 let partition_key = timer.invocation_id().partition_key();
                 let header = self.create_header(partition_key);
-                // Err only if the consensus module is shutting down
-                let _ = self
-                    .consensus_writer
-                    .send(Envelope::new(header, Command::Timer(timer)))
-                    .await;
+                append_envelope_to_log(Envelope::new(header, Command::Timer(timer))).await?;
             }
             ActionEffect::BuiltInInvoker(invoker_output) => {
                 // TODO Super BAD code to mitigate https://github.com/restatedev/restate/issues/851
@@ -85,31 +73,26 @@ impl ActionEffectHandler {
                 //  to append a journal entry we must have stored the JournalMetadata first.
                 let (fid, effects) = invoker_output.into_inner();
 
-                let header = self.create_header(fid.partition_key());
-
                 for effect in effects {
-                    // Err only if the consensus module is shutting down
-                    let _ = self
-                        .consensus_writer
-                        .send(Envelope::new(
-                            header.clone(),
-                            Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                                fid.clone(),
-                                vec![effect],
-                            )),
-                        ))
-                        .await;
+                    let header = self.create_header(fid.partition_key());
+                    append_envelope_to_log(Envelope::new(
+                        header.clone(),
+                        Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
+                            fid.clone(),
+                            vec![effect],
+                        )),
+                    ))
+                    .await?;
                 }
             }
             ActionEffect::Invocation(service_invocation) => {
                 let header = self.create_header(service_invocation.fid.partition_key());
-                // Err only if the consensus module is shutting down
-                let _ = self
-                    .consensus_writer
-                    .send(Envelope::new(header, Command::Invoke(service_invocation)))
-                    .await;
+                append_envelope_to_log(Envelope::new(header, Command::Invoke(service_invocation)))
+                    .await?;
             }
         };
+
+        Ok(())
     }
 
     /// Creates a header with itself as the source and destination.

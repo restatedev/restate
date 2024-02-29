@@ -12,7 +12,6 @@ use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_
 use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
-use crate::util::IdentitySender;
 use assert2::let_assert;
 use futures::StreamExt;
 use metrics::counter;
@@ -41,7 +40,6 @@ use restate_bifrost::{bifrost, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
-type ConsensusWriter = IdentitySender<Envelope>;
 use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_types::dedup::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
@@ -57,8 +55,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
 
     timer_service_options: restate_timer::Options,
     channel_size: usize,
-
-    consensus_writer: ConsensusWriter,
 
     invoker_tx: InvokerInputSender,
 
@@ -85,7 +81,6 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
-        consensus_writer: ConsensusWriter,
         invoker_tx: InvokerInputSender,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
@@ -98,7 +93,6 @@ where
             partition_key_range,
             timer_service_options,
             channel_size,
-            consensus_writer,
             invoker_tx,
             _entry_codec: Default::default(),
             rocksdb_storage,
@@ -117,7 +111,6 @@ where
             timer_service_options,
             channel_size,
             invoker_tx,
-            consensus_writer,
             rocksdb_storage,
             schemas,
             options,
@@ -147,7 +140,6 @@ where
             timer_service_options,
             channel_size,
             invoker_tx,
-            consensus_writer,
             ingress_tx,
         );
 
@@ -199,13 +191,13 @@ where
                 action_effect = action_effect_stream.next() => {
                     counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
                     let action_effect = action_effect.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
-                    state.handle_action_effect(action_effect).await;
+                    state.handle_action_effect(action_effect).await?;
                 },
                 task_result = state.run_tasks() => {
                     match task_result {
                         TaskResult::Timer(timer) => {
                             counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
-                            state.handle_action_effect(ActionEffect::Timer(timer)).await;
+                            state.handle_action_effect(ActionEffect::Timer(timer)).await?;
                         },
                         TaskResult::TerminatedTask(result) => {
                             Err(result)?
@@ -409,10 +401,7 @@ impl LogReader {
         match record {
             Record::Data(payload) => {
                 // todo: Replace bincode with protobuf or something similar
-                let (envelope, _) = bincode::serde::decode_from_slice(
-                    payload.as_ref(),
-                    bincode::config::standard(),
-                )?;
+                let envelope = Envelope::decode_with_bincode(payload.as_ref())?;
                 Ok(envelope)
             }
             Record::TrimGap(_) => {

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
-use crate::partition::{shuffle, storage, ConsensusWriter};
+use crate::partition::{shuffle, storage};
 use assert2::let_assert;
 use futures::{future, StreamExt};
 use restate_core::metadata;
@@ -65,7 +65,6 @@ pub(crate) struct FollowerState<I> {
     timer_service_options: restate_timer::Options,
     channel_size: usize,
     invoker_tx: I,
-    consensus_writer: ConsensusWriter,
     ingress_tx: IngressDispatcherInputSender,
     partition_key_range: RangeInclusive<PartitionKey>,
 }
@@ -75,9 +74,11 @@ pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Invoker(NotRunningError),
     #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
-    FailedShuffleTask(#[from] anyhow::Error),
+    FailedShuffleTask(anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error("action effect handler failed: {0}")]
+    ActionEffectHandler(anyhow::Error),
 }
 
 pub(crate) enum LeadershipState<InvokerInputSender> {
@@ -101,7 +102,6 @@ where
         timer_service_options: restate_timer::Options,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
-        consensus_writer: ConsensusWriter,
         ingress_tx: IngressDispatcherInputSender,
     ) -> (Self, ActionEffectStream) {
         (
@@ -112,7 +112,6 @@ where
                 timer_service_options,
                 channel_size,
                 invoker_tx,
-                consensus_writer,
                 ingress_tx,
             }),
             ActionEffectStream::Follower,
@@ -193,7 +192,6 @@ where
                 follower_state.partition_id,
                 epoch_sequence_number,
                 follower_state.partition_key_range.clone(),
-                follower_state.consensus_writer.clone(),
             );
 
             Ok((
@@ -303,7 +301,6 @@ where
                     channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
-                    consensus_writer: self_proposal_tx,
                     ingress_tx,
                 },
             leader_state:
@@ -325,7 +322,7 @@ where
 
             abort_result.map_err(Error::Invoker)?;
 
-            Self::unwrap_task_result(shuffle_result)?;
+            Self::unwrap_task_result(shuffle_result).map_err(Error::FailedShuffleTask)?;
 
             Ok(Self::follower(
                 peer_id,
@@ -334,7 +331,6 @@ where
                 num_in_memory_timers,
                 channel_size,
                 invoker_tx,
-                self_proposal_tx,
                 ingress_tx,
             ))
         } else {
@@ -540,7 +536,8 @@ where
 
                 action_effect_handler
                     .handle(ActionEffect::Invocation(service_invocation))
-                    .await;
+                    .await
+                    .map_err(Error::ActionEffectHandler)?;
             }
             Action::NotifyVirtualJournalKill {
                 target_service,
@@ -563,7 +560,8 @@ where
 
                 action_effect_handler
                     .handle(ActionEffect::Invocation(service_invocation))
-                    .await;
+                    .await
+                    .map_err(Error::ActionEffectHandler)?;
             }
             Action::IngressResponse(ingress_response) => {
                 // ingress should only be unavailable when shutting down
@@ -576,7 +574,10 @@ where
         Ok(())
     }
 
-    pub async fn handle_action_effect(&mut self, action_effect: ActionEffect) {
+    pub async fn handle_action_effect(
+        &mut self,
+        action_effect: ActionEffect,
+    ) -> anyhow::Result<()> {
         match self {
             LeadershipState::Follower(_) => {
                 // nothing to do :-)
@@ -585,9 +586,11 @@ where
                 leader_state
                     .action_effect_handler
                     .handle(action_effect)
-                    .await
+                    .await?
             }
-        }
+        };
+
+        Ok(())
     }
 }
 

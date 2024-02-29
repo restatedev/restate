@@ -31,7 +31,6 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
-use restate_types::message::PartitionTarget;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -42,7 +41,6 @@ mod metric_definitions;
 mod network_integration;
 mod partition;
 mod subscription_integration;
-mod util;
 
 pub use restate_ingress_grpc::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
@@ -83,7 +81,6 @@ use restate_types::Version;
 use restate_wal_protocol::Envelope;
 
 type PartitionProcessorCommand = Envelope;
-type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
 type ExternalClientIngress = HyperServerIngress<Schemas>;
@@ -273,7 +270,6 @@ impl Worker {
 
         let processors = partitioner
             .map(|(idx, partition_range)| {
-                let proposal_sender = consensus.create_proposal_sender();
                 let invoker_sender = invoker.handle();
 
                 Self::create_partition_processor(
@@ -281,7 +277,6 @@ impl Worker {
                     partition_range,
                     timers.clone(),
                     channel_size,
-                    proposal_sender,
                     invoker_sender,
                     rocksdb_storage.clone(),
                     schemas.clone(),
@@ -314,7 +309,6 @@ impl Worker {
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
-        proposal_sender: mpsc::Sender<ConsensusMsg>,
         invoker_sender: InvokerChannelServiceHandle,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
@@ -327,7 +321,6 @@ impl Worker {
             partition_key_range,
             timer_service_options,
             channel_size,
-            IdentitySender::new(peer_id, proposal_sender),
             invoker_sender,
             rocksdb_storage,
             schemas,
