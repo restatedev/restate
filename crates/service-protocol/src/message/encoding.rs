@@ -352,8 +352,15 @@ mod tests {
         let encoder = Encoder::new(protocol_version);
         let mut decoder = Decoder::default();
 
-        let expected_msg_0 =
-            ProtocolMessage::new_start_message("key".into(), "key".into(), 1, true, vec![]);
+        let expected_msg_0 = ProtocolMessage::new_start_message(
+            "key".into(),
+            "key".into(),
+            Some("key".into()),
+            1,
+            true,
+            vec![],
+            vec![],
+        );
 
         let expected_msg_1: ProtocolMessage =
             ProtobufRawEntryCodec::serialize_as_unary_input_entry(Bytes::from_static(

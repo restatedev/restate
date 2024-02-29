@@ -788,8 +788,10 @@ impl<'a, State: StateReader + Send + Sync> RemoteContextBuiltInService
                 ProtocolMessage::new_start_message(
                     Bytes::copy_from_slice(&virtual_invocation_id.to_bytes()),
                     virtual_invocation_id.to_string(),
+                    None,
                     length,
                     true, // TODO add eager state
+                    iter::empty(),
                     iter::empty(),
                 ),
             )

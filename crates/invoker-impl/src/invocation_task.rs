@@ -599,8 +599,10 @@ where
             ProtocolMessage::new_start_message(
                 Bytes::copy_from_slice(&self.full_invocation_id.to_invocation_id_bytes()),
                 self.full_invocation_id.to_string(),
+                Some(self.full_invocation_id.service_id.key.clone()),
                 journal_size,
                 is_partial,
+                iter::empty(),
                 state_entries,
             ),
         )
