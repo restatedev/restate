@@ -9,29 +9,122 @@
 // by the Apache License, Version 2.0.
 
 use async_trait::async_trait;
-use restate_core::{NetworkSendError, NetworkSender};
+use rand::Rng;
+use tokio::sync::mpsc;
+use tracing::info;
+
+use restate_core::{metadata, NetworkSendError, NetworkSender};
 use restate_node_protocol::{MessageEnvelope, NetworkMessage};
 use restate_types::NodeId;
-use tokio::sync::mpsc;
+
+use crate::error::NetworkError;
+use crate::{ConnectionManager, ConnectionSender};
+
+const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 10;
 
 /// Access to node-to-node networking infrastructure;
 #[derive(Default)]
-pub struct Networking {}
+pub struct Networking {
+    connections: ConnectionManager,
+}
 
 impl Networking {
     #[track_caller]
-    /// be called once on startup
-    pub fn set_metadata_manager_subscriber(&self, _subscriber: mpsc::Sender<MessageEnvelope>) {}
+    /// must be called at most once on startup
+    pub fn set_metadata_manager_subscriber(&self, subscriber: mpsc::Sender<MessageEnvelope>) {
+        self.connections
+            .router()
+            .set_metadata_manager_subscriber(subscriber)
+    }
 
     #[track_caller]
-    /// be called once on startup
-    pub fn set_ingress_subscriber(&self, _subscriber: mpsc::Sender<MessageEnvelope>) {}
+    /// must be called at most once on startup
+    pub fn set_ingress_subscriber(&self, subscriber: mpsc::Sender<MessageEnvelope>) {
+        self.connections.router().set_ingress_subscriber(subscriber)
+    }
+
+    pub fn connection_manager(&self) -> ConnectionManager {
+        self.connections.clone()
+    }
+
+    /// A connection sender is pinned to a single stream, thus guaranteeing ordered delivery of
+    /// messages.
+    pub async fn node_connection(&self, node: NodeId) -> Result<ConnectionSender, NetworkError> {
+        // find latest generation if this is not generational node id
+
+        let node = match node.as_generational() {
+            Some(node) => node,
+            None => {
+                metadata()
+                    .nodes_config()
+                    .find_node_by_id(node)?
+                    .current_generation
+            }
+        };
+
+        self.connections.get_node_sender(node).await
+    }
 }
 
 #[async_trait]
 impl NetworkSender for Networking {
-    async fn send(&self, _to: NodeId, _message: &NetworkMessage) -> Result<(), NetworkSendError> {
-        Ok(())
+    async fn send(&self, to: NodeId, message: &NetworkMessage) -> Result<(), NetworkSendError> {
+        // we try to reconnect to the node for 10 times.
+        let mut attempts = 0;
+        loop {
+            // find latest generation if this is not generational node id
+            let to = match to.as_generational() {
+                Some(to) => to,
+                None => match metadata().nodes_config().find_node_by_id(to) {
+                    Ok(node) => node.current_generation,
+                    Err(e) => return Err(NetworkSendError::UnknownNode(e)),
+                },
+            };
+
+            attempts += 1;
+            if attempts > DEFAULT_MAX_CONNECT_ATTEMPTS {
+                return Err(NetworkSendError::Unavailable(format!(
+                    "failed to connect to node {} after {} attempts",
+                    to, DEFAULT_MAX_CONNECT_ATTEMPTS
+                )));
+            }
+
+            let sender = match self.connections.get_node_sender(to).await {
+                Ok(sender) => sender,
+                // retryable errors
+                Err(
+                    e @ NetworkError::Timeout(_)
+                    | e @ NetworkError::ConnectError(_)
+                    | e @ NetworkError::ConnectionClosed,
+                ) => {
+                    info!("Connection to node {} failed with {}, retrying...", to, e);
+                    // random number between 1-500
+                    let jitter = rand::thread_rng().gen_range(1..500);
+                    tokio::time::sleep(std::time::Duration::from_millis(250 + jitter)).await;
+                    continue;
+                }
+                // terminal errors
+                Err(NetworkError::OldPeerGeneration(e)) => {
+                    return Err(NetworkSendError::OldPeerGeneration(e))
+                }
+                Err(e) => return Err(NetworkSendError::Unavailable(e.to_string())),
+            };
+
+            // can only fail due to codec errors or if connection is closed. Retry only if
+            // connection closed.
+            match sender.send(message).await {
+                Ok(_) => return Ok(()),
+                Err(NetworkError::ConnectionClosed) => {
+                    info!(
+                        "Sending messages to node {} failed due to connection reset, retrying...",
+                        to
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+                Err(e) => return Err(NetworkSendError::Unavailable(e.to_string())),
+            }
+        }
     }
 }
 
