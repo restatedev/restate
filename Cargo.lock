@@ -5812,6 +5812,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "ulid",
+ "uuid",
  "xxhash-rust",
 ]
 

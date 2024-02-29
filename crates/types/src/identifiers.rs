@@ -17,6 +17,7 @@ use ulid::Ulid;
 use std::fmt;
 use std::mem::size_of;
 use std::str::FromStr;
+use uuid::Uuid;
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
@@ -256,6 +257,13 @@ impl ServiceId {
         let key = key.into();
         let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
         Self::with_partition_key(partition_key, service_name, key)
+    }
+
+    pub fn unkeyed(service_name: impl Into<ByteString>) -> Self {
+        Self::new(
+            service_name,
+            Bytes::copy_from_slice(Uuid::now_v7().to_string().as_ref()),
+        )
     }
 
     /// # Important
