@@ -121,7 +121,7 @@ where
         let mut partition_storage =
             PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
-        let mut state_machine =
+        let state_machine =
             Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
@@ -130,8 +130,7 @@ where
             last_applied_lsn.unwrap_or(Lsn::INVALID),
         );
 
-        let mut action_collector = ActionCollector::with_capacity(128);
-        let mut effects_buffer = Effects::with_capacity(128);
+        let mut action_collector = ActionCollector::with_capacity(32);
 
         let (mut state, mut action_effect_stream) = LeadershipState::follower(
             peer_id,
@@ -143,6 +142,12 @@ where
             ingress_tx,
         );
 
+        let mut batching_state_machine = BatchingStateMachine::new(
+            state_machine,
+            partition_key_range,
+            options.max_batch_duration.map(Into::into),
+        );
+
         loop {
             tokio::select! {
                 _ = cancellation_watcher() => break,
@@ -151,16 +156,12 @@ where
 
                     let mut transaction = partition_storage.create_transaction();
 
-                    let leadership_change = Self::apply_available_records_until_leadership_change(
-                            &mut state_machine,
+                    let leadership_change = batching_state_machine.apply_available_records_until_leadership_change(
                             record,
                             &mut log_reader,
                             &mut transaction,
-                            &mut effects_buffer,
                             &mut action_collector,
-                            &partition_key_range,
                             state.is_leader(),
-                            options.max_batch_duration.map(Into::into),
                         )
                         .await?;
 
@@ -226,25 +227,44 @@ where
 
         Ok(state_machine)
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_available_records_until_leadership_change<Codec>(
-        state_machine: &mut StateMachine<Codec>,
+struct BatchingStateMachine<Codec> {
+    state_machine: StateMachine<Codec>,
+    partition_key_range: RangeInclusive<PartitionKey>,
+    max_duration: Option<Duration>,
+
+    effects: Effects,
+}
+
+impl<Codec> BatchingStateMachine<Codec>
+where
+    Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
+{
+    fn new(
+        state_machine: StateMachine<Codec>,
+        partition_key_range: RangeInclusive<PartitionKey>,
+        max_duration: Option<Duration>,
+    ) -> Self {
+        BatchingStateMachine {
+            state_machine,
+            partition_key_range,
+            max_duration,
+            effects: Effects::with_capacity(32),
+        }
+    }
+
+    async fn apply_available_records_until_leadership_change(
+        &mut self,
         record: (Lsn, Envelope),
         log_reader: &mut LogReader,
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
-        effects: &mut Effects,
         action_collector: &mut ActionCollector,
-        partition_key_range: &RangeInclusive<PartitionKey>,
         is_leader: bool,
-        max_duration: Option<Duration>,
-    ) -> anyhow::Result<Option<AnnounceLeader>>
-    where
-        Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
-    {
+    ) -> anyhow::Result<Option<AnnounceLeader>> {
         action_collector.clear();
 
-        let batch_start = max_duration.map(|duration| (duration, Instant::now()));
+        let batch_start = self.max_duration.map(|duration| (duration, Instant::now()));
 
         // only return the currently available records --> no waiting
         let available_records = futures::stream::once(futures::future::ready(Ok(record))).chain(
@@ -270,17 +290,20 @@ where
         );
         tokio::pin!(available_records);
 
-        // todo: add maximum duration for batches
         while let Some(record) = available_records.next().await {
             let (lsn, envelope) = record?;
             transaction.store_applied_lsn(lsn).await?;
 
             if let Some(dedup_information) =
-                is_targeted_to_me(&envelope.header, partition_key_range)
+                is_targeted_to_me(&envelope.header, &self.partition_key_range)
             {
                 // deduplicate if deduplication information has been provided
                 if let Some(dedup_information) = dedup_information {
                     if is_outdated_or_duplicate(dedup_information, transaction).await? {
+                        trace!(
+                            "Ignoring outdated or duplicate message: {:?}",
+                            envelope.header
+                        );
                         continue;
                     } else {
                         transaction
@@ -316,17 +339,22 @@ where
                         trace!("Ignoring outdated leadership announcement.");
                     }
                 } else {
-                    effects.clear();
-                    state_machine
+                    self.effects.clear();
+                    self.state_machine
                         .apply(
                             envelope.command,
-                            effects,
+                            &mut self.effects,
                             transaction,
                             action_collector,
                             is_leader,
                         )
                         .await?;
                 }
+            } else {
+                trace!(
+                    "Ignore message which is not targeted to me: {:?}",
+                    envelope.header
+                );
             }
         }
 
