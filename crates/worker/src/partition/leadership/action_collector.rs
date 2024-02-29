@@ -19,13 +19,13 @@ use crate::partition::{shuffle, ConsensusWriter};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use prost::Message;
+use restate_core::metadata;
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_invoker_api::ServiceHandle;
 use restate_types::identifiers::{FullInvocationId, PartitionLeaderEpoch, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::CompletionResult;
-use restate_types::NodeId;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header};
@@ -261,7 +261,7 @@ where
                 leader_epoch: partition_leader_epoch.1,
                 // todo: Add support for deduplicating self proposals
                 sequence_number: None,
-                node_id: NodeId::my_node_id().expect("NodeId should be set").id(),
+                node_id: metadata().my_node_id().as_plain(),
             },
         };
 
