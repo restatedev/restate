@@ -12,7 +12,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use restate_pb::restate::Event;
-use restate_schema_api::subscription::{EventReceiverServiceInstanceType, Sink, Subscription};
+use restate_schema_api::subscription::{
+    EventReceiverComponentType, EventReceiverServiceInstanceType, Sink, Subscription,
+};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
@@ -177,48 +179,81 @@ impl IngressRequest {
         } else {
             (None, IngressRequestMode::FireAndForget(ack_tx))
         };
+        let (target_fid, handler, argument) = match subscription.sink() {
+            Sink::Service {
+                ref name,
+                ref method,
+                ref input_event_remap,
+                ref instance_type,
+            } => {
+                // Old logic to route events
+                let target_fid = FullInvocationId::generate(ServiceId::new(
+                    &**name,
+                    // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
+                    match instance_type {
+                        EventReceiverServiceInstanceType::Keyed {
+                            ordering_key_is_key,
+                        } => Bytes::from(if *ordering_key_is_key {
+                            event.ordering_key.clone()
+                        } else {
+                            std::str::from_utf8(&event.key)
+                                .map_err(|e| EventError {
+                                    field_name: "key",
+                                    tag: 2,
+                                    reason: e,
+                                })?
+                                .to_owned()
+                        }),
+                        EventReceiverServiceInstanceType::Unkeyed => {
+                            Bytes::from(InvocationUuid::new().to_string())
+                        }
+                        EventReceiverServiceInstanceType::Singleton => Bytes::new(),
+                    },
+                ));
 
-        let Sink::Service {
-            ref name,
-            ref method,
-            ref input_event_remap,
-            ref instance_type,
-        } = subscription.sink();
-
-        // Generate fid
-        let target_fid = FullInvocationId::generate(ServiceId::new(
-            &**name,
-            // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
-            match instance_type {
-                EventReceiverServiceInstanceType::Keyed {
-                    ordering_key_is_key,
-                } => Bytes::from(if *ordering_key_is_key {
-                    event.ordering_key.clone()
+                // Perform event remapping
+                let argument = Bytes::from(if let Some(event_remap) = input_event_remap.as_ref() {
+                    event_remapping::MappedEvent::new(&mut event, event_remap)?.encode_to_vec()
                 } else {
-                    std::str::from_utf8(&event.key)
-                        .map_err(|e| EventError {
-                            field_name: "key",
-                            tag: 2,
-                            reason: e,
-                        })?
-                        .to_owned()
-                }),
-                EventReceiverServiceInstanceType::Unkeyed => {
-                    Bytes::from(InvocationUuid::new().to_string())
-                }
-                EventReceiverServiceInstanceType::Singleton => Bytes::new(),
-            },
-        ));
+                    event.encode_to_vec()
+                });
+
+                (target_fid, method, argument)
+            }
+            Sink::Component {
+                ref name,
+                ref handler,
+                ty,
+            } => {
+                let target_fid = FullInvocationId::generate(ServiceId::new(
+                    &**name,
+                    // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
+                    match ty {
+                        EventReceiverComponentType::VirtualObject {
+                            ordering_key_is_key,
+                        } => Bytes::from(if *ordering_key_is_key {
+                            event.ordering_key.clone()
+                        } else {
+                            std::str::from_utf8(&event.key)
+                                .map_err(|e| EventError {
+                                    field_name: "key",
+                                    tag: 2,
+                                    reason: e,
+                                })?
+                                .to_owned()
+                        }),
+                        EventReceiverComponentType::Service => {
+                            Bytes::from(InvocationUuid::new().to_string())
+                        }
+                    },
+                ));
+
+                (target_fid, handler, event.payload.clone())
+            }
+        };
 
         // Generate span context
         let span_context = ServiceInvocationSpanContext::start(&target_fid, related_span);
-
-        // Perform event remapping
-        let argument = Bytes::from(if let Some(event_remap) = input_event_remap.as_ref() {
-            event_remapping::MappedEvent::new(&mut event, event_remap)?.encode_to_vec()
-        } else {
-            event.encode_to_vec()
-        });
 
         Ok(if let Some(proxying_key) = proxying_key {
             // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
@@ -235,7 +270,7 @@ impl IngressRequest {
                     ),
                     argument: restate_pb::restate::internal::ProxyThroughRequest {
                         target_service: target_fid.service_id.service_name.to_string(),
-                        target_method: method.to_string(),
+                        target_method: handler.to_owned(),
                         target_key: target_fid.service_id.key,
                         target_invocation_uuid: target_fid.invocation_uuid.into(),
                         input: argument,
@@ -252,7 +287,7 @@ impl IngressRequest {
             (
                 IngressRequest {
                     fid: target_fid,
-                    method_name: ByteString::from(&**method),
+                    method_name: ByteString::from(&**handler),
                     argument,
                     span_context,
                     request_mode,

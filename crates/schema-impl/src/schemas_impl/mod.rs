@@ -23,6 +23,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
+mod component;
 pub(crate) mod deployment;
 mod service;
 mod subscription;
@@ -35,11 +36,25 @@ impl Schemas {
         let guard = self.0.load();
         guard.services.get(service_name.as_ref()).map(f)
     }
+
+    pub(crate) fn use_component_schema<F, R>(
+        &self,
+        component_name: impl AsRef<str>,
+        f: F,
+    ) -> Option<R>
+    where
+        F: FnOnce(&ComponentSchemas) -> R,
+    {
+        let guard = self.0.load();
+        guard.components.get(component_name.as_ref()).map(f)
+    }
 }
 
 /// This struct contains the actual data held by Schemas.
 #[derive(Debug, Clone)]
 pub(crate) struct SchemasInner {
+    pub(crate) components: HashMap<String, ComponentSchemas>,
+
     pub(crate) services: HashMap<String, ServiceSchemas>,
     pub(crate) deployments: HashMap<DeploymentId, DeploymentSchemas>,
     pub(crate) subscriptions: HashMap<SubscriptionId, Subscription>,
@@ -53,13 +68,13 @@ impl SchemasInner {
     ) -> Result<(), SchemasUpdateError> {
         for cmd in updates {
             match cmd {
-                SchemasUpdateCommand::InsertDeployment {
+                SchemasUpdateCommand::OldInsertDeployment {
                     deployment_id,
                     metadata,
                     services,
                     descriptor_pool,
                 } => {
-                    self.apply_insert_deployment(
+                    self.apply_old_insert_deployment(
                         deployment_id,
                         metadata,
                         services,
@@ -81,10 +96,102 @@ impl SchemasInner {
                 SchemasUpdateCommand::RemoveSubscription(sub_id) => {
                     self.apply_remove_subscription(sub_id)?;
                 }
+                SchemasUpdateCommand::InsertDeployment {
+                    metadata,
+                    deployment_id,
+                } => {
+                    self.apply_insert_deployment(deployment_id, metadata)?;
+                }
+                SchemasUpdateCommand::InsertComponent(InsertComponentUpdateCommand {
+                    name,
+                    revision,
+                    ty,
+                    deployment_id,
+                    handlers,
+                }) => {
+                    self.apply_insert_component(name, revision, ty, deployment_id, handlers)?;
+                }
+                SchemasUpdateCommand::RemoveComponent { name, revision } => {
+                    self.apply_remove_component(name, revision)?;
+                }
+                SchemasUpdateCommand::ModifyComponent { name, public } => {
+                    self.apply_modify_component(name, public)?;
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HandlerSchemas {
+    input_schema: Option<Bytes>,
+    output_schema: Option<Bytes>,
+}
+
+impl HandlerSchemas {
+    pub(crate) fn schema_to_description(_schema: Bytes) -> String {
+        // TODO to implement
+        "any".to_string()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ComponentSchemas {
+    pub(crate) revision: ComponentRevision,
+    pub(crate) handlers: HashMap<String, HandlerSchemas>,
+    pub(crate) ty: ComponentType,
+    pub(crate) location: ServiceLocation,
+}
+
+impl ComponentSchemas {
+    pub(crate) fn compute_handlers(
+        handlers: Vec<DiscoveredHandlerMetadata>,
+    ) -> HashMap<String, HandlerSchemas> {
+        handlers
+            .into_iter()
+            .map(|m| {
+                (
+                    m.name,
+                    HandlerSchemas {
+                        input_schema: m.input_schema,
+                        output_schema: m.output_schema,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn as_component_metadata(&self, name: String) -> Option<ComponentMetadata> {
+        match &self.location {
+            ServiceLocation::BuiltIn { .. } => None,
+            ServiceLocation::Deployment {
+                latest_deployment,
+                public,
+            } => Some(ComponentMetadata {
+                name,
+                handlers: self
+                    .handlers
+                    .iter()
+                    .map(|(h_name, h_schemas)| HandlerMetadata {
+                        name: h_name.clone(),
+                        input_description: h_schemas
+                            .input_schema
+                            .clone()
+                            .map(HandlerSchemas::schema_to_description),
+                        output_description: h_schemas
+                            .output_schema
+                            .clone()
+                            .map(HandlerSchemas::schema_to_description),
+                    })
+                    .collect(),
+                ty: self.ty,
+                deployment_id: *latest_deployment,
+                revision: self.revision,
+                public: *public,
+            }),
+        }
     }
 }
 
@@ -291,6 +398,7 @@ pub(crate) struct DeploymentSchemas {
     // We could optimize the memory impact of this by reading these info from disk
     pub(crate) services: Vec<ServiceMetadata>,
     pub(crate) descriptor_pool: DescriptorPool,
+    pub(crate) components: Vec<ComponentMetadata>,
 }
 
 impl Default for SchemasInner {
@@ -298,6 +406,7 @@ impl Default for SchemasInner {
         const INGRESS_DEPLOYMENT_ID: DeploymentId = DeploymentId::from_parts(0, 0);
 
         let mut inner = Self {
+            components: Default::default(),
             services: Default::default(),
             deployments: Default::default(),
             subscriptions: Default::default(),

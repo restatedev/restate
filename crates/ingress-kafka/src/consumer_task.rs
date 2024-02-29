@@ -101,7 +101,6 @@ impl MessageSender {
         consumer_group_id: &str,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), Error> {
-        let Sink::Service { name, method, .. } = self.subscription.sink();
         let Source::Kafka {
             ordering_key_format,
             ..
@@ -114,7 +113,7 @@ impl MessageSender {
             messaging.system = "kafka",
             messaging.operation = "receive",
             messaging.source.name = msg.topic(),
-            messaging.destination.name = format!("{}/{}", name, method)
+            messaging.destination.name = %self.subscription.sink()
         );
         info!(parent: &ingress_span, "Processing Kafka ingress request");
         let ingress_span_context = ingress_span.context().span().span_context().clone();

@@ -2822,7 +2822,7 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .compute_new_deployment(
+                    .old_compute_new_deployment(
                         Some(deployment.id),
                         deployment.metadata,
                         vec![GREETER_SERVICE_NAME.to_owned()],
