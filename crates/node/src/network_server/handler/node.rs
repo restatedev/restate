@@ -13,6 +13,12 @@ use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use restate_core::{metadata, TaskCenter};
+use restate_network::error::ProtocolError;
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
+
+use restate_network::ConnectionManager;
+use restate_node_protocol::node::Message;
 use restate_node_services::node_svc::node_svc_server::NodeSvc;
 use restate_node_services::node_svc::{IdentResponse, NodeStatus};
 use restate_node_services::node_svc::{
@@ -21,20 +27,25 @@ use restate_node_services::node_svc::{
 };
 use restate_schema_impl::SchemasUpdateCommand;
 use restate_worker_api::Handle;
-use tonic::{Request, Response, Status};
 
 use crate::network_server::WorkerDependencies;
 
 pub struct NodeSvcHandler {
     task_center: TaskCenter,
     worker: Option<WorkerDependencies>,
+    connections: ConnectionManager,
 }
 
 impl NodeSvcHandler {
-    pub fn new(task_center: TaskCenter, worker: Option<WorkerDependencies>) -> Self {
+    pub fn new(
+        task_center: TaskCenter,
+        worker: Option<WorkerDependencies>,
+        connections: ConnectionManager,
+    ) -> Self {
         Self {
             task_center,
             worker,
+            connections,
         }
     }
 }
@@ -163,5 +174,33 @@ impl NodeSvc for NodeSvcHandler {
             .await?;
 
         Ok(Response::new(()))
+    }
+
+    type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;
+
+    // Status codes returned in different scenarios:
+    // - DeadlineExceeded: No hello received within deadline
+    // - InvalidArgument: Header should always be set or any other missing required part of the
+    //                    handshake. This also happens if the client sent wrong message on handshake.
+    // - AlreadyExists: A node with a newer generation has been observed already
+    // - Cancelled: received an error from the client, or the client has dropped the stream during
+    //              handshake.
+    // - Unavailable: This node is shutting down
+    async fn create_connection(
+        &self,
+        request: Request<Streaming<Message>>,
+    ) -> Result<Response<Self::CreateConnectionStream>, Status> {
+        let incoming = request.into_inner();
+        let transformed = incoming.map(|x| x.map_err(ProtocolError::from));
+        let output_stream = self
+            .task_center
+            .run_in_scope(
+                "accept-connection",
+                None,
+                self.connections.accept_incoming_connection(transformed),
+            )
+            .await?;
+
+        Ok(Response::new(output_stream))
     }
 }
