@@ -10,15 +10,18 @@ publish = false
 [dependencies]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-node-protocol = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 pin-project = { workspace = true }
+static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

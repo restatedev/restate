@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use codederror::CodedError;
+use restate_network::Networking;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
 use tracing::info;
@@ -44,6 +47,22 @@ pub struct AdminRole {
 }
 
 impl AdminRole {
+    pub fn new(
+        options: Options,
+        _networking: Arc<Networking>,
+    ) -> Result<Self, AdminRoleBuildError> {
+        let meta = options.meta.build(options.worker.kafka.clone())?;
+        let admin = options
+            .admin
+            .build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+
+        Ok(AdminRole {
+            controller: restate_cluster_controller::Service::new(options.cluster_controller),
+            admin,
+            meta,
+        })
+    }
+
     pub fn cluster_controller_handle(&self) -> ClusterControllerHandle {
         self.controller.handle()
     }
@@ -90,23 +109,6 @@ impl AdminRole {
         )?;
 
         Ok(())
-    }
-}
-
-impl TryFrom<Options> for AdminRole {
-    type Error = AdminRoleBuildError;
-
-    fn try_from(options: Options) -> Result<Self, Self::Error> {
-        let meta = options.meta.build(options.worker.kafka.clone())?;
-        let admin = options
-            .admin
-            .build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
-
-        Ok(AdminRole {
-            controller: restate_cluster_controller::Service::new(options.cluster_controller),
-            admin,
-            meta,
-        })
     }
 }
 

@@ -14,6 +14,9 @@ use std::fmt::Debug;
 use std::future::Future;
 use tokio::sync::mpsc;
 
+mod v2;
+pub use v2::*;
+
 mod routing;
 mod unbounded_handle;
 pub mod utils;
