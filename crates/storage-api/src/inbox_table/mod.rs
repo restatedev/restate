@@ -27,7 +27,7 @@ impl InboxEntry {
     pub fn service_id(&self) -> &ServiceId {
         match self {
             InboxEntry::Invocation(invocation) => &invocation.fid.service_id,
-            InboxEntry::StateMutation(state_mutation) => &state_mutation.service_id,
+            InboxEntry::StateMutation(state_mutation) => &state_mutation.component_id,
         }
     }
 }

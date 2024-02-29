@@ -8,21 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::services::ComponentRevision;
-use std::time::SystemTime;
-
-use restate_schema_api::service::ServiceMetadata;
-use restate_serde_util::SerdeableHeaderHashMap;
-
 use http::Uri;
-
+use restate_schema_api::component::ComponentMetadata;
+use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::time::SystemTime;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
 use restate_schema_api::deployment::DeploymentType;
 pub use restate_schema_api::deployment::{DeploymentMetadata, ProtocolType};
+use restate_types::identifiers::ComponentRevision;
 pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -155,7 +152,7 @@ pub enum RegisterDeploymentRequest {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ServiceNameRevPair {
+pub struct ComponentNameRevPair {
     pub name: String,
     pub revision: ComponentRevision,
 }
@@ -164,7 +161,7 @@ pub struct ServiceNameRevPair {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterDeploymentResponse {
     pub id: DeploymentId,
-    pub services: Vec<ServiceMetadata>,
+    pub components: Vec<ComponentMetadata>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -181,10 +178,10 @@ pub struct DeploymentResponse {
     #[serde(flatten)]
     pub deployment: Deployment,
 
-    /// # Services
+    /// # Components
     ///
-    /// List of services exposed by this deployment.
-    pub services: Vec<ServiceNameRevPair>,
+    /// List of components exposed by this deployment.
+    pub components: Vec<ComponentNameRevPair>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -195,8 +192,8 @@ pub struct DetailedDeploymentResponse {
     #[serde(flatten)]
     pub deployment: Deployment,
 
-    /// # Services
+    /// # Components
     ///
-    /// List of services exposed by this deployment.
-    pub services: Vec<ServiceMetadata>,
+    /// List of components exposed by this deployment.
+    pub components: Vec<ComponentMetadata>,
 }

@@ -226,7 +226,7 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let service_status = state.get_service_status(&mutation.service_id).await?;
+        let service_status = state.get_service_status(&mutation.component_id).await?;
 
         match service_status {
             ServiceStatus::Locked(_) => {

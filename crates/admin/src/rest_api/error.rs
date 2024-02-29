@@ -30,12 +30,14 @@ pub enum MetaApiError {
     InvalidField(&'static str, String),
     #[error("The requested deployment '{0}' does not exist")]
     DeploymentNotFound(DeploymentId),
-    #[error("The requested service '{0}' does not exist")]
-    ServiceNotFound(String),
-    #[error("The requested method '{method_name}' on service '{service_name}' does not exist")]
-    MethodNotFound {
-        service_name: String,
-        method_name: String,
+    #[error("The requested component '{0}' does not exist")]
+    ComponentNotFound(String),
+    #[error(
+        "The requested handler '{handler_name}' on component '{component_name}' does not exist"
+    )]
+    HandlerNotFound {
+        component_name: String,
+        handler_name: String,
     },
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
@@ -62,8 +64,8 @@ struct ErrorDescriptionResponse {
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
-            MetaApiError::ServiceNotFound(_)
-            | MetaApiError::MethodNotFound { .. }
+            MetaApiError::ComponentNotFound(_)
+            | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::BadDescriptor(_))) => {
