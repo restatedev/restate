@@ -28,8 +28,8 @@ pub use options::{
     LambdaClientOptionsBuilderError, Options, OptionsBuilder, OptionsBuilderError,
 };
 
-mod http;
-mod lambda;
+pub mod http;
+pub mod lambda;
 mod options;
 mod proxy;
 mod utils;
@@ -117,13 +117,13 @@ impl<B> Request<B> {
 #[derive(Clone, Debug)]
 pub struct Parts {
     /// The request's target address
-    address: Endpoint,
+    pub address: Endpoint,
 
     /// The request's path, for example /discover or /invoke/xyz/abc
-    path: PathAndQuery,
+    pub path: PathAndQuery,
 
     /// The request's headers - in lambda case, mapped to apigatewayevent.headers
-    headers: HeaderMap<HeaderValue>,
+    pub headers: HeaderMap<HeaderValue>,
 }
 
 impl Parts {

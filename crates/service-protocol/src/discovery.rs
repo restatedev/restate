@@ -9,16 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-
+use std::error::Error;
 use std::fmt::Display;
 
 use bytes::Bytes;
-
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap, StatusCode};
+use hyper::{Body, HeaderMap, StatusCode, Version};
 use prost::{DecodeError, Message};
 use prost_reflect::{DescriptorError, DescriptorPool};
 use tracing::warn;
@@ -27,7 +26,6 @@ use codederror::CodedError;
 use restate_errors::META0003;
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
-
 use restate_types::retries::{RetryIter, RetryPolicy};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -225,8 +223,23 @@ impl ServiceDiscovery {
         build_request: impl Fn() -> Request<Body>,
         mut retry_iter: RetryIter,
     ) -> Result<(ResponseParts, Bytes), ServiceDiscoveryError> {
+        let mut try_http1 = false;
         loop {
-            let response_fut = client.call(build_request());
+            let req = build_request();
+            let req = if try_http1 {
+                let (mut parts, body) = req.into_parts();
+
+                parts.address = match parts.address {
+                    Endpoint::Http(uri, Version::HTTP_2) => Endpoint::Http(uri, Version::HTTP_11),
+                    other => other,
+                };
+
+                Request::new(parts, body)
+            } else {
+                req
+            };
+
+            let response_fut = client.call(req);
             let response = async {
                 let (parts, body) = response_fut
                     .await
@@ -267,8 +280,35 @@ impl ServiceDiscovery {
                 }
             }
 
+            if !try_http1 && is_h2_frame_size_err(&e) {
+                warn!(
+                        "Detected possible HTTP1.1 endpoint when discovering deployment at address '{}'. Retrying with HTTP1.1",
+                        address,
+                    );
+                try_http1 = true;
+                continue;
+            }
+
             return Err(e);
         }
+    }
+}
+
+fn is_h2_frame_size_err(err: &ServiceDiscoveryError) -> bool {
+    if let ServiceDiscoveryError::Client(ServiceClientError::Http(
+        restate_service_client::http::HttpError::Hyper(err),
+    )) = err
+    {
+        if let Some(source) = err.source() {
+            match source.downcast_ref::<h2::Error>() {
+                Some(err) => err.reason() == Some(h2::Reason::FRAME_SIZE_ERROR),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
     }
 }
 

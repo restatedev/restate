@@ -66,16 +66,22 @@ impl Options {
                 .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
         }
 
+        let connector = ProxyConnector::new(
+            self.proxy_uri,
+            hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build(),
+        );
+
         HttpClient::new(
-            builder.build::<_, hyper::Body>(ProxyConnector::new(
-                self.proxy_uri,
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http1()
-                    .enable_http2()
-                    .build(),
-            )),
+            builder.clone().build::<_, Body>(connector.clone()), // h1 client with alpn support
+            {
+                builder.http2_only(true);
+                builder.build::<_, Body>(connector) // h2-prior knowledge client
+            },
         )
     }
 }
@@ -137,12 +143,19 @@ type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    client: hyper::Client<Connector, Body>,
+    alpn_client: hyper::Client<Connector, Body>,
+    h2_client: hyper::Client<Connector, Body>,
 }
 
 impl HttpClient {
-    pub fn new(client: hyper::Client<Connector, Body>) -> Self {
-        Self { client }
+    pub fn new(
+        alpn_client: hyper::Client<Connector, Body>,
+        h2_client: hyper::Client<Connector, Body>,
+    ) -> Self {
+        Self {
+            alpn_client,
+            h2_client,
+        }
     }
 
     fn build_request(
@@ -200,7 +213,12 @@ impl HttpClient {
             Err(err) => return Either::Right(future::ready(Err(err.into()))),
         };
 
-        let fut = self.client.request(request);
+        let client = match request.version() {
+            Version::HTTP_2 => &self.h2_client,
+            _ => &self.alpn_client,
+        };
+
+        let fut = client.request(request);
 
         Either::Left(async move { Ok(fut.await?) })
     }

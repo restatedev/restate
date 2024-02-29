@@ -5386,6 +5386,7 @@ dependencies = [
  "bytes",
  "bytes-utils",
  "codederror",
+ "h2",
  "hyper",
  "paste",
  "prost 0.12.3",
