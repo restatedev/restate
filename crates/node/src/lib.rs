@@ -105,6 +105,7 @@ impl Node {
         let bifrost = options.bifrost.build(options.worker.partitions);
 
         let server = options.server.build(
+            networking.connection_manager(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
                     worker.rocksdb_storage().clone(),
