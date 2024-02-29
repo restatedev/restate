@@ -21,17 +21,21 @@ mod subscriptions;
 use crate::rest_api::error::MetaApiError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
+use restate_bifrost::bifrost;
+use restate_core::metadata;
 use restate_meta::{FileMetaReader, MetaReader};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_node_services::node_svc::UpdateSchemaRequest;
+use restate_types::identifiers::PartitionKey;
+use restate_types::logs::{LogId, Payload};
+use restate_types::partition_table::FindPartition;
+use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use tonic::transport::Channel;
 use tracing::debug;
 
 use crate::state::AdminServiceState;
 
-pub fn create_router<W: restate_worker_api::Handle + Clone + Send + Sync + 'static>(
-    state: AdminServiceState<W>,
-) -> axum::Router<()> {
+pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
     // Setup the router
     axum_integration::Router::new()
         .route(
@@ -133,4 +137,41 @@ async fn notify_worker_about_schema_changes(
     }
 
     Ok(())
+}
+
+async fn append_command_to_log(
+    partition_key: PartitionKey,
+    command: Command,
+) -> Result<(), MetaApiError> {
+    let partition_id = metadata()
+        .partition_table()
+        .find_partition_id(partition_key)
+        .map_err(|err| MetaApiError::Generic(err.into()))?;
+
+    let header = create_envelope_header(partition_key);
+    let envelope = Envelope::new(header, command);
+
+    let log_id = LogId::from(partition_id);
+    let payload = Payload::from(
+        envelope
+            .encode_with_bincode()
+            .map_err(|err| MetaApiError::Generic(err.into()))?,
+    );
+    bifrost()
+        .append(log_id, payload)
+        .await
+        .map_err(|err| MetaApiError::Generic(err.into()))?;
+
+    Ok(())
+}
+
+fn create_envelope_header(partition_key: PartitionKey) -> Header {
+    Header {
+        source: Source::ControlPlane {},
+        dest: Destination::Processor {
+            partition_key,
+            dedup: None,
+        },
+        ack_mode: AckMode::None,
+    }
 }

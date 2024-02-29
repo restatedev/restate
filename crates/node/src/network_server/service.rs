@@ -26,7 +26,7 @@ use restate_node_services::node_svc::node_svc_server::NodeSvcServer;
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_worker::{SubscriptionControllerHandle, WorkerCommandSender};
+use restate_worker::SubscriptionControllerHandle;
 
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
@@ -165,7 +165,6 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 
 pub struct WorkerDependencies {
     pub rocksdb: RocksDBStorage,
-    pub worker_cmd_tx: WorkerCommandSender,
     pub query_context: QueryContext,
     pub schemas: Schemas,
     pub subscription_controller: Option<SubscriptionControllerHandle>,
@@ -174,14 +173,12 @@ pub struct WorkerDependencies {
 impl WorkerDependencies {
     pub fn new(
         rocksdb: RocksDBStorage,
-        worker_cmd_tx: WorkerCommandSender,
         query_context: QueryContext,
         schemas: Schemas,
         subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         WorkerDependencies {
             rocksdb,
-            worker_cmd_tx,
             query_context,
             schemas,
             subscription_controller,

@@ -12,7 +12,6 @@ extern crate core;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::services::Services;
 use codederror::CodedError;
 use restate_bifrost::{bifrost, with_bifrost};
 use restate_consensus::Consensus;
@@ -42,7 +41,6 @@ mod invoker_integration;
 mod metric_definitions;
 mod network_integration;
 mod partition;
-mod services;
 mod subscription_integration;
 mod util;
 
@@ -83,7 +81,6 @@ pub use restate_storage_query_postgres::{
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::Version;
 use restate_wal_protocol::Envelope;
-pub use services::WorkerCommandSender;
 
 type PartitionProcessorCommand = Envelope;
 type ConsensusMsg = PartitionTarget<PartitionProcessorCommand>;
@@ -174,9 +171,6 @@ pub enum Error {
         thread: &'static str,
         cause: restate_types::errors::ThreadJoinError,
     },
-    #[error("worker services failed: {0}")]
-    #[code(unknown)]
-    Services(#[from] services::Error),
     #[error("rocksdb writer failed: {0}")]
     #[code(unknown)]
     RocksDBWriter(#[from] anyhow::Error),
@@ -206,7 +200,7 @@ pub struct Worker {
     external_client_ingress: ExternalClientIngress,
     network_ingress_sender: mpsc::Sender<Envelope>,
     ingress_kafka: IngressKafkaService,
-    services: Services,
+    subscription_controller_handle: SubscriptionControllerHandle,
     rocksdb_writer: RocksDBWriter,
     rocksdb_storage: RocksDBStorage,
 }
@@ -299,12 +293,6 @@ impl Worker {
             })
             .collect();
 
-        let services = Services::new(
-            consensus.create_proposal_sender(),
-            subscription_controller_handle,
-            channel_size,
-        );
-
         Ok(Self {
             consensus,
             processors,
@@ -317,7 +305,7 @@ impl Worker {
             external_client_ingress,
             network_ingress_sender,
             ingress_kafka,
-            services,
+            subscription_controller_handle,
             rocksdb_writer,
             rocksdb_storage,
         })
@@ -351,12 +339,8 @@ impl Worker {
         )
     }
 
-    pub fn worker_command_tx(&self) -> WorkerCommandSender {
-        self.services.worker_command_tx()
-    }
-
     pub fn subscription_controller_handle(&self) -> SubscriptionControllerHandle {
-        self.services.subscription_controller_handler()
+        self.subscription_controller_handle.clone()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {
@@ -443,14 +427,6 @@ impl Worker {
                 with_bifrost(processor.run(networking), bifrost()),
             )?;
         }
-
-        // Create worker operations service
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "worker-ops-service",
-            None,
-            self.services.run(),
-        )?;
 
         tokio::select! {
             _ = shutdown => {

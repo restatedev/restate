@@ -47,8 +47,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn create_deployment(
+    State(state): State<AdminServiceState>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
     let (discover_endpoint, force, dry_run) = match payload {
@@ -127,8 +127,8 @@ pub async fn create_deployment<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_deployment(
+    State(state): State<AdminServiceState>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, services) = state
@@ -156,8 +156,8 @@ pub async fn get_deployment<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment_descriptors<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_deployment_descriptors(
+    State(state): State<AdminServiceState>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<ProtoBytes, MetaApiError> {
     Ok(ProtoBytes(
@@ -175,8 +175,8 @@ pub async fn get_deployment_descriptors<W>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_deployments(
+    State(state): State<AdminServiceState>,
 ) -> Json<ListDeploymentsResponse> {
     ListDeploymentsResponse {
         deployments: state
@@ -237,8 +237,8 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn delete_deployment(
+    State(state): State<AdminServiceState>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {

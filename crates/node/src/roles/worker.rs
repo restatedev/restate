@@ -29,7 +29,7 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::nodes_config::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
-use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
+use restate_worker::{SubscriptionControllerHandle, Worker};
 use restate_worker_api::SubscriptionController;
 use tracing::info;
 
@@ -107,10 +107,6 @@ impl WorkerRole {
 
     pub fn rocksdb_storage(&self) -> &RocksDBStorage {
         self.worker.rocksdb_storage()
-    }
-
-    pub fn worker_command_tx(&self) -> WorkerCommandSender {
-        self.worker.worker_command_tx()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {

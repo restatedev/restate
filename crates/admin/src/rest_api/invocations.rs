@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::state::AdminServiceState;
-
 use super::error::*;
 
-use axum::extract::{Path, Query, State};
+use crate::rest_api::append_command_to_log;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use okapi_operation::*;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
+use restate_wal_protocol::Command;
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -65,14 +65,10 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn delete_invocation(
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
-) -> Result<StatusCode, MetaApiError>
-where
-    W: restate_worker_api::Handle + Clone + Send,
-{
+) -> Result<StatusCode, MetaApiError> {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
@@ -82,10 +78,12 @@ where
         TerminationMode::Kill => InvocationTermination::kill(invocation_id),
     };
 
-    state
-        .worker_handle()
-        .terminate_invocation(invocation_termination)
-        .await?;
+    let partition_key = invocation_termination.maybe_fid.partition_key();
+    append_command_to_log(
+        partition_key,
+        Command::TerminateInvocation(invocation_termination),
+    )
+    .await?;
 
     Ok(StatusCode::ACCEPTED)
 }

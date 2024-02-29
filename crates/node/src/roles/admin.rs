@@ -16,14 +16,11 @@ use tonic::transport::Channel;
 use tracing::info;
 
 use restate_admin::service::AdminService;
+use restate_bifrost::{bifrost, with_bifrost};
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
-use restate_node_services::node_svc::{StateMutationRequest, TerminationRequest};
-use restate_types::invocation::InvocationTermination;
-use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::KafkaIngressOptions;
-use restate_worker_api::{Error, Handle};
 
 use crate::Options;
 
@@ -93,65 +90,15 @@ impl AdminRole {
                 .context("valid worker address uri")?,
         )
         .connect_lazy();
-        let node_handle = GrpcNodeHandle::new(worker_channel.clone());
         let node_svc_client = NodeSvcClient::new(worker_channel);
 
         task_center().spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            self.admin.run(node_handle, node_svc_client),
+            with_bifrost(self.admin.run(node_svc_client), bifrost()),
         )?;
 
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone)]
-struct GrpcNodeHandle {
-    grpc_client: NodeSvcClient<Channel>,
-}
-
-impl GrpcNodeHandle {
-    fn new(channel: Channel) -> Self {
-        GrpcNodeHandle {
-            grpc_client: NodeSvcClient::new(channel),
-        }
-    }
-}
-
-impl Handle for GrpcNodeHandle {
-    async fn terminate_invocation(
-        &self,
-        invocation_termination: InvocationTermination,
-    ) -> Result<(), Error> {
-        let invocation_termination =
-            bincode::serde::encode_to_vec(invocation_termination, bincode::config::standard())
-                .expect("serialization should work");
-
-        self.grpc_client
-            .clone()
-            .terminate_invocation(TerminationRequest {
-                invocation_termination: invocation_termination.into(),
-            })
-            .await
-            .map(|resp| resp.into_inner())
-            // todo: Proper error handling
-            .map_err(|_err| Error::Unreachable)
-    }
-
-    async fn external_state_mutation(&self, mutation: ExternalStateMutation) -> Result<(), Error> {
-        let state_mutation = bincode::serde::encode_to_vec(mutation, bincode::config::standard())
-            .expect("serialization should work");
-
-        self.grpc_client
-            .clone()
-            .mutate_state(StateMutationRequest {
-                state_mutation: state_mutation.into(),
-            })
-            .await
-            .map(|resp| resp.into_inner())
-            // todo: Proper error handling
-            .map_err(|_err| Error::Unreachable)
     }
 }

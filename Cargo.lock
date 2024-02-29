@@ -4788,6 +4788,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-test-util",
  "restate-types",
+ "restate-wal-protocol",
  "restate-worker-api",
  "schemars",
  "serde",

@@ -22,11 +22,9 @@ use restate_node_protocol::node::Message;
 use restate_node_services::node_svc::node_svc_server::NodeSvc;
 use restate_node_services::node_svc::{IdentResponse, NodeStatus};
 use restate_node_services::node_svc::{
-    StateMutationRequest, StorageQueryRequest, StorageQueryResponse, TerminationRequest,
-    UpdateSchemaRequest,
+    StorageQueryRequest, StorageQueryResponse, UpdateSchemaRequest,
 };
 use restate_schema_impl::SchemasUpdateCommand;
-use restate_worker_api::Handle;
 
 use crate::network_server::WorkerDependencies;
 
@@ -60,52 +58,6 @@ impl NodeSvc for NodeSvcHandler {
                 node_id: Some(metadata().my_node_id().into()),
             }))
         })
-    }
-
-    async fn terminate_invocation(
-        &self,
-        request: Request<TerminationRequest>,
-    ) -> Result<Response<()>, Status> {
-        let Some(ref worker) = self.worker else {
-            return Err(Status::failed_precondition("Not a worker node"));
-        };
-
-        let (invocation_termination, _) = bincode::serde::decode_from_slice(
-            &request.into_inner().invocation_termination,
-            bincode::config::standard(),
-        )
-        .map_err(|err| Status::invalid_argument(err.to_string()))?;
-
-        worker
-            .worker_cmd_tx
-            .terminate_invocation(invocation_termination)
-            .await
-            .map_err(|_| Status::unavailable("worker shut down"))?;
-
-        Ok(Response::new(()))
-    }
-
-    async fn mutate_state(
-        &self,
-        request: Request<StateMutationRequest>,
-    ) -> Result<Response<()>, Status> {
-        let Some(ref worker) = self.worker else {
-            return Err(Status::failed_precondition("Not a worker node"));
-        };
-
-        let (state_mutation, _) = bincode::serde::decode_from_slice(
-            &request.into_inner().state_mutation,
-            bincode::config::standard(),
-        )
-        .map_err(|err| Status::invalid_argument(err.to_string()))?;
-
-        worker
-            .worker_cmd_tx
-            .external_state_mutation(state_mutation)
-            .await
-            .map_err(|_| Status::unavailable("worker shut down"))?;
-
-        Ok(Response::new(()))
     }
 
     type QueryStorageStream = BoxStream<'static, Result<StorageQueryResponse, Status>>;

@@ -38,8 +38,8 @@ use restate_types::identifiers::SubscriptionId;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn create_subscription(
+    State(state): State<AdminServiceState>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
     let subscription = state
@@ -77,8 +77,8 @@ pub async fn create_subscription<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_subscription(
+    State(state): State<AdminServiceState>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
@@ -114,8 +114,8 @@ pub async fn get_subscription<W>(
         )
     )
 )]
-pub async fn list_subscriptions<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_subscriptions(
+    State(state): State<AdminServiceState>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
 ) -> Json<ListSubscriptionsResponse> {
     let filters = match (sink, source) {
@@ -162,8 +162,8 @@ pub async fn list_subscriptions<W>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn delete_subscription(
+    State(state): State<AdminServiceState>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
     state

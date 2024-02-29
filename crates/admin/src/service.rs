@@ -47,15 +47,10 @@ impl AdminService {
         }
     }
 
-    pub async fn run(
-        self,
-        worker_handle: impl restate_worker_api::Handle + Clone + Send + Sync + 'static,
-        node_svc_client: NodeSvcClient<Channel>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(self, node_svc_client: NodeSvcClient<Channel>) -> anyhow::Result<()> {
         let rest_state = state::AdminServiceState::new(
             self.meta_handle,
             self.schemas,
-            worker_handle,
             node_svc_client.clone(),
             self.schema_reader,
         );

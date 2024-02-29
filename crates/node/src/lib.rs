@@ -110,7 +110,6 @@ impl Node {
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
                     worker.rocksdb_storage().clone(),
-                    worker.worker_command_tx(),
                     worker.storage_query_context().clone(),
                     worker.schemas(),
                     worker.subscription_controller(),
@@ -262,7 +261,10 @@ impl Node {
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                admin_role.start(self.options.bootstrap_cluster),
+                with_bifrost(
+                    admin_role.start(self.options.bootstrap_cluster),
+                    bifrost.clone(),
+                ),
             )?;
         }
 

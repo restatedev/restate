@@ -102,10 +102,9 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         TaskKind::TestRunner,
         "doc-gen",
         None,
-        admin_service.run(
-            Mock,
-            NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
-        ),
+        admin_service.run(NodeSvcClient::new(
+            Channel::builder(Uri::default()).connect_lazy(),
+        )),
     )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)

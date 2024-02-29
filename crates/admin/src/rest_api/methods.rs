@@ -30,8 +30,8 @@ use okapi_operation::*;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_methods<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_service_methods(
+    State(state): State<AdminServiceState>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceMethodsResponse>, MetaApiError> {
     match state
@@ -65,8 +65,8 @@ pub async fn list_service_methods<W>(
         )
     )
 )]
-pub async fn get_service_method<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_service_method(
+    State(state): State<AdminServiceState>,
     Path((service_name, method_name)): Path<(String, String)>,
 ) -> Result<Json<MethodMetadata>, MetaApiError> {
     match state

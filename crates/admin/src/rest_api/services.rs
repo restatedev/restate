@@ -15,7 +15,7 @@ use restate_meta_rest_model::services::*;
 use restate_pb::grpc::reflection::v1::FileDescriptorResponse;
 use restate_schema_api::service::ServiceMetadataResolver;
 
-use crate::rest_api::notify_worker_about_schema_changes;
+use crate::rest_api::{append_command_to_log, notify_worker_about_schema_changes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
@@ -26,8 +26,9 @@ use okapi_operation::okapi::openapi3::MediaType;
 use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use prost::Message;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
+use restate_wal_protocol::Command;
 
 /// List services
 #[openapi(
@@ -36,8 +37,8 @@ use restate_types::state_mut::ExternalStateMutation;
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_services(
+    State(state): State<AdminServiceState>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     Ok(ListServicesResponse {
         services: state.schemas().list_services(),
@@ -57,8 +58,8 @@ pub async fn list_services<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_service(
+    State(state): State<AdminServiceState>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     state
@@ -80,8 +81,8 @@ pub async fn get_service<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn modify_service(
+    State(state): State<AdminServiceState>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest { public }): Json<
         ModifyServiceRequest,
@@ -122,18 +123,14 @@ pub async fn modify_service<W>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn modify_service_state(
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
         service_key,
         new_state,
     }): Json<ModifyServiceStateRequest>,
-) -> Result<StatusCode, MetaApiError>
-where
-    W: restate_worker_api::Handle + Clone + Send,
-{
+) -> Result<StatusCode, MetaApiError> {
     let service_id = ServiceId::new(service_name, service_key);
 
     let new_state = new_state
@@ -141,14 +138,13 @@ where
         .map(|(k, v)| (Bytes::from(k), v))
         .collect();
 
-    state
-        .worker_handle()
-        .external_state_mutation(ExternalStateMutation {
-            service_id,
-            version,
-            state: new_state,
-        })
-        .await?;
+    let partition_key = service_id.partition_key();
+    let patch_state = ExternalStateMutation {
+        service_id,
+        version,
+        state: new_state,
+    };
+    append_command_to_log(partition_key, Command::PatchState(patch_state)).await?;
 
     Ok(StatusCode::ACCEPTED)
 }
@@ -170,8 +166,8 @@ where
         from_type = "MetaApiError",
     )
 )]
-pub async fn list_service_descriptors<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_service_descriptors(
+    State(state): State<AdminServiceState>,
     Path(service_name): Path<String>,
 ) -> Result<Proto<FileDescriptorResponse>, MetaApiError> {
     state

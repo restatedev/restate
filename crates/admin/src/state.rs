@@ -15,10 +15,9 @@ use restate_schema_impl::Schemas;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState<W> {
+pub struct AdminServiceState {
     meta_handle: MetaHandle,
     schemas: Schemas,
-    worker_handle: W,
     node_svc_client: NodeSvcClient<Channel>,
     schema_reader: FileMetaReader,
 }
@@ -28,18 +27,16 @@ pub struct QueryServiceState {
     pub node_svc_client: NodeSvcClient<Channel>,
 }
 
-impl<W> AdminServiceState<W> {
+impl AdminServiceState {
     pub fn new(
         meta_handle: MetaHandle,
         schemas: Schemas,
-        worker_handle: W,
         node_svc_client: NodeSvcClient<Channel>,
         schema_reader: FileMetaReader,
     ) -> Self {
         Self {
             meta_handle,
             schemas,
-            worker_handle,
             node_svc_client,
             schema_reader,
         }
@@ -59,11 +56,5 @@ impl<W> AdminServiceState<W> {
 
     pub fn schema_reader(&self) -> &FileMetaReader {
         &self.schema_reader
-    }
-}
-
-impl<W: Clone> AdminServiceState<W> {
-    pub fn worker_handle(&self) -> W {
-        self.worker_handle.clone()
     }
 }
