@@ -21,15 +21,18 @@ use tracing::{debug, info};
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_futures_util::command::{Command, UnboundedCommandReceiver, UnboundedCommandSender};
+use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};
 use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
-use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
+use restate_service_protocol::old_discovery::{DiscoverEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::retries::RetryPolicy;
 
 use restate_service_client::{Endpoint, ServiceClient};
+use restate_service_protocol::discovery;
+use restate_service_protocol::discovery::ComponentDiscovery;
 
 #[derive(Debug, Clone)]
 pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
@@ -62,8 +65,13 @@ impl ApplyMode {
 }
 
 enum MetaHandleRequest {
-    DiscoverDeployment {
+    OldDiscoverDeployment {
         deployment_endpoint: DiscoverEndpoint,
+        force: Force,
+        apply_changes: ApplyMode,
+    },
+    DiscoverDeployment {
+        deployment_endpoint: discovery::DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
     },
@@ -85,12 +93,18 @@ enum MetaHandleRequest {
     },
 }
 
-pub struct DiscoverDeploymentResponse {
+pub struct OldDiscoverDeploymentResponse {
     pub deployment: DeploymentId,
     pub services: Vec<ServiceMetadata>,
 }
 
+pub struct DiscoverDeploymentResponse {
+    pub deployment: DeploymentId,
+    pub components: Vec<ComponentMetadata>,
+}
+
 enum MetaHandleResponse {
+    OldDiscoverDeployment(Result<OldDiscoverDeploymentResponse, Error>),
     DiscoverDeployment(Result<DiscoverDeploymentResponse, Error>),
     ModifyService(Result<(), Error>),
     RemoveDeployment(Result<(), Error>),
@@ -99,9 +113,31 @@ enum MetaHandleResponse {
 }
 
 impl MetaHandle {
-    pub async fn register_deployment(
+    pub async fn old_register_deployment(
         &self,
         deployment_endpoint: DiscoverEndpoint,
+        force: Force,
+        apply_changes: ApplyMode,
+    ) -> Result<OldDiscoverDeploymentResponse, Error> {
+        let (cmd, response_tx) = Command::prepare(MetaHandleRequest::OldDiscoverDeployment {
+            deployment_endpoint,
+            force,
+            apply_changes,
+        });
+        self.0.send(cmd).map_err(|_e| Error::MetaClosed)?;
+        response_tx
+            .await
+            .map(|res| match res {
+                MetaHandleResponse::OldDiscoverDeployment(res) => res,
+                #[allow(unreachable_patterns)]
+                _ => panic!("Unexpected response message, this is a bug"),
+            })
+            .map_err(|_e| Error::MetaClosed)?
+    }
+
+    pub async fn register_deployment(
+        &self,
+        deployment_endpoint: discovery::DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
     ) -> Result<DiscoverDeploymentResponse, Error> {
@@ -196,7 +232,8 @@ impl MetaHandle {
 pub struct MetaService<Storage, SV> {
     schemas: Schemas,
 
-    service_discovery: ServiceDiscovery,
+    old_service_discovery: ServiceDiscovery,
+    component_discovery: ComponentDiscovery,
 
     storage: Storage,
     subscription_validator: SV,
@@ -223,7 +260,11 @@ where
 
         Self {
             schemas,
-            service_discovery: ServiceDiscovery::new(service_discovery_retry_policy, client),
+            old_service_discovery: ServiceDiscovery::new(
+                service_discovery_retry_policy.clone(),
+                client.clone(),
+            ),
+            component_discovery: ComponentDiscovery::new(service_discovery_retry_policy, client),
             storage,
             subscription_validator,
             handle: MetaHandle(api_cmd_tx),
@@ -263,6 +304,12 @@ where
                     let (req, mut replier) = cmd.expect("This channel should never be closed").into_inner();
 
                     let res = match req {
+                        MetaHandleRequest::OldDiscoverDeployment { deployment_endpoint, force, apply_changes } => MetaHandleResponse::OldDiscoverDeployment(
+                            self.old_discover_deployment(deployment_endpoint, force, apply_changes, replier.aborted()).await
+                                .map_err(|e| {
+                                    warn_it!(e); e
+                                })
+                        ),
                         MetaHandleRequest::DiscoverDeployment { deployment_endpoint, force, apply_changes } => MetaHandleResponse::DiscoverDeployment(
                             self.discover_deployment(deployment_endpoint, force, apply_changes, replier.aborted()).await
                                 .map_err(|e| {
@@ -313,9 +360,58 @@ where
         Ok(())
     }
 
-    async fn discover_deployment(
+    async fn old_discover_deployment(
         &mut self,
         endpoint: DiscoverEndpoint,
+        force: Force,
+        apply_changes: ApplyMode,
+        abort_signal: impl Future<Output = ()>,
+    ) -> Result<OldDiscoverDeploymentResponse, Error> {
+        debug!(restate.deployment.address = %endpoint.address(), "Discovering deployment");
+
+        let discovered_metadata = tokio::select! {
+            res = self.old_service_discovery.discover(&endpoint) => res,
+            _ = abort_signal => return Err(Error::RequestAborted),
+        }?;
+
+        let deployment_metadata = match endpoint.into_inner() {
+            (Endpoint::Http(uri, _), headers) => DeploymentMetadata::new_http(
+                uri.clone(),
+                discovered_metadata.protocol_type,
+                DeliveryOptions::new(headers),
+            ),
+            (Endpoint::Lambda(arn, assume_role_arn), headers) => {
+                DeploymentMetadata::new_lambda(arn, assume_role_arn, DeliveryOptions::new(headers))
+            }
+        };
+
+        // Compute the diff with the current state of Schemas
+        let schemas_update_commands = self.schemas.old_compute_new_deployment(
+            None, /* requested_deployment_id */
+            deployment_metadata,
+            discovered_metadata.services,
+            discovered_metadata.descriptor_pool,
+            force.force_enabled(),
+        )?;
+
+        // Compute the response
+        let discovery_response =
+            Self::old_infer_discovery_response_from_update_commands(&schemas_update_commands);
+
+        if apply_changes.should_apply() {
+            // Propagate updates
+            self.store_and_apply_updates(schemas_update_commands)
+                .await?;
+        } else {
+            debug!("Not applying schemas update commands because of dry-run mode");
+        }
+
+        Ok(discovery_response)
+    }
+
+    async fn discover_deployment(
+        &mut self,
+        endpoint: discovery::DiscoverEndpoint,
         force: Force,
         apply_changes: ApplyMode,
         abort_signal: impl Future<Output = ()>,
@@ -323,7 +419,7 @@ where
         debug!(restate.deployment.address = %endpoint.address(), "Discovering deployment");
 
         let discovered_metadata = tokio::select! {
-            res = self.service_discovery.discover(&endpoint) => res,
+            res = self.component_discovery.discover(&endpoint) => res,
             _ = abort_signal => return Err(Error::RequestAborted),
         }?;
 
@@ -342,8 +438,7 @@ where
         let schemas_update_commands = self.schemas.compute_new_deployment(
             None, /* requested_deployment_id */
             deployment_metadata,
-            discovered_metadata.services,
-            discovered_metadata.descriptor_pool,
+            discovered_metadata.components,
             force.force_enabled(),
         )?;
 
@@ -430,15 +525,37 @@ where
     fn infer_discovery_response_from_update_commands(
         commands: &[SchemasUpdateCommand],
     ) -> DiscoverDeploymentResponse {
+        let mut res = DiscoverDeploymentResponse {
+            deployment: Default::default(),
+            components: vec![],
+        };
         for schema_update_command in commands {
-            if let SchemasUpdateCommand::InsertDeployment {
+            match schema_update_command {
+                SchemasUpdateCommand::InsertDeployment { deployment_id, .. } => {
+                    res.deployment = *deployment_id
+                }
+                SchemasUpdateCommand::InsertComponent(cmd) => {
+                    res.components.push(cmd.as_component_metadata())
+                }
+                _ => {}
+            }
+        }
+
+        res
+    }
+
+    fn old_infer_discovery_response_from_update_commands(
+        commands: &[SchemasUpdateCommand],
+    ) -> OldDiscoverDeploymentResponse {
+        for schema_update_command in commands {
+            if let SchemasUpdateCommand::OldInsertDeployment {
                 deployment_id,
                 metadata: _,
                 services,
                 descriptor_pool,
             } = schema_update_command
             {
-                return DiscoverDeploymentResponse {
+                return OldDiscoverDeploymentResponse {
                     deployment: *deployment_id,
                     services: services
                         .iter()

@@ -348,6 +348,16 @@ pub mod component {
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub struct HandlerMetadata {
         pub name: String,
+
+        // # Human readable input description
+        //
+        // If empty, no schema was provided by the user at discovery time.
+        pub input_description: Option<String>,
+
+        // # Human readable output description
+        //
+        // If empty, no schema was provided by the user at discovery time.
+        pub output_description: Option<String>,
     }
 
     #[derive(Debug, Clone)]
@@ -449,6 +459,8 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
+                            input_description: None,
+                            output_description: None,
                         })
                         .collect(),
                     ty: ComponentType::Service,
@@ -468,6 +480,8 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
+                            input_description: None,
+                            output_description: None,
                         })
                         .collect(),
                     ty: ComponentType::VirtualObject,
@@ -808,6 +822,18 @@ pub mod subscription {
         Singleton,
     }
 
+    /// Specialized version of [super::component::ComponentType]
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum EventReceiverComponentType {
+        VirtualObject {
+            // If true, event.ordering_key is the key, otherwise event.key is the key
+            ordering_key_is_key: bool,
+        },
+        Service,
+    }
+
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -819,6 +845,11 @@ pub mod subscription {
             input_event_remap: Option<InputEventRemap>,
             instance_type: EventReceiverServiceInstanceType,
         },
+        Component {
+            name: String,
+            handler: String,
+            ty: EventReceiverComponentType,
+        },
     }
 
     impl fmt::Display for Sink {
@@ -826,6 +857,9 @@ pub mod subscription {
             match self {
                 Sink::Service { name, method, .. } => {
                     write!(f, "service://{}/{}", name, method)
+                }
+                Sink::Component { name, handler, .. } => {
+                    write!(f, "component://{}/{}", name, handler)
                 }
             }
         }
@@ -926,11 +960,10 @@ pub mod subscription {
                         topic: "my-topic".to_string(),
                         ordering_key_format: Default::default(),
                     },
-                    sink: Sink::Service {
+                    sink: Sink::Component {
                         name: "MySvc".to_string(),
-                        method: "MyMethod".to_string(),
-                        input_event_remap: None,
-                        instance_type: EventReceiverServiceInstanceType::Unkeyed,
+                        handler: "MyMethod".to_string(),
+                        ty: EventReceiverComponentType::Service,
                     },
                     metadata: Default::default(),
                 }

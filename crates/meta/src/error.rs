@@ -9,17 +9,24 @@
 // by the Apache License, Version 2.0.
 
 use restate_schema_impl::SchemasUpdateError;
-use restate_service_protocol::discovery::ServiceDiscoveryError;
+use restate_service_protocol::discovery::DiscoveryError;
+use restate_service_protocol::old_discovery::ServiceDiscoveryError;
 
 use crate::storage::{MetaReaderError, MetaStorageError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum Error {
     #[error(transparent)]
-    Discovery(
+    OldDiscovery(
         #[from]
         #[code]
         ServiceDiscoveryError,
+    ),
+    #[error(transparent)]
+    Discovery(
+        #[from]
+        #[code]
+        DiscoveryError,
     ),
     #[error(transparent)]
     #[code(unknown)]
