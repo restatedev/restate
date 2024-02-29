@@ -305,37 +305,55 @@ mod multi_input {
 mod target {
     use super::*;
 
-    pub fn new_sender_pipe_target<T>(
+    pub fn new_pipe_target<S, T, F, Fut>(
+        tx: S,
+        send_fn: F,
+        name: &'static str,
+    ) -> impl PipeTarget<T>
+    where
+        F: Fn(S, T) -> Fut,
+        Fut: Future<Output = Result<S, anyhow::Error>>,
+    {
+        SenderPipeTarget {
+            name,
+            send_fn,
+            state: SenderPipeTargetState::Idle(Some(tx)),
+        }
+    }
+
+    pub fn new_sender_pipe_target<T: Send + Sync + 'static>(
         tx: mpsc::Sender<T>,
         name: &'static str,
     ) -> impl PipeTarget<T> {
         SenderPipeTarget {
             name,
-            send_fn: |tx: mpsc::Sender<T>, t| async { tx.send(t).await.map(|_| tx) },
+            send_fn: |tx: mpsc::Sender<T>, t| async {
+                tx.send(t).await.map(|_| tx).map_err(Into::into)
+            },
             state: SenderPipeTargetState::Idle(Some(tx)),
         }
     }
 
     #[pin_project(project = SenderPipeTargetStateProj)]
-    enum SenderPipeTargetState<T, Fut> {
-        Idle(Option<mpsc::Sender<T>>),
+    enum SenderPipeTargetState<S, Fut> {
+        Idle(Option<S>),
         Sending(#[pin] Fut),
         Closed(PipeError),
     }
 
     #[pin_project]
-    struct SenderPipeTarget<T, SendFn, Fut> {
+    struct SenderPipeTarget<S, SendFn, Fut> {
         name: &'static str,
         send_fn: SendFn,
 
         #[pin]
-        state: SenderPipeTargetState<T, Fut>,
+        state: SenderPipeTargetState<S, Fut>,
     }
 
-    impl<T, SendFn, Fut> PipeTarget<T> for SenderPipeTarget<T, SendFn, Fut>
+    impl<S, SendFn, Fut, T> PipeTarget<T> for SenderPipeTarget<S, SendFn, Fut>
     where
-        SendFn: Fn(mpsc::Sender<T>, T) -> Fut,
-        Fut: Future<Output = Result<mpsc::Sender<T>, mpsc::error::SendError<T>>>,
+        SendFn: Fn(S, T) -> Fut,
+        Fut: Future<Output = Result<S, anyhow::Error>>,
     {
         fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), PipeError>> {
             let this = self.project();

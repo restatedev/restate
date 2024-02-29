@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use tracing::info;
 
 use restate_admin::service::AdminService;
-use restate_bifrost::{bifrost, with_bifrost};
+use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
@@ -63,7 +63,11 @@ impl AdminRole {
         self.meta.schema_reader()
     }
 
-    pub async fn start(mut self, _bootstrap_cluster: bool) -> Result<(), anyhow::Error> {
+    pub async fn start(
+        mut self,
+        _bootstrap_cluster: bool,
+        bifrost: Bifrost,
+    ) -> Result<(), anyhow::Error> {
         info!("Running admin role");
 
         // Init the meta. This will reload the schemas in memory.
@@ -96,7 +100,7 @@ impl AdminRole {
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            with_bifrost(self.admin.run(node_svc_client), bifrost()),
+            self.admin.run(node_svc_client, bifrost),
         )?;
 
         Ok(())

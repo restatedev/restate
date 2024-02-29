@@ -198,7 +198,6 @@ pub struct Worker {
     >,
     ingress_dispatcher_service: IngressDispatcherService,
     external_client_ingress: ExternalClientIngress,
-    network_ingress_sender: mpsc::Sender<Envelope>,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
     rocksdb_writer: RocksDBWriter,
@@ -252,7 +251,6 @@ impl Worker {
             Arc::new(partition_table),
             channel_size,
         );
-        let network_ingress_sender = network.create_ingress_sender();
 
         let consensus = Consensus::new(raft_in_rx, network.create_consensus_sender(), channel_size);
 
@@ -303,7 +301,6 @@ impl Worker {
             invoker,
             ingress_dispatcher_service,
             external_client_ingress,
-            network_ingress_sender,
             ingress_kafka,
             subscription_controller_handle,
             rocksdb_writer,
@@ -370,8 +367,7 @@ impl Worker {
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            self.ingress_dispatcher_service
-                .run(self.network_ingress_sender),
+            with_bifrost(self.ingress_dispatcher_service.run(), bifrost()),
         )?;
 
         // Ingress RPC server

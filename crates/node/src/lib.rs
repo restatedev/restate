@@ -261,10 +261,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                with_bifrost(
-                    admin_role.start(self.options.bootstrap_cluster),
-                    bifrost.clone(),
-                ),
+                admin_role.start(self.options.bootstrap_cluster, bifrost.clone()),
             )?;
         }
 

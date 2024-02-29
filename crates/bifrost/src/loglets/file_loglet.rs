@@ -22,6 +22,7 @@ pub fn default_config() -> serde_json::Value {
     json!( {"path": "target/logs/"})
 }
 
+#[derive(Debug)]
 pub struct FileLogletProvider {}
 
 impl FileLogletProvider {

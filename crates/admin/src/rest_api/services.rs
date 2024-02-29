@@ -15,12 +15,13 @@ use restate_meta_rest_model::services::*;
 use restate_pb::grpc::reflection::v1::FileDescriptorResponse;
 use restate_schema_api::service::ServiceMetadataResolver;
 
-use crate::rest_api::{append_command_to_log, notify_worker_about_schema_changes};
+use crate::rest_api::{create_envelope_header, notify_worker_about_schema_changes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
+use futures::TryFutureExt;
 use http::StatusCode;
 use okapi_operation::okapi::openapi3::MediaType;
 use okapi_operation::okapi::Map;
@@ -28,7 +29,7 @@ use okapi_operation::*;
 use prost::Message;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::{append_envelope_to, Command, Envelope};
 
 /// List services
 #[openapi(
@@ -124,6 +125,7 @@ pub async fn modify_service(
     )
 )]
 pub async fn modify_service_state(
+    State(mut state): State<AdminServiceState>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
@@ -144,7 +146,22 @@ pub async fn modify_service_state(
         version,
         state: new_state,
     };
-    append_command_to_log(partition_key, Command::PatchState(patch_state)).await?;
+
+    state
+        .task_center
+        .run_in_scope(
+            "modify_service_state",
+            None,
+            append_envelope_to(
+                &mut state.bifrost,
+                Envelope::new(
+                    create_envelope_header(partition_key),
+                    Command::PatchState(patch_state),
+                ),
+            )
+            .map_err(MetaApiError::Generic),
+        )
+        .await?;
 
     Ok(StatusCode::ACCEPTED)
 }

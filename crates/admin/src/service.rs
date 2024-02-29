@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
+use restate_bifrost::Bifrost;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
 
-use restate_core::cancellation_watcher;
+use restate_core::{cancellation_watcher, task_center};
 use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
@@ -47,12 +49,18 @@ impl AdminService {
         }
     }
 
-    pub async fn run(self, node_svc_client: NodeSvcClient<Channel>) -> anyhow::Result<()> {
+    pub async fn run(
+        self,
+        node_svc_client: NodeSvcClient<Channel>,
+        bifrost: Bifrost,
+    ) -> anyhow::Result<()> {
         let rest_state = state::AdminServiceState::new(
             self.meta_handle,
             self.schemas,
             node_svc_client.clone(),
             self.schema_reader,
+            bifrost,
+            task_center(),
         );
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });

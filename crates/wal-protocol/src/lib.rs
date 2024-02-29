@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use assert2::let_assert;
 use bytes::Bytes;
+use restate_bifrost::{bifrost, Bifrost};
+use restate_core::metadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
@@ -20,6 +21,8 @@ use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerValue;
 use restate_types::dedup::DedupInformation;
+use restate_types::logs::{LogId, Payload};
+use restate_types::partition_table::FindPartition;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub mod control;
@@ -163,10 +166,27 @@ impl Command {
 
 impl WithPartitionKey for Envelope {
     fn partition_key(&self) -> PartitionKey {
-        let_assert!(
-            Destination::Processor { partition_key, .. } = &self.header.dest,
-            "envelopes are only targeted to partition processors"
-        );
-        *partition_key
+        match self.header.dest {
+            Destination::Processor { partition_key, .. } => partition_key,
+        }
     }
+}
+
+pub async fn append_envelope_to_log(envelope: Envelope) -> Result<(), anyhow::Error> {
+    append_envelope_to(&mut bifrost(), envelope).await
+}
+
+pub async fn append_envelope_to(
+    bifrost: &mut Bifrost,
+    envelope: Envelope,
+) -> Result<(), anyhow::Error> {
+    let partition_id = metadata()
+        .partition_table()
+        .find_partition_id(envelope.partition_key())?;
+
+    let log_id = LogId::from(partition_id);
+    let payload = Payload::from(envelope.encode_with_bincode()?);
+    bifrost.append(log_id, payload).await?;
+
+    Ok(())
 }

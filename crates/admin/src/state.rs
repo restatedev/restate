@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 //
 
+use restate_bifrost::Bifrost;
+use restate_core::TaskCenter;
 use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
@@ -20,6 +22,8 @@ pub struct AdminServiceState {
     schemas: Schemas,
     node_svc_client: NodeSvcClient<Channel>,
     schema_reader: FileMetaReader,
+    pub bifrost: Bifrost,
+    pub task_center: TaskCenter,
 }
 
 #[derive(Clone)]
@@ -33,12 +37,16 @@ impl AdminServiceState {
         schemas: Schemas,
         node_svc_client: NodeSvcClient<Channel>,
         schema_reader: FileMetaReader,
+        bifrost: Bifrost,
+        task_center: TaskCenter,
     ) -> Self {
         Self {
             meta_handle,
             schemas,
             node_svc_client,
             schema_reader,
+            bifrost,
+            task_center,
         }
     }
 

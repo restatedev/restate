@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+anyhow = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
 thiserror = { workspace = true }

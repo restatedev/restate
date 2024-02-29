@@ -10,13 +10,15 @@
 
 use super::error::*;
 
-use crate::rest_api::append_command_to_log;
-use axum::extract::{Path, Query};
+use crate::rest_api::create_envelope_header;
+use crate::state::AdminServiceState;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use futures::TryFutureExt;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::{append_envelope_to, Command, Envelope};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -66,6 +68,7 @@ pub struct DeleteInvocationParams {
     )
 )]
 pub async fn delete_invocation(
+    State(mut state): State<AdminServiceState>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -79,11 +82,22 @@ pub async fn delete_invocation(
     };
 
     let partition_key = invocation_termination.maybe_fid.partition_key();
-    append_command_to_log(
-        partition_key,
-        Command::TerminateInvocation(invocation_termination),
-    )
-    .await?;
+
+    state
+        .task_center
+        .run_in_scope(
+            "delete_invocation",
+            None,
+            append_envelope_to(
+                &mut state.bifrost,
+                Envelope::new(
+                    create_envelope_header(partition_key),
+                    Command::TerminateInvocation(invocation_termination),
+                ),
+            )
+            .map_err(MetaApiError::Generic),
+        )
+        .await?;
 
     Ok(StatusCode::ACCEPTED)
 }

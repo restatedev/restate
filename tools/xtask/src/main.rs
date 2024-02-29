@@ -10,6 +10,7 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
@@ -96,15 +97,18 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         admin_options.build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
     meta.init().await.unwrap();
 
+    let bifrost = Bifrost::new_in_memory(1).await;
+
     // We start the Meta component, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     node_env.tc.spawn(
         TaskKind::TestRunner,
         "doc-gen",
         None,
-        admin_service.run(NodeSvcClient::new(
-            Channel::builder(Uri::default()).connect_lazy(),
-        )),
+        admin_service.run(
+            NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
+            bifrost,
+        ),
     )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)

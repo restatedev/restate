@@ -10,19 +10,22 @@
 
 use super::*;
 
+use assert2::let_assert;
 use bytes::{BufMut, BytesMut};
 use prost::Message;
 use restate_core::cancellation_watcher;
 use restate_futures_util::pipe::{
-    new_sender_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
+    new_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
     UnboundedReceiverPipeInput,
 };
 use restate_pb::restate::internal::{
     idempotent_invoke_response, IdempotentInvokeRequest, IdempotentInvokeResponse,
 };
+use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
 use restate_types::GenerationalNodeId;
+use restate_wal_protocol::append_envelope_to_log;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -65,7 +68,7 @@ impl Service {
         }
     }
 
-    pub async fn run(self, output_tx: mpsc::Sender<Envelope>) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         debug!("Running the ResponseDispatcher");
         let my_node_id = metadata().my_node_id();
 
@@ -83,7 +86,11 @@ impl Service {
                 ReceiverPipeInput::new(input_rx, "network input rx"),
                 UnboundedReceiverPipeInput::new(server_rx, "ingress rx"),
             ),
-            new_sender_pipe_target(output_tx.clone(), "network output tx"),
+            new_pipe_target(
+                (),
+                |_, envelope| append_envelope_to_log(envelope),
+                "bifrost output",
+            ),
         );
 
         tokio::pin!(pipe);
@@ -101,9 +108,22 @@ impl Service {
                         Either::Left(ingress_input) => {
                             handler.handle_network_input(ingress_input);
                         },
-                        Either::Right(invocation_or_response) => pipe.as_mut().write(
-                            handler.handle_ingress_command(invocation_or_response)
-                        )?
+                        Either::Right(invocation_or_response) => {
+                            let (envelope, message_index) = handler.handle_ingress_command(invocation_or_response);
+                            let_assert!(Destination::Processor { dedup, .. } = &envelope.header.dest);
+
+                            let ack = if let Some(dedup) = dedup {
+                                let_assert!(ProducerId::Other(producer_id) = &dedup.producer_id);
+                                let_assert!(DedupSequenceNumber::Sn(sn) = dedup.sequence_number);
+                                IngressDispatcherInput::DedupMessageAck(producer_id.clone().into(), sn)
+                            } else {
+                                IngressDispatcherInput::MessageAck(message_index)
+                            };
+
+                            pipe.as_mut().write(envelope)?;
+
+                            handler.handle_network_input(ack);
+                        }
                     }
                 }
             }
@@ -234,7 +254,10 @@ impl DispatcherLoopHandler {
         }
     }
 
-    fn handle_ingress_command(&mut self, ingress_request: IngressRequest) -> Envelope {
+    fn handle_ingress_command(
+        &mut self,
+        ingress_request: IngressRequest,
+    ) -> (Envelope, MessageIndex) {
         let IngressRequest {
             fid,
             method_name,
@@ -320,10 +343,13 @@ impl DispatcherLoopHandler {
             }
         };
 
-        wrap_service_invocation_in_envelope(
-            service_invocation,
-            self.my_node_id,
-            dedup_source,
+        (
+            wrap_service_invocation_in_envelope(
+                service_invocation,
+                self.my_node_id,
+                dedup_source,
+                msg_index,
+            ),
             msg_index,
         )
     }
@@ -340,6 +366,7 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
+    use restate_bifrost::{with_bifrost, Bifrost};
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
     use test_log::test;
@@ -347,26 +374,36 @@ mod tests {
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::ServiceId;
     use restate_types::invocation::{ResponseResult, SpanRelation};
+    use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::partition_table::{FindPartition, FixedPartitionTable};
+    use restate_types::Version;
 
     #[test(tokio::test)]
-    async fn test_closed_handler() {
+    async fn test_closed_handler() -> anyhow::Result<()> {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
-        let (output_tx, _output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher = Service::new(1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
         let command_sender = ingress_dispatcher.create_ingress_request_sender();
 
+        let num_partitions = 64;
+        node_env
+            .metadata_writer
+            .update(FixedPartitionTable::new(Version::MIN, num_partitions))
+            .await?;
+
+        let bifrost = tc
+            .run_in_scope("init bifrost", None, Bifrost::new_in_memory(num_partitions))
+            .await;
+
         // Start the dispatcher loop
-        let dispatcher_task = tc
-            .spawn(
-                TaskKind::SystemService,
-                "ingress-dispatcher",
-                None,
-                ingress_dispatcher.run(output_tx),
-            )
-            .unwrap();
+        let dispatcher_task = tc.spawn(
+            TaskKind::SystemService,
+            "ingress-dispatcher",
+            None,
+            with_bifrost(ingress_dispatcher.run(), bifrost),
+        )?;
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
@@ -377,7 +414,7 @@ mod tests {
             SpanRelation::None,
             IdempotencyMode::None,
         );
-        command_sender.send(invocation).unwrap();
+        command_sender.send(invocation)?;
         drop(response_rx);
 
         // Now let's send the response
@@ -387,31 +424,41 @@ mod tests {
                 response: ResponseResult::Success(Bytes::new()),
                 target_node: GenerationalNodeId::new(0, 0),
             }))
-            .await
-            .unwrap();
+            .await?;
 
         // Close and check it did not panic
-        tc.cancel_task(dispatcher_task).unwrap().await.unwrap()
+        tc.cancel_task(dispatcher_task).unwrap().await?;
+
+        Ok(())
     }
 
     #[test(tokio::test)]
-    async fn idempotent_invoke() {
+    async fn idempotent_invoke() -> anyhow::Result<()> {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
-        let (output_tx, mut output_rx) = mpsc::channel(2);
 
         let ingress_dispatcher = Service::new(1);
         let handler_tx = ingress_dispatcher.create_ingress_request_sender();
         let network_tx = ingress_dispatcher.create_ingress_dispatcher_input_sender();
+
+        // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
+        let num_partitions = 1;
+        node_env
+            .metadata_writer
+            .update(FixedPartitionTable::new(Version::MIN, num_partitions))
+            .await?;
+
+        let bifrost = tc
+            .run_in_scope("init bifrost", None, Bifrost::new_in_memory(num_partitions))
+            .await;
 
         // Start the dispatcher loop
         tc.spawn(
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            ingress_dispatcher.run(output_tx),
-        )
-        .unwrap();
+            with_bifrost(ingress_dispatcher.run(), bifrost.clone()),
+        )?;
 
         // Ask for a response, then drop the receiver
         let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
@@ -424,10 +471,18 @@ mod tests {
             SpanRelation::None,
             IdempotencyMode::key(idempotency_key.clone(), None),
         );
-        handler_tx.send(invocation).unwrap();
+        handler_tx.send(invocation)?;
 
         // Let's check we correct have a response
-        let output_message = output_rx.recv().await.unwrap();
+        let partition_id = node_env
+            .metadata
+            .partition_table()
+            .find_partition_id(fid.partition_key())?;
+        let log_id = LogId::from(partition_id);
+        let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
+
+        let output_message =
+            Envelope::decode_with_bincode(log_record.record.payload().unwrap().as_ref())?;
 
         let_assert!(
             Envelope {
@@ -474,15 +529,16 @@ mod tests {
                 ),
                 target_node: GenerationalNodeId::new(0, 0),
             }))
-            .await
-            .unwrap();
+            .await?;
 
         assert_that!(
-            res.await.unwrap(),
+            res.await?,
             pat!(ExpiringIngressResponse {
                 idempotency_expiry_time: some(eq(expiry_time)),
                 result: ok(eq(response))
             })
         );
+
+        Ok(())
     }
 }

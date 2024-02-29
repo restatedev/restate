@@ -13,6 +13,8 @@ serde = ["dep:serde", "dep:bincode", "enum-map/serde", "bytestring/serde", "rest
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-bifrost = { workspace = true }
+restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }

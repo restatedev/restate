@@ -134,7 +134,7 @@ where
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
         let mut log_reader = LogReader::new(
             LogId::from(partition_id),
-            last_applied_lsn.unwrap_or(Lsn::OLDEST),
+            last_applied_lsn.unwrap_or(Lsn::INVALID),
         );
 
         let mut action_collector = ActionCollector::with_capacity(128);

@@ -5008,6 +5008,7 @@ dependencies = [
 name = "restate-futures-util"
 version = "0.9.0"
 dependencies = [
+ "anyhow",
  "futures",
  "pin-project",
  "restate-test-util",
@@ -5023,11 +5024,13 @@ name = "restate-ingress-dispatcher"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "assert2",
  "bytes",
  "bytestring",
  "drain",
  "googletest",
  "prost 0.12.3",
+ "restate-bifrost",
  "restate-core",
  "restate-futures-util",
  "restate-pb",
@@ -5846,6 +5849,8 @@ dependencies = [
  "enum-map",
  "googletest",
  "once_cell",
+ "restate-bifrost",
+ "restate-core",
  "restate-invoker-api",
  "restate-storage-api",
  "restate-test-util",
