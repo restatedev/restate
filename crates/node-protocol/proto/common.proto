@@ -13,8 +13,7 @@ package dev.restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  BASIC_HANDSHAKE = 1;
-  MAX_PROTOCOL_VERSION = 2;
+  BINCODED = 1;
 }
 
 message NodeId {

@@ -22,8 +22,8 @@ use crate::rest_api::error::MetaApiError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_meta::{FileMetaReader, MetaReader};
-use restate_node_services::node::node_svc_client::NodeSvcClient;
-use restate_node_services::node::UpdateSchemaRequest;
+use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_node_services::node_svc::UpdateSchemaRequest;
 use tonic::transport::Channel;
 use tracing::debug;
 

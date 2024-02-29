@@ -13,10 +13,11 @@ use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use restate_core::{metadata, TaskCenter};
-use restate_node_services::node::node_svc_server::NodeSvc;
-use restate_node_services::node::{
-    IdentResponse, NodeStatus, StateMutationRequest, StorageQueryRequest, StorageQueryResponse,
-    TerminationRequest, UpdateSchemaRequest,
+use restate_node_services::node_svc::node_svc_server::NodeSvc;
+use restate_node_services::node_svc::{IdentResponse, NodeStatus};
+use restate_node_services::node_svc::{
+    StateMutationRequest, StorageQueryRequest, StorageQueryResponse, TerminationRequest,
+    UpdateSchemaRequest,
 };
 use restate_schema_impl::SchemasUpdateCommand;
 use restate_worker_api::Handle;
