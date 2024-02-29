@@ -66,6 +66,8 @@ pub enum TaskKind {
     SystemService,
     Ingress,
     PartitionProcessor,
+    #[strum(props(OnError = "log"))]
+    ConnectionReactor,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system
     /// shutdown on errors and the system will wait for its graceful cancellation on shutdown.
