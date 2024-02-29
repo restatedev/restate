@@ -26,7 +26,7 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
-use restate_network::{PartitionProcessorSender, UnboundedNetworkHandle};
+use restate_network::{Networking, PartitionProcessorSender, UnboundedNetworkHandle};
 use restate_schema_impl::Schemas;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
@@ -35,6 +35,7 @@ use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::debug;
 use util::IdentitySender;
@@ -163,9 +164,13 @@ impl Options {
         &self.storage_rocksdb.path
     }
 
-    pub fn build(self, schemas: Schemas) -> Result<Worker, BuildError> {
+    pub fn build(
+        self,
+        networking: Arc<Networking>,
+        schemas: Schemas,
+    ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
-        Worker::new(self, schemas)
+        Worker::new(self, networking, schemas)
     }
 }
 
@@ -194,6 +199,7 @@ impl Error {
 pub struct Worker {
     consensus: Consensus<PartitionProcessorCommand>,
     processors: Vec<PartitionProcessor>,
+    networking: Arc<Networking>,
     network: network_integration::Network,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
@@ -214,7 +220,11 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(opts: Options, schemas: Schemas) -> Result<Self, BuildError> {
+    pub fn new(
+        opts: Options,
+        networking: Arc<Networking>,
+        schemas: Schemas,
+    ) -> Result<Self, BuildError> {
         let Options {
             channel_size,
             ingress_grpc,
@@ -315,6 +325,7 @@ impl Worker {
         Ok(Self {
             consensus,
             processors,
+            networking,
             network,
             storage_query_context,
             storage_query_postgres,
@@ -418,7 +429,7 @@ impl Worker {
         // Networking
         tc.spawn_child(
             TaskKind::SystemService,
-            "networking",
+            "networking-legacy",
             None,
             self.network.run(),
         )?;
@@ -449,11 +460,12 @@ impl Worker {
 
         // Create partition processors
         for processor in self.processors {
+            let networking = self.networking.clone();
             tc.spawn_child(
                 TaskKind::PartitionProcessor,
                 "partition-processor",
                 Some(processor.partition_id),
-                processor.run(),
+                processor.run(networking),
             )?;
         }
 

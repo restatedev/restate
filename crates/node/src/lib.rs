@@ -16,9 +16,11 @@ pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
+use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
 use std::ops::Deref;
+use std::sync::Arc;
 
 use anyhow::bail;
 use codederror::CodedError;
@@ -83,16 +85,19 @@ impl Node {
             }
         }
 
-        let metadata_manager = MetadataManager::build();
+        let networking = Arc::new(Networking::default());
+        let metadata_manager = MetadataManager::build(networking.clone());
+        // Metadata manager subscribes to sync and update metadata messages.
+        networking.set_metadata_manager_subscriber(metadata_manager.network_inbound_sender());
 
         let admin_role = if options.roles.contains(Role::Admin) {
-            Some(AdminRole::try_from(options.clone())?)
+            Some(AdminRole::new(options.clone(), networking.clone())?)
         } else {
             None
         };
 
         let worker_role = if options.roles.contains(Role::Worker) {
-            Some(WorkerRole::try_from(options.clone())?)
+            Some(WorkerRole::new(options.clone(), networking.clone())?)
         } else {
             None
         };
