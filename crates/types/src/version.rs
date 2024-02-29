@@ -29,10 +29,22 @@ pub struct Version(u32);
 impl Version {
     pub const INVALID: Version = Version(0);
     pub const MIN: Version = Version(1);
+
+    pub fn next(self) -> Self {
+        Version(self.0 + 1)
+    }
 }
 
 impl Default for Version {
     fn default() -> Self {
         Self::MIN
     }
+}
+
+pub trait Versioned {
+    /// Returns the version of the versioned value
+    fn version(&self) -> Version;
+
+    /// Increments the version of the versioned value
+    fn increment_version(&mut self);
 }

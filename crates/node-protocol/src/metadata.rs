@@ -10,6 +10,7 @@
 
 use enum_map::Enum;
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
@@ -37,6 +38,7 @@ pub enum MetadataKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
+    PartitionTable(FixedPartitionTable),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +56,7 @@ impl MetadataContainer {
     pub fn kind(&self) -> MetadataKind {
         match self {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
+            MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
         }
     }
 }
@@ -61,5 +64,11 @@ impl MetadataContainer {
 impl From<NodesConfiguration> for MetadataContainer {
     fn from(value: NodesConfiguration) -> Self {
         MetadataContainer::NodesConfiguration(value)
+    }
+}
+
+impl From<FixedPartitionTable> for MetadataContainer {
+    fn from(value: FixedPartitionTable) -> Self {
+        MetadataContainer::PartitionTable(value)
     }
 }

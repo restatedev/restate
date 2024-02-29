@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_errors::NotRunningError;
-use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
-use std::fmt::Debug;
+use restate_types::identifiers::PeerId;
 use std::future::Future;
 use tokio::sync::mpsc;
 
@@ -66,15 +65,4 @@ pub enum ShuffleOrIngressTarget<S, I> {
 pub trait TargetShuffleOrIngress<S, I> {
     /// Returns the target of a message. It can either be a shuffle or an ingress.
     fn into_target(self) -> ShuffleOrIngressTarget<S, I>;
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("Cannot find target peer for partition key {0}")]
-pub struct PartitionTableError(PartitionKey);
-
-pub trait FindPartition {
-    fn find_partition_id(
-        &self,
-        partition_key: PartitionKey,
-    ) -> Result<PartitionId, PartitionTableError>;
 }

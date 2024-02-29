@@ -20,11 +20,11 @@ use arc_swap::ArcSwapOption;
 use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
+use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 use restate_node_protocol::{MetadataContainer, MetadataKind};
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version};
-
-use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 /// The kind of versioned metadata that can be synchronized across nodes.
 
@@ -59,6 +59,20 @@ impl Metadata {
         }
     }
 
+    /// Panics if partition table is not loaded yet.
+    pub fn partition_table(&self) -> Arc<FixedPartitionTable> {
+        self.inner.partition_table.load_full().unwrap()
+    }
+
+    /// Returns Version::INVALID if nodes configuration has not been loaded yet.
+    pub fn partition_table_version(&self) -> Version {
+        let c = self.inner.partition_table.load();
+        match c.as_deref() {
+            Some(c) => c.version(),
+            None => Version::INVALID,
+        }
+    }
+
     // Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
@@ -83,6 +97,7 @@ impl Metadata {
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: ArcSwapOption<NodesConfiguration>,
+    partition_table: ArcSwapOption<FixedPartitionTable>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 

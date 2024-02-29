@@ -29,6 +29,7 @@ use tracing::{error, info};
 use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
@@ -176,6 +177,14 @@ impl Node {
             // Not supported at the moment
             bail!("Only cluster bootstrap mode is supported at the moment");
         }
+
+        // Update the partition table. Currently, only setting a single version is supported
+        metadata_writer
+            .update(FixedPartitionTable::new(
+                Version::MIN,
+                self.options.worker.partitions,
+            ))
+            .await?;
 
         let nodes_config = metadata.nodes_config();
         // Find my node in nodes configuration.

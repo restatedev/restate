@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use arc_swap::ArcSwapOption;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -15,7 +16,6 @@ use restate_node_protocol::MessageEnvelope;
 use restate_node_protocol::MetadataUpdate;
 use restate_node_protocol::NetworkMessage;
 use restate_types::GenerationalNodeId;
-use restate_types::Version;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::debug;
@@ -25,6 +25,8 @@ use crate::cancellation_watcher;
 use crate::network_sender::NetworkSender;
 use crate::task_center;
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::FixedPartitionTable;
+use restate_types::{Version, Versioned};
 
 use super::Metadata;
 use super::MetadataContainer;
@@ -142,8 +144,15 @@ impl MetadataManager {
     fn update_metadata(&mut self, value: MetadataContainer, callback: Option<oneshot::Sender<()>>) {
         match value {
             MetadataContainer::NodesConfiguration(config) => {
-                self.update_nodes_configuration(config, callback);
+                self.update_nodes_configuration(config);
             }
+            MetadataContainer::PartitionTable(partition_table) => {
+                self.update_partition_table(partition_table);
+            }
+        }
+
+        if let Some(callback) = callback {
+            let _ = callback.send(());
         }
     }
 
@@ -203,47 +212,52 @@ impl MetadataManager {
         );
     }
 
-    fn update_nodes_configuration(
-        &mut self,
-        config: NodesConfiguration,
-        callback: Option<oneshot::Sender<()>>,
-    ) {
-        let inner = &self.inner;
-        let current = inner.nodes_config.load();
-        let mut maybe_new_version = config.version();
-        match current.as_deref() {
+    fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
+        let maybe_new_version = Self::update_internal(&self.inner.nodes_config, config);
+
+        self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
+    }
+
+    fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
+        let maybe_new_version = Self::update_internal(&self.inner.partition_table, partition_table);
+
+        self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
+    }
+
+    fn update_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
+        let current_value = container.load();
+        let mut maybe_new_version = new_value.version();
+        match current_value.as_deref() {
             None => {
-                inner.nodes_config.store(Some(Arc::new(config)));
+                container.store(Some(Arc::new(new_value)));
             }
-            Some(current) if config.version() > current.version() => {
-                inner.nodes_config.store(Some(Arc::new(config)));
+            Some(current_value) if new_value.version() > current_value.version() => {
+                container.store(Some(Arc::new(new_value)));
             }
-            Some(current) => {
+            Some(current_value) => {
                 /* Do nothing, current is already newer */
                 debug!(
-                    "Ignoring nodes config update {} because we are at {}",
-                    config.version(),
-                    current.version(),
+                    "Ignoring update {} because we are at {}",
+                    new_value.version(),
+                    current_value.version(),
                 );
-                maybe_new_version = current.version();
+                maybe_new_version = current_value.version();
             }
         }
 
-        if let Some(callback) = callback {
-            let _ = callback.send(());
-        }
+        maybe_new_version
+    }
 
+    fn notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
         // notify watches.
-        self.inner.write_watches[MetadataKind::NodesConfiguration]
-            .sender
-            .send_if_modified(|v| {
-                if maybe_new_version > *v {
-                    *v = maybe_new_version;
-                    true
-                } else {
-                    false
-                }
-            });
+        self.inner.write_watches[kind].sender.send_if_modified(|v| {
+            if maybe_new_version > *v {
+                *v = maybe_new_version;
+                true
+            } else {
+                false
+            }
+        });
     }
 }
 
@@ -278,31 +292,50 @@ mod tests {
 
     #[tokio::test]
     async fn test_nodes_config_updates() -> Result<()> {
+        test_updates(
+            create_mock_nodes_config(),
+            MetadataKind::NodesConfiguration,
+            |metadata| metadata.nodes_config_version(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_partition_table_updates() -> Result<()> {
+        test_updates(
+            FixedPartitionTable::new(Version::MIN, 42),
+            MetadataKind::PartitionTable,
+            |metadata| metadata.partition_table_version(),
+        )
+        .await
+    }
+
+    async fn test_updates<T, F>(value: T, kind: MetadataKind, config_version: F) -> Result<()>
+    where
+        T: Into<MetadataContainer> + Versioned + Clone,
+        F: Fn(&Metadata) -> Version,
+    {
         let network_sender = Arc::new(MockNetworkSender);
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
         let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 
-        assert_eq!(Version::INVALID, metadata.nodes_config_version());
+        assert_eq!(Version::INVALID, config_version(&metadata));
 
-        let nodes_config = create_mock_nodes_config();
-        assert_eq!(Version::MIN, nodes_config.version());
+        assert_eq!(Version::MIN, value.version());
         // updates happening before metadata manager start should not get lost.
-        metadata_writer.submit(nodes_config.clone());
+        metadata_writer.submit(value.clone());
 
         // start metadata manager
         spawn_metadata_manager(&tc, metadata_manager)?;
 
-        let version = metadata
-            .wait_for_version(MetadataKind::NodesConfiguration, Version::MIN)
-            .await
-            .unwrap();
+        let version = metadata.wait_for_version(kind, Version::MIN).await.unwrap();
         assert_eq!(Version::MIN, version);
 
         // Wait should not block if waiting older version
         let version2 = metadata
-            .wait_for_version(MetadataKind::NodesConfiguration, Version::INVALID)
+            .wait_for_version(kind, Version::INVALID)
             .await
             .unwrap();
         assert_eq!(version, version2);
@@ -312,21 +345,19 @@ mod tests {
             let metadata = metadata.clone();
             let updated = Arc::clone(&updated);
             async move {
-                let _ = metadata
-                    .wait_for_version(MetadataKind::NodesConfiguration, Version::from(3))
-                    .await;
+                let _ = metadata.wait_for_version(kind, Version::from(3)).await;
                 updated.store(true, Ordering::Release);
             }
         });
 
         // let's bump the version a couple of times.
-        let mut nodes_config = nodes_config.clone();
-        nodes_config.increment_version();
-        nodes_config.increment_version();
-        nodes_config.increment_version();
-        nodes_config.increment_version();
+        let mut value = value.clone();
+        value.increment_version();
+        value.increment_version();
+        value.increment_version();
+        value.increment_version();
 
-        metadata_writer.update(nodes_config).await?;
+        metadata_writer.update(value).await?;
         assert_eq!(true, updated.load(Ordering::Acquire));
 
         tc.cancel_tasks(None, None).await;
@@ -334,42 +365,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watchers() -> Result<()> {
+    async fn test_nodes_config_watchers() -> Result<()> {
+        test_watchers(
+            create_mock_nodes_config(),
+            MetadataKind::NodesConfiguration,
+            |metadata| metadata.nodes_config_version(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_partition_table_watchers() -> Result<()> {
+        test_watchers(
+            FixedPartitionTable::new(Version::MIN, 42),
+            MetadataKind::PartitionTable,
+            |metadata| metadata.partition_table_version(),
+        )
+        .await
+    }
+
+    async fn test_watchers<T, F>(value: T, kind: MetadataKind, config_version: F) -> Result<()>
+    where
+        T: Into<MetadataContainer> + Versioned + Clone,
+        F: Fn(&Metadata) -> Version,
+    {
         let network_sender = Arc::new(MockNetworkSender);
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
         let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 
-        assert_eq!(Version::INVALID, metadata.nodes_config_version());
+        assert_eq!(Version::INVALID, config_version(&metadata));
 
-        let nodes_config = create_mock_nodes_config();
-        assert_eq!(Version::MIN, nodes_config.version());
+        assert_eq!(Version::MIN, value.version());
 
         // start metadata manager
         spawn_metadata_manager(&tc, metadata_manager)?;
 
-        let mut watcher1 = metadata.watch(MetadataKind::NodesConfiguration);
+        let mut watcher1 = metadata.watch(kind);
         assert_eq!(Version::INVALID, *watcher1.borrow());
-        let mut watcher2 = metadata.watch(MetadataKind::NodesConfiguration);
+        let mut watcher2 = metadata.watch(kind);
         assert_eq!(Version::INVALID, *watcher2.borrow());
 
-        metadata_writer.update(nodes_config.clone()).await?;
+        metadata_writer.update(value.clone()).await?;
         watcher1.changed().await?;
 
         assert_eq!(Version::MIN, *watcher1.borrow());
         assert_eq!(Version::MIN, *watcher2.borrow());
 
         // let's push multiple updates
-        let mut nodes_config = nodes_config.clone();
-        nodes_config.increment_version();
-        metadata_writer.update(nodes_config.clone()).await?;
-        nodes_config.increment_version();
-        metadata_writer.update(nodes_config.clone()).await?;
-        nodes_config.increment_version();
-        metadata_writer.update(nodes_config.clone()).await?;
-        nodes_config.increment_version();
-        metadata_writer.update(nodes_config.clone()).await?;
+        let mut value = value.clone();
+        value.increment_version();
+        metadata_writer.update(value.clone()).await?;
+        value.increment_version();
+        metadata_writer.update(value.clone()).await?;
+        value.increment_version();
+        metadata_writer.update(value.clone()).await?;
+        value.increment_version();
+        metadata_writer.update(value.clone()).await?;
 
         // Watcher sees the latest value only.
         watcher2.changed().await?;

@@ -11,11 +11,11 @@
 //! todo: This service can probably be removed once the admin service can directly write into target partitions
 
 use crate::subscription_integration::SubscriptionControllerHandle;
-use restate_core::cancellation_watcher;
-use restate_network::PartitionTableError;
-use restate_types::identifiers::{PartitionKey, WithPartitionKey};
+use restate_core::{cancellation_watcher, metadata};
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
 use restate_types::message::PartitionTarget;
+use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 use tokio::sync::mpsc;
@@ -72,24 +72,19 @@ pub enum Error {
     PartitionNotFound(#[from] PartitionTableError),
 }
 
-pub(crate) struct Services<PartitionTable> {
+pub(crate) struct Services {
     command_rx: mpsc::Receiver<WorkerCommand>,
 
     consensus_writer: ConsensusWriter,
-    partition_table: PartitionTable,
 
     command_tx: WorkerCommandSender,
     subscription_controller_handle: SubscriptionControllerHandle,
 }
 
-impl<PartitionTable> Services<PartitionTable>
-where
-    PartitionTable: restate_network::FindPartition,
-{
+impl Services {
     pub(crate) fn new(
         consensus_writer: ConsensusWriter,
         subscription_controller_handle: SubscriptionControllerHandle,
-        partition_table: PartitionTable,
         channel_size: usize,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(channel_size);
@@ -99,7 +94,6 @@ where
             command_tx: WorkerCommandSender::new(command_tx),
             subscription_controller_handle,
             consensus_writer,
-            partition_table,
         }
     }
 
@@ -115,7 +109,6 @@ where
         let Self {
             mut command_rx,
             consensus_writer,
-            partition_table,
             ..
         } = self;
 
@@ -134,14 +127,14 @@ where
                     match command {
                         WorkerCommand::ExternalStateMutation(mutation) => {
                             let partition_key = mutation.service_id.partition_key();
-                            let partition_id = partition_table.find_partition_id(partition_key)?;
+                            let partition_id = Self::find_partition_id(partition_key)?;
                             let header = create_header(partition_key);
                             let envelope = Envelope::new(header, Command::PatchState(mutation));
                             consensus_writer.send((partition_id, envelope)).await.map_err(|_| Error::ConsensusClosed)?
                         },
                         WorkerCommand::TerminateInvocation(invocation_termination) => {
                             let partition_key = invocation_termination.maybe_fid.partition_key();
-                            let partition_id = partition_table.find_partition_id(partition_key)?;
+                            let partition_id = Self::find_partition_id(partition_key)?;
 
                             let header = create_header(partition_key);
                             let envelope = Envelope::new(header, Command::TerminateInvocation(invocation_termination));
@@ -153,6 +146,12 @@ where
         }
 
         Ok(())
+    }
+
+    fn find_partition_id(partition_key: PartitionKey) -> Result<PartitionId, PartitionTableError> {
+        metadata()
+            .partition_table()
+            .find_partition_id(partition_key)
     }
 }
 
