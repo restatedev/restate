@@ -19,7 +19,7 @@ use restate_core::metadata;
 use restate_network::Networking;
 use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBTransaction};
-use restate_types::identifiers::{PartitionId, PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
@@ -49,7 +49,6 @@ use restate_wal_protocol::control::AnnounceLeader;
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
-    peer_id: PeerId,
     pub partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
 
@@ -76,7 +75,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
-        peer_id: PeerId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
@@ -88,7 +86,6 @@ where
         ingress_tx: IngressDispatcherInputSender,
     ) -> Self {
         Self {
-            peer_id,
             partition_id,
             partition_key_range,
             timer_service_options,
@@ -102,10 +99,9 @@ where
         }
     }
 
-    #[instrument(level = "trace", skip_all, fields(peer_id = %self.peer_id, partition_id = %self.partition_id))]
+    #[instrument(level = "trace", skip_all, fields(partition_id = %self.partition_id))]
     pub(super) async fn run(self, _networking: Networking) -> anyhow::Result<()> {
         let PartitionProcessor {
-            peer_id,
             partition_id,
             partition_key_range,
             timer_service_options,
@@ -133,7 +129,6 @@ where
         let mut action_collector = ActionCollector::with_capacity(32);
 
         let (mut state, mut action_effect_stream) = LeadershipState::follower(
-            peer_id,
             partition_id,
             partition_key_range.clone(),
             timer_service_options,
@@ -208,7 +203,7 @@ where
             }
         }
 
-        debug!(%peer_id, %partition_id, "Shutting partition processor down.");
+        debug!(restate.node = %metadata().my_node_id(), %partition_id, "Shutting partition processor down.");
         let _ = state.become_follower().await;
 
         Ok(())

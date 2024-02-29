@@ -14,9 +14,7 @@ use async_channel::{TryRecvError, TrySendError};
 use restate_bifrost::bifrost;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::dedup::DedupInformation;
-use restate_types::identifiers::{
-    LeaderEpoch, PartitionId, PartitionKey, PeerId, WithPartitionKey,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::{LogId, Payload};
 use restate_types::message::{AckKind, MessageIndex};
 use restate_types::partition_table::FindPartition;
@@ -179,7 +177,6 @@ impl HintSender {
 
 #[derive(Debug)]
 pub(crate) struct ShuffleMetadata {
-    peer_id: PeerId,
     partition_id: PartitionId,
     leader_epoch: LeaderEpoch,
     node_id: NodeId,
@@ -187,13 +184,11 @@ pub(crate) struct ShuffleMetadata {
 
 impl ShuffleMetadata {
     pub(crate) fn new(
-        peer_id: PeerId,
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
         node_id: NodeId,
     ) -> Self {
         ShuffleMetadata {
-            peer_id,
             partition_id,
             leader_epoch,
             node_id,
@@ -249,12 +244,12 @@ where
             ..
         } = self;
 
-        debug!(restate.partition.peer = %metadata.peer_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
+        debug!(restate.node = %metadata.node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
 
         let shutdown = shutdown_watch.signaled();
         tokio::pin!(shutdown);
 
-        let peer_id = metadata.peer_id;
+        let node_id = metadata.node_id;
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
@@ -293,7 +288,7 @@ where
             }
         }
 
-        debug!(%peer_id, "Stopping shuffle");
+        debug!(restate.node = %node_id, "Stopping shuffle");
 
         Ok(())
     }

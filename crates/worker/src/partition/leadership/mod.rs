@@ -41,7 +41,7 @@ use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::dedup::EpochSequenceNumber;
 use restate_types::identifiers::{FullInvocationId, InvocationId, PartitionKey};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch, PeerId};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::journal::{CompletionResult, EntryType};
 use restate_wal_protocol::timer::TimerValue;
@@ -60,7 +60,6 @@ pub(crate) struct LeaderState {
 }
 
 pub(crate) struct FollowerState<I> {
-    peer_id: PeerId,
     partition_id: PartitionId,
     timer_service_options: restate_timer::Options,
     channel_size: usize,
@@ -96,7 +95,6 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
-        peer_id: PeerId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
@@ -106,7 +104,6 @@ where
     ) -> (Self, ActionEffectStream) {
         (
             Self::Follower(FollowerState {
-                peer_id,
                 partition_id,
                 partition_key_range,
                 timer_service_options,
@@ -172,7 +169,6 @@ where
 
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(
-                    follower_state.peer_id,
                     follower_state.partition_id,
                     leader_epoch,
                     metadata().my_node_id().into(),
@@ -295,7 +291,6 @@ where
         if let LeadershipState::Leader {
             follower_state:
                 FollowerState {
-                    peer_id,
                     partition_id,
                     partition_key_range,
                     channel_size,
@@ -325,7 +320,6 @@ where
             Self::unwrap_task_result(shuffle_result).map_err(Error::FailedShuffleTask)?;
 
             Ok(Self::follower(
-                peer_id,
                 partition_id,
                 partition_key_range,
                 num_in_memory_timers,

@@ -29,7 +29,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{PartitionKey, PeerId};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 use tracing::debug;
 
@@ -283,7 +283,7 @@ impl Worker {
 
     #[allow(clippy::too_many_arguments)]
     fn create_partition_processor(
-        peer_id: PeerId,
+        partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         timer_service_options: restate_timer::Options,
         channel_size: usize,
@@ -294,8 +294,7 @@ impl Worker {
         ingress_tx: IngressDispatcherInputSender,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
-            peer_id,
-            peer_id,
+            partition_id,
             partition_key_range,
             timer_service_options,
             channel_size,
