@@ -44,8 +44,10 @@ impl ProtocolMessage {
     pub fn new_start_message(
         id: Bytes,
         debug_id: String,
+        key: Option<Bytes>,
         known_entries: u32,
         partial_state: bool,
+        headers: impl IntoIterator<Item = (String, String)>,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
     ) -> Self {
         Self::Start(pb::protocol::StartMessage {
@@ -57,7 +59,13 @@ impl ProtocolMessage {
                 .into_iter()
                 .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
                 .collect(),
-            ..pb::protocol::StartMessage::default()
+            key: key
+                .and_then(|b| String::from_utf8(b.to_vec()).ok())
+                .unwrap_or_default(),
+            headers: headers
+                .into_iter()
+                .map(|(key, value)| pb::protocol::Header { key, value })
+                .collect(),
         })
     }
 
