@@ -109,7 +109,6 @@ impl ActionEffectHandler {
                 partition_id: self.partition_id,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
-                sequence_number: None,
                 node_id: metadata().my_node_id().as_plain(),
             },
         }

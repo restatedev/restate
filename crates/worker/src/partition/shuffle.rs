@@ -99,7 +99,6 @@ fn create_header(
         source: Source::Processor {
             partition_id: shuffle_metadata.partition_id,
             partition_key: None,
-            sequence_number: Some(seq_number),
             leader_epoch: shuffle_metadata.leader_epoch,
             node_id: shuffle_metadata.node_id.id(),
         },

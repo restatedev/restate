@@ -75,9 +75,6 @@ pub enum Source {
         /// messages to accept. Readers should ignore messages coming from
         /// epochs lower than the max observed for a given partition id.
         leader_epoch: LeaderEpoch,
-        /// This represents the logical clock of the sender at the time of writing this command.
-        /// The receiver can (optionally) use this message to detect duplication.
-        sequence_number: Option<MessageIndex>, // -- or sender_sequencer_number
         /// Which node is this message from?
         node_id: PlainNodeId,
     },
