@@ -5878,7 +5878,7 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-ingress-dispatcher",
- "restate-ingress-grpc",
+ "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-api",
  "restate-invoker-impl",

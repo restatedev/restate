@@ -16,7 +16,7 @@ options_schema = [
   "restate-storage-query-datafusion/options_schema",
   "restate-storage-query-postgres/options_schema",
   "restate-ingress-kafka/options_schema",
-  "restate-ingress-grpc/options_schema",
+  "restate-ingress-http/options_schema",
   "restate-invoker-impl/options_schema",
 ]
 
@@ -25,7 +25,7 @@ restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
-restate-ingress-grpc = { workspace = true }
+restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
