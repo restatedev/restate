@@ -25,7 +25,7 @@ restate-errors = { workspace = true }
 restate-meta = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
-restate-node-services = { workspace = true }
+restate-node-services = { workspace = true, features = ["servers"] }
 restate-schema-api = { workspace = true }
 restate-schema-impl = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
