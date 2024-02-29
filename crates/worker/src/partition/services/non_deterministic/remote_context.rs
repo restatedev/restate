@@ -27,7 +27,7 @@ use restate_pb::restate::internal::{
 use restate_pb::{
     REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME, REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME,
 };
-use restate_schema_api::key::KeyExtractor;
+use restate_schema_api::component::{ComponentMetadataResolver, ComponentType};
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -663,19 +663,26 @@ impl<'a, State: StateReader> InvocationContext<'a, State> {
         &self,
         request: &InvokeRequest,
     ) -> Result<FullInvocationId, InvocationError> {
-        let service_key = self
+        let service_id = match self
             .schemas
-            .extract(
-                &request.service_name,
-                &request.method_name,
-                request.parameter.clone(),
-            )
-            .map_err(InvocationError::internal)?;
+            .resolve_latest_component_handler(&request.service_name, &request.method_name)
+        {
+            Some(meta) => match meta.ty {
+                ComponentType::Service => ServiceId::unkeyed(request.service_name.clone()),
+                ComponentType::VirtualObject => ServiceId::new(
+                    request.service_name.clone(),
+                    request.key.as_bytes().to_owned(),
+                ),
+            },
+            None => {
+                return Err(InvocationError::service_method_not_found(
+                    &request.service_name,
+                    &request.method_name,
+                ))
+            }
+        };
 
-        Ok(FullInvocationId::generate(ServiceId::new(
-            request.service_name.clone(),
-            service_key,
-        )))
+        Ok(FullInvocationId::generate(service_id))
     }
 
     fn generate_virtual_fid(&self, invocation_id: &InvocationId) -> FullInvocationId {
@@ -1195,6 +1202,7 @@ mod tests {
     use restate_pb::REMOTE_CONTEXT_SERVICE_NAME;
     use restate_schema_api::deployment::Deployment;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
+    use restate_service_protocol::discovery::schema;
     use restate_test_util::assert_eq;
     use restate_test_util::matchers::*;
     use restate_types::errors::InvocationErrorCode;
@@ -2824,11 +2832,18 @@ mod tests {
         schemas
             .apply_updates(
                 schemas
-                    .old_compute_new_deployment(
+                    .compute_new_deployment(
                         Some(deployment.id),
                         deployment.metadata,
-                        vec![GREETER_SERVICE_NAME.to_owned()],
-                        restate_pb::mocks::DESCRIPTOR_POOL.clone(),
+                        vec![schema::Component {
+                            component_type: schema::ComponentType::Service,
+                            fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
+                            handlers: vec![schema::Handler {
+                                name: "Greet".parse().unwrap(),
+                                input_schema: None,
+                                output_schema: None,
+                            }],
+                        }],
                         false,
                     )
                     .unwrap(),
