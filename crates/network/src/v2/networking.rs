@@ -33,16 +33,16 @@ pub struct Networking {
 impl Networking {
     #[track_caller]
     /// must be called at most once on startup
-    pub fn set_metadata_manager_subscriber(&self, subscriber: mpsc::Sender<MessageEnvelope>) {
+    pub fn set_metadata_manager_handler(&self, handler: mpsc::Sender<MessageEnvelope>) {
         self.connections
             .router()
-            .set_metadata_manager_subscriber(subscriber)
+            .set_metadata_manager_handler(handler)
     }
 
     #[track_caller]
     /// must be called at most once on startup
-    pub fn set_ingress_subscriber(&self, subscriber: mpsc::Sender<MessageEnvelope>) {
-        self.connections.router().set_ingress_subscriber(subscriber)
+    pub fn set_ingress_handler(&self, handler: mpsc::Sender<MessageEnvelope>) {
+        self.connections.router().set_ingress_handler(handler)
     }
 
     pub fn connection_manager(&self) -> ConnectionManager {

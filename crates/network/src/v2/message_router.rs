@@ -31,29 +31,26 @@ impl MessageRouter {
 
     #[track_caller]
     pub fn set_route(&self, kind: MessageKind, handler: mpsc::Sender<MessageEnvelope>) {
-        if self.handlers[kind].set(handler).is_err() {
-            panic!("Handler already set for message kind: {:?}", kind);
-        }
+        self.set_handlers(&[kind], handler);
     }
 
-    #[track_caller]
-    pub fn set_metadata_manager_subscriber(&self, subscriber: mpsc::Sender<MessageEnvelope>) {
+    /// Allows metadata manager to receive metadata-related requests and responses
+    /// Must be called at most once on startup.
+    pub fn set_metadata_manager_handler(&self, handler: mpsc::Sender<MessageEnvelope>) {
         // metadata manager can handle the sync metadata messages.
         let interested_in = [MessageKind::GetMetadataRequest, MessageKind::MetadataUpdate];
-
-        for kind in interested_in {
-            if self.handlers[kind].set(subscriber.clone()).is_err() {
-                panic!("Handler already set for message kind: {}", kind);
-            }
-        }
+        self.set_handlers(&interested_in, handler);
     }
 
-    #[track_caller]
-    pub fn set_ingress_subscriber(&self, _handler: mpsc::Sender<MessageEnvelope>) {
-        // worker can handle the following message types.
-        // if self.handlers[kind].set(handler).is_err() {
-        //     panic!("Handler already set for message kind: {:?}", kind);
-        // }
+    /// Allows metadata manager to receive metadata-related requests and responses
+    /// Must be called at most once on startup.
+    pub fn set_ingress_handler(&self, handler: mpsc::Sender<MessageEnvelope>) {
+        // ingress can handle the following message types.
+        let interested_in = [
+            MessageKind::IngressInvocationResponse,
+            MessageKind::IngressMessageAck,
+        ];
+        self.set_handlers(&interested_in, handler);
     }
 
     pub async fn route_message(&self, envelope: MessageEnvelope) {
@@ -67,6 +64,15 @@ impl MessageRouter {
         } else {
             // Channel is not setup, or we have the wrong role to handle this message type.
             error!("No handler set for message kind: {}", envelope.kind());
+        }
+    }
+
+    #[track_caller]
+    fn set_handlers(&self, kinds: &[MessageKind], handler: mpsc::Sender<MessageEnvelope>) {
+        for kind in kinds {
+            if self.handlers[*kind].set(handler.clone()).is_err() {
+                panic!("Handler is already set for message kind: {}", kind);
+            }
         }
     }
 }

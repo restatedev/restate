@@ -26,8 +26,6 @@ use restate_types::{GenerationalNodeId, Version};
 
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
-/// The kind of versioned metadata that can be synchronized across nodes.
-
 #[derive(Clone)]
 pub struct Metadata {
     sender: manager::CommandSender,
@@ -59,7 +57,7 @@ impl Metadata {
         }
     }
 
-    // Returns when the metadata kind is at the provided version (or newer)
+    /// Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
         metadata_kind: MetadataKind,
@@ -73,7 +71,7 @@ impl Metadata {
         Ok(*v)
     }
 
-    // Watch for version updates of this metadata kind.
+    /// Watch for version updates of this metadata kind.
     pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
         self.inner.write_watches[metadata_kind].receive.clone()
     }
@@ -103,7 +101,7 @@ impl MetadataWriter {
         Self { sender, inner }
     }
 
-    // Returns when the nodes configuration update is performed.
+    /// Returns when the nodes configuration update is performed.
     pub async fn update(&self, value: impl Into<MetadataContainer>) -> Result<(), ShutdownError> {
         let (callback, recv) = oneshot::channel();
         let o = self.sender.send(manager::Command::UpdateMetadata(
@@ -123,7 +121,7 @@ impl MetadataWriter {
         let _ = self.inner.my_node_id.set(id);
     }
 
-    // Fire and forget update
+    /// Fire and forget update
     pub fn submit(&self, value: impl Into<MetadataContainer>) {
         // Ignore the error, task-center takes care of safely shutting down the
         // system if metadata manager failed

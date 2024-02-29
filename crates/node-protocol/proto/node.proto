@@ -39,6 +39,9 @@ enum MessageKind {
   MessageKind_UNKNOWN = 0;
   GET_METADATA_REQUEST = 1;
   METADATA_UPDATE = 2;
+  // Ingress
+  INGRESS_INVOCATION_RESPONSE = 3;
+  INGRESS_MESSAGE_ACK = 4;
 }
 
 // Bidirectional Communication

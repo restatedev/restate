@@ -88,7 +88,7 @@ impl Node {
         let networking = Arc::new(Networking::default());
         let metadata_manager = MetadataManager::build(networking.clone());
         // Metadata manager subscribes to sync and update metadata messages.
-        networking.set_metadata_manager_subscriber(metadata_manager.network_inbound_sender());
+        networking.set_metadata_manager_handler(metadata_manager.network_inbound_sender());
 
         let admin_role = if options.roles.contains(Role::Admin) {
             Some(AdminRole::new(options.clone(), networking.clone())?)
