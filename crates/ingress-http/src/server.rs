@@ -195,7 +195,7 @@ mod tests {
     use http_body_util::Full;
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
-    use restate_core::{create_test_task_center, TaskCenter, TaskKind};
+    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_ingress_dispatcher::IngressRequest;
     use restate_test_util::assert_eq;
     use serde::{Deserialize, Serialize};
@@ -274,7 +274,7 @@ mod tests {
     }
 
     async fn bootstrap_test() -> (SocketAddr, JoinHandle<Option<IngressRequest>>, TestHandle) {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
         // Create the ingress and start it
@@ -284,7 +284,9 @@ mod tests {
             mock_component_resolver(),
             ingress_request_tx,
         );
-        tc.spawn(TaskKind::SystemService, "ingress", None, ingress.run())
+        node_env
+            .tc
+            .spawn(TaskKind::SystemService, "ingress", None, ingress.run())
             .unwrap();
 
         // Mock the service invocation receiver
@@ -293,7 +295,7 @@ mod tests {
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, input, TestHandle(tc))
+        (address, input, TestHandle(node_env.tc))
     }
 
     struct TestHandle(TaskCenter);

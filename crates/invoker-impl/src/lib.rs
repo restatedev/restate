@@ -932,7 +932,8 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use restate_core::{create_test_task_center, TaskKind};
+    use restate_core::TaskKind;
+    use restate_core::TestCoreEnv;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1025,7 +1026,8 @@ mod tests {
 
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         let tempdir = tempfile::tempdir().unwrap();
         let service = Service::new(
             // all invocations are unknown leading to immediate retries
