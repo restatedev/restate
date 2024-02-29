@@ -23,12 +23,12 @@ use crate::ui::deployments::{
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 
-use restate_meta_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_meta_rest_model::deployments::{ComponentNameRevPair, Deployment, DeploymentResponse};
 
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+use restate_meta_rest_model::components::ComponentMetadata;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -51,7 +51,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::MetasClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     // To know the latest version of every service.
-    let services = client.get_services().await?.into_body().await?.services;
+    let services = client.get_components().await?.into_body().await?.components;
 
     let deployments = client
         .get_deployments()
@@ -67,7 +67,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         return Ok(());
     }
     // For each deployment, we need to calculate the status and # of invocations.
-    let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
+    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
     for svc in services {
         latest_services.insert(svc.name.clone(), svc);
     }
@@ -94,7 +94,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         let active_inv = count_deployment_active_inv(&sql_client, &deployment.id).await?;
         let status = calculate_deployment_status(
             &deployment.id,
-            &deployment.services,
+            &deployment.components,
             active_inv,
             &latest_services,
         );
@@ -122,7 +122,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         if list_opts.extra {
             row.push(render_services(
                 &deployment.id,
-                &deployment.services,
+                &deployment.components,
                 &latest_services,
             ));
         }
@@ -137,8 +137,8 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
 
 fn render_services(
     deployment_id: &DeploymentId,
-    services: &[ServiceNameRevPair],
-    latest_services: &HashMap<String, ServiceMetadata>,
+    services: &[ComponentNameRevPair],
+    latest_services: &HashMap<String, ComponentMetadata>,
 ) -> Cell {
     use std::fmt::Write as FmtWrite;
 

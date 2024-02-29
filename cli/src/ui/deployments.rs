@@ -11,9 +11,8 @@
 use std::collections::HashMap;
 
 use comfy_table::{Cell, Color, Table};
-
-use restate_meta_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::deployments::{ComponentNameRevPair, Deployment, ProtocolType};
 use restate_types::identifiers::DeploymentId;
 
 use super::console::StyledTable;
@@ -55,9 +54,9 @@ pub fn render_deployment_type(deployment: &Deployment) -> String {
 
 pub fn calculate_deployment_status(
     deployment_id: &DeploymentId,
-    owned_services: &[ServiceNameRevPair],
+    owned_services: &[ComponentNameRevPair],
     active_inv: i64,
-    latest_services: &HashMap<String, ServiceMetadata>,
+    latest_services: &HashMap<String, ComponentMetadata>,
 ) -> DeploymentStatus {
     let mut status = DeploymentStatus::Draining;
 

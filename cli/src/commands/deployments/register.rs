@@ -18,7 +18,7 @@ use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::render_deployment_url;
 use crate::ui::service_methods::{
-    create_service_methods_table, create_service_methods_table_diff, icon_for_service_flavor,
+    create_component_handlers_table, create_service_methods_table_diff, icon_for_component_type,
 };
 use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
@@ -30,7 +30,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_meta_rest_model::components::ComponentMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
@@ -208,14 +208,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     let discovered_service_names = dry_run_result
-        .services
+        .components
         .iter()
         .map(|svc| svc.name.clone())
         .collect::<HashSet<_>>();
 
     // Services found in this discovery
     let (added, updated): (Vec<_>, Vec<_>) = dry_run_result
-        .services
+        .components
         .iter()
         .partition(|svc| svc.revision == 1);
 
@@ -232,16 +232,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         for svc in added {
             c_indentln!(1, "- {}", Styled(Style::Success, &svc.name),);
-            c_indentln!(
-                2,
-                "Type: {:?} {}",
-                svc.instance_type,
-                icon_for_service_flavor(&svc.instance_type),
-            );
+            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
 
             c_indent_table!(
                 2,
-                create_service_methods_table(&env.ui_config, &svc.methods)
+                create_component_handlers_table(&env.ui_config, &svc.handlers)
             );
             c_println!();
         }
@@ -260,11 +255,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
-        let mut existing_services: HashMap<String, ServiceMetadata> = HashMap::new();
+        let mut existing_services: HashMap<String, ComponentMetadata> = HashMap::new();
         for svc in &updated {
             // Get the current service information by querying the server.
             progress.set_message(format!("Fetching information about service '{}'", svc.name,));
-            match client.get_service(&svc.name).await?.into_body().await {
+            match client.get_component(&svc.name).await?.into_body().await {
                 Ok(svc_metadata) => {
                     existing_services.insert(svc.name.clone(), svc_metadata);
                 }
@@ -289,12 +284,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         for svc in updated {
             c_indentln!(1, "- {}", Styled(Style::Info, &svc.name),);
-            c_indentln!(
-                2,
-                "Type: {:?} {}",
-                svc.instance_type,
-                icon_for_service_flavor(&svc.instance_type),
-            );
+            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
 
             if let Some(existing_svc) = existing_services.get(&svc.name) {
                 c_indentln!(
@@ -322,16 +312,15 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
                 let tt = create_service_methods_table_diff(
                     &env.ui_config,
-                    svc.instance_type.clone(),
-                    &existing_svc.methods,
-                    &svc.methods,
+                    &existing_svc.handlers,
+                    &svc.handlers,
                 );
                 c_indent_table!(2, tt);
             } else {
                 c_indentln!(
                     2,
                     "{}",
-                    create_service_methods_table(&env.ui_config, &svc.methods)
+                    create_component_handlers_table(&env.ui_config, &svc.handlers)
                 );
             }
             c_println!();
@@ -343,7 +332,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     if let Some(existing_endpoint) = existing_deployment {
         // The following services will be removed/forgotten:
         let services_removed = existing_endpoint
-            .services
+            .components
             .iter()
             .filter(|svc| !discovered_service_names.contains(&svc.name))
             .collect::<Vec<_>>();
@@ -386,7 +375,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     c_success!("DEPLOYMENT:");
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in dry_run_result.services {
+    for svc in dry_run_result.components {
         table.add_row(vec![svc.name, svc.revision.to_string()]);
     }
     c_println!("{}", table);

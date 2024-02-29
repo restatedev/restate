@@ -13,9 +13,8 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-
-use restate_meta_rest_model::deployments::ServiceNameRevPair;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::deployments::ComponentNameRevPair;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
@@ -25,7 +24,7 @@ use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
-use crate::ui::service_methods::icon_for_service_flavor;
+use crate::ui::service_methods::icon_for_component_type;
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 use crate::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
@@ -50,9 +49,9 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = MetasClient::new(env)?;
 
-    let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
+    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
     // To know the latest version of every service.
-    let services = client.get_services().await?.into_body().await?.services;
+    let services = client.get_components().await?.into_body().await?.components;
     for svc in services {
         latest_services.insert(svc.name.clone(), svc);
     }
@@ -68,9 +67,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 
     let svc_rev_pairs: Vec<_> = deployment
-        .services
+        .components
         .iter()
-        .map(|s| ServiceNameRevPair {
+        .map(|s| ComponentNameRevPair {
             name: s.name.clone(),
             revision: s.revision,
         })
@@ -97,7 +96,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     c_println!();
 
     c_title!("🤖", "Services");
-    for svc in deployment.services {
+    for svc in deployment.components {
         let Some(latest_svc) = latest_services.get(&svc.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that
@@ -110,12 +109,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         };
 
         c_indentln!(1, "- {}", Styled(Style::Info, &svc.name));
-        c_indentln!(
-            2,
-            "Type: {:?} {}",
-            svc.instance_type,
-            icon_for_service_flavor(&svc.instance_type),
-        );
+        c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
 
         let latest_revision_message = if svc.revision == latest_svc.revision {
             // We are latest.
@@ -137,19 +131,19 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             "ACTIVE INVOCATIONS",
         ]);
 
-        for method in &svc.methods {
+        for handler in &svc.handlers {
             // how many inv pinned on this deployment+service+method.
             let active_inv = active_inv
                 .iter()
-                .filter(|x| x.service == svc.name && x.method == method.name)
+                .filter(|x| x.service == svc.name && x.method == handler.name)
                 .map(|x| x.inv_count)
                 .next()
                 .unwrap_or(0);
 
             methods_table.add_row(vec![
-                Cell::new(&method.name),
-                Cell::new(&method.input_type),
-                Cell::new(&method.output_type),
+                Cell::new(&handler.name),
+                Cell::new(handler.input_description.as_deref().unwrap_or("any")),
+                Cell::new(handler.output_description.as_deref().unwrap_or("any")),
                 render_active_invocations(active_inv),
             ]);
         }

@@ -19,7 +19,7 @@ use crate::ui::invocations::render_invocation_compact;
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::services::InstanceType;
+use restate_meta_rest_model::components::ComponentType;
 
 pub async fn run_detailed_status(
     env: &CliEnv,
@@ -36,12 +36,12 @@ pub async fn run_detailed_status(
 
     progress.set_message("Fetching service status");
     let service = metas_client
-        .get_service(service_name)
+        .get_component(service_name)
         .await?
         .into_body()
         .await?;
 
-    let is_keyed = service.instance_type == InstanceType::Keyed;
+    let is_object = service.ty == ComponentType::VirtualObject;
 
     // Print summary table first.
     let status_map = get_services_status(&sql_client, vec![service_name]).await?;
@@ -58,7 +58,7 @@ pub async fn run_detailed_status(
     c_title!("📷", "Summary");
     render_services_status(env, vec![service], status_map).await?;
 
-    if is_keyed {
+    if is_object {
         let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
         if !locked_keys.is_empty() {
             c_title!("📨", "Active Keys");

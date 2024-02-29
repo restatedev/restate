@@ -11,19 +11,22 @@
 use super::console::{Icon, StyledTable};
 use crate::app::UiConfig;
 
-use restate_meta_rest_model::services::{InstanceType, MethodMetadata};
-
 use comfy_table::{Cell, Color, Table};
+use restate_meta_rest_model::components::ComponentType;
+use restate_meta_rest_model::handlers::HandlerMetadata;
 
-pub fn create_service_methods_table(ui_config: &UiConfig, methods: &[MethodMetadata]) -> Table {
+pub fn create_component_handlers_table(
+    ui_config: &UiConfig,
+    handlers: &[HandlerMetadata],
+) -> Table {
     let mut table = Table::new_styled(ui_config);
     table.set_styled_header(vec!["METHOD", "INPUT TYPE", "OUTPUT TYPE"]);
 
-    for method in methods {
+    for handler in handlers {
         table.add_row(vec![
-            Cell::new(&method.name),
-            Cell::new(&method.input_type),
-            Cell::new(&method.output_type),
+            Cell::new(&handler.name),
+            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
+            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
         ]);
     }
     table
@@ -31,9 +34,8 @@ pub fn create_service_methods_table(ui_config: &UiConfig, methods: &[MethodMetad
 
 pub fn create_service_methods_table_diff(
     ui_config: &UiConfig,
-    service_type: InstanceType,
-    old_svc_methods: &[MethodMetadata],
-    new_svc_methods: &[MethodMetadata],
+    old_svc_methods: &[HandlerMetadata],
+    new_svc_methods: &[HandlerMetadata],
 ) -> Table {
     let mut old_svc_methods = old_svc_methods
         .iter()
@@ -41,69 +43,45 @@ pub fn create_service_methods_table_diff(
         .collect::<std::collections::HashMap<_, _>>();
 
     let mut table = Table::new_styled(ui_config);
-    let mut headers = vec!["", "METHOD", "INPUT TYPE", "OUTPUT TYPE"];
-
-    if service_type != InstanceType::Unkeyed {
-        headers.push("KEY FIELD INDEX");
-    }
-    table.set_styled_header(headers);
+    table.set_styled_header(vec!["", "METHOD", "INPUT TYPE", "OUTPUT TYPE"]);
 
     // Additions and updates
-    for method in new_svc_methods {
+    for handler in new_svc_methods {
         let mut row = vec![];
-        if old_svc_methods.remove(&method.name).is_some() {
+        if old_svc_methods.remove(&handler.name).is_some() {
             // possibly updated.
             row.push(Cell::new(""));
-            row.push(Cell::new(&method.name));
+            row.push(Cell::new(&handler.name));
         } else {
             // new method
             row.push(Cell::new("++").fg(Color::Green));
-            row.push(Cell::new(&method.name).fg(Color::Green));
+            row.push(Cell::new(&handler.name).fg(Color::Green));
         }
         row.extend_from_slice(&[
-            Cell::new(&method.input_type),
-            Cell::new(&method.output_type),
+            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
+            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
         ]);
-        if service_type != InstanceType::Unkeyed {
-            row.push(Cell::new(
-                &method
-                    .key_field_number
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            ));
-        }
         table.add_row(row);
     }
 
     // Removals
-    for method in old_svc_methods.values() {
-        let mut row = vec![
+    for handler in old_svc_methods.values() {
+        let row = vec![
             Cell::new("--").fg(Color::Red),
-            Cell::new(&method.name).fg(Color::Red),
-            Cell::new(&method.input_type),
-            Cell::new(&method.output_type),
+            Cell::new(&handler.name).fg(Color::Red),
+            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
+            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
         ];
 
-        if service_type != InstanceType::Unkeyed {
-            row.push(Cell::new(
-                &method
-                    .key_field_number
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            ));
-        }
         table.add_row(row);
     }
     table
 }
 
-pub fn icon_for_service_flavor(svc_type: &InstanceType) -> Icon {
+pub fn icon_for_component_type(svc_type: &ComponentType) -> Icon {
     match svc_type {
-        InstanceType::Unkeyed => Icon("", ""),
-        InstanceType::Keyed => Icon("⬅️ 🚶🚶🚶", "keyed"),
-        InstanceType::Singleton => Icon("👑", "singleton"),
+        ComponentType::Service => Icon("", ""),
+        ComponentType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "keyed"),
     }
 }
 

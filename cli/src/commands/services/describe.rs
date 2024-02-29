@@ -22,7 +22,7 @@ use crate::ui::deployments::{
     add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
     render_deployment_url,
 };
-use crate::ui::service_methods::create_service_methods_table;
+use crate::ui::service_methods::create_component_handlers_table;
 use crate::ui::watcher::Watch;
 
 use anyhow::Result;
@@ -44,14 +44,11 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = MetasClient::new(env)?;
-    let svc = client.get_service(&opts.name).await?.into_body().await?;
+    let svc = client.get_component(&opts.name).await?.into_body().await?;
 
     let mut table = Table::new_styled(&env.ui_config);
     table.add_kv_row("Name:", &svc.name);
-    table.add_kv_row(
-        "Flavor (Instance Type):",
-        &format!("{:?}", svc.instance_type),
-    );
+    table.add_kv_row("Flavor (Instance Type):", &format!("{:?}", svc.ty));
     table.add_kv_row("Revision:", svc.revision);
     table.add_kv_row("Public:", svc.public);
     table.add_kv_row("Deployment ID:", svc.deployment_id);
@@ -69,7 +66,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     // Methods
     c_println!();
     c_title!("🔌", "Methods");
-    let table = create_service_methods_table(&env.ui_config, &svc.methods);
+    let table = create_component_handlers_table(&env.ui_config, &svc.handlers);
     c_println!("{}", table);
 
     // Printing other existing endpoints with previous revisions. We currently don't
@@ -93,7 +90,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .filter_map(|e| {
             // endpoints that serve the same service.
             let svc_match: Vec<_> = e
-                .services
+                .components
                 .iter()
                 .filter(|s| s.name == svc_name && s.revision != latest_rev)
                 .collect();
