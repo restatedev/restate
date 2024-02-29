@@ -4959,10 +4959,12 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "async-trait",
  "derive_more",
  "enum-map",
  "futures",
  "googletest",
+ "restate-node-protocol",
  "restate-test-util",
  "restate-types",
  "static_assertions",
@@ -5323,6 +5325,7 @@ dependencies = [
  "restate-errors",
  "restate-meta",
  "restate-network",
+ "restate-node-protocol",
  "restate-node-services",
  "restate-schema-api",
  "restate-schema-impl",
@@ -5353,6 +5356,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-node-protocol"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "enum-map",
+ "prost 0.12.3",
+ "prost-build",
+ "prost-types",
+ "restate-types",
+ "serde",
+ "strum 0.26.1",
+ "strum_macros 0.26.1",
+ "thiserror",
+]
+
+[[package]]
 name = "restate-node-services"
 version = "0.8.0"
 dependencies = [
@@ -5360,6 +5380,7 @@ dependencies = [
  "bytes",
  "prost 0.12.3",
  "prost-types",
+ "restate-node-protocol",
  "restate-types",
  "thiserror",
  "tonic 0.10.2",
