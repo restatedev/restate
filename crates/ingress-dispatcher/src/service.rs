@@ -22,7 +22,7 @@ use restate_pb::restate::internal::{
 };
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
-use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::GenerationalNodeId;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -65,12 +65,9 @@ impl Service {
         }
     }
 
-    pub async fn run(
-        self,
-        my_node_id: NodeId,
-        output_tx: mpsc::Sender<Envelope>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(self, output_tx: mpsc::Sender<Envelope>) -> anyhow::Result<()> {
         debug!("Running the ResponseDispatcher");
+        let my_node_id = metadata().my_node_id();
 
         let Service {
             server_rx,
@@ -91,11 +88,7 @@ impl Service {
 
         tokio::pin!(pipe);
 
-        let mut handler = DispatcherLoopHandler::new(
-            my_node_id
-                .as_generational()
-                .expect("My node ID is generational"),
-        );
+        let mut handler = DispatcherLoopHandler::new(my_node_id);
 
         loop {
             select! {
@@ -359,7 +352,6 @@ mod tests {
         let tc = create_test_task_center();
         let (output_tx, _output_rx) = mpsc::channel(2);
 
-        let my_node_id = GenerationalNodeId::new(1, 1);
         let ingress_dispatcher = Service::new(1);
         let input_sender = ingress_dispatcher.create_ingress_dispatcher_input_sender();
         let command_sender = ingress_dispatcher.create_ingress_request_sender();
@@ -370,7 +362,7 @@ mod tests {
                 TaskKind::SystemService,
                 "ingress-dispatcher",
                 None,
-                ingress_dispatcher.run(my_node_id.into(), output_tx),
+                ingress_dispatcher.run(output_tx),
             )
             .unwrap();
 
@@ -405,7 +397,6 @@ mod tests {
         let tc = create_test_task_center();
         let (output_tx, mut output_rx) = mpsc::channel(2);
 
-        let my_node_id = GenerationalNodeId::new(1, 1);
         let ingress_dispatcher = Service::new(1);
         let handler_tx = ingress_dispatcher.create_ingress_request_sender();
         let network_tx = ingress_dispatcher.create_ingress_dispatcher_input_sender();
@@ -415,7 +406,7 @@ mod tests {
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            ingress_dispatcher.run(my_node_id.into(), output_tx),
+            ingress_dispatcher.run(output_tx),
         )
         .unwrap();
 

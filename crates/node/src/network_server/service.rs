@@ -16,8 +16,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use restate_cluster_controller::ClusterControllerHandle;
-use restate_core::cancellation_watcher;
-use restate_core::metadata::{Metadata, MetadataWriter};
+use restate_core::{cancellation_watcher, task_center};
 use restate_meta::FileMetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_node_services::node::node_svc_server::NodeSvcServer;
@@ -56,15 +55,11 @@ pub struct NetworkServer {
     opts: Options,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
-    metadata: Metadata,
-    metadata_writer: MetadataWriter,
 }
 
 impl NetworkServer {
     pub fn new(
         opts: Options,
-        metadata: Metadata,
-        metadata_writer: MetadataWriter,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {
@@ -72,8 +67,6 @@ impl NetworkServer {
             opts,
             worker_deps,
             admin_deps,
-            metadata,
-            metadata_writer,
         }
     }
 
@@ -114,19 +107,15 @@ impl NetworkServer {
                 .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
         }
 
-        let cluster_controller_service = self.admin_deps.map(|admin_deps| {
-            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(
-                admin_deps,
-                self.metadata.clone(),
-            ))
-        });
+        let cluster_controller_service = self
+            .admin_deps
+            .map(|admin_deps| ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps)));
 
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(NodeSvcServer::new(NodeSvcHandler::new(
+                task_center(),
                 self.worker_deps,
-                self.metadata_writer,
-                self.metadata,
             )))
             .add_optional_service(cluster_controller_service)
             .add_service(reflection_service_builder.build()?);

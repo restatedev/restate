@@ -34,7 +34,6 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
-use restate_types::NodeId;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -384,7 +383,6 @@ impl Worker {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
-        let my_node_id = NodeId::my_node_id().expect("my node ID is set");
         let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
@@ -403,7 +401,7 @@ impl Worker {
             "ingress-dispatcher",
             None,
             self.ingress_dispatcher_service
-                .run(my_node_id, self.network_ingress_sender),
+                .run(self.network_ingress_sender),
         )?;
 
         // Ingress RPC server
