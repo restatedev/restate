@@ -30,7 +30,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use okapi_operation::*;
-use restate_node_services::node::StorageQueryRequest;
+use restate_node_services::node_svc::StorageQueryRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
