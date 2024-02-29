@@ -1926,7 +1926,7 @@ mod tests {
 
         let (_, _, send_effects, _) = send_then_receive_test(
             ProtobufRawEntryCodec::serialize(Entry::invoke(
-                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone()),
+                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone(), ""),
                 None,
             ))
             .into(),
@@ -2008,7 +2008,7 @@ mod tests {
 
         let (_, _, _, _, effects) = send_test(
             ProtobufRawEntryCodec::serialize(Entry::background_invoke(
-                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone()),
+                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone(), ""),
                 None,
             ))
             .into(),
@@ -2043,7 +2043,7 @@ mod tests {
 
         let (_, _, _, _, effects) = send_test(
             ProtobufRawEntryCodec::serialize(Entry::background_invoke(
-                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone()),
+                InvokeRequest::new(GREETER_SERVICE_NAME, "Greet", argument.clone(), ""),
                 Some(time),
             ))
             .into(),

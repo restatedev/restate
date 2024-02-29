@@ -275,6 +275,10 @@ pub struct InvokeRequest {
     pub service_name: ByteString,
     pub method_name: ByteString,
     pub parameter: Bytes,
+    /// Empty if service call.
+    /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
+    /// whether the key is none or empty.
+    pub key: ByteString,
 }
 
 impl InvokeRequest {
@@ -282,11 +286,13 @@ impl InvokeRequest {
         service_name: impl Into<ByteString>,
         method_name: impl Into<ByteString>,
         parameter: impl Into<Bytes>,
+        key: impl Into<ByteString>,
     ) -> Self {
         InvokeRequest {
             service_name: service_name.into(),
             method_name: method_name.into(),
             parameter: parameter.into(),
+            key: key.into(),
         }
     }
 }
