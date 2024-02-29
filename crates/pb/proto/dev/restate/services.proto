@@ -21,34 +21,6 @@ option java_multiple_files = true;
 option java_package = "dev.restate.generated";
 option go_package = "restate.dev/sdk-go/pb";
 
-service Ingress {
-  // Invoke a service and don't wait for the response.
-  // It is guaranteed that the service will be invoked after this method returns.
-  rpc Invoke(InvokeRequest) returns (InvokeResponse);
-}
-
-message InvokeRequest {
-  // Fully qualified name of the service, e.g. `counter.Counter`
-  string service = 1;
-
-  // Method name of the service to invoke, e.g. `Add`
-  string method = 2;
-
-  // Argument of the invocation.
-  // You can pass the invocation argument either as protobuf or as JSON.
-  // In case of JSON, the argument will be automatically transcoded to protobuf before sending it to the target service.
-  oneof argument {
-    bytes pb = 3;
-    google.protobuf.Struct json = 4 [json_name = "argument"];
-  }
-}
-
-message InvokeResponse {
-  // Generated unique invocation identifier.
-  // It can be used to retrieve the status of the invocation and cancel it.
-  string id = 1;
-}
-
 service Awakeables {
   // Resolve an Awakeable with a result value.
   rpc Resolve(ResolveAwakeableRequest) returns (google.protobuf.Empty);
