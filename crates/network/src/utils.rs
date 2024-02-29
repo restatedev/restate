@@ -32,6 +32,8 @@ pub fn create_grpc_channel_from_network_address(
             // todo: Make the channel settings configurable
             Channel::builder(uri)
                 .connect_timeout(Duration::from_secs(5))
+                // todo: configure the channel from configuration file
+                .http2_adaptive_window(true)
                 .connect_lazy()
         }
     };

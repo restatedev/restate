@@ -8,7 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod error;
+mod codec;
+mod connection;
+mod connection_manager;
+mod handshake;
+mod message_router;
 mod networking;
 
+pub mod error;
+
+pub use connection::ConnectionSender;
+pub use connection_manager::ConnectionManager;
 pub use networking::Networking;

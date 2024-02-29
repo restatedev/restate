@@ -18,6 +18,7 @@ use tracing::info;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{cancellation_watcher, task_center};
 use restate_meta::FileMetaReader;
+use restate_network::ConnectionManager;
 use restate_node_protocol::{common, node};
 use restate_node_services::cluster_ctrl;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
@@ -54,6 +55,7 @@ pub enum Error {
 
 pub struct NetworkServer {
     opts: Options,
+    connection_manager: ConnectionManager,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
 }
@@ -61,11 +63,13 @@ pub struct NetworkServer {
 impl NetworkServer {
     pub fn new(
         opts: Options,
+        connection_manager: ConnectionManager,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {
         Self {
             opts,
+            connection_manager,
             worker_deps,
             admin_deps,
         }
@@ -117,6 +121,7 @@ impl NetworkServer {
             .add_service(NodeSvcServer::new(NodeSvcHandler::new(
                 task_center(),
                 self.worker_deps,
+                self.connection_manager,
             )))
             .add_optional_service(cluster_controller_service)
             .add_service(reflection_service_builder.build()?);
