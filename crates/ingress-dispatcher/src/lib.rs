@@ -335,8 +335,6 @@ pub fn wrap_service_invocation_in_envelope(
     let header = Header {
         source: Source::Ingress {
             node_id: from_node_id,
-            sequence_number: msg_index,
-            dedup_key: deduplication_source.clone(),
             nodes_config_version: metadata().nodes_config_version(),
         },
         dest: Destination::Processor {

@@ -90,9 +90,6 @@ pub enum Source {
         /// Last config version observed by sender. If this is a newer generation
         /// or an unknown ID, we might need to update our config.
         nodes_config_version: Version,
-        // If unset and AckMode is dedup, we use the node_id as a key.
-        dedup_key: Option<String>,
-        sequence_number: MessageIndex,
     },
     /// Message is sent from some control plane component (controller, cli, etc.)
     ControlPlane {
