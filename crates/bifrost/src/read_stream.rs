@@ -82,7 +82,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_core::create_test_task_center;
+    use restate_core::TestCoreEnv;
     use tokio::task::JoinHandle;
     use tracing::info;
     use tracing_test::traced_test;
@@ -95,7 +95,8 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_basic_readstream() -> Result<()> {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             // start a simple bifrost service with 5 logs.
             let num_partitions = 5;
