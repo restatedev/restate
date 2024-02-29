@@ -10,10 +10,11 @@
 
 use std::fmt::Debug;
 
-use restate_core::{create_test_task_center, TaskKind};
+use restate_core::TaskKind;
 use test_log::test;
 use tokio::sync::mpsc;
 
+use restate_core::TestCoreEnv;
 use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::invocation::ServiceInvocation;
@@ -99,13 +100,14 @@ fn create_envelope(partition_key: PartitionKey) -> Envelope {
 
 #[test(tokio::test)]
 async fn no_consensus_message_is_dropped() {
-    let tc = create_test_task_center();
+    let test_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let (network, mut consensus_rx, _ingress_rx) = mock_network();
 
     let network_handle = network.create_network_handle();
     let consensus_tx = network.create_consensus_sender();
 
-    let networking_task = tc
+    let networking_task = test_env
+        .tc
         .spawn(TaskKind::SystemService, "networking", None, network.run())
         .unwrap();
 
@@ -124,7 +126,12 @@ async fn no_consensus_message_is_dropped() {
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_2);
     assert_eq!(consensus_rx.recv().await.unwrap(), msg_3);
 
-    tc.cancel_task(networking_task).unwrap().await.unwrap();
+    test_env
+        .tc
+        .cancel_task(networking_task)
+        .unwrap()
+        .await
+        .unwrap();
 }
 
 #[test(tokio::test)]
@@ -217,10 +224,11 @@ async fn run_router_test<Input, Output>(
     Input: Debug + Clone,
     Output: PartialEq + Debug,
 {
-    let tc = create_test_task_center();
+    let test_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let network_handle = network.create_network_handle();
 
-    let networking_task = tc
+    let networking_task = test_env
+        .tc
         .spawn(TaskKind::SystemService, "networking", None, network.run())
         .unwrap();
 
@@ -238,5 +246,10 @@ async fn run_router_test<Input, Output>(
         assert_eq!(rx.recv().await.unwrap(), output);
     }
 
-    tc.cancel_task(networking_task).unwrap().await.unwrap();
+    test_env
+        .tc
+        .cancel_task(networking_task)
+        .unwrap()
+        .await
+        .unwrap();
 }
