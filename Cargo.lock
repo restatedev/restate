@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "codederror-derive",
  "thiserror",
@@ -4755,7 +4755,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -4805,14 +4805,14 @@ dependencies = [
 
 [[package]]
 name = "restate-base64-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.21.7",
 ]
 
 [[package]]
 name = "restate-benchmarks"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -4837,7 +4837,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4869,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4919,7 +4919,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cluster-controller"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "codederror",
@@ -4938,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "restate-consensus"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -4955,7 +4955,7 @@ dependencies = [
 
 [[package]]
 name = "restate-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4979,7 +4979,7 @@ dependencies = [
 
 [[package]]
 name = "restate-errors"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "codederror",
  "paste",
@@ -4993,7 +4993,7 @@ dependencies = [
 
 [[package]]
 name = "restate-fs-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -5002,7 +5002,7 @@ dependencies = [
 
 [[package]]
 name = "restate-futures-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "futures",
  "pin-project",
@@ -5016,7 +5016,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-dispatcher"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5040,7 +5040,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-grpc"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5086,7 +5086,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-http"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5122,7 +5122,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-kafka"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -5153,7 +5153,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5169,7 +5169,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-impl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5213,7 +5213,7 @@ dependencies = [
 
 [[package]]
 name = "restate-meta"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5252,7 +5252,7 @@ dependencies = [
 
 [[package]]
 name = "restate-meta-rest-model"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bytes",
  "http 0.2.11",
@@ -5268,7 +5268,7 @@ dependencies = [
 
 [[package]]
 name = "restate-network"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5292,7 +5292,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5354,7 +5354,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node-services"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5368,7 +5368,7 @@ dependencies = [
 
 [[package]]
 name = "restate-pb"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "convert_case 0.6.0",
  "once_cell",
@@ -5383,7 +5383,7 @@ dependencies = [
 
 [[package]]
 name = "restate-queue"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bincode",
  "criterion",
@@ -5396,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "restate-schema-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -5417,7 +5417,7 @@ dependencies = [
 
 [[package]]
 name = "restate-schema-impl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5448,7 +5448,7 @@ dependencies = [
 
 [[package]]
 name = "restate-serde-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.21.7",
  "bytes",
@@ -5462,7 +5462,7 @@ dependencies = [
 
 [[package]]
 name = "restate-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "codederror",
@@ -5499,7 +5499,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arc-swap",
  "aws-config",
@@ -5528,7 +5528,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.21.7",
  "bytes",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5577,7 +5577,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-proto"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5593,7 +5593,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-datafusion"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ahash",
  "async-trait",
@@ -5623,7 +5623,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-postgres"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5656,7 +5656,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-rocksdb"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5692,7 +5692,7 @@ dependencies = [
 
 [[package]]
 name = "restate-test-util"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "assert2",
  "googletest",
@@ -5703,7 +5703,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ahash",
  "derive_builder",
@@ -5726,7 +5726,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer-queue"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "futures",
  "tokio",
@@ -5734,7 +5734,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing-instrumentation"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "console-subscriber",
  "derive_builder",
@@ -5757,7 +5757,7 @@ dependencies = [
 
 [[package]]
 name = "restate-types"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5795,7 +5795,7 @@ dependencies = [
 
 [[package]]
 name = "restate-wal-protocol"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "assert2",
@@ -5830,7 +5830,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "assert2",
@@ -5891,7 +5891,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker-api"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "restate-schema-api",
  "restate-types",
@@ -6272,7 +6272,7 @@ dependencies = [
 
 [[package]]
 name = "service-protocol-wireshark-dissector"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bytes",
  "mlua",
@@ -7788,7 +7788,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "drain",
