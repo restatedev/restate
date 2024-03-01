@@ -13,6 +13,7 @@ use std::str::FromStr;
 
 use serde_with::serde_as;
 
+use restate_network::ConnectionManager;
 use restate_types::nodes_config::AdvertisedAddress;
 
 use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDependencies};
@@ -58,9 +59,10 @@ impl Default for Options {
 impl Options {
     pub fn build(
         self,
+        connection_manager: ConnectionManager,
         node_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> NetworkServer {
-        NetworkServer::new(self, node_deps, admin_deps)
+        NetworkServer::new(self, connection_manager, node_deps, admin_deps)
     }
 }
