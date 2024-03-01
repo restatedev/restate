@@ -12,19 +12,18 @@ use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage};
 use assert2::let_assert;
 use futures::{future, StreamExt};
-use restate_core::metadata;
+use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
 use restate_invoker_api::InvokeInputJournal;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::{Deref, RangeInclusive};
 
 use bytes::Bytes;
+use futures::future::OptionFuture;
 use prost::Message;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
-use tokio::task;
-use tokio::task::JoinError;
 use tracing::trace;
 
 mod action_collector;
@@ -34,6 +33,7 @@ use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
+use restate_bifrost::{bifrost, with_bifrost};
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_schema_impl::Schemas;
@@ -51,9 +51,8 @@ type TimerService = restate_timer::TimerService<TimerValue, TokioClock, Partitio
 
 pub(crate) struct LeaderState {
     leader_epoch: LeaderEpoch,
-    shutdown_signal: drain::Signal,
     shuffle_hint_tx: HintSender,
-    shuffle_handle: task::JoinHandle<Result<(), anyhow::Error>>,
+    shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
     action_effect_handler: ActionEffectHandler,
@@ -72,12 +71,12 @@ pub(crate) struct FollowerState<I> {
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Invoker(NotRunningError),
-    #[error("shuffle failed. This indicates a bug or the system is shutting down: {0}")]
-    FailedShuffleTask(anyhow::Error),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
     #[error("action effect handler failed: {0}")]
     ActionEffectHandler(anyhow::Error),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
 }
 
 pub(crate) enum LeadershipState<InvokerInputSender> {
@@ -180,9 +179,12 @@ where
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
 
-            let (shutdown_signal, shutdown_watch) = drain::channel();
-
-            let shuffle_handle = tokio::spawn(shuffle.run(shutdown_watch));
+            let shuffle_task_id = task_center().spawn_child(
+                TaskKind::Shuffle,
+                "shuffle",
+                Some(follower_state.partition_id),
+                with_bifrost(shuffle.run(), bifrost()),
+            )?;
 
             let action_effect_handler = ActionEffectHandler::new(
                 follower_state.partition_id,
@@ -195,9 +197,8 @@ where
                     follower_state,
                     leader_state: LeaderState {
                         leader_epoch,
-                        shutdown_signal,
+                        shuffle_task_id,
                         shuffle_hint_tx,
-                        shuffle_handle,
                         timer_service,
                         action_effect_handler,
                         non_deterministic_service_invoker: service_invoker,
@@ -301,14 +302,12 @@ where
             leader_state:
                 LeaderState {
                     leader_epoch,
-                    shutdown_signal,
-                    shuffle_handle,
+                    shuffle_task_id,
                     ..
                 },
         } = self
         {
-            // trigger shut down of all leadership tasks
-            shutdown_signal.drain().await;
+            let shuffle_handle = OptionFuture::from(task_center().cancel_task(shuffle_task_id));
 
             let (shuffle_result, abort_result) = tokio::join!(
                 shuffle_handle,
@@ -317,7 +316,9 @@ where
 
             abort_result.map_err(Error::Invoker)?;
 
-            Self::unwrap_task_result(shuffle_result).map_err(Error::FailedShuffleTask)?;
+            if let Some(shuffle_result) = shuffle_result {
+                shuffle_result.expect("graceful termination of shuffle task");
+            }
 
             Ok(Self::follower(
                 partition_id,
@@ -332,61 +333,13 @@ where
         }
     }
 
-    fn unwrap_task_result<E>(result: Result<Result<(), E>, JoinError>) -> Result<(), E> {
-        if let Err(err) = result {
-            if err.is_panic() {
-                panic::resume_unwind(err.into_panic());
-            }
-
-            Ok(())
-        } else {
-            result.unwrap()
-        }
-    }
-
-    pub(crate) async fn run_tasks(&mut self) -> TaskResult {
+    pub(crate) async fn run_timer(&mut self) -> TimerValue {
         match self {
             LeadershipState::Follower { .. } => future::pending().await,
             LeadershipState::Leader {
-                leader_state:
-                    LeaderState {
-                        shuffle_handle,
-                        timer_service,
-                        ..
-                    },
+                leader_state: LeaderState { timer_service, .. },
                 ..
-            } => {
-                tokio::select! {
-                    result = shuffle_handle => TaskResult::TerminatedTask(Self::into_task_result("shuffle", result)),
-                    timer = timer_service.as_mut().next_timer() => TaskResult::Timer(timer)
-                }
-            }
-        }
-    }
-
-    fn into_task_result<E: Into<anyhow::Error>>(
-        name: &'static str,
-        result: Result<Result<(), E>, JoinError>,
-    ) -> TokioTaskResult {
-        if let Err(err) = result {
-            if err.is_panic() {
-                panic::resume_unwind(err.into_panic());
-            }
-
-            TokioTaskResult::FailedTask {
-                name,
-                error: TaskError::Cancelled,
-            }
-        } else {
-            let result = result.unwrap();
-
-            result
-                .err()
-                .map(|err| TokioTaskResult::FailedTask {
-                    name,
-                    error: TaskError::Error(err.into()),
-                })
-                .unwrap_or(TokioTaskResult::TerminatedTask(name))
+            } => timer_service.as_mut().next_timer().await,
         }
     }
 
@@ -588,27 +541,8 @@ where
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum TaskResult {
-    TerminatedTask(TokioTaskResult),
-    Timer(TimerValue),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TokioTaskResult {
-    #[error("task '{0}' terminated unexpectedly")]
-    TerminatedTask(&'static str),
-    #[error("task '{name}' failed: {error}")]
-    FailedTask {
-        name: &'static str,
-        error: TaskError,
-    },
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TaskError {
-    #[error("task was cancelled")]
-    Cancelled,
     #[error(transparent)]
     Error(#[from] anyhow::Error),
 }

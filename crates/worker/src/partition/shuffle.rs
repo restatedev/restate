@@ -12,6 +12,7 @@ use crate::partition::shuffle::state_machine::StateMachine;
 use assert2::let_assert;
 use async_channel::{TryRecvError, TrySendError};
 use restate_bifrost::bifrost;
+use restate_core::cancellation_watcher;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::dedup::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
@@ -235,7 +236,7 @@ where
         HintSender::new(self.hint_tx.clone(), self.hint_rx.clone())
     }
 
-    pub(super) async fn run(self, shutdown_watch: drain::Watch) -> anyhow::Result<()> {
+    pub(super) async fn run(self) -> anyhow::Result<()> {
         let Self {
             metadata,
             mut hint_rx,
@@ -245,9 +246,6 @@ where
         } = self;
 
         debug!(restate.node = %metadata.node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
-
-        let shutdown = shutdown_watch.signaled();
-        tokio::pin!(shutdown);
 
         let node_id = metadata.node_id;
         let state_machine = StateMachine::new(
@@ -282,7 +280,7 @@ where
                     // this is just a hint which we can drop
                     let _ = truncation_tx.try_send(OutboxTruncation::new(shuffled_message_index));
                 },
-                _ = &mut shutdown => {
+                _ = cancellation_watcher() => {
                     break;
                 }
             }

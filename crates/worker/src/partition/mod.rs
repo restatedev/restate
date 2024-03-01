@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_HANDLED};
-use crate::partition::leadership::{ActionEffect, LeadershipState, TaskResult};
+use crate::partition::leadership::{ActionEffect, LeadershipState};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 use assert2::let_assert;
@@ -189,16 +189,9 @@ where
                     let action_effect = action_effect.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
                     state.handle_action_effect(action_effect).await?;
                 },
-                task_result = state.run_tasks() => {
-                    match task_result {
-                        TaskResult::Timer(timer) => {
-                            counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
-                            state.handle_action_effect(ActionEffect::Timer(timer)).await?;
-                        },
-                        TaskResult::TerminatedTask(result) => {
-                            Err(result)?
-                        }
-                    }
+                timer = state.run_timer() => {
+                    counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
+                    state.handle_action_effect(ActionEffect::Timer(timer)).await?;
                 },
             }
         }
