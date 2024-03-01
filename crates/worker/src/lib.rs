@@ -14,7 +14,7 @@ use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use codederror::CodedError;
 use restate_bifrost::{bifrost, with_bifrost};
-use restate_core::{cancellation_watcher, task_center, TaskKind};
+use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
 use restate_ingress_dispatcher::{
     IngressDispatcherInputSender, Service as IngressDispatcherService,
 };
@@ -29,7 +29,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 use tracing::debug;
 
@@ -71,8 +71,11 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_types::logs::{LogId, Payload};
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::Version;
+use restate_wal_protocol::control::AnnounceLeader;
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
@@ -366,9 +369,34 @@ impl Worker {
             self.ingress_kafka.run(),
         )?;
 
+        let node_id = metadata().my_node_id();
+        let announce_leader = AnnounceLeader {
+            node_id,
+            // todo: This only works as long as we have an ephemeral log. Once the log becomes
+            //  durable, we need to generate an increasing leader epoch.
+            leader_epoch: LeaderEpoch::INITIAL,
+        };
+
         // Create partition processors
         for processor in self.processors {
             let networking = self.networking.clone();
+
+            let header = Header {
+                dest: Destination::Processor {
+                    partition_key: *processor.partition_key_range.start(),
+                    dedup: None,
+                },
+                source: Source::ControlPlane {},
+            };
+
+            let envelope = Envelope::new(header, Command::AnnounceLeader(announce_leader.clone()));
+            let payload = Payload::from(envelope.encode_with_bincode()?);
+
+            // todo: Remove once we have proper leader election
+            bifrost()
+                .append(LogId::from(processor.partition_id), payload)
+                .await?;
+
             tc.spawn_child(
                 TaskKind::PartitionProcessor,
                 "partition-processor",

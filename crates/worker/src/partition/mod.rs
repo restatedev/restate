@@ -50,7 +50,7 @@ use restate_wal_protocol::control::AnnounceLeader;
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     pub partition_id: PartitionId,
-    partition_key_range: RangeInclusive<PartitionKey>,
+    pub partition_key_range: RangeInclusive<PartitionKey>,
 
     timer_service_options: restate_timer::Options,
     channel_size: usize,
