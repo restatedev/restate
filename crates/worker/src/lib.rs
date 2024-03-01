@@ -228,8 +228,7 @@ impl Worker {
             );
 
         // todo: Fix once we support dynamic partition tables
-        let partition_table = FixedPartitionTable::new(Version::MIN, opts.partitions);
-        let partitioner = partition_table.partitioner();
+        let partitioner = FixedPartitionTable::new(Version::MIN, opts.partitions).partitioner();
 
         let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
