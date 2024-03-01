@@ -86,6 +86,7 @@ impl LogletProvider for MemoryLogletProvider {
     }
 }
 
+#[derive(Debug)]
 struct OffsetWatcher {
     offset: LogletOffset,
     channel: Sender<()>,
@@ -137,7 +138,7 @@ impl MemoryLoglet {
 
     fn index_to_offset(&self, index: usize) -> LogletOffset {
         let offset = self.trim_point_offset.load(Ordering::Acquire);
-        LogletOffset::from(offset + index as u64)
+        LogletOffset::from(offset + 1 + index as u64)
     }
 
     fn saturating_offset_to_index(&self, offset: LogletOffset) -> usize {

@@ -34,7 +34,9 @@ pub(crate) trait LsnExt: SequenceNumber {
         let base_lsn_raw: u64 = base_lsn.into();
         let self_raw: u64 = self.into();
         let oldest_offset: u64 = LogletOffset::OLDEST.into();
-        LogletOffset(self_raw.saturating_sub(base_lsn_raw) + oldest_offset)
+        // We must first add the oldest_offset before subtracting base_lsn_raw because self_raw
+        // can be 0.
+        LogletOffset((self_raw + oldest_offset).saturating_sub(base_lsn_raw))
     }
 }
 
@@ -119,4 +121,20 @@ pub struct FindTailAttributes {
     // Ensure that we are reading the most recent metadata. This should be used when
     // linearizable metadata reads are required.
     // TODO: consistent_read: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::loglet::LogletOffset;
+    use crate::types::LsnExt;
+    use restate_types::logs::{Lsn, SequenceNumber};
+
+    #[test]
+    fn convert_invalid_lsn_into_invalid_offset() {
+        let lsn = Lsn::INVALID;
+
+        let offset = lsn.into_offset(Lsn::OLDEST);
+
+        assert_eq!(offset, LogletOffset::INVALID);
+    }
 }
