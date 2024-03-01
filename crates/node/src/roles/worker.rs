@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use codederror::CodedError;
 use tonic::transport::Channel;
-use tracing::debug;
 use tracing::subscriber::NoSubscriber;
+use tracing::trace;
 
 use restate_core::TaskKind;
 use restate_core::{metadata, task_center};
@@ -182,7 +182,7 @@ impl WorkerRole {
         if let Err(err) = result {
             match err {
                 SchemaError::Fetch(err) => {
-                    debug!("Failed fetching schema information: {err}. Retrying.");
+                    trace!("Failed fetching schema information: {err}. Retrying.");
                 }
                 SchemaError::Decode(_) | SchemaError::Update(_) | SchemaError::Subscription(_) => {
                     Err(err)?
@@ -206,7 +206,7 @@ impl WorkerRole {
         loop {
             fetch_interval.tick().await;
 
-            debug!("Trying to fetch schema information");
+            trace!("Trying to fetch schema information");
 
             Self::ignore_fetch_error(
                 Self::fetch_and_update_schemas(
