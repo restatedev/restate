@@ -9,6 +9,8 @@ publish = false
 
 [features]
 default = []
+clients = []
+servers = []
 
 [dependencies]
 restate-node-protocol = { workspace = true }

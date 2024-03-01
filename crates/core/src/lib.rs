@@ -17,3 +17,9 @@ pub use metadata::{spawn_metadata_manager, Metadata, MetadataManager, MetadataWr
 pub use network_sender::{NetworkSendError, NetworkSender};
 pub use task_center::*;
 pub use task_center_types::*;
+
+#[cfg(any(test, feature = "test-util"))]
+mod test_env;
+
+#[cfg(any(test, feature = "test-util"))]
+pub use test_env::{create_mock_nodes_config, TestCoreEnv};
