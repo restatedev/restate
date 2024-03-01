@@ -38,7 +38,8 @@ impl Default for Options {
         }
 
         Self {
-            default_provider: ProviderKind::File,
+            // todo: Replace with File once properly implemented
+            default_provider: ProviderKind::Memory,
             providers_config,
         }
     }
