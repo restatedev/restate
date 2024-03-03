@@ -17,45 +17,21 @@ pub use manager::MetadataManager;
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwapOption;
-use enum_map::{Enum, EnumMap};
-use strum_macros::EnumIter;
+use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
-use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+use restate_node_protocol::{MetadataContainer, MetadataKind};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::{GenerationalNodeId, Version};
 
+use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+
 /// The kind of versioned metadata that can be synchronized across nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Enum, EnumIter)]
-pub enum MetadataKind {
-    NodesConfiguration,
-    Schema,
-    PartitionTable,
-    Logs,
-}
 
 #[derive(Clone)]
 pub struct Metadata {
     sender: manager::CommandSender,
     inner: Arc<MetadataInner>,
-}
-
-pub enum MetadataContainer {
-    NodesConfiguration(NodesConfiguration),
-}
-
-impl MetadataContainer {
-    pub fn kind(&self) -> MetadataKind {
-        match self {
-            MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
-        }
-    }
-}
-
-impl From<NodesConfiguration> for MetadataContainer {
-    fn from(value: NodesConfiguration) -> Self {
-        MetadataContainer::NodesConfiguration(value)
-    }
 }
 
 impl Metadata {

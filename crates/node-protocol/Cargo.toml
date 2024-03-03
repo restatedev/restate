@@ -1,5 +1,5 @@
 [package]
-name = "restate-node-services"
+name = "restate-node-protocol"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -11,15 +11,19 @@ publish = false
 default = []
 
 [dependencies]
-restate-node-protocol = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["serde"] }
 
 anyhow = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+derive_more = { workspace = true }
+enum-map = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+serde = { workspace = true}
+strum = { workspace = true }
+strum_macros = { workspace = true }
 thiserror = { workspace = true, optional = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+prost-build = { workspace = true }
+
