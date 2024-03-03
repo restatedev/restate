@@ -27,7 +27,6 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::nodes_config::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
-use restate_types::NodeId;
 use restate_worker::{SubscriptionControllerHandle, Worker, WorkerCommandSender};
 use restate_worker_api::SubscriptionController;
 use tracing::info;
@@ -169,7 +168,7 @@ impl WorkerRole {
                 cc_client
                     .clone()
                     .attach_node(AttachmentRequest {
-                        node_id: NodeId::my_node_id().map(Into::into),
+                        node_id: Some(metadata().my_node_id().into()),
                     })
                     .await
             })

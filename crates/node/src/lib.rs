@@ -24,10 +24,10 @@ use anyhow::bail;
 use codederror::CodedError;
 use tracing::{error, info};
 
-use restate_core::metadata::{spawn_metadata_manager, MetadataManager};
+use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::{GenerationalNodeId, MyNodeIdWriter, NodeId, Version};
+use restate_types::{GenerationalNodeId, Version};
 
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
@@ -100,8 +100,6 @@ impl Node {
         let bifrost = options.bifrost.build(options.worker.partitions);
 
         let server = options.server.build(
-            metadata_manager.metadata(),
-            metadata_manager.writer(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
                     worker.rocksdb_storage().clone(),
@@ -146,7 +144,7 @@ impl Node {
                 my_id.with_generation(1)
             } else {
                 // default to node-id 1 generation 1
-                GenerationalNodeId::new(1, 1)
+                GenerationalNodeId::new(1, 0)
             };
             // Temporary: nodes configuration from current node.
             let mut nodes_config =
@@ -211,7 +209,6 @@ impl Node {
         let mut my_node_id = current_config.current_generation;
         my_node_id.bump_generation();
 
-        let my_node_id: NodeId = my_node_id.into();
         // TODO: replace this temporary code with proper CAS write to metadata store
         // Simulate a node configuration update and commit
         {
@@ -219,7 +216,7 @@ impl Node {
 
             let my_node = NodeConfig::new(
                 self.options.node_name.clone(),
-                my_node_id.as_generational().unwrap(),
+                my_node_id,
                 address,
                 self.options.roles,
             );
@@ -230,7 +227,7 @@ impl Node {
             metadata_writer.update(editable_nodes_config).await?;
         }
         // My Node ID is set
-        MyNodeIdWriter::set_as_my_node_id(my_node_id);
+        metadata_writer.set_my_node_id(my_node_id);
         info!("My Node ID is {}", my_node_id);
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
