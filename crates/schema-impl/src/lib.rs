@@ -337,12 +337,12 @@ impl Schemas {
 
     pub fn compute_modify_component(
         &self,
-        service_name: String,
+        component_name: String,
         public: bool,
     ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         self.0
             .load()
-            .compute_modify_component_updates(service_name, public)
+            .compute_modify_component_updates(component_name, public)
     }
 
     pub fn compute_remove_deployment(
