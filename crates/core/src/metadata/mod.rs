@@ -20,7 +20,7 @@ use arc_swap::ArcSwapOption;
 use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
-use restate_node_protocol::{MetadataContainer, MetadataKind};
+use restate_node_protocol::metadata::{MetadataContainer, MetadataKind};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::{GenerationalNodeId, Version};
 

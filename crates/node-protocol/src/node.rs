@@ -76,7 +76,7 @@ impl From<ConnectionControl> for message::Body {
 
 impl From<BinaryMessage> for message::Body {
     fn from(value: BinaryMessage) -> Self {
-        message::Body::Bincoded(value)
+        message::Body::Encoded(value)
     }
 }
 
@@ -98,12 +98,6 @@ impl ConnectionControl {
             signal: message::Signal::CodecError.into(),
             message: message.into(),
         }
-    }
-}
-
-impl std::fmt::Display for MessageKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str_name())
     }
 }
 

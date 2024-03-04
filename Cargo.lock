@@ -5359,7 +5359,7 @@ dependencies = [
 name = "restate-node-protocol"
 version = "0.9.0"
 dependencies = [
- "anyhow",
+ "bincode",
  "bytes",
  "derive_more",
  "enum-map",

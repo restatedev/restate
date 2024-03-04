@@ -8,20 +8,42 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod codec;
 pub mod common;
-mod metadata;
+mod error;
+pub mod metadata;
 pub mod node;
-mod protocol;
 
+// re-exports for convenience
 pub use common::CURRENT_PROTOCOL_VERSION;
 pub use common::MIN_SUPPORTED_PROTOCOL_VERSION;
+pub use error::*;
 
-pub use metadata::*;
-pub use node::MessageKind;
-pub use protocol::{MessageEnvelope, NetworkMessage};
+use restate_types::GenerationalNodeId;
 
-// re-exports of network message types
-pub mod messages {
-    pub use crate::metadata::GetMetadataRequest;
-    pub use crate::metadata::MetadataUpdate;
+use self::codec::WireSerde;
+
+/// A wrapper for a message that includes the sender id
+pub struct MessageEnvelope<M: WireSerde> {
+    peer: GenerationalNodeId,
+    connection_id: u64,
+    body: M,
+}
+
+impl<M: WireSerde> MessageEnvelope<M> {
+    pub fn new(peer: GenerationalNodeId, connection_id: u64, body: M) -> Self {
+        Self {
+            peer,
+            connection_id,
+            body,
+        }
+    }
+
+    pub fn connection_id(&self) -> u64 {
+        self.connection_id
+    }
+
+    pub fn split(self) -> (GenerationalNodeId, M) {
+        (self.peer, self.body)
+    }
 }

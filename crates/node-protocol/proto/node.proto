@@ -35,12 +35,6 @@ message Welcome {
   dev.restate.common.NodeId my_node_id = 3;
 }
 
-enum MessageKind {
-  MessageKind_UNKNOWN = 0;
-  GET_METADATA_REQUEST = 1;
-  METADATA_UPDATE = 2;
-}
-
 // Bidirectional Communication
 message Message {
   enum Signal {
@@ -56,7 +50,7 @@ message Message {
   }
 
   message BinaryMessage {
-    MessageKind kind = 1;
+    dev.restate.common.TargetName target = 1;
     bytes payload = 2;
   }
 
@@ -67,6 +61,6 @@ message Message {
     Hello hello = 3;
     // Sent as first response
     Welcome welcome = 4;
-    BinaryMessage bincoded = 5;
+    BinaryMessage encoded = 5;
   }
 }

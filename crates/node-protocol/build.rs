@@ -26,6 +26,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "MessageKind",
             "#[derive(::enum_map::Enum, ::strum_macros::EnumIs)]",
         )
+        .enum_attribute(
+            "TargetName",
+            "#[derive(::enum_map::Enum, ::strum_macros::EnumIs, ::strum_macros::Display)]",
+        )
         .enum_attribute("Message.body", "#[derive(::strum_macros::EnumIs)]")
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("node_descriptor.bin"))

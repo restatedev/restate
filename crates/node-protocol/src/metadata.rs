@@ -8,10 +8,50 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
 use enum_map::Enum;
 use restate_types::nodes_config::NodesConfiguration;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
+
+use crate::codec::{Targeted, WireSerde};
+use crate::common::ProtocolVersion;
+use crate::common::TargetName;
+use crate::CodecError;
+
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    derive_more::From,
+    strum_macros::EnumIs,
+    strum_macros::IntoStaticStr,
+)]
+pub enum MetadataMessage {
+    GetMetadataRequest(GetMetadataRequest),
+    MetadataUpdate(MetadataUpdate),
+}
+
+impl Targeted for MetadataMessage {
+    const TARGET: TargetName = TargetName::MetadataManager;
+
+    fn kind(&self) -> &'static str {
+        self.into()
+    }
+}
+
+impl WireSerde for MetadataMessage {
+    fn encode(&self, _protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
+        // serialize message to bytes
+        Ok(bincode::serde::encode_to_vec(self, bincode::config::standard())?.into())
+    }
+
+    fn decode(payload: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
+        let (output, _) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
+        Ok(output)
+    }
+}
 
 /// The kind of versioned metadata that can be synchronized across nodes.
 #[derive(

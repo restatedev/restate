@@ -8,27 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use async_trait::async_trait;
-use restate_node_protocol::NetworkMessage;
+use restate_node_protocol::CodecError;
 use restate_types::nodes_config::NodesConfigError;
-use restate_types::NodeId;
 
 use crate::ShutdownError;
 
 #[derive(Debug, thiserror::Error)]
-pub enum NetworkSendError {
-    #[error("Unknown node: {0}")]
-    UnknownNode(#[from] NodesConfigError),
-    #[error("Operation aborted, node is shutting down")]
-    Shutdown(#[from] ShutdownError),
-    #[error("OldPeerGeneration: {0}")]
-    OldPeerGeneration(String),
-    #[error("Cannot send messages to this node: {0}")]
-    Unavailable(String),
+pub enum RouterError {
+    #[error("codec error: {0}")]
+    CodecError(#[from] CodecError),
+    #[error("target not registered: {0}")]
+    NotRegisteredTarget(String),
 }
 
-/// Access to node-to-node networking infrastructure
-#[async_trait]
-pub trait NetworkSender: Send + Sync {
-    async fn send(&self, to: NodeId, message: &NetworkMessage) -> Result<(), NetworkSendError>;
+#[derive(Debug, thiserror::Error)]
+pub enum NetworkSendError {
+    #[error("unknown node: {0}")]
+    UnknownNode(#[from] NodesConfigError),
+    #[error("operation aborted, node is shutting down")]
+    Shutdown(#[from] ShutdownError),
+    #[error("oldPeerGeneration: {0}")]
+    OldPeerGeneration(String),
+    #[error("codec error: {0}")]
+    Codec(#[from] CodecError),
+    #[error("peer is not connected")]
+    ConnectionClosed,
+    #[error("cannot send messages to this node: {0}")]
+    Unavailable(String),
 }

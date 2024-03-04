@@ -13,8 +13,8 @@ default = []
 [dependencies]
 restate-types = { workspace = true, features = ["serde"] }
 
-anyhow = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 prost = { workspace = true }
@@ -22,7 +22,7 @@ prost-types = { workspace = true }
 serde = { workspace = true}
 strum = { workspace = true }
 strum_macros = { workspace = true }
-thiserror = { workspace = true, optional = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
