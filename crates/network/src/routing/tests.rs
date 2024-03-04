@@ -19,11 +19,11 @@ use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::message::PartitionTarget;
+use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_wal_protocol::{AckMode, Command, Destination, Envelope, Header, Source};
 
 use crate::{
-    FindPartition, Network, NetworkHandle, PartitionTableError, ShuffleOrIngressTarget,
-    TargetShuffle, TargetShuffleOrIngress,
+    Network, NetworkHandle, ShuffleOrIngressTarget, TargetShuffle, TargetShuffleOrIngress,
 };
 
 #[derive(Debug, Default, Clone)]

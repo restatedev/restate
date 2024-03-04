@@ -12,12 +12,11 @@ extern crate core;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::partitioning_scheme::FixedConsecutivePartitions;
 use crate::services::Services;
 use codederror::CodedError;
 use partition::shuffle;
 use restate_consensus::Consensus;
-use restate_core::{cancellation_watcher, task_center, TaskKind};
+use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
 use restate_ingress_dispatcher::{
     IngressDispatcherInputSender, Service as IngressDispatcherService,
 };
@@ -43,7 +42,6 @@ mod invoker_integration;
 mod metric_definitions;
 mod network_integration;
 mod partition;
-mod partitioning_scheme;
 mod services;
 mod subscription_integration;
 mod util;
@@ -209,7 +207,7 @@ pub struct Worker {
     external_client_ingress: ExternalClientIngress,
     network_ingress_sender: mpsc::Sender<Envelope>,
     ingress_kafka: IngressKafkaService,
-    services: Services<FixedConsecutivePartitions>,
+    services: Services,
     rocksdb_writer: RocksDBWriter,
     rocksdb_storage: RocksDBStorage,
 }
@@ -232,7 +230,6 @@ impl Worker {
             ..
         } = opts;
 
-        let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
         let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
@@ -252,12 +249,13 @@ impl Worker {
                 ingress_kafka.create_command_sender(),
             );
 
-        let partition_table = FixedConsecutivePartitions::new(num_partition_processors);
+        let partition_table = metadata().partition_table();
+        let partitioner = partition_table.partitioner();
 
         let network = network_integration::Network::new(
             raft_in_tx,
             ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
-            partition_table.clone(),
+            partition_table,
             channel_size,
         );
         let network_ingress_sender = network.create_ingress_sender();
@@ -283,8 +281,6 @@ impl Worker {
             schemas.clone(),
         )?;
         let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
-
-        let partitioner = partition_table.partitioner();
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = partitioner
             .map(|(idx, partition_range)| {
@@ -313,7 +309,6 @@ impl Worker {
         let services = Services::new(
             consensus.create_proposal_sender(),
             subscription_controller_handle,
-            partition_table,
             channel_size,
         );
 
