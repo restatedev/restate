@@ -4973,6 +4973,7 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -5273,6 +5274,7 @@ name = "restate-network"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "drain",
  "futures",
@@ -5280,9 +5282,11 @@ dependencies = [
  "pin-project",
  "restate-core",
  "restate-errors",
+ "restate-node-protocol",
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",
+ "static_assertions",
  "test-log",
  "thiserror",
  "tokio",

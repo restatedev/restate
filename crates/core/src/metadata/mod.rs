@@ -24,6 +24,7 @@ use restate_node_protocol::metadata::{MetadataContainer, MetadataKind};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::{GenerationalNodeId, Version};
 
+use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
 /// The kind of versioned metadata that can be synchronized across nodes.
@@ -148,10 +149,13 @@ impl Default for VersionWatch {
     }
 }
 
-pub fn spawn_metadata_manager(
+pub fn spawn_metadata_manager<N>(
     tc: &TaskCenter,
-    metadata_manager: MetadataManager,
-) -> Result<TaskId, ShutdownError> {
+    metadata_manager: MetadataManager<N>,
+) -> Result<TaskId, ShutdownError>
+where
+    N: NetworkSender + 'static,
+{
     tc.spawn(
         TaskKind::MetadataBackgroundSync,
         "metadata-manager",
