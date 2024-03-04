@@ -15,7 +15,9 @@ mod roles;
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
+use restate_core::network::MessageRouterBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
+use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 
 use std::ops::Deref;
@@ -63,7 +65,7 @@ pub enum BuildError {
 
 pub struct Node {
     options: Options,
-    metadata_manager: MetadataManager,
+    metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
@@ -83,16 +85,19 @@ impl Node {
             }
         }
 
-        let metadata_manager = MetadataManager::build();
+        let mut sr_builder = MessageRouterBuilder::default();
+        let networking = Networking::default();
+        let metadata_manager = MetadataManager::build(networking.clone());
+        metadata_manager.register_in_message_router(&mut sr_builder);
 
         let admin_role = if options.roles.contains(Role::Admin) {
-            Some(AdminRole::try_from(options.clone())?)
+            Some(AdminRole::new(options.clone(), networking.clone())?)
         } else {
             None
         };
 
         let worker_role = if options.roles.contains(Role::Worker) {
-            Some(WorkerRole::try_from(options.clone())?)
+            Some(WorkerRole::new(options.clone(), networking.clone())?)
         } else {
             None
         };

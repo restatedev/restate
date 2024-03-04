@@ -8,10 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod error;
-mod message_router;
-mod network_sender;
+pub mod error;
+mod networking;
 
-pub use error::*;
-pub use message_router::*;
-pub use network_sender::*;
+pub use networking::Networking;

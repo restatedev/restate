@@ -8,26 +8,132 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Deref;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{debug, info, warn};
+
+use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate};
+use restate_node_protocol::MessageEnvelope;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::GenerationalNodeId;
+use restate_types::Version;
 
 use crate::cancellation_watcher;
-use restate_types::nodes_config::NodesConfiguration;
+use crate::is_cancellation_requested;
+use crate::metadata;
+use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
+use crate::task_center;
 
-use super::Metadata;
-use super::MetadataContainer;
-use super::MetadataInner;
-use super::MetadataKind;
-use super::MetadataWriter;
+use super::{Metadata, MetadataContainer, MetadataInner, MetadataKind, MetadataWriter};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
 pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
+}
+
+/// A handler for processing network messages targeting metadata manager
+/// (dev.restate.common.TargetName = METADATA_MANAGER)
+struct MetadataMessageHandler<N>
+where
+    N: NetworkSender + 'static + Clone,
+{
+    sender: CommandSender,
+    networking: N,
+}
+
+impl<N> MetadataMessageHandler<N>
+where
+    N: NetworkSender + 'static + Clone,
+{
+    fn send_metadata(
+        &self,
+        peer: GenerationalNodeId,
+        metadata_kind: MetadataKind,
+        min_version: Option<Version>,
+    ) {
+        match metadata_kind {
+            MetadataKind::NodesConfiguration => self.send_nodes_config(peer, min_version),
+            _ => {
+                todo!("Can't send metadata '{}' to peer", metadata_kind)
+            }
+        };
+    }
+
+    fn send_nodes_config(&self, to: GenerationalNodeId, version: Option<Version>) {
+        let config = metadata().nodes_config();
+        if version.is_some_and(|min_version| min_version > config.version()) {
+            // We don't have the version that the peer is asking for. Just ignore.
+            info!(
+                "Peer requested nodes config version {} but we have {}, ignoring their request",
+                version.unwrap(),
+                config.version()
+            );
+            return;
+        }
+        info!(
+            "Sending nodes config {} to peer, requested version? {:?}",
+            config.version(),
+            version,
+        );
+        let _ = task_center().spawn_child(
+            crate::TaskKind::Disposable,
+            "send-metadata-to-peer",
+            None,
+            {
+                let networking = self.networking.clone();
+                async move {
+                    networking
+                        .send(
+                            to.into(),
+                            &MetadataMessage::MetadataUpdate(MetadataUpdate {
+                                container: MetadataContainer::NodesConfiguration(
+                                    config.deref().clone(),
+                                ),
+                            }),
+                        )
+                        .await?;
+                    Ok(())
+                }
+            },
+        );
+    }
+}
+
+impl<N> MessageHandler for MetadataMessageHandler<N>
+where
+    N: NetworkSender + 'static + Clone,
+{
+    type MessageType = MetadataMessage;
+
+    async fn on_message(&self, envelope: MessageEnvelope<MetadataMessage>) {
+        let (peer, msg) = envelope.split();
+        match msg {
+            MetadataMessage::MetadataUpdate(update) => {
+                info!(
+                    "Received '{}' metadata update from peer {}",
+                    update.container.kind(),
+                    peer
+                );
+                if let Err(e) = self
+                    .sender
+                    .send(Command::UpdateMetadata(update.container, None))
+                {
+                    if !is_cancellation_requested() {
+                        warn!("Failed to send metadata message to metadata manager: {}", e);
+                    }
+                }
+            }
+            MetadataMessage::GetMetadataRequest(request) => {
+                debug!("Received GetMetadataRequest from peer {}", peer);
+                self.send_metadata(peer, request.metadata_kind, request.min_version);
+            }
+        };
+    }
 }
 
 /// Handle to access locally cached metadata, request metadata updates, and more.
@@ -49,21 +155,32 @@ pub(super) enum Command {
 /// - Schema metadata
 /// - NodesConfiguration
 /// - Partition table
-pub struct MetadataManager {
+pub struct MetadataManager<N> {
     self_sender: CommandSender,
     inner: Arc<MetadataInner>,
     inbound: CommandReceiver,
+    networking: N,
 }
 
-impl MetadataManager {
-    pub fn build() -> Self {
-        let (self_sender, inbound) = tokio::sync::mpsc::unbounded_channel();
-
+impl<N> MetadataManager<N>
+where
+    N: NetworkSender + 'static + Clone,
+{
+    pub fn build(networking: N) -> Self {
+        let (self_sender, inbound) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(MetadataInner::default()),
             inbound,
             self_sender,
+            networking,
         }
+    }
+
+    pub fn register_in_message_router(&self, sr_builder: &mut MessageRouterBuilder) {
+        sr_builder.add_message_handler(MetadataMessageHandler {
+            sender: self.self_sender.clone(),
+            networking: self.networking.clone(),
+        });
     }
 
     pub fn metadata(&self) -> Metadata {
@@ -124,6 +241,11 @@ impl MetadataManager {
             }
             Some(current) => {
                 /* Do nothing, current is already newer */
+                debug!(
+                    "Ignoring nodes config update {} because we are at {}",
+                    config.version(),
+                    current.version(),
+                );
                 maybe_new_version = current.version();
             }
         }
@@ -156,15 +278,37 @@ mod tests {
     use googletest::prelude::*;
     use restate_test_util::assert_eq;
     use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, Role};
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::{GenerationalNodeId, NodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;
+    use crate::network::NetworkSendError;
     use crate::TaskCenterFactory;
+
+    // TEMPORARY. REMOVED IN NEXT PR(s)
+    #[derive(Clone)]
+    struct MockNetworkSender;
+
+    impl NetworkSender for MockNetworkSender {
+        async fn send<M>(
+            &self,
+            _to: NodeId,
+            _message: &M,
+        ) -> std::result::Result<(), NetworkSendError>
+        where
+            M: restate_node_protocol::codec::WireSerde
+                + restate_node_protocol::codec::Targeted
+                + Send
+                + Sync,
+        {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_nodes_config_updates() -> Result<()> {
+        let network_sender = MockNetworkSender;
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build();
+        let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 
@@ -219,8 +363,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_watchers() -> Result<()> {
+        let network_sender = MockNetworkSender;
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build();
+        let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 

@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use futures::FutureExt;
-use restate_types::identifiers::PartitionId;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use futures::Future;
+use futures::{Future, FutureExt};
+use restate_types::NodeId;
 use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, trace, warn};
 
+use restate_types::identifiers::PartitionId;
+
 use crate::metadata::{spawn_metadata_manager, Metadata, MetadataManager};
+use crate::network::{NetworkSendError, NetworkSender};
 use crate::{TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +33,22 @@ const EXIT_CODE_FAILURE: i32 = 1;
 #[derive(Debug, thiserror::Error)]
 #[error("system is shutting down")]
 pub struct ShutdownError;
+
+// TEMPORARY. REMOVED IN NEXT PR(s)
+#[derive(Clone)]
+struct MockNetworkSender;
+
+impl NetworkSender for MockNetworkSender {
+    async fn send<M>(&self, _to: NodeId, _message: &M) -> Result<(), NetworkSendError>
+    where
+        M: restate_node_protocol::codec::WireSerde
+            + restate_node_protocol::codec::Targeted
+            + Send
+            + Sync,
+    {
+        Ok(())
+    }
+}
 
 /// Used to create a new task center. In practice, there should be a single task center for the
 /// entire process but we might need to create more than one in integration test scenarios.
@@ -56,7 +74,8 @@ pub fn create_test_task_center() -> TaskCenter {
 
     let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
 
-    let metadata_manager = MetadataManager::build();
+    let networking = MockNetworkSender;
+    let metadata_manager = MetadataManager::build(networking);
     let metadata = metadata_manager.metadata();
     metadata_manager
         .writer()

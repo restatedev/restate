@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use codederror::CodedError;
+use restate_network::Networking;
 use tonic::transport::Channel;
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
@@ -96,6 +97,13 @@ pub struct WorkerRole {
 }
 
 impl WorkerRole {
+    pub fn new(options: Options, networking: Networking) -> Result<Self, WorkerRoleBuildError> {
+        let schemas = Schemas::default();
+        let worker = options.worker.build(networking, schemas.clone())?;
+
+        Ok(WorkerRole { schemas, worker })
+    }
+
     pub fn rocksdb_storage(&self) -> &RocksDBStorage {
         self.worker.rocksdb_storage()
     }
@@ -253,17 +261,6 @@ impl WorkerRole {
             bincode::config::standard(),
         )?;
         Ok(schema_updates)
-    }
-}
-
-impl TryFrom<Options> for WorkerRole {
-    type Error = WorkerRoleBuildError;
-
-    fn try_from(options: Options) -> Result<Self, Self::Error> {
-        let schemas = Schemas::default();
-        let worker = options.worker.build(schemas.clone())?;
-
-        Ok(WorkerRole { schemas, worker })
     }
 }
 
