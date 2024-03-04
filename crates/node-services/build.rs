@@ -17,6 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
+        .server_mod_attribute("cluster_ctrl", "#[cfg(feature = \"servers\")]")
+        .client_mod_attribute("cluster_ctrl", "#[cfg(feature = \"clients\")]")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".dev.restate.common", "::restate_node_protocol::common")
@@ -28,6 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("node_svc_descriptor.bin"))
+        .server_mod_attribute("node_svc", "#[cfg(feature = \"servers\")]")
+        .client_mod_attribute("node_svc", "#[cfg(feature = \"clients\")]")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .extern_path(".dev.restate.node", "::restate_node_protocol::node")
