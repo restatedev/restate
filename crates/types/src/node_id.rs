@@ -15,7 +15,17 @@
 /// type. For instance, if any side of the comparison is a generational node id, the other side
 /// must be also generational and the generations must match. If you are only interested in
 /// checking the id part, then compare using `x.id() == y.id()` instead of `x == y`.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, derive_more::From, derive_more::Display)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    derive_more::From,
+    derive_more::Display,
+    strum_macros::EnumIs,
+)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodeId {
     Plain(PlainNodeId),
