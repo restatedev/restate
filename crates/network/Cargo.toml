@@ -11,19 +11,25 @@ publish = false
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-node-services = { workspace = true, features = ["clients"] }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bincode = { workspace = true }
 bytes = { workspace = true }
 drain = { workspace = true }
+enum-map = { workspace = true }
+enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 pin-project = { workspace = true }
+rand = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
@@ -31,6 +37,9 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
+restate-types = { workspace = true }
 
+googletest = { workspace = true }
 test-log = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
