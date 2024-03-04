@@ -18,7 +18,7 @@ use tracing::info;
 
 use restate_core::cancellation_watcher;
 use restate_meta::{FileMetaReader, MetaHandle};
-use restate_node_services::node::node_svc_client::NodeSvcClient;
+use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
 
 use crate::{rest_api, state, storage_query};

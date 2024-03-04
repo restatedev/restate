@@ -12,9 +12,11 @@ test-util = []
 
 [dependencies]
 restate-types = { workspace = true }
+restate-node-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+async-trait = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }

@@ -11,8 +11,9 @@ syntax = "proto3";
 
 import "google/protobuf/empty.proto";
 import "common.proto";
+import "node.proto";
 
-package dev.restate.node;
+package dev.restate.node_svc;
 
 service NodeSvc {
   // Get identity information from this node.
@@ -56,15 +57,11 @@ message StateMutationRequest {
   bytes state_mutation = 1;
 }
 
-message StorageQueryRequest {
-  string query = 1;
-}
+message StorageQueryRequest { string query = 1; }
 
 message StorageQueryResponse {
   bytes header = 1;
   bytes data = 2;
 }
 
-message UpdateSchemaRequest {
-  bytes schema_bin = 1;
-}
+message UpdateSchemaRequest { bytes schema_bin = 1; }

@@ -16,24 +16,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .bytes(["."])
-        .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
-        // allow older protobuf compiler to be used
-        .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/common.proto"], &["proto"])?;
-
-    tonic_build::configure()
-        .bytes(["."])
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/cluster_ctrl_svc.proto"], &["proto"])?;
+        .extern_path(".dev.restate.common", "::restate_node_protocol::common")
+        .compile(
+            &["./proto/cluster_ctrl_svc.proto"],
+            &["proto", "../node-protocol/proto"],
+        )?;
 
     tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile(&["./proto/node_svc.proto"], &["proto"])?;
+        .extern_path(".dev.restate.node", "::restate_node_protocol::node")
+        .extern_path(".dev.restate.common", "::restate_node_protocol::common")
+        .compile(
+            &["./proto/node_svc.proto"],
+            &["proto", "../node-protocol/proto"],
+        )?;
 
     Ok(())
 }
