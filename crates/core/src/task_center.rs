@@ -23,7 +23,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_types::identifiers::PartitionId;
 
-use crate::metadata::{spawn_metadata_manager, Metadata, MetadataManager};
+use crate::metadata::Metadata;
 use crate::network::{NetworkSendError, NetworkSender};
 use crate::{TaskId, TaskKind};
 
@@ -66,25 +66,6 @@ impl TaskCenterFactory {
             }),
         }
     }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-pub fn create_test_task_center() -> TaskCenter {
-    use restate_types::GenerationalNodeId;
-
-    let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-
-    let networking = MockNetworkSender;
-    let metadata_manager = MetadataManager::build(networking);
-    let metadata = metadata_manager.metadata();
-    metadata_manager
-        .writer()
-        .set_my_node_id(GenerationalNodeId::new(1, 1));
-    tc.try_set_global_metadata(metadata);
-
-    spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager should start");
-
-    tc
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.

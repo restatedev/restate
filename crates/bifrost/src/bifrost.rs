@@ -265,7 +265,8 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
-    use restate_core::{create_test_task_center, task_center};
+    use restate_core::task_center;
+    use restate_core::TestCoreEnv;
     use restate_types::logs::SequenceNumber;
     use tracing::info;
     use tracing_test::traced_test;
@@ -273,7 +274,8 @@ mod tests {
     #[tokio::test]
     #[traced_test]
     async fn test_append_smoke() -> Result<()> {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             // start a simple bifrost service with 5 logs.
             let num_partitions = 5;
@@ -344,7 +346,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_lazy_initialization() -> Result<()> {
-        let tc = create_test_task_center();
+        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             let delay = Duration::from_secs(5);
             let num_partitions = 5;
