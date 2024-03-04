@@ -70,7 +70,7 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
             get(openapi_handler!(handlers::list_component_handlers)),
         )
         .route(
-            "/components/:service/handlers/:handler",
+            "/components/:component/handlers/:handler",
             get(openapi_handler!(handlers::get_component_handler)),
         )
         .route(
