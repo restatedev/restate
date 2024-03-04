@@ -409,10 +409,8 @@ impl Schemas {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use restate_schema_api::component::ComponentMetadataResolver;
 
-    use restate_schema_api::deployment::DeploymentResolver;
-    use restate_schema_api::service::ServiceMetadataResolver;
+    use restate_schema_api::component::ComponentMetadataResolver;
     use restate_test_util::assert_eq;
 
     impl Schemas {
@@ -422,30 +420,6 @@ mod tests {
                 .services
                 .insert(service_name.to_string(), service_schemas);
             self.0.store(Arc::new(schemas_inner));
-        }
-
-        #[track_caller]
-        pub(crate) fn assert_service_revision(&self, svc_name: &str, revision: ComponentRevision) {
-            assert_eq!(
-                self.resolve_latest_service_metadata(svc_name)
-                    .unwrap()
-                    .revision,
-                revision
-            );
-        }
-
-        #[track_caller]
-        pub(crate) fn assert_resolves_deployment(
-            &self,
-            svc_name: &str,
-            deployment_id: DeploymentId,
-        ) {
-            assert_eq!(
-                self.resolve_latest_deployment_for_service(svc_name)
-                    .unwrap()
-                    .id,
-                deployment_id
-            );
         }
 
         #[track_caller]

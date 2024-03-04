@@ -17,13 +17,13 @@ use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
 impl DeploymentResolver for Schemas {
-    fn resolve_latest_deployment_for_service(
+    fn resolve_latest_deployment_for_component(
         &self,
-        service_name: impl AsRef<str>,
+        component_name: impl AsRef<str>,
     ) -> Option<Deployment> {
         let schemas = self.0.load();
-        let service = schemas.services.get(service_name.as_ref())?;
-        match &service.location {
+        let component = schemas.components.get(component_name.as_ref())?;
+        match &component.location {
             ServiceLocation::BuiltIn { .. } => None,
             ServiceLocation::Deployment {
                 latest_deployment, ..
