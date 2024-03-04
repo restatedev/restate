@@ -13,7 +13,8 @@
 
 use crate::partition;
 use crate::partition::shuffle;
-use crate::partitioning_scheme::FixedConsecutivePartitions;
+use restate_types::partition_table::FixedPartitionTable;
+use std::sync::Arc;
 
 pub(super) type Network = restate_network::Network<
     shuffle::ShuffleInput,
@@ -21,7 +22,7 @@ pub(super) type Network = restate_network::Network<
     partition::types::AckResponse,
     partition::types::ShuffleAckResponse,
     partition::types::IngressAckResponse,
-    FixedConsecutivePartitions,
+    Arc<FixedPartitionTable>,
 >;
 
 mod partition_integration {
