@@ -1,0 +1,29 @@
+[package]
+name = "restate-node-protocol"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-types = { workspace = true, features = ["serde"] }
+
+bincode = { workspace = true }
+bytes = { workspace = true }
+derive_more = { workspace = true }
+enum-map = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+serde = { workspace = true}
+strum = { workspace = true }
+strum_macros = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+

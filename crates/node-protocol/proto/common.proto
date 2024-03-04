@@ -13,8 +13,7 @@ package dev.restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  BASIC_HANDSHAKE = 1;
-  MAX_PROTOCOL_VERSION = 2;
+  BINCODED = 1;
 }
 
 message NodeId {
@@ -26,3 +25,11 @@ message NodeId {
 message Version {
   uint32 value = 1;
 }
+
+// The target service for a message
+enum TargetName {
+  TargetName_UNKNOWN = 0;
+  METADATA_MANAGER = 1;
+  INGRESS = 2;
+}
+

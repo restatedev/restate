@@ -48,6 +48,7 @@ restate-meta = { path = "crates/meta" }
 restate-meta-rest-model = { path = "crates/meta-rest-model" }
 restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
+restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }

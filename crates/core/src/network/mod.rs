@@ -8,11 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod metadata;
-pub mod network;
-mod task_center;
-mod task_center_types;
+mod error;
+mod network_sender;
 
-pub use metadata::{spawn_metadata_manager, Metadata, MetadataManager, MetadataWriter};
-pub use task_center::*;
-pub use task_center_types::*;
+pub use error::*;
+pub use network_sender::*;
