@@ -25,6 +25,7 @@ pub mod journal;
 pub mod logs;
 pub mod message;
 pub mod nodes_config;
+pub mod partition_table;
 pub mod retries;
 pub mod state_mut;
 pub mod subscription;
