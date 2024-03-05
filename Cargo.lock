@@ -5818,6 +5818,7 @@ dependencies = [
  "strum 0.26.1",
  "strum_macros 0.26.1",
  "sync_wrapper",
+ "test-log",
  "thiserror",
  "tokio",
  "tonic 0.10.2",
