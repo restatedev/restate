@@ -5443,6 +5443,7 @@ dependencies = [
  "prost-types",
  "restate-base64-util",
  "restate-errors",
+ "restate-pb",
  "restate-schema-api",
  "restate-service-client",
  "restate-test-util",

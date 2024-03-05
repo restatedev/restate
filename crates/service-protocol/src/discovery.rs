@@ -292,6 +292,33 @@ fn patch_built_in_descriptors(mut files: Bytes) -> Result<Bytes, ServiceDiscover
             *file = prost_reflect_types::FileDescriptorProto::decode(&*file_desc)
                 .expect("This deserialization should not fail!");
         }
+
+        // Temporary fix to make the TS SDK work with grpc service reflection. It seems that the
+        // TS SDK is not able to send the proper FileDescriptors for the below files. This can be
+        // removed once we no longer rely on receiving gRPC file descriptors from the SDK.
+        if file.name() == "google/protobuf/descriptor.proto" {
+            // Let's take the descriptor we need from the DescriptorPool::global()
+            let file_desc = DescriptorPool::global()
+                .get_file_by_name("google/protobuf/descriptor.proto")
+                .expect("The global descriptor pool must contain descriptor.proto")
+                .encode_to_vec();
+
+            // Let's apply it
+            *file = prost_reflect_types::FileDescriptorProto::decode(&*file_desc)
+                .expect("This deserialization should not fail!");
+        }
+
+        if file.name() == "dev/restate/ext.proto" {
+            // Let's take the descriptor we need from the restate_pb descriptor pool
+            let file_desc = restate_pb::DESCRIPTOR_POOL
+                .get_file_by_name("dev/restate/ext.proto")
+                .expect("The restate_pb descriptor pool must contain ext.proto")
+                .encode_to_vec();
+
+            // Let's apply it
+            *file = prost_reflect_types::FileDescriptorProto::decode(&*file_desc)
+                .expect("This deserialization should not fail!");
+        }
     }
 
     Ok(Bytes::from(files.encode_to_vec()))
