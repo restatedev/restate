@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,23 +8,48 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_network::{FindPartition, PartitionTableError};
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use crate::identifiers::{PartitionId, PartitionKey};
+use crate::{Version, Versioned};
+use std::borrow::Borrow;
 use std::ops::RangeInclusive;
 
-#[derive(Debug, Clone)]
-pub(crate) struct FixedConsecutivePartitions {
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot find target peer for partition key {0}")]
+pub struct PartitionTableError(PartitionKey);
+
+pub trait FindPartition {
+    fn find_partition_id(
+        &self,
+        partition_key: PartitionKey,
+    ) -> Result<PartitionId, PartitionTableError>;
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FixedPartitionTable {
+    version: Version,
     num_partitions: u64,
 }
 
-impl FixedConsecutivePartitions {
+impl FixedPartitionTable {
     const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
 
-    pub(crate) fn new(num_partitions: u64) -> Self {
-        Self { num_partitions }
+    pub fn new(version: Version, num_partitions: u64) -> Self {
+        Self {
+            version,
+            num_partitions,
+        }
     }
 
-    pub(crate) fn partitioner(&self) -> Partitioner {
+    pub fn version(&self) -> Version {
+        self.version
+    }
+
+    pub fn increment_version(&mut self) {
+        self.version = self.version.next();
+    }
+
+    pub fn partitioner(&self) -> Partitioner {
         Partitioner::new(self.num_partitions)
     }
 
@@ -68,13 +93,26 @@ impl FixedConsecutivePartitions {
     }
 }
 
-impl FindPartition for FixedConsecutivePartitions {
+impl Versioned for FixedPartitionTable {
+    fn version(&self) -> Version {
+        self.version()
+    }
+
+    fn increment_version(&mut self) {
+        self.increment_version();
+    }
+}
+
+impl<T> FindPartition for T
+where
+    T: Borrow<FixedPartitionTable>,
+{
     fn find_partition_id(
         &self,
         partition_key: PartitionKey,
     ) -> Result<PartitionId, PartitionTableError> {
-        let partition_id = FixedConsecutivePartitions::partition_key_to_partition_id(
-            self.num_partitions,
+        let partition_id = FixedPartitionTable::partition_key_to_partition_id(
+            self.borrow().num_partitions,
             partition_key,
         );
 
@@ -83,7 +121,7 @@ impl FindPartition for FixedConsecutivePartitions {
 }
 
 #[derive(Debug)]
-pub(crate) struct Partitioner {
+pub struct Partitioner {
     num_partitions: u64,
     next_partition_id: u64,
 }
@@ -105,7 +143,7 @@ impl Iterator for Partitioner {
             let partition_id = self.next_partition_id;
             self.next_partition_id += 1;
 
-            let partition_range = FixedConsecutivePartitions::partition_id_to_partition_range(
+            let partition_range = FixedPartitionTable::partition_id_to_partition_range(
                 self.num_partitions,
                 partition_id,
             );
@@ -121,9 +159,9 @@ impl Iterator for Partitioner {
 mod tests {
     use test_log::test;
 
-    use crate::partitioning_scheme::{FixedConsecutivePartitions, Partitioner};
-    use restate_network::FindPartition;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use crate::identifiers::{PartitionId, PartitionKey};
+    use crate::partition_table::{FindPartition, FixedPartitionTable, Partitioner};
+    use crate::Version;
 
     #[test]
     fn partitioner_produces_consecutive_ranges() {
@@ -152,7 +190,7 @@ mod tests {
         assert_eq!(previous_end, Some(PartitionKey::MAX));
     }
 
-    impl FixedConsecutivePartitions {
+    impl FixedPartitionTable {
         fn unchecked_partition_key_to_target_peer(
             &self,
             partition_key: PartitionKey,
@@ -164,7 +202,7 @@ mod tests {
     #[test(tokio::test)]
     async fn partition_table_resolves_partition_keys() {
         let num_partitions = 10;
-        let partition_table = FixedConsecutivePartitions::new(num_partitions);
+        let partition_table = FixedPartitionTable::new(Version::MIN, num_partitions);
         let partitioner = partition_table.partitioner();
 
         for (partition_id, partition_range) in partitioner {

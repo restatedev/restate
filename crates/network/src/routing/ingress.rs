@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{FindPartition, PartitionTableError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::message::PartitionTarget;
+use restate_types::partition_table::{FindPartition, PartitionTableError};
 use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
