@@ -17,8 +17,8 @@ use std::str::FromStr;
 use enumset::{EnumSet, EnumSetType};
 use http::Uri;
 
-use crate::Version;
 use crate::{GenerationalNodeId, NodeId, PlainNodeId};
+use crate::{Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {
@@ -196,6 +196,16 @@ impl NodesConfiguration {
             MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
             _ => None,
         })
+    }
+}
+
+impl Versioned for NodesConfiguration {
+    fn version(&self) -> Version {
+        self.version()
+    }
+
+    fn increment_version(&mut self) {
+        self.increment_version();
     }
 }
 

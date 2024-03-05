@@ -12,7 +12,6 @@ extern crate core;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::partitioning_scheme::FixedConsecutivePartitions;
 use crate::services::Services;
 use codederror::CodedError;
 use partition::shuffle;
@@ -35,6 +34,7 @@ use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{PartitionKey, PeerId};
 use restate_types::message::PartitionTarget;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::debug;
 use util::IdentitySender;
@@ -43,7 +43,6 @@ mod invoker_integration;
 mod metric_definitions;
 mod network_integration;
 mod partition;
-mod partitioning_scheme;
 mod services;
 mod subscription_integration;
 mod util;
@@ -81,6 +80,8 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_types::partition_table::FixedPartitionTable;
+use restate_types::Version;
 use restate_wal_protocol::Envelope;
 pub use services::WorkerCommandSender;
 
@@ -209,7 +210,7 @@ pub struct Worker {
     external_client_ingress: ExternalClientIngress,
     network_ingress_sender: mpsc::Sender<Envelope>,
     ingress_kafka: IngressKafkaService,
-    services: Services<FixedConsecutivePartitions>,
+    services: Services,
     rocksdb_writer: RocksDBWriter,
     rocksdb_storage: RocksDBStorage,
 }
@@ -232,7 +233,6 @@ impl Worker {
             ..
         } = opts;
 
-        let num_partition_processors = opts.partitions;
         let (raft_in_tx, raft_in_rx) = mpsc::channel(channel_size);
 
         let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
@@ -252,12 +252,14 @@ impl Worker {
                 ingress_kafka.create_command_sender(),
             );
 
-        let partition_table = FixedConsecutivePartitions::new(num_partition_processors);
+        // todo: Fix once we support dynamic partition tables
+        let partition_table = FixedPartitionTable::new(Version::MIN, opts.partitions);
+        let partitioner = partition_table.partitioner();
 
         let network = network_integration::Network::new(
             raft_in_tx,
             ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
-            partition_table.clone(),
+            Arc::new(partition_table),
             channel_size,
         );
         let network_ingress_sender = network.create_ingress_sender();
@@ -283,8 +285,6 @@ impl Worker {
             schemas.clone(),
         )?;
         let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
-
-        let partitioner = partition_table.partitioner();
 
         let (command_senders, processors): (Vec<_>, Vec<_>) = partitioner
             .map(|(idx, partition_range)| {
@@ -313,7 +313,6 @@ impl Worker {
         let services = Services::new(
             consensus.create_proposal_sender(),
             subscription_controller_handle,
-            partition_table,
             channel_size,
         );
 

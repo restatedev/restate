@@ -54,4 +54,6 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+test-log = { workspace = true }
+
 rand = { workspace = true }

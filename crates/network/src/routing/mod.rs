@@ -16,6 +16,7 @@ use crate::{NetworkCommand, TargetShuffle, TargetShuffleOrIngress, UnboundedNetw
 use restate_core::cancellation_watcher;
 use restate_types::identifiers::PeerId;
 use restate_types::message::PartitionTarget;
+use restate_types::partition_table::FindPartition;
 use restate_wal_protocol::Envelope;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -101,7 +102,7 @@ where
     PPOut: TargetShuffleOrIngress<PPToShuffle, PPToIngress>,
     PPToShuffle: TargetShuffle + Into<ShuffleIn> + Debug,
     PPToIngress: Into<IngressIn> + Debug,
-    PartitionTable: crate::FindPartition + Clone,
+    PartitionTable: FindPartition + Clone,
 {
     pub fn new(
         consensus_tx: mpsc::Sender<PartitionTarget<Envelope>>,

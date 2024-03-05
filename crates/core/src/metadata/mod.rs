@@ -22,6 +22,7 @@ use tokio::sync::{oneshot, watch};
 
 use restate_node_protocol::metadata::{MetadataContainer, MetadataKind};
 use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version};
 
 use crate::network::NetworkSender;
@@ -60,7 +61,25 @@ impl Metadata {
         }
     }
 
-    /// Returns when the metadata kind is at the provided version (or newer)
+    /// Panics if partition table is not loaded yet.
+    #[track_caller]
+    pub fn partition_table(&self) -> Arc<FixedPartitionTable> {
+        self.inner
+            .partition_table
+            .load_full()
+            .expect("partition table is loaded")
+    }
+
+    /// Returns Version::INVALID if nodes configuration has not been loaded yet.
+    pub fn partition_table_version(&self) -> Version {
+        let c = self.inner.partition_table.load();
+        match c.as_deref() {
+            Some(c) => c.version(),
+            None => Version::INVALID,
+        }
+    }
+
+    // Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
         metadata_kind: MetadataKind,
@@ -84,6 +103,7 @@ impl Metadata {
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: ArcSwapOption<NodesConfiguration>,
+    partition_table: ArcSwapOption<FixedPartitionTable>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 
