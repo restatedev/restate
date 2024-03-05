@@ -31,14 +31,7 @@ service Awakeables {
 message ResolveAwakeableRequest {
   // Base64 encoded identifier of the Awakeable to resolve.
   string id = 1;
-
-  oneof result {
-    bytes bytes_result = 2;
-
-    // When executing requests to the ingress using JSON, you can pass a json_result directly for ease of use.
-    // json_result will be sent back to the awakeable as string encoded JSON, not as Protobuf value.
-    google.protobuf.Value json_result = 3;
-  }
+  bytes result = 2;
 }
 
 message RejectAwakeableRequest {

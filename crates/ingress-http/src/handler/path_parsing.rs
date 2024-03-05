@@ -17,7 +17,6 @@ use restate_schema_api::component;
 use restate_schema_api::component::ComponentMetadataResolver;
 use std::collections::VecDeque;
 
-#[allow(dead_code)]
 pub(crate) enum AwakeableRequestType {
     Resolve { awakeable_id: String },
     Reject { awakeable_id: String },

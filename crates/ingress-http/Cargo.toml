@@ -19,9 +19,14 @@ restate-ingress-dispatcher = { workspace = true }
 restate-schema-api = { workspace = true, features = ["component"]}
 restate-types = { workspace = true }
 
+# To invoke the awakeables built-in service
+restate-pb = { workspace = true }
+prost = { workspace = true }
+
 # Encoding/Decoding
 bytes = { workspace = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 serde_json = { workspace = true }
 
 # Futures
@@ -50,7 +55,6 @@ derive_builder = { workspace = true }
 metrics = { workspace = true }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
-uuid = { workspace = true }
 urlencoding = "2.1"
 pin-project-lite = "0.2.13"
 

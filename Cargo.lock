@@ -5091,16 +5091,19 @@ dependencies = [
  "metrics",
  "opentelemetry",
  "pin-project-lite",
+ "prost 0.12.3",
  "restate-core",
  "restate-errors",
  "restate-futures-util",
  "restate-ingress-dispatcher",
+ "restate-pb",
  "restate-schema-api",
  "restate-test-util",
  "restate-types",
  "schemars",
  "serde",
  "serde_json",
+ "serde_with",
  "thiserror",
  "tokio",
  "tower",
@@ -5110,7 +5113,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "urlencoding",
- "uuid",
 ]
 
 [[package]]

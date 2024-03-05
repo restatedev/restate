@@ -12,7 +12,6 @@ use std::str::FromStr;
 
 use crate::partition::services::deterministic::*;
 
-use prost_reflect::ReflectMessage;
 use restate_pb::restate::AwakeablesBuiltInService;
 use restate_pb::restate::*;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
@@ -24,25 +23,10 @@ impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
             .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
             .into_inner();
 
-        let result = match req.result {
-            None => {
-                return Err(InvocationError::new_static(
-                    UserErrorCode::InvalidArgument.into(),
-                    "result must be non-empty",
-                ));
-            }
-            Some(resolve_awakeable_request::Result::BytesResult(bytes)) => bytes,
-            Some(resolve_awakeable_request::Result::JsonResult(value)) => Bytes::from(
-                serde_json::to_vec(&value.transcode_to_dynamic()).map_err(|e| {
-                    InvocationError::new(UserErrorCode::InvalidArgument, e.to_string())
-                })?,
-            ),
-        };
-
         self.outbox_message(OutboxMessage::from_awakeable_completion(
             invocation_id,
             entry_index,
-            ResponseResult::from(Ok(result)),
+            ResponseResult::from(Ok(req.result)),
         ));
         Ok(())
     }

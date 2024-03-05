@@ -22,13 +22,14 @@ use restate_schema_api::component::ComponentMetadataResolver;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 
+mod awakeables;
 mod component_handler;
 mod error;
 mod health;
 mod path_parsing;
-mod restate;
 #[cfg(test)]
 mod tests;
+mod tracing;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 

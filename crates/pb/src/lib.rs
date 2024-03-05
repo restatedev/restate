@@ -46,6 +46,8 @@ pub mod restate {
 }
 
 pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
+pub const AWAKEABLES_RESOLVE_HANDLER_NAME: &str = "Resolve";
+pub const AWAKEABLES_REJECT_HANDLER_NAME: &str = "Reject";
 pub const PROXY_SERVICE_NAME: &str = "restate_internal_pp_proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
 pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "restate_remote_context";

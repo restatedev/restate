@@ -11,11 +11,13 @@
 use super::component_handler::*;
 use super::health::HealthResponse;
 use super::mocks::*;
-use super::*;
+use super::Handler;
+use super::ConnectInfo;
 
-use http::Method;
+use bytes::Bytes;
+use http::{Method, Request, Response};
 use http::StatusCode;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use restate_core::create_test_task_center;
 use restate_ingress_dispatcher::IdempotencyMode;
 use restate_ingress_dispatcher::IngressRequest;
