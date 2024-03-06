@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::Weak;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 use tracing::instrument;
@@ -24,6 +25,9 @@ use restate_node_protocol::node::message;
 use restate_node_protocol::node::Header;
 use restate_node_protocol::node::Message;
 use restate_types::GenerationalNodeId;
+
+use crate::metric_definitions::CONNECTION_SEND_DURATION;
+use crate::metric_definitions::MESSAGE_SENT;
 
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
@@ -116,15 +120,20 @@ impl ConnectionSender {
     where
         M: WireSerde + Targeted,
     {
+        let send_start = Instant::now();
         let header = Header::new(metadata().nodes_config_version());
         let body = serialize_message(message, self.protocol_version)?;
-        self.connection
+        let res = self
+            .connection
             .upgrade()
             .ok_or(NetworkSendError::ConnectionClosed)?
             .sender
             .send(Message::new(header, body))
             .await
-            .map_err(|_| NetworkSendError::ConnectionClosed)
+            .map_err(|_| NetworkSendError::ConnectionClosed);
+        MESSAGE_SENT.increment(1);
+        CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        res
     }
 }
 
