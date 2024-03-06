@@ -16,7 +16,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
-use restate_ingress_dispatcher::IngressRequestSender;
+use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
 use std::convert::Infallible;
 use std::future::Future;
@@ -45,27 +45,28 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas> {
+pub struct HyperServerIngress<Schemas, Dispatcher> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     schemas: Schemas,
-    request_tx: IngressRequestSender,
+    dispatcher: Dispatcher,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<Schemas> HyperServerIngress<Schemas>
+impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
         schemas: Schemas,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -73,7 +74,7 @@ where
             listening_addr,
             concurrency_limit,
             schemas,
-            request_tx,
+            dispatcher,
             start_signal_tx,
         };
 
@@ -85,7 +86,7 @@ where
             listening_addr,
             concurrency_limit,
             schemas,
-            request_tx,
+            dispatcher,
             start_signal_tx,
         } = self;
 
@@ -107,8 +108,12 @@ where
         // Prepare the handler
         let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
 
-        let handler =
-            handler::Handler::new(schemas, request_tx, global_concurrency_limit_semaphore);
+        let handler = handler::Handler::new(
+            task_center(),
+            schemas,
+            dispatcher,
+            global_concurrency_limit_semaphore,
+        );
 
         info!(
             net.host.addr = %local_addr.ip(),
@@ -139,7 +144,7 @@ where
     fn handle_connection(
         stream: TcpStream,
         remote_peer: SocketAddr,
-        handler: Handler<Schemas>,
+        handler: Handler<Schemas, Dispatcher>,
     ) -> anyhow::Result<()> {
         let connect_info = ConnectInfo::new(remote_peer);
         let io = TokioIo::new(stream);
@@ -196,6 +201,7 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
+    use restate_ingress_dispatcher::mocks::MockDispatcher;
     use restate_ingress_dispatcher::IngressRequest;
     use restate_test_util::assert_eq;
     use serde::{Deserialize, Serialize};
@@ -282,7 +288,7 @@ mod tests {
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
             mock_component_resolver(),
-            ingress_request_tx,
+            MockDispatcher::new(ingress_request_tx),
         );
         node_env
             .tc

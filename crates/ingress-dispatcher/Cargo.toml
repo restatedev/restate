@@ -14,7 +14,7 @@ mocks = ["dep:restate-test-util"]
 [dependencies]
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
-restate-futures-util = { workspace = true }
+restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["restate-types"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-test-util = { workspace = true, optional = true }
@@ -22,9 +22,9 @@ restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
-assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+dashmap = { workspace = true }
 drain = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }

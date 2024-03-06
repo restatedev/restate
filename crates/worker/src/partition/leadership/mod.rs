@@ -12,8 +12,13 @@ use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage};
 use assert2::let_assert;
 use futures::{future, StreamExt};
-use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
+use restate_core::network::NetworkSender;
+use restate_core::{
+    current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
+};
 use restate_invoker_api::InvokeInputJournal;
+use restate_network::Networking;
+use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::{Deref, RangeInclusive};
@@ -24,7 +29,7 @@ use prost::Message;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
-use tracing::trace;
+use tracing::{trace, warn};
 
 mod action_collector;
 
@@ -35,7 +40,6 @@ use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
-use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_schema_impl::Schemas;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -63,7 +67,7 @@ pub(crate) struct FollowerState<I> {
     timer_service_options: restate_timer::Options,
     channel_size: usize,
     invoker_tx: I,
-    ingress_tx: IngressDispatcherInputSender,
+    networking: Networking,
     partition_key_range: RangeInclusive<PartitionKey>,
     bifrost: Bifrost,
 }
@@ -100,8 +104,8 @@ where
         timer_service_options: restate_timer::Options,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
-        ingress_tx: IngressDispatcherInputSender,
         bifrost: Bifrost,
+        networking: Networking,
     ) -> (Self, ActionEffectStream) {
         (
             Self::Follower(FollowerState {
@@ -110,8 +114,8 @@ where
                 timer_service_options,
                 channel_size,
                 invoker_tx,
-                ingress_tx,
                 bifrost,
+                networking,
             }),
             ActionEffectStream::Follower,
         )
@@ -302,8 +306,8 @@ where
                     channel_size,
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
-                    ingress_tx,
                     bifrost,
+                    networking,
                 },
             leader_state:
                 LeaderState {
@@ -332,8 +336,8 @@ where
                 num_in_memory_timers,
                 channel_size,
                 invoker_tx,
-                ingress_tx,
                 bifrost,
+                networking,
             ))
         } else {
             Ok((self, ActionEffectStream::Follower))
@@ -372,7 +376,7 @@ where
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
                         &mut leader_state.action_effect_handler,
-                        &follower_state.ingress_tx,
+                        &follower_state.networking,
                     )
                     .await?;
                 }
@@ -391,7 +395,7 @@ where
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker,
         action_effect_handler: &mut ActionEffectHandler,
-        ingress_tx: &IngressDispatcherInputSender,
+        networking: &Networking,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
@@ -518,10 +522,62 @@ where
                     .map_err(Error::ActionEffectHandler)?;
             }
             Action::IngressResponse(ingress_response) => {
-                // ingress should only be unavailable when shutting down
-                let _ = ingress_tx
-                    .send(IngressDispatcherInput::Response(ingress_response))
-                    .await;
+                let invocation_id: InvocationId = ingress_response.full_invocation_id.into();
+                // NOTE: We dispatch the response in a non-blocking task-center task to avoid
+                // blocking partition processor. This comes with the risk of overwhelming the
+                // runtime. This should be a temporary solution until we have a better way to
+                // handle this case. Options are split into two categories:
+                //
+                // Category A) Do not block PP's loop if ingress is slow/unavailable
+                //   - Add timeout to the disposable task to drop old/stale responses in congestion
+                //   scenarios.
+                //   - Limit the number of inflight ingress responses (per ingress node) by
+                //   mapping node_id -> Vec<TaskId>
+                // Category B) Enforce Back-pressure on PP if ingress is slow
+                //   - Either directly or through a channel/buffer, block this loop if ingress node
+                //   cannot keep up with the responses.
+                //
+                //  todo: Decide.
+                let maybe_task = task_center().spawn_child(
+                    TaskKind::Disposable,
+                    "respond-to-ingress",
+                    current_task_partition_id(),
+                    {
+                        let networking = networking.clone();
+                        let invocation_id = invocation_id.clone();
+                        async move {
+                            if let Err(e) = networking
+                                .send(
+                                    ingress_response.target_node.into(),
+                                    &ingress::IngressMessage::InvocationResponse(
+                                        ingress::InvocationResponse {
+                                            id: invocation_id.clone(),
+                                            response: ingress_response.response,
+                                        },
+                                    ),
+                                )
+                                .await
+                            {
+                                warn!(
+                                    ?e,
+                                    ingress_node_id = ?ingress_response.target_node,
+                                    invocation.id = %invocation_id,
+                                    "Failed to send ingress response for invocation, will drop \
+                                        the response on the floor"
+                                );
+                            }
+                            Ok(())
+                        }
+                    },
+                );
+
+                if maybe_task.is_err() {
+                    trace!(
+                        restate.invocation.id = %invocation_id,
+                        "Partition processor is shutting down, we are not sending response of {} to ingress",
+                        invocation_id
+                    );
+                }
             }
         }
 

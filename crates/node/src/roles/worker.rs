@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use codederror::CodedError;
+use restate_core::network::MessageRouterBuilder;
 use restate_network::Networking;
 use tonic::transport::Channel;
 use tracing::subscriber::NoSubscriber;
@@ -98,9 +99,16 @@ pub struct WorkerRole {
 }
 
 impl WorkerRole {
-    pub fn new(options: Options, networking: Networking) -> Result<Self, WorkerRoleBuildError> {
+    pub fn new(
+        options: Options,
+        router_builder: &mut MessageRouterBuilder,
+        networking: Networking,
+        bifrost: Bifrost,
+    ) -> Result<Self, WorkerRoleBuildError> {
         let schemas = Schemas::default();
-        let worker = options.worker.build(networking, schemas.clone())?;
+        let worker = options
+            .worker
+            .build(networking, bifrost, router_builder, schemas.clone())?;
 
         Ok(WorkerRole { schemas, worker })
     }

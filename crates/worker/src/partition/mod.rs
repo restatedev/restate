@@ -35,15 +35,13 @@ pub mod types;
 
 use restate_bifrost::{Bifrost, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
-
-use restate_ingress_dispatcher::IngressDispatcherInputSender;
 use restate_storage_api::StorageError;
 use restate_types::dedup::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
 };
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::control::AnnounceLeader;
+use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
@@ -58,8 +56,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     rocksdb_storage: RocksDBStorage,
 
     schemas: Schemas,
-
-    ingress_tx: IngressDispatcherInputSender,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -78,7 +74,6 @@ where
         invoker_tx: InvokerInputSender,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
-        ingress_tx: IngressDispatcherInputSender,
     ) -> Self {
         Self {
             partition_id,
@@ -89,12 +84,11 @@ where
             _entry_codec: Default::default(),
             rocksdb_storage,
             schemas,
-            ingress_tx,
         }
     }
 
-    #[instrument(level = "trace", skip_all, fields(partition_id = %self.partition_id))]
-    pub(super) async fn run(self, _networking: Networking, bifrost: Bifrost) -> anyhow::Result<()> {
+    #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id))]
+    pub(super) async fn run(self, networking: Networking, bifrost: Bifrost) -> anyhow::Result<()> {
         let PartitionProcessor {
             partition_id,
             partition_key_range,
@@ -103,7 +97,6 @@ where
             invoker_tx,
             rocksdb_storage,
             schemas,
-            ingress_tx,
             ..
         } = self;
 
@@ -129,8 +122,8 @@ where
             timer_service_options,
             channel_size,
             invoker_tx,
-            ingress_tx,
             bifrost,
+            networking,
         );
 
         loop {
@@ -337,7 +330,6 @@ impl LogReader {
 
     async fn read_next(&mut self) -> anyhow::Result<(Lsn, Envelope)> {
         let LogRecord { record, offset } = self.log_reader.read_next().await?;
-
         Self::deserialize_record(record).map(|envelope| (offset, envelope))
     }
 
