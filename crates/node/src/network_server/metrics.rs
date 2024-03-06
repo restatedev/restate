@@ -18,13 +18,7 @@ use crate::network_server::Options;
 /// Be mindful when adding new labels, the number of time series(es) is directly propotional
 /// to cardinality of the chosen labels. Avoid using labels with potential high cardinality
 /// as much as possible (e.g. `restate.invocation.id`)
-static ALLOWED_LABELS: &[&str] = &[
-    "partition_id",
-    "rpc.method",
-    "rpc.service",
-    "command",
-    "service",
-];
+static ALLOWED_LABELS: &[&str] = &["rpc.method", "rpc.service", "command", "service"];
 
 pub(crate) fn install_global_prometheus_recorder(opts: &Options) -> PrometheusHandle {
     let builder = PrometheusBuilder::default()
