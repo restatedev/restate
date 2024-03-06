@@ -56,4 +56,4 @@ In order to finish the release, you have to publish it [here](https://github.com
 
 Please also bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
 
-If you are releasing a new major/minor version of the runtime, please also create a new release of the [documentation](https://github.com/restatedev/restate) and update the [website](https://github.com/restatedev/placeholder-website).
+If you are releasing a new major/minor version of the runtime, please also create a new release of the [documentation](https://github.com/restatedev/restate).
