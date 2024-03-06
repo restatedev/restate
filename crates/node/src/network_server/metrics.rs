@@ -19,7 +19,6 @@ use crate::network_server::Options;
 /// to cardinality of the chosen labels. Avoid using labels with potential high cardinality
 /// as much as possible (e.g. `restate.invocation.id`)
 static ALLOWED_LABELS: &[&str] = &[
-    "partition_id",
     "rpc.method",
     "rpc.service",
     "command",
