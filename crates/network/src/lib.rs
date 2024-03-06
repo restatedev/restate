@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,6 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod v2;
-pub use v2::*;
+mod connection;
+mod connection_manager;
+mod handshake;
+pub(crate) mod metric_definitions;
+mod networking;
 pub mod utils;
+
+pub mod error;
+
+pub use connection::ConnectionSender;
+pub use connection_manager::ConnectionManager;
+pub use networking::Networking;

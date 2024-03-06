@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::{Future, FutureExt};
+use metrics::counter;
 use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -22,7 +23,8 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use restate_types::identifiers::PartitionId;
 
-use crate::{Metadata, TaskId, TaskKind};
+use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
+use crate::{metric_definitions, Metadata, TaskId, TaskKind};
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -36,6 +38,7 @@ pub struct ShutdownError;
 pub struct TaskCenterFactory {}
 impl TaskCenterFactory {
     pub fn create(runtime: tokio::runtime::Handle) -> TaskCenter {
+        metric_definitions::describe_metrics();
         TaskCenter {
             inner: Arc::new(TaskCenterInner {
                 runtime,
@@ -147,7 +150,8 @@ impl TaskCenter {
         ));
         *handle_mut = Some(join_handle);
         drop(handle_mut);
-
+        let kind_str: &'static str = kind.into();
+        counter!(TC_SPAWN, "kind" => kind_str).increment(1);
         // Task is ready
         id
     }
@@ -421,6 +425,7 @@ impl TaskCenter {
         kind: TaskKind,
         task_id: TaskId,
     ) {
+        let kind_str: &'static str = kind.into();
         let inner = self.inner.clone();
         // Remove our entry from the tasks map.
         let Some(task) = inner.tasks.lock().unwrap().remove(&task_id) else {
@@ -434,6 +439,8 @@ impl TaskCenter {
             match result {
                 Ok(Ok(())) => {
                     trace!(kind = ?kind, name = ?task.name, "Task {} exited normally", task_id);
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_COMPLETED)
+                        .increment(1);
                 }
                 Ok(Err(err)) => {
                     if err.root_cause().downcast_ref::<ShutdownError>().is_some() {
@@ -450,8 +457,12 @@ impl TaskCenter {
                     } else {
                         error!(kind = ?kind, name = ?task.name, "Task {} failed with: {:?}", task_id, err);
                     }
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
+                        .increment(1);
                 }
                 Err(err) => {
+                    counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
+                        .increment(1);
                     if should_shutdown_on_error {
                         error!(kind = ?kind, name = ?task.name, "Shutting down: task {} panicked: {:?}", task_id, err);
                         request_node_shutdown = true;

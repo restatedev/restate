@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod metadata;
+mod metric_definitions;
 pub mod network;
 mod task_center;
 mod task_center_types;
