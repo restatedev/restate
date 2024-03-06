@@ -62,6 +62,10 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     MetadataBackgroundSync,
     RpcServer,
+    /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
+    /// to shutdown cleanly without waiting indefinitely.
+    #[strum(props(OnCancel = "abort"))]
+    IngressServer,
     RoleRunner,
     SystemService,
     Ingress,

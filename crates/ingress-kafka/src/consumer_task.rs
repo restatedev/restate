@@ -16,7 +16,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
-    DeduplicationId, EventError, IngressRequest, IngressRequestSender,
+    DeduplicationId, DispatchIngressRequest, EventError, IngressDispatcher, IngressRequest,
 };
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{
@@ -85,15 +85,18 @@ impl DeduplicationId for KafkaDeduplicationId {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MessageSender {
     subscription: Subscription,
-    tx: IngressRequestSender,
+    dispatcher: IngressDispatcher,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, tx: IngressRequestSender) -> Self {
-        Self { subscription, tx }
+    pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
+        Self {
+            subscription,
+            dispatcher,
+        }
     }
 
     async fn send(
@@ -147,8 +150,9 @@ impl MessageSender {
         })?;
 
         async {
-            self.tx
-                .send(req)
+            self.dispatcher
+                .dispatch_ingress_request(req)
+                .await
                 .map_err(|_| Error::IngressDispatcherClosed)?;
             rx.await.map_err(|_| Error::IngressDispatcherClosed)?;
 
