@@ -18,7 +18,6 @@ mod methods;
 mod services;
 mod subscriptions;
 
-use crate::rest_api::error::MetaApiError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_meta::{FileMetaReader, MetaReader};
@@ -108,31 +107,37 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
         .with_state(state)
 }
 
-/// Notifies the worker about schema changes. This method is best-effort and will not fail if the worker
-/// could not be reached.
-async fn notify_worker_about_schema_changes(
+/// Notifies the node about schema changes. This method is best-effort and will not fail if the node
+/// could not be reached or the schema changes cannot serialized.
+async fn notify_node_about_schema_changes(
     schema_reader: &FileMetaReader,
     mut node_svc_client: NodeSvcClient<Channel>,
-) -> Result<(), MetaApiError> {
+) {
     let schema_updates = schema_reader
         .read()
         .await
-        .map_err(|err| MetaApiError::Meta(err.into()))?;
+        .map_err(anyhow::Error::from)
+        .and_then(|schema_updates| {
+            bincode::serde::encode_to_vec(schema_updates, bincode::config::standard())
+                .map_err(anyhow::Error::from)
+        });
 
-    // don't fail if the worker is not reachable
+    if let Err(err) = schema_updates {
+        debug!("Failed serializing schema changes for notifying node about schema changes: {err}");
+        return;
+    }
+
+    let schema_updates = schema_updates.unwrap();
+
     let result = node_svc_client
         .update_schemas(UpdateSchemaRequest {
-            schema_bin: bincode::serde::encode_to_vec(schema_updates, bincode::config::standard())
-                .map_err(|err| MetaApiError::Generic(err.into()))?
-                .into(),
+            schema_bin: schema_updates.into(),
         })
         .await;
 
     if let Err(err) = result {
-        debug!("Failed notifying worker about schema changes: {err}");
+        debug!("Failed notifying node about schema changes: {err}");
     }
-
-    Ok(())
 }
 
 fn create_envelope_header(partition_key: PartitionKey) -> Header {

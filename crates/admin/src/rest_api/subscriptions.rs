@@ -14,7 +14,7 @@ use crate::state::AdminServiceState;
 use restate_meta_rest_model::subscriptions::*;
 use restate_schema_api::subscription::SubscriptionResolver;
 
-use crate::rest_api::notify_worker_about_schema_changes;
+use crate::rest_api::notify_node_about_schema_changes;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -53,7 +53,7 @@ pub async fn create_subscription(
         )
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
+    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
 
     Ok((
         StatusCode::CREATED,
@@ -171,7 +171,7 @@ pub async fn delete_subscription(
         .delete_subscription(subscription_id)
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
+    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
 
     Ok(StatusCode::ACCEPTED)
 }

@@ -14,12 +14,12 @@ use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use futures::TryFutureExt;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use serde::Deserialize;
+use tracing::warn;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub enum TerminationMode {
@@ -83,7 +83,7 @@ pub async fn delete_invocation(
 
     let partition_key = invocation_termination.maybe_fid.partition_key();
 
-    state
+    let result = state
         .task_center
         .run_in_scope(
             "delete_invocation",
@@ -94,10 +94,16 @@ pub async fn delete_invocation(
                     create_envelope_header(partition_key),
                     Command::TerminateInvocation(invocation_termination),
                 ),
-            )
-            .map_err(MetaApiError::Generic),
+            ),
         )
-        .await?;
+        .await;
 
-    Ok(StatusCode::ACCEPTED)
+    if let Err(err) = result {
+        warn!("Could not append invocation termination command to Bifrost: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending invocation termination to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
 }

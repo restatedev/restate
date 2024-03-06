@@ -15,13 +15,12 @@ use restate_meta_rest_model::services::*;
 use restate_pb::grpc::reflection::v1::FileDescriptorResponse;
 use restate_schema_api::service::ServiceMetadataResolver;
 
-use crate::rest_api::{create_envelope_header, notify_worker_about_schema_changes};
+use crate::rest_api::{create_envelope_header, notify_node_about_schema_changes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
-use futures::TryFutureExt;
 use http::StatusCode;
 use okapi_operation::okapi::openapi3::MediaType;
 use okapi_operation::okapi::Map;
@@ -30,6 +29,7 @@ use prost::Message;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
+use tracing::warn;
 
 /// List services
 #[openapi(
@@ -94,7 +94,7 @@ pub async fn modify_service(
         .modify_service(service_name.clone(), public)
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
+    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
 
     state
         .schemas()
@@ -147,7 +147,7 @@ pub async fn modify_service_state(
         state: new_state,
     };
 
-    state
+    let result = state
         .task_center
         .run_in_scope(
             "modify_service_state",
@@ -158,12 +158,18 @@ pub async fn modify_service_state(
                     create_envelope_header(partition_key),
                     Command::PatchState(patch_state),
                 ),
-            )
-            .map_err(MetaApiError::Generic),
+            ),
         )
-        .await?;
+        .await;
 
-    Ok(StatusCode::ACCEPTED)
+    if let Err(err) = result {
+        warn!("Could not append state patching command to Bifrost: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending state patching command to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
 }
 
 /// List service descriptors

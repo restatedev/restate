@@ -43,8 +43,8 @@ pub enum MetaApiError {
     Meta(#[from] MetaError),
     #[error(transparent)]
     Worker(#[from] restate_worker_api::Error),
-    #[error(transparent)]
-    Generic(Error),
+    #[error("Internal server error: {0}")]
+    Internal(String),
 }
 
 /// # Error description response
