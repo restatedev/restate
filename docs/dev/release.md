@@ -34,6 +34,7 @@ When performing a full release of all the artifacts, this order should be follow
 1. [Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Node template generator](https://github.com/restatedev/node-template-generator#releasing)
 1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
 1. [CDK](https://github.com/restatedev/cdk) (might require a release if the server's API changed)
+1. [Operator](https://github.com/restatedev/restate-operator) (might require a release if the server's API changed)
 1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
 1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation)
 

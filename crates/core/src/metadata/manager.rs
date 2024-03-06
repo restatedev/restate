@@ -323,7 +323,7 @@ mod tests {
         T: Into<MetadataContainer> + Versioned + Clone,
         F: Fn(&Metadata) -> Version,
     {
-        let network_sender = MockNetworkSender;
+        let network_sender = MockNetworkSender::default();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
         let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
@@ -397,7 +397,7 @@ mod tests {
         T: Into<MetadataContainer> + Versioned + Clone,
         F: Fn(&Metadata) -> Version,
     {
-        let network_sender = MockNetworkSender;
+        let network_sender = MockNetworkSender::default();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
         let metadata_manager = MetadataManager::build(network_sender);
         let metadata_writer = metadata_manager.writer();
