@@ -16,7 +16,8 @@ use hyper::server::conn::AddrStream;
 use hyper::service::make_service_fn;
 use hyper::service::service_fn;
 use restate_core::cancellation_watcher;
-use restate_ingress_dispatcher::IngressRequestSender;
+use restate_core::task_center;
+use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_schema_api::json::JsonMapperResolver;
 use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
@@ -49,20 +50,20 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas> {
+pub struct HyperServerIngress<Schemas, Dispatcher> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     json: JsonOptions,
     schemas: Schemas,
-    request_tx: IngressRequestSender,
+    dispatcher: Dispatcher,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<Schemas, JsonDecoder, JsonEncoder> HyperServerIngress<Schemas>
+impl<Schemas, JsonDecoder, JsonEncoder, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
     Schemas: JsonMapperResolver<JsonToProtobufMapper = JsonDecoder, ProtobufToJsonMapper = JsonEncoder>
         + ServiceMetadataResolver
@@ -74,6 +75,7 @@ where
         + 'static,
     JsonDecoder: Send,
     JsonEncoder: Send,
+    Dispatcher: DispatchIngressRequest + Send + Sync + Clone + 'static,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -81,7 +83,7 @@ where
         concurrency_limit: usize,
         json: JsonOptions,
         schemas: Schemas,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -90,7 +92,7 @@ where
             concurrency_limit,
             json,
             schemas,
-            request_tx,
+            dispatcher,
             start_signal_tx,
         };
 
@@ -103,7 +105,7 @@ where
             concurrency_limit,
             json,
             schemas,
-            request_tx,
+            dispatcher,
             start_signal_tx,
         } = self;
 
@@ -115,13 +117,15 @@ where
         })?;
 
         let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
+        let tc = task_center();
 
         let service_builder = ServiceBuilder::new()
             .layer(CorsLayer::very_permissive())
             .service(handler::Handler::new(
+                tc,
                 json,
                 schemas,
-                request_tx,
+                dispatcher,
                 global_concurrency_limit_semaphore,
             ));
 
@@ -166,8 +170,9 @@ mod tests {
     use http::StatusCode;
     use hyper::Body;
     use prost::Message;
-    use restate_core::TestCoreEnv;
-    use restate_core::{TaskCenter, TaskKind};
+    use restate_core::TaskKind;
+    use restate_core::{MockNetworkSender, TestCoreEnv};
+    use restate_ingress_dispatcher::mocks::MockDispatcher;
     use serde_json::json;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -335,18 +340,18 @@ mod tests {
 
     async fn bootstrap_test() -> (SocketAddr, JoinHandle<Option<IngressRequest>>, TestHandle) {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
-        let tc = node_env.tc;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
-
         // Create the ingress and start it
         let (ingress, start_signal) = HyperServerIngress::new(
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
             JsonOptions::default(),
             test_schemas(),
-            ingress_request_tx,
+            MockDispatcher::new(ingress_request_tx),
         );
-        tc.spawn(TaskKind::SystemService, "ingress", None, ingress.run())
+        node_env
+            .tc
+            .spawn(TaskKind::SystemService, "ingress", None, ingress.run())
             .unwrap();
 
         // Mock the service invocation receiver
@@ -355,14 +360,14 @@ mod tests {
         // Wait server to start
         let address = start_signal.await.unwrap();
 
-        (address, input, TestHandle(tc))
+        (address, input, TestHandle(node_env))
     }
 
-    struct TestHandle(TaskCenter);
+    struct TestHandle(TestCoreEnv<MockNetworkSender>);
 
     impl TestHandle {
         async fn close(self) {
-            self.0.cancel_tasks(None, None).await;
+            self.0.tc.cancel_tasks(None, None).await;
         }
     }
 }

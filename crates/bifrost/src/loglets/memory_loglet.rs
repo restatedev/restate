@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use restate_types::logs::{Payload, SequenceNumber};
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
@@ -208,7 +208,7 @@ impl LogletBase for MemoryLoglet {
     async fn append(&self, payload: Payload) -> Result<LogletOffset, Error> {
         let mut log = self.log.lock().unwrap();
         let offset = self.index_to_offset(log.len());
-        info!(
+        debug!(
             "Appending record to in-memory loglet {:?} at offset {}",
             self.params, offset,
         );

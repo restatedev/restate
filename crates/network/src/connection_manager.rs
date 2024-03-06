@@ -129,7 +129,7 @@ impl ConnectionManager {
         // The client can retry with an exponential backoff on handshake timeout.
         let metadata = metadata();
 
-        info!("Accepting incoming connection");
+        debug!("Accepting incoming connection");
         let (header, hello) = wait_for_hello(&mut incoming).await?;
         // NodeId **must** be generational at this layer
         let peer_node_id = hello
@@ -416,7 +416,10 @@ impl ConnectionManager {
             None,
             run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
         )?;
-        info!("Incoming connection accepted from node {}", peer_node_id);
+        info!(
+            peer_node_id = %peer_node_id,
+            task_id = %task_id,
+            "Incoming connection accepted from node {}", peer_node_id);
         // Reactor has already started by now.
 
         guard.connections.insert(task_id, connection_weak.clone());

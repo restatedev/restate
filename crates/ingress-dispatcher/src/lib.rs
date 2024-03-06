@@ -22,25 +22,20 @@ use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
 use std::fmt::Display;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
-// -- Re-export dispatcher service
-
+mod dispatcher;
+pub mod error;
 mod event_remapping;
-mod service;
+
+pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
 
 pub use event_remapping::Error as EventError;
 use restate_core::metadata;
 use restate_types::dedup::DedupInformation;
-use restate_types::ingress::IngressResponse;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
-pub use service::Error as ServiceError;
-pub use service::Service;
 
 // -- Types used by the ingress to interact with the dispatcher
-
-pub type IngressRequestSender = mpsc::UnboundedSender<IngressRequest>;
-pub type IngressRequestReceiver = mpsc::UnboundedReceiver<IngressRequest>;
 pub type IngressResponseSender = oneshot::Sender<ExpiringIngressResponse>;
 pub type IngressResponseReceiver = oneshot::Receiver<ExpiringIngressResponse>;
 pub type AckSender = oneshot::Sender<()>;
@@ -300,32 +295,6 @@ impl IngressRequest {
     }
 }
 
-// -- Types used by the network to interact with the ingress dispatcher service
-
-pub type IngressDispatcherInputReceiver = mpsc::Receiver<IngressDispatcherInput>;
-pub type IngressDispatcherInputSender = mpsc::Sender<IngressDispatcherInput>;
-
-#[derive(Debug)]
-pub enum IngressDispatcherInput {
-    Response(IngressResponse),
-    MessageAck(MessageIndex),
-    DedupMessageAck(String, MessageIndex),
-}
-
-impl IngressDispatcherInput {
-    pub fn message_ack(seq_number: MessageIndex) -> Self {
-        IngressDispatcherInput::MessageAck(seq_number)
-    }
-
-    pub fn dedup_message_ack(dedup_name: String, seq_number: MessageIndex) -> Self {
-        IngressDispatcherInput::DedupMessageAck(dedup_name, seq_number)
-    }
-
-    pub fn response(response: IngressResponse) -> Self {
-        IngressDispatcherInput::Response(response)
-    }
-}
-
 pub fn wrap_service_invocation_in_envelope(
     service_invocation: ServiceInvocation,
     from_node_id: GenerationalNodeId,
@@ -350,7 +319,34 @@ pub fn wrap_service_invocation_in_envelope(
 pub mod mocks {
     use super::*;
 
+    use tokio::sync::mpsc;
+
     use restate_test_util::let_assert;
+    use restate_types::identifiers::InvocationId;
+
+    use self::error::IngressDispatchError;
+
+    #[derive(Clone)]
+    pub struct MockDispatcher {
+        sender: mpsc::UnboundedSender<IngressRequest>,
+    }
+
+    impl MockDispatcher {
+        pub fn new(sender: mpsc::UnboundedSender<IngressRequest>) -> Self {
+            Self { sender }
+        }
+    }
+
+    impl DispatchIngressRequest for MockDispatcher {
+        fn evict_pending_response(&self, _invocation_id: &InvocationId) {}
+        async fn dispatch_ingress_request(
+            &self,
+            ingress_request: IngressRequest,
+        ) -> Result<(), IngressDispatchError> {
+            let _ = self.sender.send(ingress_request);
+            Ok(())
+        }
+    }
 
     impl IngressRequest {
         pub fn expect_invocation(

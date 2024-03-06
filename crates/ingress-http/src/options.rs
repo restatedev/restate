@@ -10,6 +10,7 @@
 
 use super::HyperServerIngress;
 
+use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::component::ComponentMetadataResolver;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -44,9 +45,9 @@ impl Default for Options {
 impl Options {
     pub fn build<Schemas>(
         self,
-        request_tx: restate_ingress_dispatcher::IngressRequestSender,
+        dispatcher: IngressDispatcher,
         schemas: Schemas,
-    ) -> HyperServerIngress<Schemas>
+    ) -> HyperServerIngress<Schemas, IngressDispatcher>
     where
         Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
     {
@@ -57,7 +58,7 @@ impl Options {
 
         crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) =
-            HyperServerIngress::new(bind_address, concurrency_limit, schemas, request_tx);
+            HyperServerIngress::new(bind_address, concurrency_limit, schemas, dispatcher);
 
         hyper_ingress_server
     }

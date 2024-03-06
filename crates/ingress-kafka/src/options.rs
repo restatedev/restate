@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::subscription_controller::Service;
-use restate_ingress_dispatcher::IngressRequestSender;
+use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::subscription::{Source, Subscription, SubscriptionValidator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ impl SubscriptionValidator for Options {
 }
 
 impl Options {
-    pub fn build(self, tx: IngressRequestSender) -> Service {
-        Service::new(self, tx)
+    pub fn build(self, dispatcher: IngressDispatcher) -> Service {
+        Service::new(self, dispatcher)
     }
 }
