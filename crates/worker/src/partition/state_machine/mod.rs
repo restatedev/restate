@@ -177,7 +177,7 @@ mod tests {
 
             transaction.commit().await.unwrap();
 
-            action_collector.into_inner()
+            action_collector
         }
 
         pub fn storage(&mut self) -> &mut RocksDBStorage {

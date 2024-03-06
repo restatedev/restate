@@ -183,7 +183,7 @@ where
                     } else {
                         // Commit our changes and notify actuators about actions if we are the leader
                         transaction.commit().await?;
-                        state.handle_actions(action_collector.drain()).await?;
+                        state.handle_actions(action_collector.drain(..)).await?;
                     }
                 },
                 action_effect = action_effect_stream.next() => {

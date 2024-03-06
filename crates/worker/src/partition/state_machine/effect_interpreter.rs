@@ -33,38 +33,9 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::future::Future;
 use std::marker::PhantomData;
-use std::vec::Drain;
 use tracing::{debug, warn};
 
-#[derive(Debug, Default)]
-pub struct ActionCollector {
-    actions: Vec<Action>,
-}
-
-impl ActionCollector {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            actions: Vec::with_capacity(capacity),
-        }
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.actions.clear()
-    }
-
-    pub(crate) fn drain(&mut self) -> Drain<'_, Action> {
-        self.actions.drain(..)
-    }
-
-    fn collect(&mut self, action: Action) {
-        self.actions.push(action);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn into_inner(self) -> Vec<Action> {
-        self.actions
-    }
-}
+pub type ActionCollector = Vec<Action>;
 
 pub trait StateStorage {
     fn store_service_status(
@@ -229,7 +200,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .store_invocation_status(&invocation_id, InvocationStatus::Invoked(metadata))
                     .await?;
 
-                collector.collect(Action::Invoke {
+                collector.push(Action::Invoke {
                     full_invocation_id: FullInvocationId::combine(service_id, invocation_id),
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
@@ -280,7 +251,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .store_outbox_seq_number(seq_number + 1)
                     .await?;
 
-                collector.collect(Action::NewOutboxMessage {
+                collector.push(Action::NewOutboxMessage {
                     seq_number,
                     message,
                 });
@@ -306,11 +277,11 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .store_timer(timer_value.key().clone(), timer_value.value().clone())
                     .await?;
 
-                collector.collect(Action::RegisterTimer { timer_value });
+                collector.push(Action::RegisterTimer { timer_value });
             }
             Effect::DeleteTimer(timer_key) => {
                 state_storage.delete_timer(&timer_key).await?;
-                collector.collect(Action::DeleteTimer { timer_key });
+                collector.push(Action::DeleteTimer { timer_key });
             }
             Effect::StoreDeploymentId {
                 invocation_id,
@@ -362,7 +333,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 full_invocation_id,
                 completion,
             } => {
-                collector.collect(Action::ForwardCompletion {
+                collector.push(Action::ForwardCompletion {
                     full_invocation_id,
                     completion,
                 });
@@ -390,7 +361,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 method_name,
                 invocation_id,
                 completion,
-            } => collector.collect(Action::NotifyVirtualJournalCompletion {
+            } => collector.push(Action::NotifyVirtualJournalCompletion {
                 target_service,
                 method_name,
                 invocation_id,
@@ -400,7 +371,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 target_service,
                 method_name,
                 invocation_id,
-            } => collector.collect(Action::NotifyVirtualJournalKill {
+            } => collector.push(Action::NotifyVirtualJournalKill {
                 target_service,
                 method_name,
                 invocation_id,
@@ -435,10 +406,10 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 // these effects are only needed for span creation
             }
             Effect::AbortInvocation(full_invocation_id) => {
-                collector.collect(Action::AbortInvocation(full_invocation_id))
+                collector.push(Action::AbortInvocation(full_invocation_id))
             }
             Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
-                collector.collect(Action::AckStoredEntry {
+                collector.push(Action::AckStoredEntry {
                     full_invocation_id,
                     entry_index,
                 });
@@ -447,7 +418,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 Self::mutate_state(state_storage, state_mutation).await?;
             }
             Effect::IngressResponse(ingress_response) => {
-                collector.collect(Action::IngressResponse(ingress_response));
+                collector.push(Action::IngressResponse(ingress_response));
             }
         }
 
@@ -558,7 +529,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         let input_entry = if non_deterministic::ServiceInvoker::is_supported(
             &service_invocation.fid.service_id.service_name,
         ) {
-            collector.collect(Action::InvokeBuiltInService {
+            collector.push(Action::InvokeBuiltInService {
                 full_invocation_id: service_invocation.fid.clone(),
                 span_context: service_invocation.span_context,
                 response_sink: service_invocation.response_sink,
@@ -576,7 +547,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 Codec::serialize_as_unary_input_entry(service_invocation.argument.clone());
             let (header, serialized_entry) = poll_input_stream_entry.into_inner();
 
-            collector.collect(Action::Invoke {
+            collector.push(Action::Invoke {
                 full_invocation_id: service_invocation.fid.clone(),
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
                     restate_invoker_api::JournalMetadata::new(
