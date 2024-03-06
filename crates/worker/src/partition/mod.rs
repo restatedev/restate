@@ -23,24 +23,22 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use std::time::{Duration, Instant};
 use tracing::{debug, instrument, trace};
 
 mod action_effect_handler;
 mod leadership;
-mod options;
 mod services;
 pub mod shuffle;
 mod state_machine;
 pub mod storage;
 pub mod types;
 
-pub use options::Options;
 use restate_bifrost::{Bifrost, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use restate_ingress_dispatcher::IngressDispatcherInputSender;
+use restate_storage_api::StorageError;
 use restate_types::dedup::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
 };
@@ -61,8 +59,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
 
     schemas: Schemas,
 
-    options: Options,
-
     ingress_tx: IngressDispatcherInputSender,
 
     _entry_codec: PhantomData<RawEntryCodec>,
@@ -82,7 +78,6 @@ where
         invoker_tx: InvokerInputSender,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
-        options: Options,
         ingress_tx: IngressDispatcherInputSender,
     ) -> Self {
         Self {
@@ -94,7 +89,6 @@ where
             _entry_codec: Default::default(),
             rocksdb_storage,
             schemas,
-            options,
             ingress_tx,
         }
     }
@@ -109,7 +103,6 @@ where
             invoker_tx,
             rocksdb_storage,
             schemas,
-            options,
             ingress_tx,
             ..
         } = self;
@@ -117,7 +110,7 @@ where
         let mut partition_storage =
             PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
-        let state_machine =
+        let mut state_machine =
             Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
@@ -127,7 +120,8 @@ where
             last_applied_lsn.unwrap_or(Lsn::INVALID),
         );
 
-        let mut action_collector = ActionCollector::with_capacity(32);
+        let mut action_collector = ActionCollector::default();
+        let mut effects = Effects::default();
 
         let (mut state, mut action_effect_stream) = LeadershipState::follower(
             partition_id,
@@ -139,12 +133,6 @@ where
             bifrost,
         );
 
-        let mut batching_state_machine = BatchingStateMachine::new(
-            state_machine,
-            partition_key_range,
-            options.max_batch_duration.map(Into::into),
-        );
-
         loop {
             tokio::select! {
                 _ = cancellation_watcher() => break,
@@ -153,13 +141,17 @@ where
 
                     let mut transaction = partition_storage.create_transaction();
 
-                    let leadership_change = batching_state_machine.apply_available_records_until_leadership_change(
+                    // clear buffers used when applying the next record
+                    action_collector.clear();
+                    effects.clear();
+
+                    let leadership_change = Self::apply_record(
                             record,
-                            &mut log_reader,
+                            &mut state_machine,
                             &mut transaction,
                             &mut action_collector,
-                            state.is_leader(),
-                        )
+                            &mut effects, state.is_leader(),
+                            &partition_key_range)
                         .await?;
 
                     if let Some(announce_leader) = leadership_change {
@@ -217,135 +209,80 @@ where
 
         Ok(state_machine)
     }
-}
 
-struct BatchingStateMachine<Codec> {
-    state_machine: StateMachine<Codec>,
-    partition_key_range: RangeInclusive<PartitionKey>,
-    max_duration: Option<Duration>,
-
-    effects: Effects,
-}
-
-impl<Codec> BatchingStateMachine<Codec>
-where
-    Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
-{
-    fn new(
-        state_machine: StateMachine<Codec>,
-        partition_key_range: RangeInclusive<PartitionKey>,
-        max_duration: Option<Duration>,
-    ) -> Self {
-        BatchingStateMachine {
-            state_machine,
-            partition_key_range,
-            max_duration,
-            effects: Effects::with_capacity(32),
-        }
-    }
-
-    async fn apply_available_records_until_leadership_change(
-        &mut self,
+    async fn apply_record<Codec>(
         record: (Lsn, Envelope),
-        log_reader: &mut LogReader,
+        state_machine: &mut StateMachine<Codec>,
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
         action_collector: &mut ActionCollector,
+        effects: &mut Effects,
         is_leader: bool,
-    ) -> anyhow::Result<Option<AnnounceLeader>> {
-        action_collector.clear();
+        partition_key_range: &RangeInclusive<PartitionKey>,
+    ) -> Result<Option<AnnounceLeader>, state_machine::Error>
+    where
+        Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
+    {
+        let (lsn, envelope) = record;
+        transaction.store_applied_lsn(lsn).await?;
 
-        let batch_start = self.max_duration.map(|duration| (duration, Instant::now()));
-
-        // only return the currently available records --> no waiting
-        let available_records = futures::stream::once(futures::future::ready(Ok(record))).chain(
-            futures::stream::unfold(
-                (log_reader, batch_start),
-                |(log_reader, batch_start)| async move {
-                    if batch_start
-                        .map(|(duration, start)| start.elapsed() < duration)
-                        .unwrap_or(true)
-                    {
-                        log_reader
-                            // todo: Check whether a truely synchronous variant would work better because
-                            //  right now we can be waiting for remote reads
-                            .read_next_opt()
-                            .await
-                            .transpose()
-                            .map(|record| (record, (log_reader, batch_start)))
-                    } else {
-                        None
-                    }
-                },
-            ),
-        );
-        tokio::pin!(available_records);
-
-        while let Some(record) = available_records.next().await {
-            let (lsn, envelope) = record?;
-            transaction.store_applied_lsn(lsn).await?;
-
-            if let Some(dedup_information) =
-                is_targeted_to_me(&envelope.header, &self.partition_key_range)
-            {
-                // deduplicate if deduplication information has been provided
-                if let Some(dedup_information) = dedup_information {
-                    if is_outdated_or_duplicate(dedup_information, transaction).await? {
-                        trace!(
-                            "Ignoring outdated or duplicate message: {:?}",
-                            envelope.header
-                        );
-                        continue;
-                    } else {
-                        transaction
-                            .store_dedup_sequence_number(
-                                dedup_information.producer_id.clone(),
-                                dedup_information.sequence_number,
-                            )
-                            .await;
-                    }
-                }
-
-                if let Command::AnnounceLeader(announce_leader) = envelope.command {
-                    let last_known_esn = transaction
-                        .get_dedup_sequence_number(&ProducerId::self_producer())
-                        .await?
-                        .map(|dedup_sn| {
-                            let_assert!(
-                                DedupSequenceNumber::Esn(esn) = dedup_sn,
-                                "self producer must store epoch sequence numbers!"
-                            );
-                            esn
-                        });
-
-                    if last_known_esn
-                        .map(|last_known_esn| {
-                            last_known_esn.leader_epoch < announce_leader.leader_epoch
-                        })
-                        .unwrap_or(true)
-                    {
-                        // leadership change detected, let's finish our transaction here
-                        return Ok(Some(announce_leader));
-                    } else {
-                        trace!("Ignoring outdated leadership announcement.");
-                    }
+        if let Some(dedup_information) = is_targeted_to_me(&envelope.header, partition_key_range) {
+            // deduplicate if deduplication information has been provided
+            if let Some(dedup_information) = dedup_information {
+                if is_outdated_or_duplicate(dedup_information, transaction).await? {
+                    trace!(
+                        "Ignoring outdated or duplicate message: {:?}",
+                        envelope.header
+                    );
+                    return Ok(None);
                 } else {
-                    self.effects.clear();
-                    self.state_machine
-                        .apply(
-                            envelope.command,
-                            &mut self.effects,
-                            transaction,
-                            action_collector,
-                            is_leader,
+                    transaction
+                        .store_dedup_sequence_number(
+                            dedup_information.producer_id.clone(),
+                            dedup_information.sequence_number,
                         )
-                        .await?;
+                        .await;
+                }
+            }
+
+            if let Command::AnnounceLeader(announce_leader) = envelope.command {
+                let last_known_esn = transaction
+                    .get_dedup_sequence_number(&ProducerId::self_producer())
+                    .await?
+                    .map(|dedup_sn| {
+                        let_assert!(
+                            DedupSequenceNumber::Esn(esn) = dedup_sn,
+                            "self producer must store epoch sequence numbers!"
+                        );
+                        esn
+                    });
+
+                if last_known_esn
+                    .map(|last_known_esn| {
+                        last_known_esn.leader_epoch < announce_leader.leader_epoch
+                    })
+                    .unwrap_or(true)
+                {
+                    // leadership change detected, let's finish our transaction here
+                    return Ok(Some(announce_leader));
+                } else {
+                    trace!("Ignoring outdated leadership announcement.");
                 }
             } else {
-                trace!(
-                    "Ignore message which is not targeted to me: {:?}",
-                    envelope.header
-                );
+                state_machine
+                    .apply(
+                        envelope.command,
+                        effects,
+                        transaction,
+                        action_collector,
+                        is_leader,
+                    )
+                    .await?;
             }
+        } else {
+            trace!(
+                "Ignore message which is not targeted to me: {:?}",
+                envelope.header
+            );
         }
 
         Ok(None)
@@ -368,7 +305,7 @@ fn is_targeted_to_me<'a>(
 async fn is_outdated_or_duplicate(
     dedup_information: &DedupInformation,
     dedup_resolver: &mut impl DedupSequenceNumberResolver,
-) -> anyhow::Result<bool> {
+) -> Result<bool, StorageError> {
     let last_dsn = dedup_resolver
         .get_dedup_sequence_number(&dedup_information.producer_id)
         .await?;
@@ -404,6 +341,7 @@ impl LogReader {
         Self::deserialize_record(record).map(|envelope| (offset, envelope))
     }
 
+    #[allow(dead_code)]
     async fn read_next_opt(&mut self) -> anyhow::Result<Option<(Lsn, Envelope)>> {
         let maybe_log_record = self.log_reader.read_next_opt().await?;
 

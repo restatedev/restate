@@ -99,7 +99,6 @@ pub struct Options {
     ingress_grpc: IngressOptions,
     pub kafka: KafkaIngressOptions,
     invoker: InvokerOptions,
-    partition_processor: partition::Options,
 
     /// # Partitions
     ///
@@ -123,7 +122,6 @@ impl Default for Options {
             ingress_grpc: Default::default(),
             kafka: Default::default(),
             invoker: Default::default(),
-            partition_processor: Default::default(),
             partitions: 1024,
         }
     }
@@ -209,7 +207,6 @@ impl Worker {
             storage_query_datafusion,
             storage_query_postgres,
             storage_rocksdb,
-            partition_processor: partition_processor_options,
             ..
         } = opts;
 
@@ -262,7 +259,6 @@ impl Worker {
                     invoker_sender,
                     rocksdb_storage.clone(),
                     schemas.clone(),
-                    partition_processor_options.clone(),
                     ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
                 )
             })
@@ -292,7 +288,6 @@ impl Worker {
         invoker_sender: InvokerChannelServiceHandle,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
-        partition_processor_options: partition::Options,
         ingress_tx: IngressDispatcherInputSender,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
@@ -303,7 +298,6 @@ impl Worker {
             invoker_sender,
             rocksdb_storage,
             schemas,
-            partition_processor_options,
             ingress_tx,
         )
     }
