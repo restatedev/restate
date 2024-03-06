@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use super::notify_worker_about_schema_changes;
+use super::{create_envelope_header, notify_node_about_schema_changes};
 use crate::state::AdminServiceState;
 
 use axum::extract::{Path, State};
@@ -20,8 +20,10 @@ use okapi_operation::*;
 use restate_meta_rest_model::components::ListComponentsResponse;
 use restate_meta_rest_model::components::*;
 use restate_schema_api::component::ComponentMetadataResolver;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
+use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
+use tracing::warn;
 
 /// List components
 #[openapi(
@@ -30,8 +32,8 @@ use restate_types::state_mut::ExternalStateMutation;
     operation_id = "list_components",
     tags = "component"
 )]
-pub async fn list_components<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_components(
+    State(state): State<AdminServiceState>,
 ) -> Result<Json<ListComponentsResponse>, MetaApiError> {
     Ok(ListComponentsResponse {
         components: state.schemas().list_components(),
@@ -51,8 +53,8 @@ pub async fn list_components<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_component<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_component(
+    State(state): State<AdminServiceState>,
     Path(component_name): Path<String>,
 ) -> Result<Json<ComponentMetadata>, MetaApiError> {
     state
@@ -74,8 +76,8 @@ pub async fn get_component<W>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_component<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn modify_component(
+    State(state): State<AdminServiceState>,
     Path(component_name): Path<String>,
     #[request_body(required = true)] Json(ModifyComponentRequest { public }): Json<
         ModifyComponentRequest,
@@ -86,7 +88,7 @@ pub async fn modify_component<W>(
         .modify_component(component_name.clone(), public)
         .await?;
 
-    notify_worker_about_schema_changes(state.schema_reader(), state.node_svc_client()).await?;
+    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
 
     state
         .schemas()
@@ -116,18 +118,15 @@ pub async fn modify_component<W>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_component_state<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn modify_component_state(
+    State(mut state): State<AdminServiceState>,
     Path(component_name): Path<String>,
     #[request_body(required = true)] Json(ModifyComponentStateRequest {
         version,
         object_key,
         new_state,
     }): Json<ModifyComponentStateRequest>,
-) -> Result<StatusCode, MetaApiError>
-where
-    W: restate_worker_api::Handle + Clone + Send,
-{
+) -> Result<StatusCode, MetaApiError> {
     let component_id = ServiceId::new(component_name, object_key);
 
     let new_state = new_state
@@ -135,14 +134,34 @@ where
         .map(|(k, v)| (Bytes::from(k), v))
         .collect();
 
-    state
-        .worker_handle()
-        .external_state_mutation(ExternalStateMutation {
-            component_id,
-            version,
-            state: new_state,
-        })
-        .await?;
+    let partition_key = component_id.partition_key();
+    let patch_state = ExternalStateMutation {
+        component_id,
+        version,
+        state: new_state,
+    };
 
-    Ok(StatusCode::ACCEPTED)
+    let result = state
+        .task_center
+        .run_in_scope(
+            "modify_service_state",
+            None,
+            append_envelope_to_bifrost(
+                &mut state.bifrost,
+                Envelope::new(
+                    create_envelope_header(partition_key),
+                    Command::PatchState(patch_state),
+                ),
+            ),
+        )
+        .await;
+
+    if let Err(err) = result {
+        warn!("Could not append state patching command to Bifrost: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending state patching command to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
 }

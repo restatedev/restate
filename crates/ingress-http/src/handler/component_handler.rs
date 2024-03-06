@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{Handler, APPLICATION_JSON};
-use super::HandlerError;
 use super::path_parsing::{ComponentRequestType, InvokeType, TargetType};
 use super::tracing::prepare_tracing_span;
+use super::HandlerError;
+use super::{Handler, APPLICATION_JSON};
 
 use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
 use bytes::Bytes;
@@ -75,9 +75,7 @@ where
         let fid = if let TargetType::VirtualObject { key } = target {
             FullInvocationId::generate(ServiceId::new(component_name.clone(), key))
         } else {
-            FullInvocationId::generate(ServiceId::unkeyed(
-                component_name.clone(),
-            ))
+            FullInvocationId::generate(ServiceId::unkeyed(component_name.clone()))
         };
 
         // Prepare the tracing span

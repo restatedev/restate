@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use super::notify_worker_about_schema_changes;
+use super::notify_node_about_schema_changes;
 use crate::state::AdminServiceState;
 
 use axum::body::Bytes;

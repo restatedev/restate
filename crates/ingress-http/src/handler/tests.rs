@@ -11,14 +11,14 @@
 use super::component_handler::*;
 use super::health::HealthResponse;
 use super::mocks::*;
-use super::Handler;
 use super::ConnectInfo;
+use super::Handler;
 
 use bytes::Bytes;
-use http::{Method, Request, Response};
 use http::StatusCode;
+use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
-use restate_core::create_test_task_center;
+use restate_core::TestCoreEnv;
 use restate_ingress_dispatcher::IdempotencyMode;
 use restate_ingress_dispatcher::IngressRequest;
 use tokio::sync::mpsc;
@@ -411,14 +411,14 @@ where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     <B as http_body::Body>::Data: Send + Sync + 'static,
 {
-    let tc = create_test_task_center();
+    let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 
     req.extensions_mut()
         .insert(ConnectInfo::new("0.0.0.0:0".parse().unwrap()));
     req.extensions_mut().insert(opentelemetry::Context::new());
 
-    let handler_fut = tc.run_in_scope(
+    let handler_fut = node_env.tc.run_in_scope(
         "ingress",
         None,
         Handler::new(mock_component_resolver(), ingress_request_tx).oneshot(req),

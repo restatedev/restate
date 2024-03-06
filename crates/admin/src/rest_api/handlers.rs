@@ -29,8 +29,8 @@ use restate_schema_api::component::ComponentMetadataResolver;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_component_handlers<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn list_component_handlers(
+    State(state): State<AdminServiceState>,
     Path(component_name): Path<String>,
 ) -> Result<Json<ListComponentHandlersResponse>, MetaApiError> {
     match state.schemas().resolve_latest_component(&component_name) {
@@ -61,8 +61,8 @@ pub async fn list_component_handlers<W>(
         )
     )
 )]
-pub async fn get_component_handler<W>(
-    State(state): State<AdminServiceState<W>>,
+pub async fn get_component_handler(
+    State(state): State<AdminServiceState>,
     Path((component_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError> {
     match state.schemas().resolve_latest_component(&component_name) {
