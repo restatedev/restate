@@ -18,7 +18,7 @@ use futures::TryFutureExt;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::InvocationTermination;
-use restate_wal_protocol::{append_envelope_to, Command, Envelope};
+use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -88,7 +88,7 @@ pub async fn delete_invocation(
         .run_in_scope(
             "delete_invocation",
             None,
-            append_envelope_to(
+            append_envelope_to_bifrost(
                 &mut state.bifrost,
                 Envelope::new(
                     create_envelope_header(partition_key),

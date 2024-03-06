@@ -33,7 +33,7 @@ use crate::partition::services::non_deterministic;
 use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
-use restate_bifrost::{bifrost, with_bifrost};
+use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
 use restate_ingress_dispatcher::{IngressDispatcherInput, IngressDispatcherInputSender};
 use restate_schema_impl::Schemas;
@@ -65,6 +65,7 @@ pub(crate) struct FollowerState<I> {
     invoker_tx: I,
     ingress_tx: IngressDispatcherInputSender,
     partition_key_range: RangeInclusive<PartitionKey>,
+    bifrost: Bifrost,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +101,7 @@ where
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         ingress_tx: IngressDispatcherInputSender,
+        bifrost: Bifrost,
     ) -> (Self, ActionEffectStream) {
         (
             Self::Follower(FollowerState {
@@ -109,6 +111,7 @@ where
                 channel_size,
                 invoker_tx,
                 ingress_tx,
+                bifrost,
             }),
             ActionEffectStream::Follower,
         )
@@ -175,6 +178,7 @@ where
                 partition_storage.clone(),
                 shuffle_tx,
                 follower_state.channel_size,
+                follower_state.bifrost.clone(),
             );
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
@@ -183,13 +187,14 @@ where
                 TaskKind::Shuffle,
                 "shuffle",
                 Some(follower_state.partition_id),
-                with_bifrost(shuffle.run(), bifrost()),
+                shuffle.run(),
             )?;
 
             let action_effect_handler = ActionEffectHandler::new(
                 follower_state.partition_id,
                 epoch_sequence_number,
                 follower_state.partition_key_range.clone(),
+                follower_state.bifrost.clone(),
             );
 
             Ok((
@@ -298,6 +303,7 @@ where
                     timer_service_options: num_in_memory_timers,
                     mut invoker_tx,
                     ingress_tx,
+                    bifrost,
                 },
             leader_state:
                 LeaderState {
@@ -327,6 +333,7 @@ where
                 channel_size,
                 invoker_tx,
                 ingress_tx,
+                bifrost,
             ))
         } else {
             Ok((self, ActionEffectStream::Follower))

@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
-use restate_bifrost::{bifrost, with_bifrost};
+use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::{metadata, task_center};
 use restate_network::utils::create_grpc_channel_from_network_address;
@@ -121,7 +121,7 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn start(self) -> anyhow::Result<()> {
+    pub async fn start(self, bifrost: Bifrost) -> anyhow::Result<()> {
         // todo: only run subscriptions on node 0 once being distributed
         let subscription_controller = Some(self.worker.subscription_controller_handle());
 
@@ -152,18 +152,10 @@ impl WorkerRole {
             Self::reload_schemas(subscription_controller, self.schemas, cluster_ctrl_client),
         )?;
 
-        task_center().spawn_child(
-            TaskKind::RoleRunner,
-            "worker-service",
-            None,
-            with_bifrost(
-                async {
-                    Self::attach_node(admin_address).await?;
-                    self.worker.run().await
-                },
-                bifrost(),
-            ),
-        )?;
+        task_center().spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
+            Self::attach_node(admin_address).await?;
+            self.worker.run(bifrost).await
+        })?;
 
         Ok(())
     }

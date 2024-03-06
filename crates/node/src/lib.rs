@@ -14,7 +14,7 @@ mod roles;
 
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
-use restate_bifrost::{with_bifrost, BifrostService};
+use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
@@ -270,7 +270,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                with_bifrost(worker_role.start(), bifrost),
+                worker_role.start(bifrost),
             )?;
         }
 

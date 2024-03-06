@@ -13,7 +13,7 @@ extern crate core;
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use codederror::CodedError;
-use restate_bifrost::{bifrost, with_bifrost};
+use restate_bifrost::Bifrost;
 use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
 use restate_ingress_dispatcher::{
     IngressDispatcherInputSender, Service as IngressDispatcherService,
@@ -320,7 +320,7 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, mut bifrost: Bifrost) -> anyhow::Result<()> {
         let tc = task_center();
         let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -339,7 +339,7 @@ impl Worker {
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            with_bifrost(self.ingress_dispatcher_service.run(), bifrost()),
+            self.ingress_dispatcher_service.run(bifrost.clone()),
         )?;
 
         // Ingress RPC server
@@ -393,7 +393,7 @@ impl Worker {
             let payload = Payload::from(envelope.encode_with_bincode()?);
 
             // todo: Remove once we have proper leader election
-            bifrost()
+            bifrost
                 .append(LogId::from(processor.partition_id), payload)
                 .await?;
 
@@ -401,7 +401,7 @@ impl Worker {
                 TaskKind::PartitionProcessor,
                 "partition-processor",
                 Some(processor.partition_id),
-                with_bifrost(processor.run(networking), bifrost()),
+                processor.run(networking, bifrost.clone()),
             )?;
         }
 

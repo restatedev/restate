@@ -13,6 +13,7 @@ use super::*;
 use assert2::let_assert;
 use bytes::{BufMut, BytesMut};
 use prost::Message;
+use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
 use restate_futures_util::pipe::{
     new_pipe_target, Either, EitherPipeInput, Pipe, PipeError, ReceiverPipeInput,
@@ -25,7 +26,7 @@ use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::FullInvocationId;
 use restate_types::invocation::{ServiceInvocationResponseSink, Source};
 use restate_types::GenerationalNodeId;
-use restate_wal_protocol::append_envelope_to_log;
+use restate_wal_protocol::append_envelope_to_bifrost;
 use std::collections::HashMap;
 use std::future::poll_fn;
 use tokio::select;
@@ -68,7 +69,7 @@ impl Service {
         }
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
         debug!("Running the ResponseDispatcher");
         let my_node_id = metadata().my_node_id();
 
@@ -88,7 +89,9 @@ impl Service {
             ),
             new_pipe_target(
                 (),
-                |_, envelope| append_envelope_to_log(envelope),
+                |_, envelope| async {
+                    append_envelope_to_bifrost(&mut bifrost.clone(), envelope).await
+                },
                 "bifrost output",
             ),
         );
@@ -366,7 +369,7 @@ mod tests {
     use super::*;
 
     use googletest::{assert_that, pat};
-    use restate_bifrost::{with_bifrost, Bifrost};
+    use restate_bifrost::Bifrost;
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
     use test_log::test;
@@ -402,7 +405,7 @@ mod tests {
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            with_bifrost(ingress_dispatcher.run(), bifrost),
+            ingress_dispatcher.run(bifrost),
         )?;
 
         // Ask for a response, then drop the receiver
@@ -457,7 +460,7 @@ mod tests {
             TaskKind::SystemService,
             "ingress-dispatcher",
             None,
-            with_bifrost(ingress_dispatcher.run(), bifrost.clone()),
+            ingress_dispatcher.run(bifrost.clone()),
         )?;
 
         // Ask for a response, then drop the receiver

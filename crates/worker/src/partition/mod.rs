@@ -36,7 +36,7 @@ pub mod storage;
 pub mod types;
 
 pub use options::Options;
-use restate_bifrost::{bifrost, LogReadStream, LogRecord, Record};
+use restate_bifrost::{Bifrost, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
@@ -100,7 +100,7 @@ where
     }
 
     #[instrument(level = "trace", skip_all, fields(partition_id = %self.partition_id))]
-    pub(super) async fn run(self, _networking: Networking) -> anyhow::Result<()> {
+    pub(super) async fn run(self, _networking: Networking, bifrost: Bifrost) -> anyhow::Result<()> {
         let PartitionProcessor {
             partition_id,
             partition_key_range,
@@ -122,6 +122,7 @@ where
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
         let mut log_reader = LogReader::new(
+            &bifrost,
             LogId::from(partition_id),
             last_applied_lsn.unwrap_or(Lsn::INVALID),
         );
@@ -135,6 +136,7 @@ where
             channel_size,
             invoker_tx,
             ingress_tx,
+            bifrost,
         );
 
         let mut batching_state_machine = BatchingStateMachine::new(
@@ -390,9 +392,9 @@ struct LogReader {
 }
 
 impl LogReader {
-    fn new(log_id: LogId, lsn: Lsn) -> Self {
+    fn new(bifrost: &Bifrost, log_id: LogId, lsn: Lsn) -> Self {
         Self {
-            log_reader: bifrost().create_reader(log_id, lsn),
+            log_reader: bifrost.create_reader(log_id, lsn),
         }
     }
 

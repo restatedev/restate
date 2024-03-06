@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use super::leadership::ActionEffect;
+use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::{
-    append_envelope_to_log, Command, Destination, Envelope, Header, Source,
+    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
 use std::ops::RangeInclusive;
 
@@ -23,6 +24,7 @@ pub(super) struct ActionEffectHandler {
     partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     partition_key_range: RangeInclusive<PartitionKey>,
+    bifrost: Bifrost,
 }
 
 impl ActionEffectHandler {
@@ -30,11 +32,13 @@ impl ActionEffectHandler {
         partition_id: PartitionId,
         epoch_sequence_number: EpochSequenceNumber,
         partition_key_range: RangeInclusive<PartitionKey>,
+        bifrost: Bifrost,
     ) -> Self {
         Self {
             partition_id,
             epoch_sequence_number,
             partition_key_range,
+            bifrost,
         }
     }
 
@@ -42,26 +46,30 @@ impl ActionEffectHandler {
         match actuator_output {
             ActionEffect::Invoker(invoker_output) => {
                 let header = self.create_header(invoker_output.full_invocation_id.partition_key());
-                append_envelope_to_log(Envelope::new(
-                    header,
-                    Command::InvokerEffect(invoker_output),
-                ))
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(header, Command::InvokerEffect(invoker_output)),
+                )
                 .await?;
             }
             ActionEffect::Shuffle(outbox_truncation) => {
                 // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
                 //  specific destination messages that are identified by a partition_id
                 let header = self.create_header(*self.partition_key_range.start());
-                append_envelope_to_log(Envelope::new(
-                    header,
-                    Command::TruncateOutbox(outbox_truncation.index()),
-                ))
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(header, Command::TruncateOutbox(outbox_truncation.index())),
+                )
                 .await?;
             }
             ActionEffect::Timer(timer) => {
                 let partition_key = timer.invocation_id().partition_key();
                 let header = self.create_header(partition_key);
-                append_envelope_to_log(Envelope::new(header, Command::Timer(timer))).await?;
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(header, Command::Timer(timer)),
+                )
+                .await?;
             }
             ActionEffect::BuiltInInvoker(invoker_output) => {
                 // TODO Super BAD code to mitigate https://github.com/restatedev/restate/issues/851
@@ -75,20 +83,26 @@ impl ActionEffectHandler {
 
                 for effect in effects {
                     let header = self.create_header(fid.partition_key());
-                    append_envelope_to_log(Envelope::new(
-                        header.clone(),
-                        Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                            fid.clone(),
-                            vec![effect],
-                        )),
-                    ))
+                    append_envelope_to_bifrost(
+                        &mut self.bifrost,
+                        Envelope::new(
+                            header.clone(),
+                            Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
+                                fid.clone(),
+                                vec![effect],
+                            )),
+                        ),
+                    )
                     .await?;
                 }
             }
             ActionEffect::Invocation(service_invocation) => {
                 let header = self.create_header(service_invocation.fid.partition_key());
-                append_envelope_to_log(Envelope::new(header, Command::Invoke(service_invocation)))
-                    .await?;
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(header, Command::Invoke(service_invocation)),
+                )
+                .await?;
             }
         };
 

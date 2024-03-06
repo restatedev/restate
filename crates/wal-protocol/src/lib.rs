@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use restate_bifrost::{bifrost, Bifrost};
+use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
@@ -150,11 +150,12 @@ impl WithPartitionKey for Envelope {
     }
 }
 
-pub async fn append_envelope_to_log(envelope: Envelope) -> Result<(), anyhow::Error> {
-    append_envelope_to(&mut bifrost(), envelope).await
-}
-
-pub async fn append_envelope_to(
+/// Appends the given envelope to the provided Bifrost instance. The log instance is chosen
+/// based on the envelopes partition key.
+///
+/// Important: This method must only be called in the context of a [`TaskCenter`] task because
+/// it needs access to [`metadata()`].
+pub async fn append_envelope_to_bifrost(
     bifrost: &mut Bifrost,
     envelope: Envelope,
 ) -> Result<(), anyhow::Error> {

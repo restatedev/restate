@@ -29,7 +29,7 @@ use okapi_operation::*;
 use prost::Message;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
-use restate_wal_protocol::{append_envelope_to, Command, Envelope};
+use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 
 /// List services
 #[openapi(
@@ -152,7 +152,7 @@ pub async fn modify_service_state(
         .run_in_scope(
             "modify_service_state",
             None,
-            append_envelope_to(
+            append_envelope_to_bifrost(
                 &mut state.bifrost,
                 Envelope::new(
                     create_envelope_header(partition_key),

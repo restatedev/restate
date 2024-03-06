@@ -9,18 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::state_machine::StateMachine;
-use assert2::let_assert;
 use async_channel::{TryRecvError, TrySendError};
-use restate_bifrost::bifrost;
+use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::dedup::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::logs::{LogId, Payload};
 use restate_types::message::{AckKind, MessageIndex};
-use restate_types::partition_table::FindPartition;
 use restate_types::NodeId;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{
+    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+};
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -202,6 +201,8 @@ pub(super) struct Shuffle<OR> {
 
     outbox_reader: OR,
 
+    bifrost: Bifrost,
+
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
 
@@ -220,6 +221,7 @@ where
         outbox_reader: OR,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
         channel_size: usize,
+        bifrost: Bifrost,
     ) -> Self {
         let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
@@ -229,6 +231,7 @@ where
             truncation_tx,
             hint_rx,
             hint_tx,
+            bifrost,
         }
     }
 
@@ -242,6 +245,7 @@ where
             mut hint_rx,
             outbox_reader,
             truncation_tx,
+            bifrost,
             ..
         } = self;
 
@@ -251,21 +255,12 @@ where
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
-            |msg| async move {
-                let_assert!(
-                    Destination::Processor { partition_key, .. } = &msg.header.dest,
-                    "shuffle can only send messages to a partition processor"
-                );
-
-                let partition_id = restate_core::metadata()
-                    .partition_table()
-                    .find_partition_id(*partition_key)?;
-                let log_id = LogId::from(partition_id);
-
-                let payload = Payload::from(msg.encode_with_bincode()?);
-                bifrost().append(log_id, payload).await?;
-
-                Ok(())
+            |msg| {
+                let mut bifrost = bifrost.clone();
+                async move {
+                    append_envelope_to_bifrost(&mut bifrost, msg).await?;
+                    Ok(())
+                }
             },
             &mut hint_rx,
         );
