@@ -4948,6 +4948,7 @@ dependencies = [
  "enum-map",
  "futures",
  "googletest",
+ "rand",
  "restate-node-protocol",
  "restate-test-util",
  "restate-types",
