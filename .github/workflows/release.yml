@@ -34,17 +34,25 @@ jobs:
 
   run-tests:
     name: Test release
-    needs: [verify-version]
+    needs: [ verify-version ]
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
   build-docker-image:
     name: Build release Docker image
-    needs: [run-tests]
+    needs: [ run-tests ]
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
       pushToDockerHub: true
+
+  release-helm:
+    name: Release helm chart
+    needs: [ build-docker-image ]
+    uses: ./.github/workflows/helm.yml
+    secrets: inherit
+    with:
+      version: ${{ github.ref_name }}
 
   build-binaries:
     name: Build binaries
@@ -57,7 +65,7 @@ jobs:
   create-release:
     name: Create release
     runs-on: ubuntu-latest
-    needs: [build-docker-image, build-binaries]
+    needs: [ build-docker-image, build-binaries ]
 
     steps:
       - name: Download aarch64-apple-darwin binaries
