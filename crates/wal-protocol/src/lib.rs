@@ -22,7 +22,7 @@ use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerValue;
 use restate_types::dedup::DedupInformation;
 use restate_types::logs::{LogId, Payload};
-use restate_types::partition_table::FindPartition;
+use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub mod control;
@@ -150,6 +150,16 @@ impl WithPartitionKey for Envelope {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("partition not found: {0}")]
+    PartitionNotFound(#[from] PartitionTableError),
+    #[error("failed encoding envelope: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+    #[error("failed writing to bifrost: {0}")]
+    Bifrost(#[from] restate_bifrost::Error),
+}
+
 /// Appends the given envelope to the provided Bifrost instance. The log instance is chosen
 /// based on the envelopes partition key.
 ///
@@ -158,7 +168,7 @@ impl WithPartitionKey for Envelope {
 pub async fn append_envelope_to_bifrost(
     bifrost: &mut Bifrost,
     envelope: Envelope,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), Error> {
     let partition_id = metadata()
         .partition_table()
         .find_partition_id(envelope.partition_key())?;

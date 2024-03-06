@@ -90,7 +90,9 @@ impl Service {
             new_pipe_target(
                 (),
                 |_, envelope| async {
-                    append_envelope_to_bifrost(&mut bifrost.clone(), envelope).await
+                    append_envelope_to_bifrost(&mut bifrost.clone(), envelope)
+                        .await
+                        .map_err(Into::into)
                 },
                 "bifrost output",
             ),
