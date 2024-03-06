@@ -319,7 +319,7 @@ impl TaskCenter {
         future: F,
     ) -> O
     where
-        F: Future<Output = O> + Send,
+        F: Future<Output = O>,
     {
         let cancel_token = CancellationToken::new();
         let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst));

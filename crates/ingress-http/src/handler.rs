@@ -23,7 +23,8 @@ use metrics::{counter, histogram};
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
-use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
+use restate_core::TaskCenter;
+use restate_ingress_dispatcher::{DispatchIngressRequest, IdempotencyMode, IngressRequest};
 use restate_schema_api::component::{ComponentMetadataResolver, ComponentType};
 use restate_types::errors::UserErrorCode;
 use restate_types::identifiers::{InvocationId, ServiceId};
@@ -32,7 +33,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
-use tracing::{debug, info, info_span, trace, warn, Instrument};
+use tracing::{info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
@@ -107,29 +108,33 @@ pub(crate) struct SendResponse {
 }
 
 #[derive(Clone)]
-pub(crate) struct Handler<Schemas> {
+pub(crate) struct Handler<Schemas, Dispatcher> {
+    task_center: TaskCenter,
     schemas: Schemas,
-    request_tx: IngressRequestSender,
+    dispatcher: Dispatcher,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<Schemas> Handler<Schemas> {
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn new(
+        task_center: TaskCenter,
         schemas: Schemas,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
+            task_center,
             schemas,
-            request_tx,
+            dispatcher,
             global_concurrency_semaphore,
         }
     }
 }
 
-impl<Schemas> Handler<Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Dispatcher: DispatchIngressRequest,
 {
     pub(crate) async fn handle<B: http_body::Body>(
         self,
@@ -292,7 +297,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
-                        self.request_tx,
+                        self.dispatcher,
                     )
                     .await
                 }
@@ -303,7 +308,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
-                        self.request_tx,
+                        self.dispatcher,
                     )
                     .await
                 }
@@ -312,7 +317,10 @@ where
         .instrument(ingress_span);
 
         async move {
-            let result = handle_fut.await;
+            let result = self
+                .task_center
+                .run_in_scope("ingress-http-request", None, handle_fut)
+                .await;
             // We hold the semaphore permit up to the end of the request processing
             drop(permit);
             // Note that we only record (mostly) successful requests here. We might want to
@@ -342,8 +350,9 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> Result<Response<Either<Empty<Bytes>, Full<Bytes>>>, HandlerError> {
+        let invocation_id: InvocationId = fid.clone().into();
         let (invocation, response_rx) = IngressRequest::invocation(
             fid,
             cloned_handler_name,
@@ -351,8 +360,12 @@ where
             span_relation,
             idempotency_mode,
         );
-        if request_tx.send(invocation).is_err() {
-            debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+            warn!(
+                restate.invocation.id = %invocation_id,
+                "Failed to dispatch ingress request: {}",
+                e,
+            );
             return Err(HandlerError::Unavailable);
         }
 
@@ -360,6 +373,7 @@ where
         let response = if let Ok(response) = response_rx.await {
             response
         } else {
+            dispatcher.evict_pending_response(&invocation_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
@@ -405,7 +419,7 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> Result<Response<Either<Empty<Bytes>, Full<Bytes>>>, HandlerError> {
         if !matches!(idempotency_mode, IdempotencyMode::None) {
             // TODO https://github.com/restatedev/restate/issues/1233
@@ -422,11 +436,17 @@ where
             span_relation,
             None,
         );
-        if request_tx.send(invocation).is_err() {
-            debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+
+        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+            warn!(
+                restate.invocation.id = %invocation_id,
+                "Failed to dispatch ingress request: {}",
+                e,
+            );
             return Err(HandlerError::Unavailable);
         }
         if ack_rx.await.is_err() {
+            dispatcher.evict_pending_response(&invocation_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
@@ -610,6 +630,7 @@ mod tests {
     use super::*;
 
     use restate_core::TestCoreEnv;
+    use restate_ingress_dispatcher::mocks::MockDispatcher;
     use tokio::sync::mpsc;
     use tracing_test::traced_test;
 
@@ -1008,8 +1029,9 @@ mod tests {
             "ingress",
             None,
             Handler::new(
+                node_env.tc.clone(),
                 mock_component_resolver(),
-                ingress_request_tx,
+                MockDispatcher::new(ingress_request_tx),
                 Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
             )
             .handle(ConnectInfo::new("0.0.0.0:0".parse().unwrap()), req),

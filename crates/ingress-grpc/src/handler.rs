@@ -25,7 +25,8 @@ use metrics::{counter, histogram};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use prost::Message;
 use reflection::{v1, v1alpha};
-use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
+use restate_core::TaskCenter;
+use restate_ingress_dispatcher::{DispatchIngressRequest, IdempotencyMode, IngressRequest};
 use restate_pb::grpc;
 use restate_pb::grpc::health;
 use restate_schema_api::json::JsonMapperResolver;
@@ -33,7 +34,7 @@ use restate_schema_api::key::KeyExtractor;
 use restate_schema_api::proto_symbol::ProtoSymbolResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::SpanRelation;
 use std::sync::Arc;
 use std::task::Poll;
@@ -45,10 +46,11 @@ use tower::{BoxError, Layer, Service};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub struct Handler<Schemas, ProtoSymbols>
+pub struct Handler<Schemas, ProtoSymbols, Dispatcher>
 where
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
+    task_center: TaskCenter,
     json: JsonOptions,
     schemas: Schemas,
     reflection_server: GrpcWebService<
@@ -61,38 +63,42 @@ where
             v1alpha::ServerReflectionService<ProtoSymbols>,
         >,
     >,
-    request_tx: IngressRequestSender,
+    dispatcher: Dispatcher,
     global_concurrency_semaphore: Arc<Semaphore>,
 }
 
-impl<Schemas, ProtoSymbols> Clone for Handler<Schemas, ProtoSymbols>
+impl<Schemas, ProtoSymbols, Dispatcher> Clone for Handler<Schemas, ProtoSymbols, Dispatcher>
 where
     Schemas: Clone,
     ProtoSymbols: ProtoSymbolResolver + Clone + Send + Sync + 'static,
+    Dispatcher: Clone,
 {
     fn clone(&self) -> Self {
         Self {
+            task_center: self.task_center.clone(),
             json: self.json.clone(),
             schemas: self.schemas.clone(),
             reflection_server: self.reflection_server.clone(),
             reflection_server_v1alpha: self.reflection_server_v1alpha.clone(),
-            request_tx: self.request_tx.clone(),
+            dispatcher: self.dispatcher.clone(),
             global_concurrency_semaphore: self.global_concurrency_semaphore.clone(),
         }
     }
 }
 
-impl<Schemas> Handler<Schemas, Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Schemas, Dispatcher>
 where
     Schemas: ProtoSymbolResolver + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
+        task_center: TaskCenter,
         json: JsonOptions,
         schemas: Schemas,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
         global_concurrency_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
+            task_center,
             json,
             schemas: schemas.clone(),
             reflection_server: GrpcWebLayer::new().layer(
@@ -105,7 +111,7 @@ where
                     v1alpha::ServerReflectionService(schemas),
                 ),
             ),
-            request_tx,
+            dispatcher,
             global_concurrency_semaphore,
         }
     }
@@ -113,7 +119,8 @@ where
 
 // TODO When porting to hyper 1.0 https://github.com/restatedev/restate/issues/96
 //  replace this impl with hyper::Service impl
-impl<Schemas, JsonDecoder, JsonEncoder> Service<Request<HyperBody>> for Handler<Schemas, Schemas>
+impl<Schemas, JsonDecoder, JsonEncoder, Dispatcher> Service<Request<HyperBody>>
+    for Handler<Schemas, Schemas, Dispatcher>
 where
     JsonDecoder: Send,
     JsonEncoder: Send,
@@ -125,6 +132,7 @@ where
         + Send
         + Sync
         + 'static,
+    Dispatcher: DispatchIngressRequest + Send + Sync + Clone + 'static,
 {
     type Response = Response<BoxBody>;
     type Error = BoxError;
@@ -235,7 +243,7 @@ where
 
         // Encapsulate in this closure the remaining part of the processing
         let schemas = self.schemas.clone();
-        let request_tx = self.request_tx.clone();
+        let dispatcher = self.dispatcher.clone();
 
         let client_connect_info = req.extensions().get::<ConnectInfo>().cloned();
 
@@ -334,6 +342,7 @@ where
 
 
                 let fid = FullInvocationId::generate(ServiceId::new(service_name, key));
+                let invocation_id: InvocationId = fid.clone().into();
                 let span_relation = SpanRelation::Parent(ingress_span_context);
 
                 // Check if Idempotency-Key is available
@@ -347,16 +356,20 @@ where
                     span_relation,
                     idempotency_mode
                 );
-                if request_tx.send(invocation).is_err() {
-                    debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
-                    return Err(Status::unavailable("Unavailable"));
+                // Dispatch the request through bifrost
+                dispatcher.dispatch_ingress_request(invocation)
+                .await.map_err(|e| {
+                    warn!("Failed to dispatch ingress request: {}", e);
+                    Status::unavailable("Could not ingest the invocation request")
                 }
+                )?;
 
                 // Wait on response
                 let response = if let Ok(response) = response_rx.await {
                     response
                 } else {
                     warn!("Response channel was closed");
+                    dispatcher.evict_pending_response(&invocation_id);
                     return Err(Status::unavailable("Unavailable"));
                 };
 
@@ -392,8 +405,11 @@ where
             req,
             ingress_request_handler,
         );
+        let tc = self.task_center.clone();
         async move {
-            let result = result_fut.await;
+            let result = tc
+                .run_in_scope("ingress-grpc-request", None, result_fut)
+                .await;
             // We hold the semaphore permit up to the end of the request processing
             drop(permit);
             // Note that we only record (mostly) successful requests here. We might want to
