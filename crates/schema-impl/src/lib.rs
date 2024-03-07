@@ -8,91 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schemas_impl::{HandlerSchemas, SchemasInner};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Uri;
-use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
 use restate_schema_api::deployment::DeploymentMetadata;
-use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
+use schemas_impl::deployment::IncompatibleServiceChangeError;
+use schemas_impl::{HandlerSchemas, SchemasInner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 mod component;
 mod deployment;
-mod json;
-mod json_key_conversion;
-mod key_expansion;
-mod key_extraction;
-mod proto_symbol;
 mod schemas_impl;
-mod service;
 mod subscriptions;
 
-use self::schemas_impl::deployment::{BadDescriptorError, IncompatibleServiceChangeError};
-use self::schemas_impl::InstanceTypeMetadata;
-use self::schemas_impl::ServiceSchemas;
-
 // --- Update commands data structure
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FieldAnnotation {
-    Key,
-    EventPayload,
-    EventMetadata,
-}
-
-/// This structure provides the directives to the key parser to parse nested messages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KeyStructure {
-    Scalar,
-    Nested(std::collections::BTreeMap<u32, KeyStructure>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiscoveredInstanceType {
-    Keyed(KeyStructure),
-    Unkeyed,
-    Singleton,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct DiscoveredMethodMetadata {
-    input_fields_annotations: HashMap<FieldAnnotation, u32>,
-}
-
-/// Insert (or replace) service
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OldInsertServiceUpdateCommand {
-    pub name: String,
-    pub revision: ComponentRevision,
-    pub instance_type: DiscoveredInstanceType,
-    pub methods: HashMap<String, DiscoveredMethodMetadata>,
-}
-
-impl OldInsertServiceUpdateCommand {
-    pub fn as_service_metadata(
-        &self,
-        latest_deployment_id: DeploymentId,
-        service_descriptor: &ServiceDescriptor,
-    ) -> Option<ServiceMetadata> {
-        let schemas = ServiceSchemas::new(
-            self.revision,
-            ServiceSchemas::compute_service_methods(service_descriptor, &self.methods),
-            InstanceTypeMetadata::from_discovered_metadata(
-                self.instance_type.clone(),
-                &self.methods,
-            ),
-            latest_deployment_id,
-        );
-        service::map_to_service_metadata(&self.name, &schemas)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DiscoveredHandlerMetadata {
@@ -148,23 +83,6 @@ impl InsertComponentUpdateCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchemasUpdateCommand {
     /// Insert (or replace) deployment
-    OldInsertDeployment {
-        deployment_id: DeploymentId,
-        metadata: DeploymentMetadata,
-        services: Vec<OldInsertServiceUpdateCommand>,
-        #[serde(with = "descriptor_pool_serde")]
-        descriptor_pool: DescriptorPool,
-    },
-    /// Remove only if the revision is matching
-    RemoveService {
-        name: String,
-        revision: ComponentRevision,
-    },
-    ModifyService {
-        name: String,
-        public: bool,
-    },
-    /// Insert (or replace) deployment
     InsertDeployment {
         deployment_id: DeploymentId,
         metadata: DeploymentMetadata,
@@ -185,30 +103,9 @@ pub enum SchemasUpdateCommand {
     RemoveSubscription(SubscriptionId),
 }
 
-mod descriptor_pool_serde {
-    use bytes::Bytes;
-    use prost_reflect::DescriptorPool;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(descriptor_pool: &DescriptorPool, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(&descriptor_pool.encode_to_vec())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DescriptorPool, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let b = Bytes::deserialize(deserializer)?;
-        DescriptorPool::decode(b).map_err(serde::de::Error::custom)
-    }
-}
-
 /// The schema registry
 #[derive(Debug, Default, Clone)]
-pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
+pub struct Schemas(Arc<ArcSwap<SchemasInner>>);
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(unknown)]
@@ -257,47 +154,9 @@ pub enum SchemasUpdateError {
         #[code]
         IncompatibleServiceChangeError,
     ),
-    #[error(transparent)]
-    BadDescriptor(
-        #[from]
-        #[code]
-        BadDescriptorError,
-    ),
 }
 
 impl Schemas {
-    /// Compute the commands to update the schema registry with a new deployment.
-    /// This method doesn't execute any in-memory update of the registry.
-    /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
-    ///
-    /// If `allow_override` is true, this method compares the deployment registered services with the given `services`,
-    /// and generates remove commands for services no longer available at that deployment.
-    ///
-    /// If `deployment_id` is set, it's assumed that:
-    ///   - This ID should be used if it's is a new deployment
-    ///   - or if conflicting/existing deployment exists, it must match.
-    /// Otherwise, a new deployment id is generated for this deployment, or the existing
-    /// deployment_id will be reused.
-    ///
-    /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
-    /// as one change set might depend on the previously computed change set.
-    pub fn old_compute_new_deployment(
-        &self,
-        deployment_id: Option<DeploymentId>,
-        deployment_metadata: DeploymentMetadata,
-        services: Vec<String>,
-        descriptor_pool: DescriptorPool,
-        force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().old_compute_new_deployment(
-            deployment_id,
-            deployment_metadata,
-            services,
-            descriptor_pool,
-            force,
-        )
-    }
-
     /// Compute the commands to update the schema registry with a new deployment.
     /// This method doesn't execute any in-memory update of the registry.
     /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
@@ -323,16 +182,6 @@ impl Schemas {
         self.0
             .load()
             .compute_new_deployment(deployment_id, deployment_metadata, components, force)
-    }
-
-    pub fn compute_modify_service(
-        &self,
-        service_name: String,
-        public: bool,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
-        self.0
-            .load()
-            .compute_modify_service_updates(service_name, public)
     }
 
     pub fn compute_modify_component(
@@ -414,14 +263,6 @@ mod tests {
     use restate_test_util::assert_eq;
 
     impl Schemas {
-        pub(crate) fn add_mock_service(&self, service_name: &str, service_schemas: ServiceSchemas) {
-            let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-            schemas_inner
-                .services
-                .insert(service_name.to_string(), service_schemas);
-            self.0.store(Arc::new(schemas_inner));
-        }
-
         #[track_caller]
         pub(crate) fn assert_component_handler(&self, component_name: &str, handler_name: &str) {
             assert!(self
@@ -461,19 +302,5 @@ mod tests {
         pub(crate) fn assert_component(&self, component_name: &str) -> ComponentMetadata {
             self.resolve_latest_component(component_name).unwrap()
         }
-    }
-
-    #[macro_export]
-    macro_rules! load_mock_descriptor {
-        ($name:ident, $path:literal) => {
-            static $name: once_cell::sync::Lazy<DescriptorPool> =
-                once_cell::sync::Lazy::new(|| {
-                    DescriptorPool::decode(
-                        include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin"))
-                            .as_ref(),
-                    )
-                    .expect("The built-in descriptor pool should be valid")
-                });
-        };
     }
 }

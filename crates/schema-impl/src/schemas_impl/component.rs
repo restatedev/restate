@@ -44,7 +44,7 @@ impl SchemasInner {
                 component_schemas.revision = revision;
                 component_schemas.ty = ty;
                 component_schemas.handlers = ComponentSchemas::compute_handlers(handlers.clone());
-                if let ServiceLocation::Deployment {
+                if let ComponentLocation::Deployment {
                     latest_deployment, ..
                 } = &mut component_schemas.location
                 {
@@ -55,7 +55,7 @@ impl SchemasInner {
                 revision,
                 handlers: ComponentSchemas::compute_handlers(handlers),
                 ty,
-                location: ServiceLocation::Deployment {
+                location: ComponentLocation::Deployment {
                     latest_deployment: deployment_id,
                     public: true,
                 },
@@ -86,7 +86,7 @@ impl SchemasInner {
             .ok_or_else(|| SchemasUpdateError::UnknownComponent(name.clone()))?;
 
         // Update the public field
-        if let ServiceLocation::Deployment {
+        if let ComponentLocation::Deployment {
             public: old_public_value,
             ..
         } = &mut schemas.location
