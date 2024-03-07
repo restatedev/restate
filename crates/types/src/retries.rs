@@ -14,6 +14,10 @@ use std::cmp;
 use std::future::Future;
 use std::time::Duration;
 
+use rand::Rng;
+
+const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
+
 /// This struct represents the policy to execute retries.
 ///
 /// It can be used in components which needs to configure policies to execute retries.
@@ -191,6 +195,7 @@ pub struct RetryIter {
 impl Iterator for RetryIter {
     type Item = Duration;
 
+    /// adds up to 1/3 target duration as jitter
     fn next(&mut self) -> Option<Self::Item> {
         self.attempts += 1;
         match self.policy {
@@ -202,7 +207,7 @@ impl Iterator for RetryIter {
                 if self.attempts > max_attempts {
                     None
                 } else {
-                    Some(interval.into())
+                    Some(with_jitter(interval.into(), DEFAULT_JITTER_MULTIPLIER))
                 }
             }
             RetryPolicy::Exponential {
@@ -219,10 +224,10 @@ impl Iterator for RetryIter {
                         max_interval.map(Into::into).unwrap_or(Duration::MAX),
                     );
                     self.last_retry = Some(new_retry);
-                    return Some(new_retry);
+                    return Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER));
                 } else {
                     self.last_retry = Some(*initial_interval);
-                    return Some(*initial_interval);
+                    return Some(with_jitter(*initial_interval, DEFAULT_JITTER_MULTIPLIER));
                 }
             }
         }
@@ -238,6 +243,23 @@ impl Iterator for RetryIter {
             max_attempts - self.attempts,
             Some(max_attempts - self.attempts),
         )
+    }
+}
+
+// Jitter is a random duration added to the desired target, it ranges from 3ms to
+// (max_multiplier * duration) of the original requested delay. The minimum of +2ms
+// is to avoid falling into common zero-ending values (0, 10, 100, etc.) which are
+// common cause of harmonics in systems (avoiding resonance frequencies)
+static MIN_JITTER: Duration = Duration::from_millis(3);
+
+pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
+    let max_jitter = duration.mul_f32(max_multiplier);
+    if max_jitter <= MIN_JITTER {
+        // We can't get a random value unless max_jitter is higher than MIN_JITTER.
+        duration + MIN_JITTER
+    } else {
+        let jitter = rand::thread_rng().gen_range(MIN_JITTER..max_jitter);
+        duration + jitter
     }
 }
 
@@ -257,60 +279,73 @@ mod tests {
 
     #[test]
     fn fixed_delay_retry_policy() {
-        assert_eq!(
-            vec![Duration::from_millis(100); 10],
-            RetryPolicy::fixed_delay(Duration::from_millis(100), 10)
-                .into_iter()
-                .collect::<Vec<_>>()
-        )
+        let expected = vec![Duration::from_millis(100); 10];
+        let actuals = RetryPolicy::fixed_delay(Duration::from_millis(100), 10)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(actuals.len(), expected.len());
+        for (expected, actual) in expected.iter().zip(actuals.iter()) {
+            assert!(within_jitter(*expected, *actual, DEFAULT_JITTER_MULTIPLIER));
+        }
     }
 
     #[test]
     fn exponential_retry_policy() {
-        assert_eq!(
-            vec![
-                // Manually building this powers to avoid rounding issues :)
-                Duration::from_millis(100),
-                Duration::from_millis(100).mul_f32(2.0),
-                Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
-                Duration::from_millis(100)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0),
-                Duration::from_millis(100)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0)
-            ],
-            RetryPolicy::exponential(Duration::from_millis(100), 2.0, 5, None)
-                .into_iter()
-                .collect::<Vec<_>>()
-        )
+        let expected = vec![
+            // Manually building this powers to avoid rounding issues :)
+            Duration::from_millis(100),
+            Duration::from_millis(100).mul_f32(2.0),
+            Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
+            Duration::from_millis(100)
+                .mul_f32(2.0)
+                .mul_f32(2.0)
+                .mul_f32(2.0),
+            Duration::from_millis(100)
+                .mul_f32(2.0)
+                .mul_f32(2.0)
+                .mul_f32(2.0)
+                .mul_f32(2.0),
+        ];
+
+        let actuals = RetryPolicy::exponential(Duration::from_millis(100), 2.0, 5, None)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(actuals.len(), expected.len());
+        for (expected, actual) in expected.iter().zip(actuals.iter()) {
+            assert!(within_jitter(*expected, *actual, DEFAULT_JITTER_MULTIPLIER));
+        }
     }
 
     #[test]
     fn exponential_retry_policy_with_max_interval() {
-        assert_eq!(
-            vec![
-                // Manually building this powers to avoid rounding issues :)
-                Duration::from_millis(100),
-                Duration::from_millis(100).mul_f32(2.0),
-                Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
-                Duration::from_millis(100)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0)
-                    .mul_f32(2.0),
-                Duration::from_secs(1)
-            ],
-            RetryPolicy::exponential(
-                Duration::from_millis(100),
-                2.0,
-                5,
-                Some(Duration::from_secs(1))
-            )
-            .into_iter()
-            .collect::<Vec<_>>()
+        let expected = vec![
+            // Manually building this powers to avoid rounding issues :)
+            Duration::from_millis(100),
+            Duration::from_millis(100).mul_f32(2.0),
+            Duration::from_millis(100).mul_f32(2.0).mul_f32(2.0),
+            Duration::from_millis(100)
+                .mul_f32(2.0)
+                .mul_f32(2.0)
+                .mul_f32(2.0),
+            Duration::from_secs(1),
+        ];
+        let actuals = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            5,
+            Some(Duration::from_secs(1)),
         )
+        .into_iter()
+        .collect::<Vec<_>>();
+        assert_eq!(actuals.len(), expected.len());
+        for (expected, actual) in expected.iter().zip(actuals.iter()) {
+            assert!(within_jitter(*expected, *actual, DEFAULT_JITTER_MULTIPLIER));
+        }
+    }
+
+    fn within_jitter(expected: Duration, actual: Duration, max_multiplier: f32) -> bool {
+        let min_inc_jitter = expected + MIN_JITTER;
+        let max_inc_jitter = expected + expected.mul_f32(max_multiplier);
+        actual >= min_inc_jitter && actual <= max_inc_jitter
     }
 }
