@@ -10,6 +10,7 @@
 
 use std::collections::{hash_map, HashMap};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
@@ -32,13 +33,16 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 use super::connection::{Connection, ConnectionSender};
 use super::handshake::{negotiate_protocol_version, wait_for_hello, wait_for_welcome};
 use crate::error::{NetworkError, ProtocolError};
+use crate::metric_definitions::{
+    self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
+    ONGOING_DRAIN, OUTGOING_CONNECTION,
+};
 use crate::utils::create_grpc_channel_from_network_address;
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
 static_assertions::const_assert!(SEND_QUEUE_SIZE >= 1);
 
-#[derive(Default)]
 struct ConnectionManagerInner {
     router: MessageRouter,
     connections: HashMap<TaskId, Weak<Connection>>,
@@ -65,6 +69,19 @@ impl ConnectionManagerInner {
         self.connection_by_gen_id
             .get(peer_node_id)
             .and_then(|connections| connections.choose(&mut rand::thread_rng())?.upgrade())
+    }
+}
+
+impl Default for ConnectionManagerInner {
+    fn default() -> Self {
+        metric_definitions::describe_metrics();
+        Self {
+            router: Default::default(),
+            connections: Default::default(),
+            connection_by_gen_id: Default::default(),
+            observed_generations: Default::default(),
+            channel_cache: Default::default(),
+        }
     }
 }
 
@@ -191,6 +208,7 @@ impl ConnectionManager {
         tx.try_send(welcome)
             .expect("channel accept Welcome message");
 
+        INCOMING_CONNECTION.increment(1);
         let connection = Connection::new(peer_node_id, selected_protocol_version, tx);
         // Register the connection.
         let _ = self.start_connection_reactor(connection, incoming)?;
@@ -273,6 +291,8 @@ impl ConnectionManager {
 
         let transformed = ReceiverStream::new(rx).map(Ok);
         let incoming = Box::pin(transformed);
+        OUTGOING_CONNECTION.increment(1);
+        INCOMING_CONNECTION.increment(1);
         self.start_connection_reactor(connection, incoming)
     }
 
@@ -329,6 +349,7 @@ impl ConnectionManager {
             .into());
         }
 
+        OUTGOING_CONNECTION.increment(1);
         let connection = Connection::new(
             peer_node_id
                 .as_generational()
@@ -449,6 +470,8 @@ where
             }
         };
 
+        MESSAGE_RECEIVED.increment(1);
+        let processing_started = Instant::now();
         // header is optional on non-hello messages.
         if let Some(_header) = msg.header {
             // todo: if header contains newer config or metadata versions, notify metadata().
@@ -493,10 +516,12 @@ where
                 {
                     warn!("Error processing message: {:?}", e);
                 }
+                MESSAGE_PROCESSING_DURATION.record(processing_started.elapsed());
             }
             Err(status) => {
                 // terminate the stream
                 info!("Error processing message, reporting error to peer: {status}");
+                MESSAGE_PROCESSING_DURATION.record(processing_started.elapsed());
                 connection.send_control_frame(ConnectionControl::codec_error(status.to_string()));
                 break;
             }
@@ -504,6 +529,7 @@ where
     }
 
     // remove from active set
+    ONGOING_DRAIN.increment(1.0);
     on_connection_draining(&connection, &connection_manager);
     let connection_id = connection.cid;
     let protocol_version = connection.protocol_version;
@@ -537,6 +563,8 @@ where
     // We should also terminate response stream. This happens automatically when
     // the sender is dropped
     on_connection_terminated(&connection_manager);
+    ONGOING_DRAIN.decrement(1.0);
+    CONNECTION_DROPPED.increment(1);
     info!(
         "Connection terminated, drained {} messages in {:?}, total connection age is {:?}",
         drain_counter,
@@ -567,7 +595,7 @@ fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::v2::handshake::HANDSHAKE_TIMEOUT;
+    use crate::handshake::HANDSHAKE_TIMEOUT;
 
     use super::*;
 
