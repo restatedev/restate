@@ -18,8 +18,6 @@ pub mod codec;
 pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;
-#[cfg(feature = "discovery")]
-pub mod old_discovery;
 
 #[cfg(feature = "awakeable-id")]
 pub mod awakeable_id;
