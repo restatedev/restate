@@ -146,6 +146,28 @@ pub(crate) struct ComponentSchemas {
 }
 
 impl ComponentSchemas {
+    fn new_built_in<'a>(
+        ty: ComponentType,
+        ingress_available: bool,
+        handlers: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        Self {
+            revision: 0,
+            handlers: Self::compute_handlers(
+                handlers
+                    .into_iter()
+                    .map(|s| DiscoveredHandlerMetadata {
+                        name: s.to_owned(),
+                        input_schema: None,
+                        output_schema: None,
+                    })
+                    .collect(),
+            ),
+            location: ServiceLocation::BuiltIn { ingress_available },
+            ty,
+        }
+    }
+
     pub(crate) fn compute_handlers(
         handlers: Vec<DiscoveredHandlerMetadata>,
     ) -> HashMap<String, HandlerSchemas> {
@@ -237,7 +259,6 @@ pub(crate) enum InstanceTypeMetadata {
     },
     Unkeyed,
     Singleton,
-    Unsupported,
     #[allow(dead_code)]
     Custom {
         // If method is missing, it means there's no key, hence a random key will be generated
@@ -246,18 +267,6 @@ pub(crate) enum InstanceTypeMetadata {
 }
 
 impl InstanceTypeMetadata {
-    pub(crate) fn keyed_with_scalar_key<'a>(
-        methods: impl IntoIterator<Item = (&'a str, u32)>,
-    ) -> Self {
-        Self::Keyed {
-            key_structure: KeyStructure::Scalar,
-            service_methods_key_field_root_number: methods
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
-        }
-    }
-
     pub(crate) fn from_discovered_metadata(
         instance_type: DiscoveredInstanceType,
         methods: &HashMap<String, DiscoveredMethodMetadata>,
@@ -311,30 +320,6 @@ impl ServiceSchemas {
                 latest_deployment,
                 public: true,
             },
-        }
-    }
-
-    fn new_built_in(
-        svc_desc: &ServiceDescriptor,
-        instance_type: InstanceTypeMetadata,
-        ingress_available: bool,
-    ) -> Self {
-        Self {
-            revision: 0,
-            methods: svc_desc
-                .methods()
-                .map(|descriptor| {
-                    (
-                        descriptor.name().to_string(),
-                        MethodSchemas {
-                            descriptor,
-                            input_fields_annotations: Default::default(),
-                        },
-                    )
-                })
-                .collect(),
-            instance_type,
-            location: ServiceLocation::BuiltIn { ingress_available },
         }
     }
 
@@ -403,8 +388,6 @@ pub(crate) struct DeploymentSchemas {
 
 impl Default for SchemasInner {
     fn default() -> Self {
-        const INGRESS_DEPLOYMENT_ID: DeploymentId = DeploymentId::from_parts(0, 0);
-
         let mut inner = Self {
             components: Default::default(),
             services: Default::default(),
@@ -413,6 +396,7 @@ impl Default for SchemasInner {
             proto_symbols: Default::default(),
         };
 
+        #[allow(dead_code)]
         enum Visibility {
             Public,
             IngressAvailable,
@@ -420,88 +404,51 @@ impl Default for SchemasInner {
         }
 
         // Register built-in services
-        let mut register_built_in = |svc_name: &'static str,
-                                     service_instance_type: InstanceTypeMetadata,
-                                     visibility: Visibility| {
-            inner.services.insert(
-                svc_name.to_string(),
-                ServiceSchemas::new_built_in(
-                    &restate_pb::get_service(svc_name),
-                    service_instance_type,
+        let mut register_built_in = |component_name: &'static str,
+                                     ty: ComponentType,
+                                     visibility: Visibility,
+                                     handlers: Vec<&str>| {
+            inner.components.insert(
+                component_name.to_string(),
+                ComponentSchemas::new_built_in(
+                    ty,
                     matches!(
                         visibility,
                         Visibility::Public | Visibility::IngressAvailable
                     ),
+                    handlers,
                 ),
             );
-            if matches!(visibility, Visibility::Public) {
-                inner
-                    .proto_symbols
-                    .add_service(&INGRESS_DEPLOYMENT_ID, &restate_pb::get_service(svc_name))
-            }
         };
         register_built_in(
-            restate_pb::REFLECTION_SERVICE_NAME,
-            InstanceTypeMetadata::Unsupported,
-            Visibility::Public,
-        );
-        register_built_in(
-            restate_pb::REFLECTION_SERVICE_NAME_V1ALPHA,
-            InstanceTypeMetadata::Unsupported,
-            Visibility::Public,
-        );
-        register_built_in(
-            restate_pb::HEALTH_SERVICE_NAME,
-            InstanceTypeMetadata::Unsupported,
-            Visibility::Public,
-        );
-        register_built_in(
-            restate_pb::INGRESS_SERVICE_NAME,
-            InstanceTypeMetadata::Unkeyed,
-            Visibility::Public,
-        );
-        register_built_in(
-            restate_pb::AWAKEABLES_SERVICE_NAME,
-            InstanceTypeMetadata::Unkeyed,
-            Visibility::Public,
-        );
-        register_built_in(
             restate_pb::PROXY_SERVICE_NAME,
-            // Key must be manually provided when invoking the proxy service
-            InstanceTypeMetadata::Unsupported,
+            ComponentType::Service,
             Visibility::Internal,
+            vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
         );
         register_built_in(
             restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
-            InstanceTypeMetadata::keyed_with_scalar_key([
-                ("Start", 1),
-                ("Send", 1),
-                ("Recv", 1),
-                ("GetResult", 1),
-                ("Cleanup", 1),
-            ]),
-            Visibility::IngressAvailable,
+            ComponentType::VirtualObject,
+            Visibility::Internal,
+            vec!["Start", "Send", "Recv", "GetResult", "Cleanup"],
+        );
+        register_built_in(
+            restate_pb::PROXY_SERVICE_NAME,
+            ComponentType::Service,
+            Visibility::Internal,
+            vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
         );
         register_built_in(
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
-            InstanceTypeMetadata::Unsupported,
+            ComponentType::Service,
             Visibility::Internal,
+            vec![
+                restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME,
+                restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME,
+                restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME,
+            ],
         );
 
         inner
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn proto_list_service_should_not_contain_remote_context() {
-        let schemas = Schemas::default();
-        assert!(
-            !restate_schema_api::proto_symbol::ProtoSymbolResolver::list_services(&schemas)
-                .contains(&"dev.restate.internal.RemoteContext".to_string())
-        );
     }
 }

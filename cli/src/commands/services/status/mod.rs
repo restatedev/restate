@@ -19,17 +19,16 @@ use crate::clients::datafusion_helpers::{
 use crate::clients::MetasClient;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
-use crate::ui::service_methods::icon_for_service_flavor;
+use crate::ui::service_methods::icon_for_component_type;
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 use crate::ui::{duration_to_human_precise, duration_to_human_rough};
-
-use restate_meta_rest_model::services::ServiceMetadata;
 
 use anyhow::Result;
 use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+use restate_meta_rest_model::components::ComponentMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
@@ -64,7 +63,7 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
 
 async fn render_services_status(
     env: &CliEnv,
-    services: Vec<ServiceMetadata>,
+    services: Vec<ComponentMetadata>,
     status_map: ServiceStatusMap,
 ) -> Result<()> {
     let empty = ServiceStatus::default();
@@ -81,7 +80,7 @@ async fn render_services_status(
     for svc in services {
         let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
         // Service title
-        let flavor = icon_for_service_flavor(&svc.instance_type);
+        let flavor = icon_for_component_type(&svc.ty);
         let svc_title = format!("{} {}", svc.name, flavor);
         table.add_row(vec![
             Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold)
@@ -119,10 +118,10 @@ fn render_method_state_stats(
 
 async fn render_methods_status(
     table: &mut Table,
-    svc: ServiceMetadata,
+    svc: ComponentMetadata,
     svc_status: &ServiceStatus,
 ) -> Result<()> {
-    for method in svc.methods {
+    for method in svc.handlers {
         let mut row = vec![];
         row.push(Cell::new(format!("  {}", &method.name)));
         // Pending

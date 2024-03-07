@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use serde::{Deserialize, Serialize};
-
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::service::MethodMetadata;
+pub use restate_schema_api::component::HandlerMetadata;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ListServiceMethodsResponse {
-    pub methods: Vec<MethodMetadata>,
+pub struct ListComponentHandlersResponse {
+    pub handlers: Vec<HandlerMetadata>,
 }

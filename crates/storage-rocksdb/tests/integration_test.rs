@@ -90,7 +90,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
 
 pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutation {
     ExternalStateMutation {
-        service_id,
+        component_id: service_id,
         version: None,
         state: HashMap::default(),
     }

@@ -8,33 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::error::*;
+use super::notify_node_about_schema_changes;
 use crate::state::AdminServiceState;
 
-use super::error::*;
-
-use restate_meta::{ApplyMode, Force};
-use restate_meta_rest_model::deployments::*;
-use restate_schema_api::deployment::DeploymentResolver;
-use restate_service_client::Endpoint;
-use restate_service_protocol::old_discovery::DiscoverEndpoint;
-use restate_types::identifiers::InvalidLambdaARN;
-
-use crate::rest_api::notify_node_about_schema_changes;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{http, Json};
+use axum::Json;
 use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::openapi3::{MediaType, Responses};
 use okapi_operation::okapi::Map;
 use okapi_operation::*;
+use restate_meta::{ApplyMode, Force};
+use restate_meta_rest_model::deployments::*;
+use restate_schema_api::deployment::DeploymentResolver;
+use restate_service_client::Endpoint;
+use restate_service_protocol::discovery::DiscoverEndpoint;
+use restate_types::identifiers::InvalidLambdaARN;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
 #[openapi(
     summary = "Create deployment",
-    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment and their Protobuf descriptor. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the components exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
     operation_id = "create_deployment",
     tags = "deployment",
     responses(
@@ -95,20 +93,20 @@ pub async fn create_deployment(
     let force = if force { Force::Yes } else { Force::No };
     let registration_result = state
         .meta_handle()
-        .old_register_deployment(discover_endpoint, force, apply_changes)
+        .register_deployment(discover_endpoint, force, apply_changes)
         .await?;
 
     notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
 
     let response_body = RegisterDeploymentResponse {
         id: registration_result.deployment,
-        services: registration_result.services,
+        components: registration_result.components,
     };
 
     Ok((
         StatusCode::CREATED,
         [(
-            http::header::LOCATION,
+            header::LOCATION,
             format!("/deployments/{}", response_body.id),
         )],
         Json(response_body),
@@ -131,7 +129,7 @@ pub async fn get_deployment(
     State(state): State<AdminServiceState>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (deployment, services) = state
+    let (deployment, components) = state
         .schemas()
         .get_deployment_and_services(&deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
@@ -139,36 +137,12 @@ pub async fn get_deployment(
     Ok(DetailedDeploymentResponse {
         id: deployment.id,
         deployment: deployment.metadata.into(),
-        services,
+        components,
     }
     .into())
 }
 
-/// Return deployment descriptors
-#[openapi(
-    summary = "Get deployment descriptors",
-    description = "Get deployment Protobuf descriptor pool, serialized as protobuf type google.protobuf.FileDescriptorSet",
-    operation_id = "get_deployment_descriptors",
-    tags = "deployment",
-    parameters(path(
-        name = "deployment",
-        description = "Deployment identifier",
-        schema = "std::string::String"
-    ))
-)]
-pub async fn get_deployment_descriptors(
-    State(state): State<AdminServiceState>,
-    Path(deployment_id): Path<DeploymentId>,
-) -> Result<ProtoBytes, MetaApiError> {
-    Ok(ProtoBytes(
-        state
-            .schemas()
-            .get_deployment_descriptor_pool(&deployment_id)
-            .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?,
-    ))
-}
-
-/// List services
+/// List deployments
 #[openapi(
     summary = "List deployments",
     description = "List all registered deployments.",
@@ -186,9 +160,9 @@ pub async fn list_deployments(
             .map(|(deployment, services)| DeploymentResponse {
                 id: deployment.id,
                 deployment: deployment.metadata.into(),
-                services: services
+                components: services
                     .into_iter()
-                    .map(|(name, revision)| ServiceNameRevPair { name, revision })
+                    .map(|(name, revision)| ComponentNameRevPair { name, revision })
                     .collect(),
             })
             .collect(),

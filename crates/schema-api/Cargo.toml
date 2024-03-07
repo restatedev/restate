@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 
-deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "service"]
+deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "component"]
 json_conversion = ["dep:prost-reflect", "prost-reflect?/serde", "dep:anyhow", "dep:serde_json"]
 json_key_conversion = ["key_extraction", "key_expansion", "dep:serde_json", "dep:thiserror"]
 key_expansion = ["dep:bytes", "dep:thiserror", "dep:prost", "dep:prost-reflect", "dep:anyhow"]

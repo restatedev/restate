@@ -21,7 +21,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExternalStateMutation {
-    pub service_id: ServiceId,
+    pub component_id: ServiceId,
     pub version: Option<String>,
     pub state: HashMap<Bytes, Bytes>,
 }

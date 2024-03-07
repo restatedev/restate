@@ -3719,7 +3719,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tower",
- "tower-http",
+ "tower-http 0.4.4",
  "tracing",
  "url",
 ]
@@ -5029,52 +5029,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-ingress-grpc"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "bytes",
- "bytestring",
- "codederror",
- "derive_builder",
- "drain",
- "futures",
- "http 0.2.12",
- "http-body 0.4.6",
- "hyper 0.14.28",
- "metrics",
- "once_cell",
- "opentelemetry",
- "opentelemetry-http",
- "pin-project",
- "prost 0.12.3",
- "prost-reflect",
- "restate-core",
- "restate-errors",
- "restate-futures-util",
- "restate-ingress-dispatcher",
- "restate-pb",
- "restate-schema-api",
- "restate-schema-impl",
- "restate-test-util",
- "restate-types",
- "schemars",
- "serde",
- "serde_json",
- "test-log",
- "thiserror",
- "tokio",
- "tonic 0.10.2",
- "tonic-web",
- "tower",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "restate-ingress-http"
 version = "0.9.0"
 dependencies = [
@@ -5090,24 +5044,29 @@ dependencies = [
  "hyper-util",
  "metrics",
  "opentelemetry",
+ "pin-project-lite",
+ "prost 0.12.3",
  "restate-core",
  "restate-errors",
  "restate-futures-util",
  "restate-ingress-dispatcher",
+ "restate-pb",
  "restate-schema-api",
  "restate-test-util",
  "restate-types",
  "schemars",
  "serde",
  "serde_json",
+ "serde_with",
  "thiserror",
  "tokio",
+ "tower",
+ "tower-http 0.5.2",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
  "urlencoding",
- "uuid",
 ]
 
 [[package]]
@@ -5214,8 +5173,6 @@ dependencies = [
  "futures",
  "googletest",
  "http 0.2.12",
- "prost 0.12.3",
- "prost-reflect",
  "restate-core",
  "restate-errors",
  "restate-fs-util",
@@ -5348,7 +5305,7 @@ dependencies = [
  "tonic 0.10.2",
  "tonic-reflection",
  "tower",
- "tower-http",
+ "tower-http 0.4.4",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
@@ -5812,6 +5769,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "ulid",
+ "uuid",
  "xxhash-rust",
 ]
 
@@ -5877,7 +5835,7 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-ingress-dispatcher",
- "restate-ingress-grpc",
+ "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-api",
  "restate-invoker-impl",
@@ -7048,26 +7006,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-web"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fddb2a37b247e6adcb9f239f4e5cefdcc5ed526141a416b943929f13aea2cce"
-dependencies = [
- "base64 0.21.7",
- "bytes",
- "http 0.2.12",
- "http-body 0.4.6",
- "hyper 0.14.28",
- "pin-project",
- "tokio-stream",
- "tonic 0.10.2",
- "tower-http",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7106,6 +7044,22 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
+dependencies = [
+ "bitflags 2.4.2",
+ "bytes",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]

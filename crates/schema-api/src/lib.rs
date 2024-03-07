@@ -12,7 +12,7 @@
 
 #[cfg(feature = "deployment")]
 pub mod deployment {
-    use super::service::ServiceMetadata;
+    use crate::component::ComponentMetadata;
     use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
@@ -165,9 +165,9 @@ pub mod deployment {
     }
 
     pub trait DeploymentResolver {
-        fn resolve_latest_deployment_for_service(
+        fn resolve_latest_deployment_for_component(
             &self,
-            service_name: impl AsRef<str>,
+            component_name: impl AsRef<str>,
         ) -> Option<Deployment>;
 
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
@@ -177,7 +177,7 @@ pub mod deployment {
         fn get_deployment_and_services(
             &self,
             deployment_id: &DeploymentId,
-        ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
+        ) -> Option<(Deployment, Vec<ComponentMetadata>)>;
 
         fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)>;
     }
@@ -220,24 +220,28 @@ pub mod deployment {
         }
 
         impl MockDeploymentMetadataRegistry {
-            pub fn mock_service(&mut self, name: &str) {
-                self.mock_service_with_metadata(name, Deployment::mock());
+            pub fn mock_component(&mut self, component: &str) {
+                self.mock_component_with_metadata(component, Deployment::mock());
             }
 
-            pub fn mock_service_with_metadata(&mut self, name: &str, deployment: Deployment) {
+            pub fn mock_component_with_metadata(
+                &mut self,
+                component: &str,
+                deployment: Deployment,
+            ) {
                 self.latest_deployment
-                    .insert(name.to_string(), deployment.id);
+                    .insert(component.to_string(), deployment.id);
                 self.deployments.insert(deployment.id, deployment.metadata);
             }
         }
 
         impl DeploymentResolver for MockDeploymentMetadataRegistry {
-            fn resolve_latest_deployment_for_service(
+            fn resolve_latest_deployment_for_component(
                 &self,
-                service_name: impl AsRef<str>,
+                component_name: impl AsRef<str>,
             ) -> Option<Deployment> {
                 self.latest_deployment
-                    .get(service_name.as_ref())
+                    .get(component_name.as_ref())
                     .and_then(|deployment_id| self.get_deployment(deployment_id))
             }
 
@@ -261,7 +265,7 @@ pub mod deployment {
             fn get_deployment_and_services(
                 &self,
                 deployment_id: &DeploymentId,
-            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+            ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
                 self.deployments
                     .get(deployment_id)
                     .cloned()

@@ -16,15 +16,14 @@ use crate::clients::MetaClientInterface;
 use crate::console::c_println;
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{render_deployment_type, render_deployment_url};
-use crate::ui::service_methods::{icon_for_is_public, icon_for_service_flavor};
+use crate::ui::service_methods::{icon_for_component_type, icon_for_is_public};
 use crate::ui::watcher::Watch;
-
-use restate_meta_rest_model::deployments::DeploymentResponse;
-use restate_meta_rest_model::services::MethodMetadata;
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
+use restate_meta_rest_model::components::HandlerMetadata;
+use restate_meta_rest_model::deployments::DeploymentResponse;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -49,9 +48,9 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::MetasClient::new(env)?;
-    let defs = client.get_services().await?.into_body().await?;
+    let defs = client.get_components().await?.into_body().await?;
 
-    if defs.services.is_empty() {
+    if defs.components.is_empty() {
         c_error!(
             "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
@@ -82,14 +81,14 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     }
     table.set_styled_header(header);
 
-    for svc in defs.services {
+    for svc in defs.components {
         if list_opts.public_only && !svc.public {
             // Skip non-public services if users chooses to.
             continue;
         }
 
         let public = icon_for_is_public(svc.public);
-        let flavor = icon_for_service_flavor(&svc.instance_type);
+        let flavor = icon_for_component_type(&svc.ty);
 
         let deployment = deployment_cache
             .get(&svc.deployment_id)
@@ -105,7 +104,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         ];
         if list_opts.extra {
             row.push(render_deployment_url(&deployment.deployment));
-            row.push(render_methods(svc.methods));
+            row.push(render_methods(svc.handlers));
         }
 
         table.add_row(row);
@@ -114,7 +113,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     Ok(())
 }
 
-fn render_methods(methods: Vec<MethodMetadata>) -> String {
+fn render_methods(methods: Vec<HandlerMetadata>) -> String {
     use std::fmt::Write as FmtWrite;
 
     let mut out = String::new();

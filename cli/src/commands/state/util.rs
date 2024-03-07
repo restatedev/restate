@@ -8,7 +8,7 @@ use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_meta_rest_model::services::{InstanceType, ModifyServiceStateRequest};
+use restate_meta_rest_model::components::{ComponentType, ModifyComponentStateRequest};
 use restate_types::state_mut::StateMutationVersion;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,8 +25,8 @@ pub(crate) async fn get_current_state(
     // 0. require that this is a keyed service
     //
     let client = MetasClient::new(env)?;
-    let service_meta = client.get_service(service).await?.into_body().await?;
-    if service_meta.instance_type != InstanceType::Keyed {
+    let service_meta = client.get_component(service).await?.into_body().await?;
+    if service_meta.ty != ComponentType::VirtualObject {
         bail!("Only keyed services support state");
     }
     //
@@ -74,10 +74,10 @@ pub(crate) async fn update_state(
     service_key: &str,
     new_state: HashMap<String, Bytes>,
 ) -> anyhow::Result<()> {
-    let req = ModifyServiceStateRequest {
+    let req = ModifyComponentStateRequest {
         version: expected_version,
         new_state,
-        service_key: service_key.to_string(),
+        object_key: service_key.to_string(),
     };
 
     let client = MetasClient::new(env)?;

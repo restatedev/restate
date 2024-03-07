@@ -67,12 +67,15 @@ pub struct DiscoveredMetadata {
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
-    #[error("received a bad response from the SDK: {0}. This might be a symptom of an SDK bug")]
+    #[error("received a bad response from the SDK: {0}")]
     #[code(unknown)]
     BadResponse(&'static str),
-    #[error("received a bad response from the SDK that cannot be decoded: {0}. This might be a symptom of an SDK bug")]
+    #[error(
+        "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
+        String::from_utf8_lossy(.1)
+    )]
     #[code(unknown)]
-    Decode(#[from] serde_json::Error),
+    Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
     #[error("bad status code: {0}")]
@@ -98,7 +101,7 @@ impl DiscoveryError {
                     | StatusCode::GATEWAY_TIMEOUT
             ),
             DiscoveryError::Client(client_error) => client_error.is_retryable(),
-            DiscoveryError::BadResponse(_) | DiscoveryError::Decode(_) => false,
+            DiscoveryError::BadResponse(_) | DiscoveryError::Decode(_, _) => false,
         }
     }
 }
@@ -145,7 +148,8 @@ impl ComponentDiscovery {
         }
 
         // Parse the response
-        let response: schema::Deployment = serde_json::from_slice(&body)?;
+        let response: schema::Deployment =
+            serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?;
 
         let protocol_type = match response.protocol_mode {
             Some(schema::ProtocolMode::BidiStream) => ProtocolType::BidiStream,

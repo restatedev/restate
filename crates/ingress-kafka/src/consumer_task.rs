@@ -109,7 +109,7 @@ impl MessageSender {
         // Prepare ingress span
         let ingress_span = info_span!(
             "kafka_ingress_consume",
-            otel.name = format!("kafka_ingress_consume"),
+            otel.name = "kafka_ingress_consume",
             messaging.system = "kafka",
             messaging.operation = "receive",
             messaging.source.name = msg.topic(),

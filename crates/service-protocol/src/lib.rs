@@ -158,6 +158,7 @@ mod pb_into {
                     service_name: msg.service_name.into(),
                     method_name: msg.method_name.into(),
                     parameter: msg.parameter,
+                    key: msg.key.into(),
                 },
                 result: msg.result.map(|v| match v {
                     invoke_entry_message::Result::Value(r) => EntryResult::Success(r),
@@ -178,6 +179,7 @@ mod pb_into {
                     service_name: msg.service_name.into(),
                     method_name: msg.method_name.into(),
                     parameter: msg.parameter,
+                    key: msg.key.into(),
                 },
                 invoke_time: msg.invoke_time,
             }))

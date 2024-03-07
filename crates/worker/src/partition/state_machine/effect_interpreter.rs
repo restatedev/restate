@@ -458,7 +458,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_mutation: ExternalStateMutation,
     ) -> StorageResult<()> {
         let ExternalStateMutation {
-            service_id,
+            component_id: service_id,
             version,
             state,
         } = state_mutation;

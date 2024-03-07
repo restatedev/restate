@@ -63,7 +63,7 @@ const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/r
 #[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
     #[error("no deployment was found to process the invocation")]
-    NoDeploymentForService,
+    NoDeploymentForComponent,
     #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
     UnknownDeployment(DeploymentId),
     #[error("unexpected http status code: {0}")]
@@ -372,10 +372,10 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
-                    .resolve_latest_deployment_for_service(
+                    .resolve_latest_deployment_for_component(
                         &self.full_invocation_id.service_id.service_name
                     )
-                    .ok_or(InvocationTaskError::NoDeploymentForService));
+                    .ok_or(InvocationTaskError::NoDeploymentForComponent));
                 (deployment, /* has_changed= */ true)
             };
 

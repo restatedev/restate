@@ -232,7 +232,7 @@ mod tests {
     #[test(tokio::test)]
     async fn idempotent_invoke_test() {
         let mut ctx = TestInvocationContext::from_service_id(ServiceId::new(
-            restate_pb::INGRESS_SERVICE_NAME,
+            "MyService",
             Bytes::copy_from_slice(b"123456"),
         ));
 

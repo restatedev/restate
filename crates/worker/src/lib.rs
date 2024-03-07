@@ -18,7 +18,7 @@ use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
 use restate_ingress_dispatcher::{
     IngressDispatcherInputSender, Service as IngressDispatcherService,
 };
-use restate_ingress_grpc::HyperServerIngress;
+use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
@@ -38,7 +38,7 @@ mod metric_definitions;
 mod partition;
 mod subscription_integration;
 
-pub use restate_ingress_grpc::{
+pub use restate_ingress_http::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
     OptionsBuilderError as IngressOptionsBuilderError,
 };
@@ -96,7 +96,7 @@ pub struct Options {
     storage_query_datafusion: StorageQueryDatafusionOptions,
     storage_query_postgres: StorageQueryPostgresOptions,
     storage_rocksdb: RocksdbOptions,
-    ingress_grpc: IngressOptions,
+    ingress: IngressOptions,
     pub kafka: KafkaIngressOptions,
     invoker: InvokerOptions,
 
@@ -119,7 +119,7 @@ impl Default for Options {
             storage_query_datafusion: Default::default(),
             storage_query_postgres: Default::default(),
             storage_rocksdb: Default::default(),
-            ingress_grpc: Default::default(),
+            ingress: Default::default(),
             kafka: Default::default(),
             invoker: Default::default(),
             partitions: 1024,
@@ -201,7 +201,7 @@ impl Worker {
     ) -> Result<Self, BuildError> {
         let Options {
             channel_size,
-            ingress_grpc,
+            ingress,
             kafka,
             timers,
             storage_query_datafusion,
@@ -213,7 +213,7 @@ impl Worker {
         let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
 
         // ingress_grpc
-        let external_client_ingress = ingress_grpc.build(
+        let ingress_http = ingress.build(
             ingress_dispatcher_service.create_ingress_request_sender(),
             schemas.clone(),
         );
@@ -271,7 +271,7 @@ impl Worker {
             storage_query_postgres,
             invoker,
             ingress_dispatcher_service,
-            external_client_ingress,
+            external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
             rocksdb_writer,

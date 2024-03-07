@@ -16,7 +16,6 @@ use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
 use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_pb::restate::internal::RemoteContextInvoker;
-use restate_pb::restate::IngressInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::invocation_status_table::NotificationTarget;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -35,7 +34,6 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 mod idempotent_invoker;
-mod ingress;
 mod remote_context;
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
@@ -95,11 +93,6 @@ impl ServiceInvoker {
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
-            restate_pb::INGRESS_SERVICE_NAME => {
-                IngressInvoker(invocation_context)
-                    .invoke_builtin(method, argument)
-                    .await
-            }
             restate_pb::REMOTE_CONTEXT_SERVICE_NAME => {
                 RemoteContextInvoker(invocation_context)
                     .invoke_builtin(method, argument)

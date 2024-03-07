@@ -10,12 +10,12 @@
 
 //! This module implements the Meta API endpoint.
 
+mod components;
 mod deployments;
 mod error;
+mod handlers;
 mod health;
 mod invocations;
-mod methods;
-mod services;
 mod subscriptions;
 
 use okapi_operation::axum_integration::{delete, get, patch, post};
@@ -46,37 +46,32 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
             get(openapi_handler!(deployments::get_deployment)),
         )
         .route(
-            "/deployments/:deployment/descriptors",
-            get(openapi_handler!(deployments::get_deployment_descriptors)),
-        )
-        .route(
             "/deployments/:deployment",
             delete(openapi_handler!(deployments::delete_deployment)),
         )
-        .route("/services", get(openapi_handler!(services::list_services)))
         .route(
-            "/services/:service",
-            get(openapi_handler!(services::get_service)),
+            "/components",
+            get(openapi_handler!(components::list_components)),
         )
         .route(
-            "/services/:service",
-            patch(openapi_handler!(services::modify_service)),
+            "/components/:component",
+            get(openapi_handler!(components::get_component)),
         )
         .route(
-            "/services/:service/descriptors",
-            get(openapi_handler!(services::list_service_descriptors)),
+            "/components/:component",
+            patch(openapi_handler!(components::modify_component)),
         )
         .route(
-            "/services/:service/state",
-            post(openapi_handler!(services::modify_service_state)),
+            "/components/:component/state",
+            post(openapi_handler!(components::modify_component_state)),
         )
         .route(
-            "/services/:service/methods",
-            get(openapi_handler!(methods::list_service_methods)),
+            "/components/:component/handlers",
+            get(openapi_handler!(handlers::list_component_handlers)),
         )
         .route(
-            "/services/:service/methods/:method",
-            get(openapi_handler!(methods::get_service_method)),
+            "/components/:component/handlers/:handler",
+            get(openapi_handler!(handlers::get_component_handler)),
         )
         .route(
             "/invocations/:invocation_id",

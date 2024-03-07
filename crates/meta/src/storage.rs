@@ -31,8 +31,6 @@ pub enum MetaStorageError {
     Io(#[from] io::Error),
     #[error("generic serde error: {0}. This is probably a runtime bug")]
     Encode(#[from] bincode::error::EncodeError),
-    #[error("generic descriptor error: {0}. This is probably a runtime bug")]
-    Descriptor(#[from] prost_reflect::DescriptorError),
     #[error("task error when writing to disk: {0}. This is probably a runtime bug")]
     Join(#[from] tokio::task::JoinError),
     #[error("failed reading meta information: {0}")]

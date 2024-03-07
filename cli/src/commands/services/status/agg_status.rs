@@ -14,10 +14,9 @@ use crate::clients::datafusion_helpers::{get_locked_keys_status, get_services_st
 use crate::clients::{DataFusionHttpClient, MetaClientInterface, MetasClient};
 use crate::{c_error, c_title};
 
-use restate_meta_rest_model::services::InstanceType;
-
 use anyhow::Result;
 use indicatif::ProgressBar;
+use restate_meta_rest_model::components::ComponentType;
 
 pub async fn run_aggregated_status(
     env: &CliEnv,
@@ -33,11 +32,11 @@ pub async fn run_aggregated_status(
 
     progress.set_message("Fetching services status");
     let services = metas_client
-        .get_services()
+        .get_components()
         .await?
         .into_body()
         .await?
-        .services;
+        .components;
     if services.is_empty() {
         progress.finish_and_clear();
         c_error!(
@@ -50,7 +49,7 @@ pub async fn run_aggregated_status(
 
     let keyed: Vec<_> = services
         .iter()
-        .filter(|svc| svc.instance_type == InstanceType::Keyed)
+        .filter(|svc| svc.ty == ComponentType::VirtualObject)
         .cloned()
         .collect();
 

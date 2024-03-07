@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-
 use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
-
-use restate_meta_rest_model::deployments::ServiceNameRevPair;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::deployments::ComponentNameRevPair;
+use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
@@ -27,7 +25,7 @@ use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
-use crate::ui::service_methods::icon_for_service_flavor;
+use crate::ui::service_methods::icon_for_component_type;
 use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indentln, c_success};
 
@@ -58,9 +56,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
 
-    let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
+    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
     // To know the latest version of every service.
-    let services = client.get_services().await?.into_body().await?.services;
+    let services = client.get_components().await?.into_body().await?.components;
     for svc in services {
         latest_services.insert(svc.name.clone(), svc);
     }
@@ -69,9 +67,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
     let svc_rev_pairs: Vec<_> = deployment
-        .services
+        .components
         .iter()
-        .map(|s| ServiceNameRevPair {
+        .map(|s| ComponentNameRevPair {
             name: s.name.clone(),
             revision: s.revision,
         })
@@ -92,7 +90,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
     c_println!("{}", table);
     c_println!("{}", Styled(Style::Info, "Services:"));
-    for svc in deployment.services {
+    for svc in deployment.components {
         let Some(latest_svc) = latest_services.get(&svc.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that
@@ -104,12 +102,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             continue;
         };
         c_indentln!(1, "- {}", Styled(Style::Info, &svc.name));
-        c_indentln!(
-            2,
-            "Type: {:?} {}",
-            svc.instance_type,
-            icon_for_service_flavor(&svc.instance_type),
-        );
+        c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
         let latest_revision_message = if svc.revision == latest_svc.revision {
             // We are latest.
             format!("[{}]", Styled(Style::Success, "Latest"))

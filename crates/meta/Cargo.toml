@@ -17,7 +17,7 @@ restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
-restate-schema-api = { workspace = true, features = ["component", "service", "deployment", "serde", "serde_schema"] }
+restate-schema-api = { workspace = true, features = ["component", "deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 restate-service-client = { workspace = true }
@@ -32,8 +32,6 @@ derive_builder = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
-prost = { workspace = true }
-prost-reflect = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

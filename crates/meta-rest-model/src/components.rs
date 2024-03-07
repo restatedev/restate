@@ -14,38 +14,38 @@ use std::collections::HashMap;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::service::{InstanceType, MethodMetadata, ServiceMetadata};
+pub use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
 pub use restate_types::identifiers::ComponentRevision;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ListServicesResponse {
-    pub services: Vec<ServiceMetadata>,
+pub struct ListComponentsResponse {
+    pub components: Vec<ComponentMetadata>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModifyServiceRequest {
+pub struct ModifyComponentRequest {
     /// # Public
     ///
-    /// If true, the service can be invoked through the ingress.
-    /// If false, the service can be invoked only from another Restate service.
+    /// If true, the component can be invoked through the ingress.
+    /// If false, the component can be invoked only from another Restate service.
     pub public: bool,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModifyServiceStateRequest {
+pub struct ModifyComponentStateRequest {
     /// # Version
     ///
     /// If set, the latest version of the state is compared with this value and the operation will fail
     /// when the versions differ.
     pub version: Option<String>,
 
-    /// # Service key
+    /// # Component key
     ///
-    /// To what service key to apply this change
-    pub service_key: String,
+    /// To what virtual object key to apply this change
+    pub object_key: String,
 
     /// # New State
     ///

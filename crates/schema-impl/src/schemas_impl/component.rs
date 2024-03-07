@@ -7,7 +7,7 @@ impl SchemasInner {
         public: bool,
     ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
         check_reserved_name(&name)?;
-        if !self.services.contains_key(&name) {
+        if !self.components.contains_key(&name) {
             return Err(SchemasUpdateError::UnknownComponent(name));
         }
 

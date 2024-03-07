@@ -10,33 +10,6 @@
 
 //! This module contains Restate public protobuf definitions
 
-use once_cell::sync::Lazy;
-use prost_reflect::{DescriptorPool, ServiceDescriptor};
-use std::convert::AsRef;
-
-pub mod grpc {
-    pub mod health {
-        #![allow(warnings)]
-        #![allow(clippy::all)]
-        #![allow(unknown_lints)]
-        include!(concat!(env!("OUT_DIR"), "/grpc.health.v1.rs"));
-    }
-    pub mod reflection {
-        pub mod v1 {
-            #![allow(warnings)]
-            #![allow(clippy::all)]
-            #![allow(unknown_lints)]
-            include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1.rs"));
-        }
-
-        pub mod v1alpha {
-            #![allow(warnings)]
-            #![allow(clippy::all)]
-            #![allow(unknown_lints)]
-            include!(concat!(env!("OUT_DIR"), "/grpc.reflection.v1alpha.rs"));
-        }
-    }
-}
 pub mod restate {
     #![allow(warnings)]
     #![allow(clippy::all)]
@@ -72,32 +45,12 @@ pub mod restate {
     }
 }
 
-pub static DESCRIPTOR_POOL: Lazy<DescriptorPool> = Lazy::new(|| {
-    DescriptorPool::decode(
-        include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin")).as_ref(),
-    )
-    .expect("The built-in descriptor pool should be valid")
-});
-
-pub fn get_service(svc_name: &str) -> ServiceDescriptor {
-    DESCRIPTOR_POOL
-        .get_service_by_name(svc_name)
-        .unwrap_or_else(|| {
-            panic!(
-                "The built-in descriptor pool should contain the {} service",
-                svc_name
-            )
-        })
-}
-
-pub const INGRESS_SERVICE_NAME: &str = "dev.restate.Ingress";
 pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
-pub const REFLECTION_SERVICE_NAME: &str = "grpc.reflection.v1.ServerReflection";
-pub const REFLECTION_SERVICE_NAME_V1ALPHA: &str = "grpc.reflection.v1alpha.ServerReflection";
-pub const HEALTH_SERVICE_NAME: &str = "grpc.health.v1.Health";
-pub const PROXY_SERVICE_NAME: &str = "dev.restate.internal.Proxy";
+pub const AWAKEABLES_RESOLVE_HANDLER_NAME: &str = "Resolve";
+pub const AWAKEABLES_REJECT_HANDLER_NAME: &str = "Reject";
+pub const PROXY_SERVICE_NAME: &str = "restate_internal_pp_proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
-pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "dev.restate.internal.RemoteContext";
+pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "restate_remote_context";
 pub const REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME: &str = "InternalOnCompletion";
 pub const REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME: &str = "InternalOnKill";
 pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "dev.restate.internal.IdempotentInvoker";

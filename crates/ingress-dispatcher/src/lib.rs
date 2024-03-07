@@ -226,13 +226,12 @@ impl IngressRequest {
                 ref handler,
                 ty,
             } => {
-                let target_fid = FullInvocationId::generate(ServiceId::new(
-                    &**name,
-                    // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
-                    match ty {
-                        EventReceiverComponentType::VirtualObject {
-                            ordering_key_is_key,
-                        } => Bytes::from(if *ordering_key_is_key {
+                let target_fid = FullInvocationId::generate(match ty {
+                    EventReceiverComponentType::VirtualObject {
+                        ordering_key_is_key,
+                    } => ServiceId::new(
+                        &**name,
+                        if *ordering_key_is_key {
                             event.ordering_key.clone()
                         } else {
                             std::str::from_utf8(&event.key)
@@ -242,12 +241,10 @@ impl IngressRequest {
                                     reason: e,
                                 })?
                                 .to_owned()
-                        }),
-                        EventReceiverComponentType::Service => {
-                            Bytes::from(InvocationUuid::new().to_string())
-                        }
-                    },
-                ));
+                        },
+                    ),
+                    EventReceiverComponentType::Service => ServiceId::unkeyed(&**name),
+                });
 
                 (target_fid, handler, event.payload.clone())
             }

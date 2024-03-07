@@ -10,20 +10,20 @@
 
 use super::Schemas;
 use bytes::Bytes;
+use restate_schema_api::component::ComponentMetadata;
 
 use crate::schemas_impl::ServiceLocation;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
-use restate_schema_api::service::ServiceMetadata;
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
 impl DeploymentResolver for Schemas {
-    fn resolve_latest_deployment_for_service(
+    fn resolve_latest_deployment_for_component(
         &self,
-        service_name: impl AsRef<str>,
+        component_name: impl AsRef<str>,
     ) -> Option<Deployment> {
         let schemas = self.0.load();
-        let service = schemas.services.get(service_name.as_ref())?;
-        match &service.location {
+        let component = schemas.components.get(component_name.as_ref())?;
+        match &component.location {
             ServiceLocation::BuiltIn { .. } => None,
             ServiceLocation::Deployment {
                 latest_deployment, ..
@@ -59,7 +59,7 @@ impl DeploymentResolver for Schemas {
     fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
         let schemas = self.0.load();
         schemas.deployments.get(deployment_id).map(|schemas| {
             (
@@ -67,7 +67,7 @@ impl DeploymentResolver for Schemas {
                     id: *deployment_id,
                     metadata: schemas.metadata.clone(),
                 },
-                schemas.services.clone(),
+                schemas.components.clone(),
             )
         })
     }

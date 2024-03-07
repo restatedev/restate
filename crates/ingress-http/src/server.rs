@@ -12,6 +12,9 @@ use super::*;
 
 use crate::handler::Handler;
 use codederror::CodedError;
+use http::{Request, Response};
+use http_body_util::Full;
+use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
@@ -21,10 +24,11 @@ use restate_schema_api::component::ComponentMetadataResolver;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio::sync::Semaphore;
+use tower::{ServiceBuilder, ServiceExt};
+use tower_http::cors::CorsLayer;
+use tower_http::normalize_path::NormalizePathLayer;
 use tracing::{info, warn};
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
@@ -105,10 +109,12 @@ where
             })?;
 
         // Prepare the handler
-        let global_concurrency_limit_semaphore = Arc::new(Semaphore::new(concurrency_limit));
-
-        let handler =
-            handler::Handler::new(schemas, request_tx, global_concurrency_limit_semaphore);
+        let service = ServiceBuilder::new()
+            .layer(NormalizePathLayer::trim_trailing_slash())
+            .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
+            .layer(CorsLayer::very_permissive())
+            .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
+            .service(Handler::new(schemas, request_tx));
 
         info!(
             net.host.addr = %local_addr.ip(),
@@ -127,7 +133,7 @@ where
             tokio::select! {
                 res = listener.accept() => {
                     let (stream, remote_peer) = res?;
-                    Self::handle_connection(stream, remote_peer, handler.clone())?;
+                    Self::handle_connection(stream, remote_peer, service.clone())?;
                 }
                   _ = &mut shutdown => {
                     return Ok(());
@@ -136,19 +142,31 @@ where
         }
     }
 
-    fn handle_connection(
+    fn handle_connection<T, F>(
         stream: TcpStream,
         remote_peer: SocketAddr,
-        handler: Handler<Schemas>,
-    ) -> anyhow::Result<()> {
+        handler: T,
+    ) -> anyhow::Result<()>
+    where
+        F: Send,
+        T: tower::Service<
+                Request<Incoming>,
+                Response = Response<Full<Bytes>>,
+                Error = Infallible,
+                Future = F,
+            > + Clone
+            + Send
+            + 'static,
+    {
         let connect_info = ConnectInfo::new(remote_peer);
         let io = TokioIo::new(stream);
 
         // Spawn a tokio task to serve the connection
         task_center().spawn(TaskKind::Ingress, "ingress", None, async move {
-            let svc = service_fn(move |hyper_req| {
+            let svc = service_fn(move |mut hyper_req| {
+                hyper_req.extensions_mut().insert(connect_info);
                 let h = handler.clone();
-                async move { Ok::<_, Infallible>(h.handle(connect_info, hyper_req).await) }
+                async move { h.oneshot(hyper_req).await }
             });
 
             let shutdown = cancellation_watcher();
@@ -200,7 +218,7 @@ mod tests {
     use restate_test_util::assert_eq;
     use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, Semaphore};
     use tokio::task::JoinHandle;
     use tracing_test::traced_test;
 

@@ -418,14 +418,14 @@ mod tests {
 
         state_machine
             .apply(Command::PatchState(ExternalStateMutation {
-                service_id: fid.service_id.clone(),
+                component_id: fid.service_id.clone(),
                 version: None,
                 state: first_state_mutation,
             }))
             .await;
         state_machine
             .apply(Command::PatchState(ExternalStateMutation {
-                service_id: fid.service_id.clone(),
+                component_id: fid.service_id.clone(),
                 version: None,
                 state: second_state_mutation.clone(),
             }))

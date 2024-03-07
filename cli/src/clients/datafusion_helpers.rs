@@ -24,7 +24,7 @@ use restate_meta_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, TimeZone};
-use restate_meta_rest_model::services::InstanceType;
+use restate_meta_rest_model::components::ComponentType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::InvocationId;
 
@@ -778,13 +778,13 @@ pub async fn find_active_invocations(
 
             let invoked_by_id = value_as_string_opt(&batch, 13, i);
             let invoked_by_service = value_as_string_opt(&batch, 14, i);
-            let instance_type = parse_instance_type(&value_as_string(&batch, 15, i));
+            let component_type = parse_component_type(&value_as_string(&batch, 15, i));
             let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
 
             let existing_pinned_deployment_id = value_as_string_opt(&batch, 17, i);
             let trace_id = value_as_string_opt(&batch, 18, i);
 
-            let key = if instance_type == InstanceType::Keyed {
+            let key = if component_type == ComponentType::VirtualObject {
                 service_key
             } else {
                 None
@@ -864,8 +864,8 @@ pub async fn find_inbox_invocations(
                 if full_count == 0 {
                     full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
                 }
-                let instance_type = parse_instance_type(&value_as_string(&batch, 7, i));
-                let key = if instance_type == InstanceType::Keyed {
+                let component_type = parse_component_type(&value_as_string(&batch, 7, i));
+                let key = if component_type == ComponentType::VirtualObject {
                     value_as_string_opt(&batch, 6, i)
                 } else {
                     None
@@ -920,11 +920,10 @@ pub async fn get_service_invocations(
     Ok((inbox, active))
 }
 
-fn parse_instance_type(s: &str) -> InstanceType {
+fn parse_component_type(s: &str) -> ComponentType {
     match s {
-        "keyed" => InstanceType::Keyed,
-        "unkeyed" => InstanceType::Unkeyed,
-        "singleton" => InstanceType::Singleton,
+        "service" => ComponentType::Service,
+        "virtual_object" => ComponentType::VirtualObject,
         _ => panic!("Unexpected instance type"),
     }
 }
