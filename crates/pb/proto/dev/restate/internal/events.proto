@@ -9,16 +9,10 @@
 
 syntax = "proto3";
 
-package dev.restate;
-
-import "dev/restate/ext.proto";
-
-option java_multiple_files = true;
-option java_package = "dev.restate.generated";
-option go_package = "restate.dev/sdk-go/pb";
+package dev.restate.internal;
 
 message Event {
-  string ordering_key = 1 [(dev.restate.ext.field) = KEY];
+  string ordering_key = 1;
 
   bytes key = 2;
   bytes payload = 3;

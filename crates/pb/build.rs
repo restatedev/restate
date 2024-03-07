@@ -11,8 +11,6 @@
 use crate::built_in_service_gen::RestateBuiltInServiceGen;
 use crate::manual_response_built_in_service_gen::ManualResponseRestateBuiltInServiceGen;
 use crate::multi_service_generator::MultiServiceGenerator;
-use std::env;
-use std::path::PathBuf;
 
 mod multi_service_generator {
     use prost_build::{Service, ServiceGenerator};
@@ -283,7 +281,10 @@ fn main() -> std::io::Result<()> {
         .bytes(["."])
         .service_generator(Box::new(
             MultiServiceGenerator::new()
-                .with_svc("dev.restate.Awakeables", Box::new(RestateBuiltInServiceGen))
+                .with_svc(
+                    "dev.restate.internal.Awakeables",
+                    Box::new(RestateBuiltInServiceGen),
+                )
                 .with_svc(
                     "dev.restate.internal.Proxy",
                     Box::new(RestateBuiltInServiceGen),
@@ -332,30 +333,11 @@ fn main() -> std::io::Result<()> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(
             &[
-                "proto/dev/restate/ext.proto",
-                "proto/dev/restate/services.proto",
                 "proto/dev/restate/internal/services.proto",
-                "proto/dev/restate/events.proto",
+                "proto/dev/restate/internal/events.proto",
                 "proto/dev/restate/internal/messages.proto",
             ],
             &["proto"],
-        )?;
-
-    prost_build::Config::new()
-        .file_descriptor_set_path(
-            PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))
-                .join("file_descriptor_set_test.bin"),
-        )
-        .bytes(["."])
-        .service_generator(tonic_build::configure().service_generator())
-        .extern_path(".dev.restate", "crate::restate")
-        .compile_protos(
-            &[
-                "tests/proto/test.proto",
-                "tests/proto/greeter.proto",
-                "tests/proto/event_handler.proto",
-            ],
-            &["proto", "tests/proto"],
         )?;
 
     Ok(())
