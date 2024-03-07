@@ -16,7 +16,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
-    DeduplicationId, EventError, IngressRequest, IngressRequestSender,
+    DeduplicationId, DispatchIngressRequest, EventError, IngressDispatcher, IngressRequest,
 };
 use restate_pb::restate::Event;
 use restate_schema_api::subscription::{
@@ -85,15 +85,18 @@ impl DeduplicationId for KafkaDeduplicationId {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MessageSender {
     subscription: Subscription,
-    tx: IngressRequestSender,
+    dispatcher: IngressDispatcher,
 }
 
 impl MessageSender {
-    pub fn new(subscription: Subscription, tx: IngressRequestSender) -> Self {
-        Self { subscription, tx }
+    pub fn new(subscription: Subscription, dispatcher: IngressDispatcher) -> Self {
+        Self {
+            subscription,
+            dispatcher,
+        }
     }
 
     async fn send(
@@ -133,7 +136,7 @@ impl MessageSender {
             attributes: Self::generate_events_attributes(msg, self.subscription.id()),
         };
 
-        let (req, rx) = IngressRequest::event(
+        let req = IngressRequest::event(
             &self.subscription,
             event,
             SpanRelation::Parent(ingress_span_context),
@@ -146,16 +149,12 @@ impl MessageSender {
             cause,
         })?;
 
-        async {
-            self.tx
-                .send(req)
-                .map_err(|_| Error::IngressDispatcherClosed)?;
-            rx.await.map_err(|_| Error::IngressDispatcherClosed)?;
-
-            Ok(())
-        }
-        .instrument(ingress_span)
-        .await
+        self.dispatcher
+            .dispatch_ingress_request(req)
+            .instrument(ingress_span)
+            .await
+            .map_err(|_| Error::IngressDispatcherClosed)?;
+        Ok(())
     }
 
     fn generate_ordering_key(

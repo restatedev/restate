@@ -21,7 +21,7 @@ use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerValue;
 use restate_types::dedup::DedupInformation;
-use restate_types::logs::{LogId, Payload};
+use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -168,14 +168,14 @@ pub enum Error {
 pub async fn append_envelope_to_bifrost(
     bifrost: &mut Bifrost,
     envelope: Envelope,
-) -> Result<(), Error> {
+) -> Result<(LogId, Lsn), Error> {
     let partition_id = metadata()
         .partition_table()
         .find_partition_id(envelope.partition_key())?;
 
     let log_id = LogId::from(partition_id);
     let payload = Payload::from(envelope.encode_with_bincode()?);
-    bifrost.append(log_id, payload).await?;
+    let lsn = bifrost.append(log_id, payload).await?;
 
-    Ok(())
+    Ok((log_id, lsn))
 }

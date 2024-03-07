@@ -86,10 +86,11 @@ impl Node {
             }
         }
 
-        let mut sr_builder = MessageRouterBuilder::default();
+        let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
+        let bifrost = options.clone().bifrost.build(options.worker.partitions);
         let metadata_manager = MetadataManager::build(networking.clone());
-        metadata_manager.register_in_message_router(&mut sr_builder);
+        metadata_manager.register_in_message_router(&mut router_builder);
 
         let admin_role = if options.roles.contains(Role::Admin) {
             Some(AdminRole::new(options.clone(), networking.clone())?)
@@ -98,12 +99,15 @@ impl Node {
         };
 
         let worker_role = if options.roles.contains(Role::Worker) {
-            Some(WorkerRole::new(options.clone(), networking.clone())?)
+            Some(WorkerRole::new(
+                options.clone(),
+                &mut router_builder,
+                networking.clone(),
+                bifrost.handle(),
+            )?)
         } else {
             None
         };
-
-        let bifrost = options.bifrost.build(options.worker.partitions);
 
         let server = options.server.build(
             networking.connection_manager(),
@@ -125,7 +129,7 @@ impl Node {
 
         // Ensures that message router is updated after all services have registered themselves in
         // the builder.
-        let message_router = sr_builder.build();
+        let message_router = router_builder.build();
         networking
             .connection_manager()
             .set_message_router(message_router);

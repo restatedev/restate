@@ -14,10 +14,9 @@ use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
+use restate_core::network::MessageRouterBuilder;
 use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
-use restate_ingress_dispatcher::{
-    IngressDispatcherInputSender, Service as IngressDispatcherService,
-};
+use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
@@ -79,7 +78,7 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
-type ExternalClientIngress = HyperServerIngress<Schemas>;
+type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
 
 /// # Worker options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
@@ -148,9 +147,15 @@ impl Options {
         &self.storage_rocksdb.path
     }
 
-    pub fn build(self, networking: Networking, schemas: Schemas) -> Result<Worker, BuildError> {
+    pub fn build(
+        self,
+        networking: Networking,
+        bifrost: Bifrost,
+        router_builder: &mut MessageRouterBuilder,
+        schemas: Schemas,
+    ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
-        Worker::new(self, networking, schemas)
+        Worker::new(self, networking, bifrost, router_builder, schemas)
     }
 }
 
@@ -185,7 +190,6 @@ pub struct Worker {
         EntryEnricher<Schemas, ProtobufRawEntryCodec>,
         Schemas,
     >,
-    ingress_dispatcher_service: IngressDispatcherService,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
@@ -197,6 +201,8 @@ impl Worker {
     pub fn new(
         opts: Options,
         networking: Networking,
+        bifrost: Bifrost,
+        router_builder: &mut MessageRouterBuilder,
         schemas: Schemas,
     ) -> Result<Self, BuildError> {
         let Options {
@@ -210,17 +216,15 @@ impl Worker {
             ..
         } = opts;
 
-        let ingress_dispatcher_service = IngressDispatcherService::new(channel_size);
+        let ingress_dispatcher = IngressDispatcher::new(bifrost);
+        router_builder.add_message_handler(ingress_dispatcher.clone());
 
-        // ingress_grpc
-        let ingress_http = ingress.build(
-            ingress_dispatcher_service.create_ingress_request_sender(),
-            schemas.clone(),
-        );
+        // http ingress
+        let ingress_http = ingress.build(ingress_dispatcher.clone(), schemas.clone());
 
         // ingress_kafka
         let kafka_config_clone = kafka.clone();
-        let ingress_kafka = kafka.build(ingress_dispatcher_service.create_ingress_request_sender());
+        let ingress_kafka = kafka.build(ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
                 kafka_config_clone,
@@ -259,7 +263,6 @@ impl Worker {
                     invoker_sender,
                     rocksdb_storage.clone(),
                     schemas.clone(),
-                    ingress_dispatcher_service.create_ingress_dispatcher_input_sender(),
                 )
             })
             .collect();
@@ -270,7 +273,6 @@ impl Worker {
             storage_query_context,
             storage_query_postgres,
             invoker,
-            ingress_dispatcher_service,
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
@@ -288,7 +290,6 @@ impl Worker {
         invoker_sender: InvokerChannelServiceHandle,
         rocksdb_storage: RocksDBStorage,
         schemas: Schemas,
-        ingress_tx: IngressDispatcherInputSender,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
             partition_id,
@@ -298,7 +299,6 @@ impl Worker {
             invoker_sender,
             rocksdb_storage,
             schemas,
-            ingress_tx,
         )
     }
 
@@ -328,17 +328,9 @@ impl Worker {
                 .map_err(Error::RocksDBWriter)?)
         })?;
 
-        // Ingress dispatcher
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "ingress-dispatcher",
-            None,
-            self.ingress_dispatcher_service.run(bifrost.clone()),
-        )?;
-
         // Ingress RPC server
         tc.spawn_child(
-            TaskKind::RpcServer,
+            TaskKind::IngressServer,
             "ingress-rpc-server",
             None,
             self.external_client_ingress.run(),

@@ -19,6 +19,7 @@ use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_core::TestCoreEnv;
+use restate_ingress_dispatcher::mocks::MockDispatcher;
 use restate_ingress_dispatcher::IdempotencyMode;
 use restate_ingress_dispatcher::IngressRequest;
 use tokio::sync::mpsc;
@@ -168,14 +169,12 @@ async fn send_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, ack_tx) = ingress_req.expect_background_invocation();
+        let (fid, method_name, argument, _) = ingress_req.expect_background_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         restate_test_util::assert_eq!(method_name, "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
         restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
-
-        ack_tx.send(()).unwrap();
     })
     .await;
 
@@ -202,15 +201,13 @@ async fn send_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, ack_tx) = ingress_req.expect_background_invocation();
+        let (fid, method_name, argument, _) = ingress_req.expect_background_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.GreeterObject");
         restate_test_util::assert_eq!(fid.service_id.key, &"my-key");
         restate_test_util::assert_eq!(method_name, "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
         restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
-
-        ack_tx.send(()).unwrap();
     })
     .await;
 
@@ -413,6 +410,7 @@ where
 {
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
+    let dispatcher = MockDispatcher::new(ingress_request_tx);
 
     req.extensions_mut()
         .insert(ConnectInfo::new("0.0.0.0:0".parse().unwrap()));
@@ -421,7 +419,7 @@ where
     let handler_fut = node_env.tc.run_in_scope(
         "ingress",
         None,
-        Handler::new(mock_component_resolver(), ingress_request_tx).oneshot(req),
+        Handler::new(mock_component_resolver(), dispatcher).oneshot(req),
     );
 
     // Mock the service invocation receiver
