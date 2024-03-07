@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use rand::Rng;
+use restate_types::retries::with_jitter;
 use tracing::{info, instrument, trace};
 
 use restate_core::metadata;
@@ -138,10 +138,9 @@ impl NetworkSender for Networking {
     }
 }
 
+// todo: replace with RetryPolicy
 async fn sleep_with_jitter(duration: Duration) {
-    let max_jitter = duration.as_millis() * 2;
-    let jitter = rand::thread_rng().gen_range(1..max_jitter);
-    let retry_after = Duration::from_millis((duration.as_millis() + jitter) as u64);
+    let retry_after = with_jitter(duration, 0.3);
     trace!("sleeping for {:?}", retry_after);
     tokio::time::sleep(retry_after).await;
 }

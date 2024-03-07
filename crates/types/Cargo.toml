@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 
-mocks = ["rand"]
+mocks = []
 serde = ["dep:serde", "dep:serde_with", "enumset/serde"]
 serde_schema = ["serde", "dep:schemars"]
 tonic_conversions = ["dep:tonic"]
@@ -29,7 +29,7 @@ http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
 opentelemetry_api = { workspace = true }
-rand = { workspace = true, optional = true }
+rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
