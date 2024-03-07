@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod analyzer;
+mod component;
 pub mod context;
 mod deployment;
 mod generic_table;
@@ -18,7 +19,6 @@ mod invocation_status;
 mod journal;
 mod options;
 mod physical_optimizer;
-mod service;
 mod service_status;
 mod state;
 mod table_macro;

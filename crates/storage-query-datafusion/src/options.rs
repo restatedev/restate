@@ -12,8 +12,8 @@ use crate::context::QueryContext;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use restate_invoker_api::StatusHandle;
+use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::deployment::DeploymentResolver;
-use restate_schema_api::service::ServiceMetadataResolver;
 use restate_storage_rocksdb::RocksDBStorage;
 use std::fmt::Debug;
 
@@ -48,7 +48,7 @@ impl Options {
         rocksdb: RocksDBStorage,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
-            + ServiceMetadataResolver
+            + ComponentMetadataResolver
             + Send
             + Sync
             + Debug
@@ -69,7 +69,7 @@ impl Options {
         crate::invocation_state::register_self(&ctx, status)?;
         crate::inbox::register_self(&ctx, rocksdb)?;
         crate::deployment::register_self(&ctx, schemas.clone())?;
-        crate::service::register_self(&ctx, schemas)?;
+        crate::component::register_self(&ctx, schemas)?;
 
         Ok(ctx)
     }

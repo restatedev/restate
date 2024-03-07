@@ -14,12 +14,12 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(service(
+define_table!(component(
     name: DataType::LargeUtf8,
     revision: DataType::UInt64,
 
     public: DataType::Boolean,
 
-    instance_type: DataType::LargeUtf8,
+    ty: DataType::LargeUtf8,
     deployment_id: DataType::LargeUtf8,
 ));
