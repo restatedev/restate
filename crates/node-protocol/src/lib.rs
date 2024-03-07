@@ -11,6 +11,7 @@
 pub mod codec;
 pub mod common;
 mod error;
+pub mod ingress;
 pub mod metadata;
 pub mod node;
 

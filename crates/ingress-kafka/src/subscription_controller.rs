@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_core::cancellation_watcher;
-use restate_ingress_dispatcher::IngressRequestSender;
+use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::subscription::{Source, Subscription};
 use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
@@ -40,19 +40,19 @@ pub enum Error {
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service {
     options: Options,
-    ingress_tx: IngressRequestSender,
+    dispatcher: IngressDispatcher,
 
     commands_tx: SubscriptionCommandSender,
     commands_rx: SubscriptionCommandReceiver,
 }
 
 impl Service {
-    pub(crate) fn new(options: Options, ingress_tx: IngressRequestSender) -> Service {
+    pub(crate) fn new(options: Options, dispatcher: IngressDispatcher) -> Service {
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
             options,
-            ingress_tx,
+            dispatcher,
             commands_tx,
             commands_rx,
         }
@@ -129,7 +129,7 @@ impl Service {
         let consumer_task = consumer_task::ConsumerTask::new(
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(subscription, self.ingress_tx.clone()),
+            MessageSender::new(subscription, self.dispatcher.clone()),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
@@ -167,6 +167,7 @@ impl Service {
 
 mod task_orchestrator {
     use crate::consumer_task;
+    use restate_core::task_center;
     use restate_timer_queue::TimerQueue;
     use restate_types::identifiers::SubscriptionId;
     use restate_types::retries::{RetryIter, RetryPolicy};
@@ -316,7 +317,17 @@ mod task_orchestrator {
                 "Spawning the consumer task for subscription id {}",
                 subscription_id
             );
-            let task_id = self.tasks.spawn(consumer_task_clone.clone().run(rx)).id();
+            let task_id = self
+                .tasks
+                .spawn({
+                    let tc = task_center();
+                    let consumer_task_clone = consumer_task_clone.clone();
+                    async move {
+                        tc.run_in_scope("kafka-consumer-task", None, consumer_task_clone.run(rx))
+                            .await
+                    }
+                })
+                .id();
 
             self.running_tasks_to_subscriptions
                 .insert(task_id, subscription_id);

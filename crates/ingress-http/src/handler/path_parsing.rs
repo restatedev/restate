@@ -119,7 +119,7 @@ pub(crate) enum RequestType {
     Component(ComponentRequestType),
 }
 
-impl<Schemas> Handler<Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
 {

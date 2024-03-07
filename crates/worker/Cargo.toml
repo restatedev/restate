@@ -30,6 +30,7 @@ restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-network = { workspace = true }
+restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["builtin-service"] }
 restate-schema-api = { workspace = true, features = [ "key_extraction", "json_conversion", "component"] }
 restate-schema-impl = { workspace = true }

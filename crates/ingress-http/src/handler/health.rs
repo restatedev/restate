@@ -24,7 +24,7 @@ pub(crate) struct HealthResponse {
     components: Vec<String>,
 }
 
-impl<Schemas> Handler<Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Send + Sync + 'static,
 {

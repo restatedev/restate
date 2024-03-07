@@ -18,14 +18,14 @@ use bytes::Bytes;
 use http::{header, HeaderMap, HeaderName, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use metrics::{counter, histogram};
-use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest, IngressRequestSender};
+use restate_ingress_dispatcher::{DispatchIngressRequest, IdempotencyMode, IngressRequest};
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
 use restate_types::invocation::SpanRelation;
 use serde::Serialize;
 use std::num::ParseIntError;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, trace, warn, Instrument};
+use tracing::{info, trace, warn, Instrument};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const IDEMPOTENCY_RETENTION_PERIOD: HeaderName =
@@ -39,9 +39,10 @@ pub(crate) struct SendResponse {
     invocation_id: InvocationId,
 }
 
-impl<Schemas> Handler<Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_component_request<B: http_body::Body>(
         self,
@@ -115,7 +116,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
-                        self.request_tx,
+                        self.dispatcher,
                     )
                     .await
                 }
@@ -126,7 +127,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
-                        self.request_tx,
+                        self.dispatcher,
                     )
                     .await
                 }
@@ -163,8 +164,9 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
+        let invocation_id: InvocationId = fid.clone().into();
         let (invocation, response_rx) = IngressRequest::invocation(
             fid,
             cloned_handler_name,
@@ -172,8 +174,12 @@ where
             span_relation,
             idempotency_mode,
         );
-        if request_tx.send(invocation).is_err() {
-            debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+            warn!(
+                restate.invocation.id = %invocation_id,
+                "Failed to dispatch ingress request: {}",
+                e,
+            );
             return Err(HandlerError::Unavailable);
         }
 
@@ -181,6 +187,7 @@ where
         let response = if let Ok(response) = response_rx.await {
             response
         } else {
+            dispatcher.evict_pending_response(&invocation_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
@@ -215,7 +222,7 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
-        request_tx: IngressRequestSender,
+        dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         if !matches!(idempotency_mode, IdempotencyMode::None) {
             // TODO https://github.com/restatedev/restate/issues/1233
@@ -224,22 +231,22 @@ where
 
         let invocation_id = InvocationId::from(&fid);
 
-        // Send the service invocation and wait on ack
-        let (invocation, ack_rx) = IngressRequest::background_invocation(
+        // Send the service invocation
+        let invocation = IngressRequest::background_invocation(
             fid,
             handler_name,
             collected_request_bytes,
             span_relation,
             None,
         );
-        if request_tx.send(invocation).is_err() {
-            debug!("Ingress dispatcher is closed while there is still an invocation in flight.");
+        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+            warn!(
+                restate.invocation.id = %invocation_id,
+                "Failed to dispatch ingress request: {}",
+                e,
+            );
             return Err(HandlerError::Unavailable);
         }
-        if ack_rx.await.is_err() {
-            warn!("Response channel was closed");
-            return Err(HandlerError::Unavailable);
-        };
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()

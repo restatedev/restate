@@ -18,15 +18,18 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use prost::Message;
+use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
 use restate_schema_api::component::ComponentMetadataResolver;
+use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::SpanRelation;
-use tracing::{debug, info, trace, warn, Instrument};
+use tracing::{info, trace, warn, Instrument};
 
-impl<Schemas> Handler<Schemas>
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_awakeable<B: http_body::Body>(
         self,
@@ -47,6 +50,7 @@ where
         // Prepare the tracing span
         let (ingress_span, ingress_span_context) = prepare_tracing_span(&fid, handler_name, &req);
 
+        let dispatcher = self.dispatcher.clone();
         async move {
             info!("Processing awakeables request");
 
@@ -85,6 +89,7 @@ where
                 }
             };
 
+            let invocation_id: InvocationId = fid.clone().into();
             let (invocation, response_rx) = IngressRequest::invocation(
                 fid,
                 handler_name,
@@ -92,9 +97,11 @@ where
                 SpanRelation::Linked(ingress_span_context),
                 IdempotencyMode::None,
             );
-            if self.request_tx.send(invocation).is_err() {
-                debug!(
-                    "Ingress dispatcher is closed while there is still an invocation in flight."
+            if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+                warn!(
+                    restate.invocation.id = %invocation_id,
+                    "Failed to dispatch ingress request: {}",
+                    e,
                 );
                 return Err(HandlerError::Unavailable);
             }
@@ -103,6 +110,7 @@ where
             let response = if let Ok(response) = response_rx.await {
                 response
             } else {
+                dispatcher.evict_pending_response(&invocation_id);
                 warn!("Response channel was closed");
                 return Err(HandlerError::Unavailable);
             };
