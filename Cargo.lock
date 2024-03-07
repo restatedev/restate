@@ -4467,20 +4467,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost-reflect"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "057237efdb71cf4b3f9396302a3d6599a92fa94063ba537b66130980ea9909f3"
-dependencies = [
- "base64 0.21.7",
- "once_cell",
- "prost 0.12.3",
- "prost-types",
- "serde",
- "serde-value",
-]
-
-[[package]]
 name = "prost-types"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4771,7 +4757,6 @@ dependencies = [
  "http 0.2.12",
  "hyper 0.14.28",
  "okapi-operation",
- "prost 0.12.3",
  "restate-bifrost",
  "restate-core",
  "restate-errors",
@@ -5353,10 +5338,8 @@ name = "restate-pb"
 version = "0.9.0"
 dependencies = [
  "convert_case 0.6.0",
- "once_cell",
  "prost 0.12.3",
  "prost-build",
- "prost-reflect",
  "prost-types",
  "restate-types",
  "tonic 0.10.2",
@@ -5385,16 +5368,12 @@ dependencies = [
  "bytes",
  "bytestring",
  "http 0.2.12",
- "prost 0.12.3",
- "prost-reflect",
  "restate-base64-util",
  "restate-serde-util",
  "restate-types",
  "schemars",
  "serde",
- "serde_json",
  "serde_with",
- "thiserror",
 ]
 
 [[package]]
@@ -5407,11 +5386,6 @@ dependencies = [
  "codederror",
  "googletest",
  "http 0.2.12",
- "itertools 0.11.0",
- "once_cell",
- "prost 0.12.3",
- "prost-build",
- "prost-reflect",
  "restate-errors",
  "restate-pb",
  "restate-schema-api",
@@ -5425,7 +5399,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -5521,8 +5494,6 @@ dependencies = [
  "prettyplease",
  "prost 0.12.3",
  "prost-build",
- "prost-reflect",
- "prost-types",
  "regress 0.9.0",
  "restate-base64-util",
  "restate-errors",
@@ -5834,7 +5805,6 @@ dependencies = [
  "opentelemetry_api",
  "pin-project",
  "prost 0.12.3",
- "prost-reflect",
  "restate-bifrost",
  "restate-core",
  "restate-errors",
@@ -6136,16 +6106,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 dependencies = [
  "serde_derive",
-]
-
-[[package]]
-name = "serde-value"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
-dependencies = [
- "ordered-float 2.10.1",
- "serde",
 ]
 
 [[package]]
