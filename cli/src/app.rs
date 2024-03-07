@@ -71,9 +71,9 @@ pub enum Command {
     /// Prints general information about the configured environment
     #[clap(name = "whoami")]
     WhoAmiI(whoami::WhoAmI),
-    /// Manage Restate's service registry
+    /// Manage Restate's components registry
     #[clap(subcommand)]
-    Services(services::Services),
+    Components(components::Components),
     /// Manages your service deployments
     #[clap(subcommand)]
     Deployments(deployments::Deployments),

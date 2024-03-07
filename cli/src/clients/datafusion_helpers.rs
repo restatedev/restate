@@ -289,79 +289,79 @@ pub async fn count_deployment_active_inv(
         .await?)
 }
 
-pub struct ServiceMethodUsage {
-    pub service: String,
-    pub method: String,
+pub struct ComponentHandlerUsage {
+    pub component: String,
+    pub handler: String,
     pub inv_count: i64,
 }
 
-/// Key is service name
+/// Key is component name
 #[derive(Clone, Default)]
-pub struct ServiceStatusMap(HashMap<String, ServiceStatus>);
+pub struct ComponentStatusMap(HashMap<String, ComponentStatus>);
 
-impl ServiceStatusMap {
+impl ComponentStatusMap {
     fn set_method_stats(
         &mut self,
         service: &str,
         method: &str,
         state: InvocationState,
-        stats: MethodStateStats,
+        stats: HandlerStateStats,
     ) {
         let svc_methods = self
             .0
             .entry(service.to_owned())
-            .or_insert_with(|| ServiceStatus {
-                methods: HashMap::new(),
+            .or_insert_with(|| ComponentStatus {
+                handlers: HashMap::new(),
             });
 
         let method_info = svc_methods
-            .methods
+            .handlers
             .entry(method.to_owned())
-            .or_insert_with(|| MethodInfo {
+            .or_insert_with(|| HandlerInfo {
                 per_state_totals: HashMap::new(),
             });
 
         method_info.per_state_totals.insert(state, stats);
     }
 
-    pub fn get_service_status(&self, service: &str) -> Option<&ServiceStatus> {
+    pub fn get_service_status(&self, service: &str) -> Option<&ComponentStatus> {
         self.0.get(service)
     }
 }
 
 #[derive(Default, Clone)]
-pub struct ServiceStatus {
-    methods: HashMap<String, MethodInfo>,
+pub struct ComponentStatus {
+    handlers: HashMap<String, HandlerInfo>,
 }
 
-impl ServiceStatus {
+impl ComponentStatus {
     pub fn get_method_stats(
         &self,
         state: InvocationState,
         method: &str,
-    ) -> Option<&MethodStateStats> {
-        self.methods.get(method).and_then(|x| x.get_stats(state))
+    ) -> Option<&HandlerStateStats> {
+        self.handlers.get(method).and_then(|x| x.get_stats(state))
     }
 
-    pub fn get_method(&self, method: &str) -> Option<&MethodInfo> {
-        self.methods.get(method)
+    pub fn get_method(&self, method: &str) -> Option<&HandlerInfo> {
+        self.handlers.get(method)
     }
 }
 
 #[derive(Default, Clone)]
-pub struct MethodInfo {
-    per_state_totals: HashMap<InvocationState, MethodStateStats>,
+pub struct HandlerInfo {
+    per_state_totals: HashMap<InvocationState, HandlerStateStats>,
 }
 
-impl MethodInfo {
-    pub fn get_stats(&self, state: InvocationState) -> Option<&MethodStateStats> {
+impl HandlerInfo {
+    pub fn get_stats(&self, state: InvocationState) -> Option<&HandlerStateStats> {
         self.per_state_totals.get(&state)
     }
 
     pub fn oldest_non_suspended_invocation_state(
         &self,
-    ) -> Option<(InvocationState, &MethodStateStats)> {
-        let mut oldest: Option<(InvocationState, &MethodStateStats)> = None;
+    ) -> Option<(InvocationState, &HandlerStateStats)> {
+        let mut oldest: Option<(InvocationState, &HandlerStateStats)> = None;
         for (state, stats) in &self.per_state_totals {
             if state == &InvocationState::Suspended {
                 continue;
@@ -376,7 +376,7 @@ impl MethodInfo {
 }
 
 #[derive(Clone)]
-pub struct MethodStateStats {
+pub struct HandlerStateStats {
     pub num_invocations: i64,
     pub oldest_at: chrono::DateTime<Local>,
     pub oldest_invocation: String,
@@ -385,7 +385,7 @@ pub struct MethodStateStats {
 pub async fn count_deployment_active_inv_by_method(
     client: &DataFusionHttpClient,
     deployment_id: &DeploymentId,
-) -> Result<Vec<ServiceMethodUsage>> {
+) -> Result<Vec<ComponentHandlerUsage>> {
     let mut output = vec![];
 
     let query = format!(
@@ -401,9 +401,9 @@ pub async fn count_deployment_active_inv_by_method(
 
     for batch in client.run_query(query).await?.batches {
         for i in 0..batch.num_rows() {
-            output.push(ServiceMethodUsage {
-                service: value_as_string(&batch, 0, i),
-                method: value_as_string(&batch, 1, i),
+            output.push(ComponentHandlerUsage {
+                component: value_as_string(&batch, 0, i),
+                handler: value_as_string(&batch, 1, i),
                 inv_count: value_as_i64(&batch, 2, i),
             });
         }
@@ -411,11 +411,11 @@ pub async fn count_deployment_active_inv_by_method(
     Ok(output)
 }
 
-pub async fn get_services_status(
+pub async fn get_components_status(
     client: &DataFusionHttpClient,
     services_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ServiceStatusMap> {
-    let mut status_map = ServiceStatusMap::default();
+) -> Result<ComponentStatusMap> {
+    let mut status_map = ComponentStatusMap::default();
 
     let query_filter = format!(
         "({})",
@@ -455,7 +455,7 @@ pub async fn get_services_status(
 
                 let oldest_invocation = batch.column(4).as_string::<i32>().value_string(i);
 
-                let stats = MethodStateStats {
+                let stats = HandlerStateStats {
                     num_invocations,
                     oldest_at,
                     oldest_invocation,
@@ -495,7 +495,7 @@ pub async fn get_services_status(
                 let method = value_as_string(&batch, 1, i);
                 let status = value_as_string(&batch, 2, i);
 
-                let stats = MethodStateStats {
+                let stats = HandlerStateStats {
                     num_invocations: value_as_i64(&batch, 3, i),
                     oldest_at: value_as_dt_opt(&batch, 4, i).unwrap(),
                     oldest_invocation: value_as_string(&batch, 5, i),
@@ -511,8 +511,8 @@ pub async fn get_services_status(
 
 // Service -> Locked Keys
 #[derive(Default)]
-pub struct ServiceMethodLockedKeysMap {
-    services: HashMap<String, HashMap<String, LockedKeyInfo>>,
+pub struct ComponentMethodLockedKeysMap {
+    components: HashMap<String, HashMap<String, LockedKeyInfo>>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -537,31 +537,31 @@ pub struct LockedKeyInfo {
     pub last_attempt_deployment_id: Option<String>,
 }
 
-impl ServiceMethodLockedKeysMap {
+impl ComponentMethodLockedKeysMap {
     fn insert(&mut self, service: &str, key: String, info: LockedKeyInfo) {
-        let locked_keys = self.services.entry(service.to_owned()).or_default();
+        let locked_keys = self.components.entry(service.to_owned()).or_default();
         locked_keys.insert(key.to_owned(), info);
     }
 
     fn locked_key_info_mut(&mut self, service: &str, key: &str) -> &mut LockedKeyInfo {
-        let locked_keys = self.services.entry(service.to_owned()).or_default();
+        let locked_keys = self.components.entry(service.to_owned()).or_default();
         locked_keys.entry(key.to_owned()).or_default()
     }
 
     pub fn into_inner(self) -> HashMap<String, HashMap<String, LockedKeyInfo>> {
-        self.services
+        self.components
     }
 
     pub fn is_empty(&self) -> bool {
-        self.services.is_empty()
+        self.components.is_empty()
     }
 }
 
 pub async fn get_locked_keys_status(
     client: &DataFusionHttpClient,
     services_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ServiceMethodLockedKeysMap> {
-    let mut key_map = ServiceMethodLockedKeysMap::default();
+) -> Result<ComponentMethodLockedKeysMap> {
+    let mut key_map = ComponentMethodLockedKeysMap::default();
     let quoted_service_names = services_filter
         .into_iter()
         .map(|x| format!("'{}'", x.as_ref()))
@@ -733,13 +733,13 @@ pub async fn find_active_invocations(
             sis.last_start_at,
             ss.invoked_by_id,
             ss.invoked_by_service,
-            svc.instance_type,
-            svc.deployment_id as svc_latest_deployment,
+            comp.ty,
+            comp.deployment_id as comp_latest_deployment,
             dp.id as known_deployment_id,
             ss.trace_id
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-        LEFT JOIN sys_service svc ON svc.name = ss.service
+        LEFT JOIN sys_component comp ON comp.name = ss.service
         LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
         {}
         {}
@@ -847,10 +847,10 @@ pub async fn find_inbox_invocations(
                 ss.invoked_by_id,
                 ss.invoked_by_service,
                 ss.service_key,
-                svc.instance_type,
+                comp.ty,
                 ss.trace_id
              FROM sys_inbox ss
-             LEFT JOIN sys_service svc ON svc.name = ss.service
+             LEFT JOIN sys_component comp ON comp.name = ss.service
              {}
              {}
             )
@@ -890,7 +890,7 @@ pub async fn find_inbox_invocations(
     Ok((inbox, full_count))
 }
 
-pub async fn get_service_invocations(
+pub async fn get_component_invocations(
     client: &DataFusionHttpClient,
     service: &str,
     limit_inbox: usize,
