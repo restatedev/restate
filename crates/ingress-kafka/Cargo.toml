@@ -38,7 +38,6 @@ tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
-restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-schema-impl = { workspace = true }
 restate-test-util = { workspace = true }
