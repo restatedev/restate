@@ -196,8 +196,8 @@ where
         let mut response_builder = hyper::Response::builder();
 
         // Add idempotency expiry time if available
-        if let Some(expire_time) = response.idempotency_expire_time() {
-            response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expire_time);
+        if let Some(expiry_time) = response.idempotency_expiry_time() {
+            response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
         }
 
         match response.into() {
