@@ -144,6 +144,7 @@ impl<T: serde::Serialize + for<'de> serde::Deserialize<'de>> StateSerde for Binc
 struct StateKey<Serde>(Cow<'static, str>, PhantomData<Serde>);
 
 impl StateKey<Raw> {
+    #[allow(dead_code)]
     pub const fn new_raw(name: &'static str) -> StateKey<Raw> {
         Self(Cow::Borrowed(name), PhantomData)
     }
@@ -192,6 +193,7 @@ mod tests {
         pub(super) Option<(JournalMetadata, Vec<EnrichedRawEntry>)>,
     );
 
+    #[allow(dead_code)]
     impl MockStateReader {
         pub(super) fn set<Serde: StateSerde>(
             &mut self,

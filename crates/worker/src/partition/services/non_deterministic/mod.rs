@@ -11,16 +11,15 @@
 use super::*;
 
 use crate::partition::storage::PartitionStorage;
-use crate::partition::types::{create_response_message, OutboxMessageExt, ResponseMessage};
+use crate::partition::types::{create_response_message, ResponseMessage};
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
 use restate_pb::restate::internal::IdempotentInvokerInvoker;
-use restate_pb::restate::internal::RemoteContextInvoker;
 use restate_schema_impl::Schemas;
 use restate_storage_api::invocation_status_table::NotificationTarget;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -34,7 +33,6 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 mod idempotent_invoker;
-mod remote_context;
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
 pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
@@ -53,7 +51,7 @@ impl ServiceInvoker {
         // * No user can register services starting with dev.restate. This is checked in the schema registry.
         // * We already checked in the previous step of the state machine whether the service is a deterministic built-in service
         // * Hence with this assertion we can 404 sooner in case the user inputs a bad built-in service name, avoiding to get it stuck in the invoker
-        service_name.starts_with("dev.restate")
+        service_name.starts_with("restate_internal")
     }
 
     pub(crate) fn new(
@@ -93,11 +91,6 @@ impl ServiceInvoker {
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
-            restate_pb::REMOTE_CONTEXT_SERVICE_NAME => {
-                RemoteContextInvoker(invocation_context)
-                    .invoke_builtin(method, argument)
-                    .await
-            }
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME => {
                 IdempotentInvokerInvoker(invocation_context)
                     .invoke_builtin(method, argument)
@@ -169,6 +162,7 @@ impl StateAndJournalTransitions {
     }
 }
 
+#[allow(dead_code)]
 struct InvocationContext<'a, S> {
     // Invocation metadata
     full_invocation_id: &'a FullInvocationId,
@@ -181,6 +175,7 @@ struct InvocationContext<'a, S> {
     state_and_journal_transitions: &'a mut StateAndJournalTransitions,
 }
 
+#[allow(dead_code)]
 impl<S: StateReader> InvocationContext<'_, S> {
     async fn load_journal_metadata(
         &mut self,
@@ -427,6 +422,7 @@ mod tests {
         response_sink: Option<ServiceInvocationResponseSink>,
     }
 
+    #[allow(dead_code)]
     impl TestInvocationContext {
         pub(super) fn new(service_name: &str) -> Self {
             Self::from_service_id(ServiceId::new(service_name, Bytes::new()))
