@@ -30,9 +30,9 @@ use itertools::Itertools;
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
 pub struct List {
-    /// Service to list invocations for
-    #[clap(long, visible_alias = "svc", value_delimiter = ',')]
-    service: Vec<String>,
+    /// Component to list invocations for
+    #[clap(long, visible_alias = "component", value_delimiter = ',')]
+    component: Vec<String>,
     /// Filter by invocation on this method name
     #[clap(long, value_delimiter = ',')]
     method: Vec<String>,
@@ -42,10 +42,10 @@ pub struct List {
     /// Filter by deployment ID
     #[clap(long, visible_alias = "dp", value_delimiter = ',')]
     deployment: Vec<String>,
-    /// Only list invocations on keyed services only
+    /// Only list invocations on keyed components only
     #[clap(long)]
     keyed_only: bool,
-    /// Filter by invocations on this service key
+    /// Filter by invocations on this component key
     #[clap(long, value_delimiter = ',')]
     key: Vec<String>,
     /// Limit the number of results
@@ -94,10 +94,13 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         || opts.status.contains(&InvocationState::Unknown)
         || !(opts.status.contains(&InvocationState::Pending) && statuses.len() == 1);
 
-    if !opts.service.is_empty() {
+    if !opts.component.is_empty() {
         inbox_filters.push(format!(
             "ss.service IN ({})",
-            opts.service.iter().map(|x| format!("'{}'", x)).format(",")
+            opts.component
+                .iter()
+                .map(|x| format!("'{}'", x))
+                .format(",")
         ));
     }
 
@@ -116,7 +119,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     if opts.keyed_only {
-        inbox_filters.push("svc.instance_type = 'keyed'".to_owned());
+        inbox_filters.push("comp.ty = 'virtual_object'".to_owned());
     }
 
     if opts.zombie {

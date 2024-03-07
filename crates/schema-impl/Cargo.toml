@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 restate-errors = { workspace = true }
 restate-pb = { workspace = true }
-restate-schema-api = { workspace = true, features = ["component", "key_extraction", "key_expansion", "json_key_conversion", "deployment", "service", "subscription", "json_conversion", "proto_symbol", "serde"] }
+restate-schema-api = { workspace = true, features = ["component", "deployment", "subscription", "serde"] }
 restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
@@ -20,26 +20,16 @@ arc-swap = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 http = { workspace = true }
-itertools = { workspace = true }
-once_cell = { workspace = true }
-prost = { workspace = true }
-prost-reflect = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
-restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 
 googletest = { workspace = true }
-prost-reflect = { workspace = true }
 test-log = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[build-dependencies]
-prost-build = { workspace = true }

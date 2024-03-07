@@ -61,11 +61,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     );
     if let Some(key) = &inv.key {
         table.add_kv_row(
-            "Service:",
+            "Component:",
             format!("{} {} {}", inv.service, style("@").dim(), style(key).dim(),),
         );
     } else {
-        table.add_kv_row("Service:", &inv.service);
+        table.add_kv_row("Component:", &inv.service);
     }
     table.add_kv_row("Method:", &inv.method);
     add_invocation_to_kv_table(&mut table, &inv);

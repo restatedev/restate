@@ -32,23 +32,23 @@ pub fn create_component_handlers_table(
     table
 }
 
-pub fn create_service_methods_table_diff(
+pub fn create_component_handlers_table_diff(
     ui_config: &UiConfig,
-    old_svc_methods: &[HandlerMetadata],
-    new_svc_methods: &[HandlerMetadata],
+    old_component_handlers: &[HandlerMetadata],
+    new_component_handlers: &[HandlerMetadata],
 ) -> Table {
-    let mut old_svc_methods = old_svc_methods
+    let mut old_component_handlers = old_component_handlers
         .iter()
         .map(|m| (m.name.clone(), m))
         .collect::<std::collections::HashMap<_, _>>();
 
     let mut table = Table::new_styled(ui_config);
-    table.set_styled_header(vec!["", "METHOD", "INPUT TYPE", "OUTPUT TYPE"]);
+    table.set_styled_header(vec!["", "HANDLER", "INPUT TYPE", "OUTPUT TYPE"]);
 
     // Additions and updates
-    for handler in new_svc_methods {
+    for handler in new_component_handlers {
         let mut row = vec![];
-        if old_svc_methods.remove(&handler.name).is_some() {
+        if old_component_handlers.remove(&handler.name).is_some() {
             // possibly updated.
             row.push(Cell::new(""));
             row.push(Cell::new(&handler.name));
@@ -65,7 +65,7 @@ pub fn create_service_methods_table_diff(
     }
 
     // Removals
-    for handler in old_svc_methods.values() {
+    for handler in old_component_handlers.values() {
         let row = vec![
             Cell::new("--").fg(Color::Red),
             Cell::new(&handler.name).fg(Color::Red),

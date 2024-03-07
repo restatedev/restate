@@ -14,12 +14,12 @@ mod detailed_status;
 use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    InvocationState, ServiceMethodLockedKeysMap, ServiceStatus, ServiceStatusMap,
+    ComponentMethodLockedKeysMap, ComponentStatus, ComponentStatusMap, InvocationState,
 };
 use crate::clients::MetasClient;
+use crate::ui::component_methods::icon_for_component_type;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
-use crate::ui::service_methods::icon_for_component_type;
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 use crate::ui::{duration_to_human_precise, duration_to_human_rough};
@@ -61,12 +61,12 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
     }
 }
 
-async fn render_services_status(
+async fn render_components_status(
     env: &CliEnv,
     services: Vec<ComponentMetadata>,
-    status_map: ServiceStatusMap,
+    status_map: ComponentStatusMap,
 ) -> Result<()> {
-    let empty = ServiceStatus::default();
+    let empty = ComponentStatus::default();
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec![
         "",
@@ -94,7 +94,7 @@ async fn render_services_status(
 }
 
 fn render_method_state_stats(
-    svc_status: &ServiceStatus,
+    svc_status: &ComponentStatus,
     method: &str,
     state: InvocationState,
 ) -> Cell {
@@ -119,7 +119,7 @@ fn render_method_state_stats(
 async fn render_methods_status(
     table: &mut Table,
     svc: ComponentMetadata,
-    svc_status: &ServiceStatus,
+    svc_status: &ComponentStatus,
 ) -> Result<()> {
     for method in svc.handlers {
         let mut row = vec![];
@@ -194,7 +194,7 @@ async fn render_methods_status(
 }
 async fn render_locked_keys(
     env: &CliEnv,
-    locked_keys: ServiceMethodLockedKeysMap,
+    locked_keys: ComponentMethodLockedKeysMap,
     limit_per_service: usize,
 ) -> Result<()> {
     let locked_keys = locked_keys.into_inner();

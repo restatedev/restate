@@ -68,9 +68,6 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::BadDescriptor(_))) => {
-                StatusCode::BAD_REQUEST
-            }
             MetaApiError::Meta(MetaError::SchemaRegistry(
                 SchemasUpdateError::OverrideDeployment(_),
             ))

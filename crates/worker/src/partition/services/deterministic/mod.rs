@@ -11,8 +11,8 @@
 use crate::partition::types::{create_response_message, OutboxMessageExt, ResponseMessage};
 use bytes::Bytes;
 use restate_pb::builtin_service::BuiltInService;
+use restate_pb::restate::internal::AwakeablesInvoker;
 use restate_pb::restate::internal::ProxyInvoker;
-use restate_pb::restate::AwakeablesInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::{InvocationError, UserErrorCode};
 use restate_types::identifiers::FullInvocationId;

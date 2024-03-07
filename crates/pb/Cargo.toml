@@ -10,16 +10,12 @@ publish = false
 [features]
 default = []
 builtin-service = ["restate-types"]
-mocks = ["dep:once_cell", "dep:prost-reflect"]
 
 [dependencies]
 restate-types = { workspace = true, optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost", "transport"] }
-
-once_cell = { workspace = true, optional = true }
-prost-reflect = { workspace = true, optional = true }
+tonic = { workspace = true, features = ["codegen", "prost"] }
 
 [build-dependencies]
 convert_case = "0.6"

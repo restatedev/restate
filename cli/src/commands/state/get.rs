@@ -30,10 +30,10 @@ pub struct Get {
     #[clap(long, short)]
     plain: bool,
 
-    /// Service name
-    service: String,
+    /// Component name
+    component: String,
 
-    /// Service key
+    /// Component key
     key: String,
 
     #[clap(flatten)]
@@ -45,7 +45,7 @@ pub async fn run_get(State(env): State<CliEnv>, opts: &Get) -> Result<()> {
 }
 
 async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
-    let current_state = get_current_state(env, &opts.service, &opts.key).await?;
+    let current_state = get_current_state(env, &opts.component, &opts.key).await?;
     let current_state_json = as_json(current_state, opts.binary)?;
 
     if opts.plain {
@@ -57,7 +57,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
+    table.add_row(vec![Cell::new("Component"), Cell::new(&opts.component)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
 
     c_println!("{table}");

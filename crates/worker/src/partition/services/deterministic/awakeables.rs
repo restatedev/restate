@@ -12,8 +12,8 @@ use std::str::FromStr;
 
 use crate::partition::services::deterministic::*;
 
-use restate_pb::restate::AwakeablesBuiltInService;
-use restate_pb::restate::*;
+use restate_pb::restate::internal::AwakeablesBuiltInService;
+use restate_pb::restate::internal::*;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::invocation::ResponseResult;
 
