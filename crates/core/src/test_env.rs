@@ -9,79 +9,285 @@
 // by the Apache License, Version 2.0.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
-use restate_node_protocol::codec::{Targeted, WireSerde};
+use tokio::sync::{mpsc, RwLock};
+
+use restate_node_protocol::codec::{deserialize_message, serialize_message, Targeted, WireSerde};
 use restate_node_protocol::metadata::MetadataKind;
+use restate_node_protocol::node::{Header, Message};
+use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
 use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, NodeId, Version};
+use tracing::info;
 
-use crate::network::{NetworkSendError, NetworkSender};
-use crate::spawn_metadata_manager;
+use crate::network::{
+    Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkSendError, NetworkSender,
+};
+use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterFactory};
 
-#[derive(Clone)]
-pub struct MockNetworkSender;
+#[derive(Clone, Default)]
+pub struct MockNetworkSender {
+    sender: Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>>,
+}
 
 impl NetworkSender for MockNetworkSender {
-    async fn send<M>(&self, _to: NodeId, _message: &M) -> Result<(), NetworkSendError>
+    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
     where
         M: WireSerde + Targeted + Send + Sync,
     {
+        let Some(sender) = &self.sender else {
+            info!("Not sending message, mock sender is not configured");
+            return Ok(());
+        };
+
+        let to = match to.as_generational() {
+            Some(to) => to,
+            None => match metadata().nodes_config().find_node_by_id(to) {
+                Ok(node) => node.current_generation,
+                Err(e) => return Err(NetworkSendError::UnknownNode(e)),
+            },
+        };
+
+        let header = Header::new(metadata().nodes_config_version());
+        let body = serialize_message(message, CURRENT_PROTOCOL_VERSION)?;
+        sender
+            .send((to, Message::new(header, body)))
+            .map_err(|_| NetworkSendError::Shutdown(ShutdownError))?;
         Ok(())
     }
 }
 
-// This might need to be moved to a better place in the future.
-pub struct TestCoreEnv {
-    pub tc: TaskCenter,
-    pub metadata: Metadata,
-    pub metadata_writer: MetadataWriter,
+#[derive(Default)]
+struct NetworkReceiver {
+    router: Arc<RwLock<MessageRouter>>,
 }
 
-impl TestCoreEnv {
-    fn create_empty() -> Self {
+impl NetworkReceiver {
+    async fn run(
+        &self,
+        mut receiver: mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>,
+    ) -> anyhow::Result<()> {
+        loop {
+            tokio::select! {
+                _ = cancellation_watcher() => {
+                    break;
+                }
+                maybe_msg = receiver.recv() => {
+                    let Some((from, msg)) = maybe_msg else {
+                        break;
+                    };
+                    {
+                    let guard = self.router.read().await;
+                    self.route_message(from, msg, &guard).await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn route_message(
+        &self,
+        peer: GenerationalNodeId,
+        msg: Message,
+        router: &MessageRouter,
+    ) -> anyhow::Result<()> {
+        let body = msg.body.expect("body must be set");
+        let msg = deserialize_message(body, CURRENT_PROTOCOL_VERSION)?;
+        router
+            .call(peer, rand::random(), CURRENT_PROTOCOL_VERSION, msg)
+            .await?;
+        Ok(())
+    }
+}
+
+impl MockNetworkSender {
+    pub fn from_sender(sender: mpsc::UnboundedSender<(GenerationalNodeId, Message)>) -> Self {
+        Self {
+            sender: Some(sender),
+        }
+    }
+    pub fn inner_sender(&self) -> Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>> {
+        self.sender.clone()
+    }
+}
+
+pub struct TestCoreEnvBuilder<N> {
+    pub tc: TaskCenter,
+    pub my_node_id: GenerationalNodeId,
+    pub network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
+    pub metadata_manager: MetadataManager<N>,
+    pub metadata_writer: MetadataWriter,
+    pub metadata: Metadata,
+    pub nodes_config: NodesConfiguration,
+    pub router_builder: MessageRouterBuilder,
+    pub network_sender: N,
+}
+
+impl TestCoreEnvBuilder<MockNetworkSender> {
+    pub fn new_with_mock_network() -> TestCoreEnvBuilder<MockNetworkSender> {
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
 
-        let networking = MockNetworkSender;
-        let metadata_manager = MetadataManager::build(networking);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let network_sender = MockNetworkSender::from_sender(tx);
+        let my_node_id = GenerationalNodeId::new(1, 1);
+        let metadata_manager = MetadataManager::build(network_sender.clone());
         let metadata = metadata_manager.metadata();
         let metadata_writer = metadata_manager.writer();
+        let router_builder = MessageRouterBuilder::default();
+        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         tc.try_set_global_metadata(metadata.clone());
-        spawn_metadata_manager(&tc, metadata_manager).expect("metadata manager should start");
-
-        Self {
+        TestCoreEnvBuilder {
             tc,
-            metadata,
+            my_node_id,
+            network_rx: Some(rx),
+            metadata_manager,
             metadata_writer,
+            metadata,
+            network_sender,
+            nodes_config,
+            router_builder,
+        }
+    }
+}
+
+impl<N> TestCoreEnvBuilder<N>
+where
+    N: NetworkSender + 'static,
+{
+    pub fn new(network_sender: N) -> Self {
+        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+
+        let my_node_id = GenerationalNodeId::new(1, 1);
+        let metadata_manager = MetadataManager::build(network_sender.clone());
+        let metadata = metadata_manager.metadata();
+        let metadata_writer = metadata_manager.writer();
+        let router_builder = MessageRouterBuilder::default();
+        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        tc.try_set_global_metadata(metadata.clone());
+        TestCoreEnvBuilder {
+            tc,
+            my_node_id,
+            network_rx: None,
+            metadata_manager,
+            metadata_writer,
+            metadata,
+            network_sender,
+            nodes_config,
+            router_builder,
         }
     }
 
-    pub async fn create_with_nodes_config(
-        nodes_config: NodesConfiguration,
-        my_node_id: u32,
-        generation: u32,
-    ) -> Self {
-        let env = Self::create_empty();
-        env.metadata_writer.submit(nodes_config.clone());
+    pub fn with_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
+        self.nodes_config = nodes_config;
+        self
+    }
 
-        env.tc
+    pub fn set_my_node_id(mut self, my_node_id: GenerationalNodeId) -> Self {
+        self.my_node_id = my_node_id;
+        self
+    }
+
+    pub fn add_mock_nodes_config(mut self) -> Self {
+        self.nodes_config =
+            create_mock_nodes_config(self.my_node_id.raw_id(), self.my_node_id.raw_generation());
+        self
+    }
+
+    pub fn add_message_handler<H>(mut self, handler: H) -> Self
+    where
+        H: MessageHandler + Send + Sync + 'static,
+    {
+        self.router_builder.add_message_handler(handler);
+        self
+    }
+
+    pub async fn build(mut self) -> TestCoreEnv<N> {
+        self.metadata_manager
+            .register_in_message_router(&mut self.router_builder);
+
+        let router = Arc::new(RwLock::new(self.router_builder.build()));
+        let metadata_manager_task = spawn_metadata_manager(&self.tc, self.metadata_manager)
+            .expect("metadata manager should start");
+
+        let network_task = match self.network_rx {
+            Some(network_rx) => {
+                let network_receiver = NetworkReceiver {
+                    router: router.clone(),
+                };
+                let network_task = self
+                    .tc
+                    .spawn(
+                        crate::TaskKind::ConnectionReactor,
+                        "test-network-receiver",
+                        None,
+                        async move { network_receiver.run(network_rx).await },
+                    )
+                    .unwrap();
+                Some(network_task)
+            }
+            None => None,
+        };
+
+        self.metadata_writer.submit(self.nodes_config.clone());
+
+        self.tc
             .run_in_scope("test-env", None, async {
-                let _ = env
+                let _ = self
                     .metadata
-                    .wait_for_version(MetadataKind::NodesConfiguration, Version::MIN)
+                    .wait_for_version(
+                        MetadataKind::NodesConfiguration,
+                        self.nodes_config.version(),
+                    )
                     .await
                     .unwrap();
             })
             .await;
-        env.metadata_writer
-            .set_my_node_id(GenerationalNodeId::new(my_node_id, generation));
-        env
-    }
+        self.metadata_writer.set_my_node_id(self.my_node_id);
 
+        TestCoreEnv {
+            tc: self.tc,
+            network_task,
+            metadata: self.metadata,
+            metadata_manager_task,
+            metadata_writer: self.metadata_writer,
+            network_sender: self.network_sender,
+            router,
+        }
+    }
+}
+
+// This might need to be moved to a better place in the future.
+pub struct TestCoreEnv<N> {
+    pub tc: TaskCenter,
+    pub metadata: Metadata,
+    pub metadata_writer: MetadataWriter,
+    pub network_sender: N,
+    pub network_task: Option<TaskId>,
+    pub metadata_manager_task: TaskId,
+    pub router: Arc<RwLock<MessageRouter>>,
+}
+
+impl TestCoreEnv<MockNetworkSender> {
     pub async fn create_with_mock_nodes_config(node_id: u32, generation: u32) -> Self {
-        let nodes_config = create_mock_nodes_config(node_id, generation);
-        Self::create_with_nodes_config(nodes_config, node_id, generation).await
+        TestCoreEnvBuilder::new_with_mock_network()
+            .set_my_node_id(GenerationalNodeId::new(node_id, generation))
+            .add_mock_nodes_config()
+            .build()
+            .await
+    }
+}
+
+impl<N> TestCoreEnv<N>
+where
+    N: NetworkSender,
+{
+    pub async fn set_message_router<H>(&mut self, router: MessageRouter) {
+        let mut guard = self.router.write().await;
+        *guard = router;
     }
 }
 
