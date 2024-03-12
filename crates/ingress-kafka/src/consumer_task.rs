@@ -135,6 +135,7 @@ impl MessageSender {
             event,
             SpanRelation::Parent(ingress_span_context),
             Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+            vec![],
         )
         .map_err(|cause| Error::Event {
             topic: msg.topic().to_string(),

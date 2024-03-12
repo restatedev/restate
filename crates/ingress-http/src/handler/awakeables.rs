@@ -96,6 +96,7 @@ where
                 payload,
                 SpanRelation::Linked(ingress_span_context),
                 IdempotencyMode::None,
+                vec![],
             );
             if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
                 warn!(

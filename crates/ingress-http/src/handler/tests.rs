@@ -22,6 +22,7 @@ use restate_core::TestCoreEnv;
 use restate_ingress_dispatcher::mocks::MockDispatcher;
 use restate_ingress_dispatcher::IdempotencyMode;
 use restate_ingress_dispatcher::IngressRequest;
+use restate_types::invocation::Header;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use tracing_test::traced_test;
@@ -36,6 +37,8 @@ async fn call_service() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.Greeter/greet")
         .method(Method::POST)
+        .header("Connection", "Close")
+        .header("my-header", "my-value")
         .body(Full::new(Bytes::from(
             serde_json::to_vec(&greeting_req).unwrap(),
         )))
@@ -43,9 +46,11 @@ async fn call_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx) = ingress_req.expect_invocation();
+        let (fid, method_name, argument, _, _, response_tx, headers) =
+            ingress_req.expect_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         restate_test_util::assert_eq!(method_name, "greet");
+        restate_test_util::assert_eq!(headers, vec![Header::new("my-header", "my-value")]);
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
         restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
@@ -81,7 +86,7 @@ async fn call_service_with_get() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx) = ingress_req.expect_invocation();
+        let (fid, method_name, argument, _, _, response_tx, _) = ingress_req.expect_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         restate_test_util::assert_eq!(method_name, "greet");
 
@@ -124,7 +129,7 @@ async fn call_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx) = ingress_req.expect_invocation();
+        let (fid, method_name, argument, _, _, response_tx, _) = ingress_req.expect_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.GreeterObject");
         restate_test_util::assert_eq!(fid.service_id.key, &"my-key");
         restate_test_util::assert_eq!(method_name, "greet");
@@ -235,7 +240,7 @@ async fn idempotency_key_parsing() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, idempotency_mode, response_tx) =
+        let (fid, method_name, argument, _, idempotency_mode, response_tx, _) =
             ingress_req.expect_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         restate_test_util::assert_eq!(method_name, "greet");

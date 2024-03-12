@@ -12,6 +12,7 @@ use super::pb::protocol;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
+use restate_types::invocation::Header;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::*;
 use restate_types::journal::{CompletionResult, Entry, EntryType};
@@ -39,11 +40,17 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
-    fn serialize_as_input_entry(value: Bytes) -> EnrichedRawEntry {
+    fn serialize_as_input_entry(headers: Vec<Header>, value: Bytes) -> EnrichedRawEntry {
         RawEntry::new(
             EnrichedEntryHeader::Input {},
             protocol::InputEntryMessage {
-                headers: vec![],
+                headers: headers
+                    .into_iter()
+                    .map(|h| protocol::Header {
+                        key: h.name.to_string(),
+                        value: h.value.to_string(),
+                    })
+                    .collect(),
                 value,
             }
             .encode_to_vec()

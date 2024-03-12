@@ -114,6 +114,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
                 caller_context: Default::default(),
             }),
             self.span_context.as_parent(),
+            vec![], // TODO we need to fix the data structure passed as input of this invoke method to be as close as possible to the original ServiceInvocation.
         )));
 
         Ok(())

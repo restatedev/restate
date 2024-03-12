@@ -21,7 +21,7 @@ use metrics::{counter, histogram};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IdempotencyMode, IngressRequest};
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
-use restate_types::invocation::SpanRelation;
+use restate_types::invocation::{Header, SpanRelation};
 use serde::Serialize;
 use std::num::ParseIntError;
 use std::time::{Duration, Instant};
@@ -86,8 +86,10 @@ where
         let handle_fut = async move {
             info!("Processing ingress request");
 
+            let (parts, body) = req.into_parts();
+
             // Check HTTP Method
-            if req.method() != Method::GET && req.method() != Method::POST {
+            if parts.method != Method::GET && parts.method != Method::POST {
                 return Err(HandlerError::MethodNotAllowed);
             }
 
@@ -95,11 +97,13 @@ where
             //  https://github.com/restatedev/restate/issues/1230
 
             // Check if Idempotency-Key is available
-            let idempotency_mode = parse_idempotency_key_and_retention_period(req.headers())?;
+            let idempotency_mode = parse_idempotency_key_and_retention_period(&parts.headers)?;
+
+            // Get headers
+            let headers = parse_headers(parts.headers)?;
 
             // Collect body
-            let collected_request_bytes = req
-                .into_body()
+            let collected_request_bytes = body
                 .collect()
                 .await
                 .map_err(|e| HandlerError::Body(e.into()))?
@@ -116,6 +120,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
+                        headers,
                         self.dispatcher,
                     )
                     .await
@@ -127,6 +132,7 @@ where
                         idempotency_mode,
                         collected_request_bytes,
                         span_relation,
+                        headers,
                         self.dispatcher,
                     )
                     .await
@@ -164,6 +170,7 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
+        headers: Vec<Header>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let invocation_id: InvocationId = fid.clone().into();
@@ -173,6 +180,7 @@ where
             collected_request_bytes,
             span_relation,
             idempotency_mode,
+            headers,
         );
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
@@ -222,6 +230,7 @@ where
         idempotency_mode: IdempotencyMode,
         collected_request_bytes: Bytes,
         span_relation: SpanRelation,
+        headers: Vec<Header>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         if !matches!(idempotency_mode, IdempotencyMode::None) {
@@ -238,6 +247,7 @@ where
             collected_request_bytes,
             span_relation,
             None,
+            headers,
         );
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
@@ -259,6 +269,27 @@ where
             ))
             .unwrap())
     }
+}
+
+fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
+    headers
+        .into_iter()
+        .filter_map(|(k, v)| k.map(|k| (k, v)))
+        // Filter out Connection, Host and idempotency headers
+        .filter(|(k, _)| {
+            k != header::CONNECTION
+                && k != header::HOST
+                && k != IDEMPOTENCY_KEY
+                && k != IDEMPOTENCY_EXPIRES
+                && k != IDEMPOTENCY_RETENTION_PERIOD
+        })
+        .map(|(k, v)| {
+            let value = v
+                .to_str()
+                .map_err(|e| HandlerError::BadHeader(k.clone(), e))?;
+            Ok(Header::new(k.as_str(), value))
+        })
+        .collect()
 }
 
 fn parse_idempotency_key_and_retention_period(

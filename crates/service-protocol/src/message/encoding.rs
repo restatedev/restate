@@ -359,10 +359,12 @@ mod tests {
             vec![],
         );
 
-        let expected_msg_1: ProtocolMessage =
-            ProtobufRawEntryCodec::serialize_as_input_entry(Bytes::from_static("input".as_bytes()))
-                .erase_enrichment()
-                .into();
+        let expected_msg_1: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
+            vec![],
+            Bytes::from_static("input".as_bytes()),
+        )
+        .erase_enrichment()
+        .into();
         let expected_msg_2: ProtocolMessage = Completion {
             entry_index: 1,
             result: CompletionResult::Empty,
@@ -407,10 +409,12 @@ mod tests {
         let encoder = Encoder::new(0);
         let mut decoder = Decoder::default();
 
-        let expected_msg: ProtocolMessage =
-            ProtobufRawEntryCodec::serialize_as_input_entry(Bytes::from_static("input".as_bytes()))
-                .erase_enrichment()
-                .into();
+        let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
+            vec![],
+            Bytes::from_static("input".as_bytes()),
+        )
+        .erase_enrichment()
+        .into();
         let expected_msg_encoded = encoder.encode(expected_msg.clone());
 
         decoder.push(expected_msg_encoded.slice(0..split_index));
@@ -433,6 +437,7 @@ mod tests {
         let encoder = Encoder::new(0);
         let message = ProtocolMessage::from(
             ProtobufRawEntryCodec::serialize_as_input_entry(
+                vec![],
                 (0..=u8::MAX).collect::<Vec<_>>().into(),
             )
             .erase_enrichment(),

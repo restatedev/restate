@@ -163,6 +163,7 @@ pub struct InvocationMetadata {
 }
 
 impl InvocationMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         service_id: ServiceId,
         journal_metadata: JournalMetadata,

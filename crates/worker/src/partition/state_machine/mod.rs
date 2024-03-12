@@ -541,6 +541,7 @@ mod tests {
                 source: Source::Ingress,
                 response_sink: None,
                 span_context: Default::default(),
+                headers: vec![],
             }))
             .await;
 
