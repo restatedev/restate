@@ -12,6 +12,7 @@
 
 use super::*;
 
+use crate::invocation::Header;
 use std::fmt::Debug;
 
 /// This struct represents headers as they are received from the wire.
@@ -245,7 +246,10 @@ pub enum ErrorKind {
 }
 
 pub trait RawEntryCodec {
-    fn serialize_as_input_entry(input_message: Bytes) -> enriched::EnrichedRawEntry;
+    fn serialize_as_input_entry(
+        headers: Vec<Header>,
+        input_message: Bytes,
+    ) -> enriched::EnrichedRawEntry;
 
     fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult;
 

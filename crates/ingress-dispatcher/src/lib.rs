@@ -55,6 +55,7 @@ pub struct IngressRequest {
     span_context: ServiceInvocationSpanContext,
     request_mode: IngressRequestMode,
     idempotency: IdempotencyMode,
+    headers: Vec<restate_types::invocation::Header>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,7 @@ impl IngressRequest {
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         idempotency: IdempotencyMode,
+        headers: Vec<restate_types::invocation::Header>,
     ) -> (Self, IngressResponseReceiver) {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         let (result_tx, result_rx) = oneshot::channel();
@@ -116,6 +118,7 @@ impl IngressRequest {
                 request_mode: IngressRequestMode::RequestResponse(result_tx),
                 span_context,
                 idempotency,
+                headers,
             },
             result_rx,
         )
@@ -127,6 +130,7 @@ impl IngressRequest {
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         ingress_deduplication_id: Option<IngressDeduplicationId>,
+        headers: Vec<restate_types::invocation::Header>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         IngressRequest {
@@ -139,6 +143,7 @@ impl IngressRequest {
                 Some(dedup_id) => IngressRequestMode::DedupFireAndForget(dedup_id),
             },
             idempotency: IdempotencyMode::None,
+            headers,
         }
     }
 
@@ -147,6 +152,7 @@ impl IngressRequest {
         event: Event,
         related_span: SpanRelation,
         deduplication: Option<(D, MessageIndex)>,
+        headers: Vec<restate_types::invocation::Header>,
     ) -> Result<Self, anyhow::Error> {
         // Check if we need to proxy or not
         let (proxying_key, request_mode) = if let Some((dedup_id, dedup_index)) = deduplication {
@@ -213,6 +219,7 @@ impl IngressRequest {
                 span_context,
                 request_mode,
                 idempotency: IdempotencyMode::None,
+                headers,
             }
         } else {
             IngressRequest {
@@ -222,6 +229,7 @@ impl IngressRequest {
                 span_context,
                 request_mode,
                 idempotency: IdempotencyMode::None,
+                headers,
             }
         })
     }
@@ -290,6 +298,7 @@ pub mod mocks {
             ServiceInvocationSpanContext,
             IdempotencyMode,
             IngressResponseSender,
+            Vec<restate_types::invocation::Header>,
         ) {
             let_assert!(
                 IngressRequest {
@@ -299,6 +308,7 @@ pub mod mocks {
                     span_context,
                     request_mode: IngressRequestMode::RequestResponse(ingress_response_sender),
                     idempotency,
+                    headers,
                     ..
                 } = self
             );
@@ -309,6 +319,7 @@ pub mod mocks {
                 span_context,
                 idempotency,
                 ingress_response_sender,
+                headers,
             )
         }
 

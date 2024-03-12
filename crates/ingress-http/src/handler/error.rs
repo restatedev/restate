@@ -11,7 +11,7 @@
 use super::APPLICATION_JSON;
 
 use bytes::Bytes;
-use http::{Response, StatusCode};
+use http::{header, Response, StatusCode};
 use restate_types::errors::{InvocationError, UserErrorCode};
 use serde::Serialize;
 use std::string;
@@ -30,6 +30,8 @@ pub(crate) enum HandlerError {
     BadAwakeablesPath,
     #[error("not implemented")]
     NotImplemented,
+    #[error("bad header {0}: {1:?}")]
+    BadHeader(header::HeaderName, #[source] header::ToStrError),
     #[error("bad path, cannot decode key: {0:?}")]
     UrlDecodingError(string::FromUtf8Error),
     #[error("the invoked component is not public")]
@@ -82,6 +84,7 @@ impl HandlerError {
             HandlerError::Invocation(e) => {
                 invocation_status_code_to_http_status_code(e.code().into())
             }
+            HandlerError::BadHeader(_, _) => StatusCode::BAD_REQUEST,
         };
 
         let error_response = match self {
