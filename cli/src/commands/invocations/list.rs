@@ -33,9 +33,9 @@ pub struct List {
     /// Component to list invocations for
     #[clap(long, visible_alias = "component", value_delimiter = ',')]
     component: Vec<String>,
-    /// Filter by invocation on this method name
+    /// Filter by invocation on this handler name
     #[clap(long, value_delimiter = ',')]
-    method: Vec<String>,
+    handler: Vec<String>,
     /// Filter by status(es)
     #[clap(long, ignore_case = true, value_delimiter = ',')]
     status: Vec<InvocationState>,
@@ -44,7 +44,7 @@ pub struct List {
     deployment: Vec<String>,
     /// Only list invocations on keyed components only
     #[clap(long)]
-    keyed_only: bool,
+    virtual_objects_only: bool,
     /// Filter by invocations on this component key
     #[clap(long, value_delimiter = ',')]
     key: Vec<String>,
@@ -96,7 +96,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
 
     if !opts.component.is_empty() {
         inbox_filters.push(format!(
-            "ss.service IN ({})",
+            "ss.component IN ({})",
             opts.component
                 .iter()
                 .map(|x| format!("'{}'", x))
@@ -104,21 +104,21 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         ));
     }
 
-    if !opts.method.is_empty() {
+    if !opts.handler.is_empty() {
         inbox_filters.push(format!(
-            "ss.method IN ({})",
-            opts.method.iter().map(|x| format!("'{}'", x)).format(",")
+            "ss.handler IN ({})",
+            opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
         inbox_filters.push(format!(
-            "ss.service_key IN ({})",
+            "ss.component_key IN ({})",
             opts.key.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
-    if opts.keyed_only {
+    if opts.virtual_objects_only {
         inbox_filters.push("comp.ty = 'virtual_object'".to_owned());
     }
 

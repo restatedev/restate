@@ -98,14 +98,14 @@ pub fn invocation_qualified_name(invocation: &Invocation) -> String {
     let svc = if let Some(key) = &invocation.key {
         format!(
             "[{} {} {}]",
-            invocation.service,
+            invocation.component,
             style("@").dim(),
             style(key).dim(),
         )
     } else {
-        invocation.service.to_string()
+        invocation.component.to_string()
     };
-    format!("{}{}{}", svc, style("::").dim(), invocation.method)
+    format!("{}{}{}", svc, style("::").dim(), invocation.handler)
 }
 
 // ❯ [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
@@ -146,7 +146,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         let invoked_by_msg = format!(
             "{} {}",
             invocation
-                .invoked_by_service
+                .invoked_by_component
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
@@ -256,9 +256,9 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
         JournalEntryType::Invoke(inv) | JournalEntryType::BackgroundInvoke(inv) => {
             format!(
                 "{}{}{} {}",
-                inv.invoked_service.as_ref().unwrap(),
+                inv.invoked_component.as_ref().unwrap(),
                 style("::").dim(),
-                inv.invoked_method.as_ref().unwrap(),
+                inv.invoked_handler.as_ref().unwrap(),
                 inv.invocation_id.as_deref().unwrap_or(""),
             )
         }
