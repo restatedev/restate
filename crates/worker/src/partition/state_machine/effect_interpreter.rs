@@ -21,7 +21,7 @@ use restate_storage_api::invocation_status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::service_status_table::ServiceStatus;
+use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, ServiceId};
@@ -41,7 +41,7 @@ pub trait StateStorage {
     fn store_service_status(
         &mut self,
         service_id: &ServiceId,
-        service_status: ServiceStatus,
+        service_status: VirtualObjectStatus,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn store_invocation_status(
@@ -447,7 +447,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
 
         state_storage
-            .store_service_status(service_id, ServiceStatus::Unlocked)
+            .store_service_status(service_id, VirtualObjectStatus::Unlocked)
             .await?;
 
         Ok(())
@@ -508,7 +508,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_storage
             .store_service_status(
                 &service_invocation.fid.service_id,
-                ServiceStatus::Locked(invocation_id.clone()),
+                VirtualObjectStatus::Locked(invocation_id.clone()),
             )
             .await?;
         state_storage

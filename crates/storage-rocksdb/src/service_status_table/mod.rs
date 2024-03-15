@@ -18,7 +18,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use restate_storage_api::service_status_table::{
-    ReadOnlyServiceStatusTable, ServiceStatus, ServiceStatusTable,
+    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
@@ -45,24 +45,24 @@ fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
 fn to_service_status(
     partition_key: PartitionKey,
     pb_status: storage::v1::ServiceStatus,
-) -> Result<ServiceStatus> {
+) -> Result<VirtualObjectStatus> {
     let invocation_uuid = InvocationUuid::try_from(pb_status).map_err(StorageError::from)?;
-    Ok(ServiceStatus::Locked(InvocationId::new(
+    Ok(VirtualObjectStatus::Locked(InvocationId::new(
         partition_key,
         invocation_uuid,
     )))
 }
 
-fn put_service_status<S: StorageAccess>(
+fn put_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
-    status: ServiceStatus,
+    status: VirtualObjectStatus,
 ) {
     let key = ServiceStatusKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
-    if status == ServiceStatus::Unlocked {
+    if status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
         let value = ProtoValue(storage::v1::ServiceStatus::from(status));
@@ -70,10 +70,10 @@ fn put_service_status<S: StorageAccess>(
     }
 }
 
-fn get_service_status<S: StorageAccess>(
+fn get_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
-) -> Result<ServiceStatus> {
+) -> Result<VirtualObjectStatus> {
     let key = ServiceStatusKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
@@ -81,7 +81,7 @@ fn get_service_status<S: StorageAccess>(
 
     storage.get_blocking(key, move |_, v| {
         if v.is_none() {
-            return Ok(ServiceStatus::Unlocked);
+            return Ok(VirtualObjectStatus::Unlocked);
         }
         let v = v.unwrap();
         let proto = storage::v1::ServiceStatus::decode(v)
@@ -90,57 +90,67 @@ fn get_service_status<S: StorageAccess>(
     })
 }
 
-fn delete_service_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
+fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
     let key = write_status_key(service_id);
     storage.delete_key(&key);
 }
 
-impl ReadOnlyServiceStatusTable for RocksDBStorage {
-    async fn get_service_status(&mut self, service_id: &ServiceId) -> Result<ServiceStatus> {
-        get_service_status(self, service_id)
+impl ReadOnlyVirtualObjectStatusTable for RocksDBStorage {
+    async fn get_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<VirtualObjectStatus> {
+        get_virtual_object_status(self, service_id)
     }
 }
 
-impl<'a> ReadOnlyServiceStatusTable for RocksDBTransaction<'a> {
-    async fn get_service_status(&mut self, service_id: &ServiceId) -> Result<ServiceStatus> {
-        get_service_status(self, service_id)
+impl<'a> ReadOnlyVirtualObjectStatusTable for RocksDBTransaction<'a> {
+    async fn get_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> Result<VirtualObjectStatus> {
+        get_virtual_object_status(self, service_id)
     }
 }
 
-impl<'a> ServiceStatusTable for RocksDBTransaction<'a> {
-    async fn put_service_status(&mut self, service_id: &ServiceId, status: ServiceStatus) {
-        put_service_status(self, service_id, status)
+impl<'a> VirtualObjectStatusTable for RocksDBTransaction<'a> {
+    async fn put_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+        status: VirtualObjectStatus,
+    ) {
+        put_virtual_object_status(self, service_id, status)
     }
 
-    async fn delete_service_status(&mut self, service_id: &ServiceId) {
-        delete_service_status(self, service_id)
+    async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) {
+        delete_virtual_object_status(self, service_id)
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct OwnedServiceStatusRow {
+pub struct OwnedVirtualObjectStatusRow {
     pub partition_key: PartitionKey,
-    pub service: ByteString,
-    pub service_key: Bytes,
-    pub service_status: ServiceStatus,
+    pub name: ByteString,
+    pub key: Bytes,
+    pub status: VirtualObjectStatus,
 }
 
 impl RocksDBStorage {
-    pub fn all_service_status(
+    pub fn all_virtual_object_status(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> impl Iterator<Item = OwnedServiceStatusRow> + '_ {
+    ) -> impl Iterator<Item = OwnedVirtualObjectStatusRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
             let state_value = storage::v1::ServiceStatus::decode(value).unwrap();
             let state_value =
                 to_service_status(state_key.partition_key.unwrap(), state_value).unwrap();
-            OwnedServiceStatusRow {
+            OwnedVirtualObjectStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
-                service: state_key.service_name.unwrap(),
-                service_key: state_key.service_key.unwrap(),
-                service_status: state_value,
+                name: state_key.service_name.unwrap(),
+                key: state_key.service_key.unwrap(),
+                status: state_value,
             }
         })
     }

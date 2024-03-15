@@ -27,7 +27,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::service_status_table::ServiceStatus;
+use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
@@ -62,10 +62,10 @@ use std::pin::pin;
 use tracing::{debug, instrument, trace};
 
 pub trait StateReader {
-    fn get_service_status(
+    fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Future<Output = StorageResult<ServiceStatus>> + Send;
+    ) -> impl Future<Output = StorageResult<VirtualObjectStatus>> + Send;
 
     fn get_invocation_status(
         &mut self,
@@ -154,7 +154,7 @@ where
         match command {
             Command::Invoke(service_invocation) => {
                 let service_status = state
-                    .get_service_status(&service_invocation.fid.service_id)
+                    .get_virtual_object_status(&service_invocation.fid.service_id)
                     .await?;
 
                 let fid = service_invocation.fid.clone();
@@ -167,7 +167,7 @@ where
                         effects,
                     )
                     .await;
-                } else if let ServiceStatus::Unlocked = service_status {
+                } else if let VirtualObjectStatus::Unlocked = service_status {
                     effects.invoke_service(service_invocation);
                 } else {
                     self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
@@ -226,13 +226,15 @@ where
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let service_status = state.get_service_status(&mutation.component_id).await?;
+        let service_status = state
+            .get_virtual_object_status(&mutation.component_id)
+            .await?;
 
         match service_status {
-            ServiceStatus::Locked(_) => {
+            VirtualObjectStatus::Locked(_) => {
                 self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation))
             }
-            ServiceStatus::Unlocked => effects.apply_state_mutation(mutation),
+            VirtualObjectStatus::Unlocked => effects.apply_state_mutation(mutation),
         }
 
         Ok((None, SpanRelation::None))

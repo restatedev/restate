@@ -27,9 +27,9 @@ mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
-mod service_status_table_test;
 mod state_table_test;
 mod timer_table_test;
+mod virtual_object_status_table_test;
 
 fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     //
@@ -71,7 +71,7 @@ async fn test_read_write() {
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
     invocation_status_table_test::run_tests(rocksdb.clone()).await;
-    service_status_table_test::run_tests(rocksdb.clone()).await;
+    virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
 
     close.await;

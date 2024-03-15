@@ -102,10 +102,12 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_storage_api::service_status_table::ServiceStatus> for ServiceStatus {
-                fn from(value: restate_storage_api::service_status_table::ServiceStatus) -> Self {
+            impl From<restate_storage_api::service_status_table::VirtualObjectStatus> for ServiceStatus {
+                fn from(
+                    value: restate_storage_api::service_status_table::VirtualObjectStatus,
+                ) -> Self {
                     match value {
-                        restate_storage_api::service_status_table::ServiceStatus::Locked(
+                        restate_storage_api::service_status_table::VirtualObjectStatus::Locked(
                             invocation_id,
                         ) => ServiceStatus {
                             status: Some(service_status::Status::Locked(service_status::Locked {
@@ -116,7 +118,7 @@ pub mod storage {
                                     .into(),
                             })),
                         },
-                        restate_storage_api::service_status_table::ServiceStatus::Unlocked => {
+                        restate_storage_api::service_status_table::VirtualObjectStatus::Unlocked => {
                             unreachable!("Nothing should be stored for unlocked")
                         }
                     }
