@@ -37,6 +37,7 @@ use restate_types::message::PartitionTarget;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use std::ops::RangeInclusive;
+use std::path::Path;
 use tokio::join;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -159,8 +160,8 @@ pub enum BuildError {
 }
 
 impl Options {
-    pub fn storage_path(&self) -> &str {
-        &self.storage_rocksdb.path
+    pub fn storage_path(&self) -> &Path {
+        self.storage_rocksdb.path.as_path()
     }
 
     pub fn build(self, schemas: Schemas, bifrost: Bifrost) -> Result<Worker, BuildError> {
