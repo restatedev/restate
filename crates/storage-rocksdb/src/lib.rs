@@ -32,6 +32,7 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use restate_storage_api::{Storage, StorageError, Transaction};
+use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;
 use rocksdb::DBCompressionType;
@@ -174,7 +175,11 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            path: "target/db/".to_string(),
+            path: Path::new(DEFAULT_STORAGE_DIRECTORY)
+                .join("db")
+                .into_os_string()
+                .into_string()
+                .expect("valid path"),
             threads: 10,
             write_buffer_size: 0,
             max_total_wal_size: 2 * (1 << 30), // 2 GiB

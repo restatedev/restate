@@ -30,3 +30,5 @@ pub mod time;
 
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
+
+pub const DEFAULT_STORAGE_DIRECTORY: &str = "./restate-data";

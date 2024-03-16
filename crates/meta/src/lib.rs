@@ -15,6 +15,7 @@ mod storage;
 use restate_schema_impl::Schemas;
 use restate_service_client::AssumeRoleCacheMode;
 use restate_types::retries::RetryPolicy;
+use std::path::Path;
 
 pub use error::Error;
 pub use restate_service_client::{
@@ -27,6 +28,7 @@ pub use storage::{FileMetaStorage, MetaStorage};
 use std::time::Duration;
 
 use codederror::CodedError;
+use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -56,7 +58,11 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            storage_path: "target/meta/".to_string(),
+            storage_path: Path::new(DEFAULT_STORAGE_DIRECTORY)
+                .join("meta")
+                .into_os_string()
+                .into_string()
+                .expect("valid path"),
             service_client: Default::default(),
         }
     }

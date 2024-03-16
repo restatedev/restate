@@ -12,14 +12,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use restate_types::logs::Payload;
+use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use serde_json::json;
+use std::path::Path;
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
 use crate::{Error, LogRecord, Options};
 
 pub fn default_config() -> serde_json::Value {
-    json!( {"path": "target/logs/"})
+    json!( {"path": Path::new(DEFAULT_STORAGE_DIRECTORY).join("logs").into_os_string()})
 }
 
 pub struct FileLogletProvider {}
