@@ -29,11 +29,15 @@ use serde_with::serde_as;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed building the meta service: {0}")]
-pub struct BuildError(
-    #[from]
-    #[code]
-    storage::BuildError,
-);
+pub enum BuildError {
+    Storage(
+        #[from]
+        #[code]
+        storage::BuildError,
+    ),
+    #[code(unknown)]
+    ServiceClient(#[from] restate_service_client::BuildError),
+}
 
 /// # Meta options
 #[serde_as]

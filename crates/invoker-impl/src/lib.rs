@@ -219,7 +219,7 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         state_reader: SR,
         entry_enricher: EE,
         deployment_registry: DMR,
-    ) -> Service<JR, SR, EE, DMR>
+    ) -> Result<Service<JR, SR, EE, DMR>, BuildError>
     where
         JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
@@ -230,9 +230,9 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         let client = ServiceClient::from_options(
             options.service_client().clone(),
             AssumeRoleCacheMode::Unbounded,
-        );
+        )?;
 
-        Service::new(
+        Ok(Service::new(
             deployment_registry,
             options.retry_policy().clone(),
             **options.inactivity_timeout(),
@@ -246,8 +246,14 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
             journal_reader,
             state_reader,
             entry_enricher,
-        )
+        ))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed building the invoker service: {0}")]
+pub enum BuildError {
+    ServiceClient(#[from] restate_service_client::BuildError),
 }
 
 impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
@@ -1080,7 +1086,8 @@ mod tests {
             ServiceClient::from_options(
                 ServiceClientOptions::default(),
                 restate_service_client::AssumeRoleCacheMode::None,
-            ),
+            )
+            .unwrap(),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,

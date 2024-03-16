@@ -224,7 +224,7 @@ where
         subscription_validator: SV,
     ) -> Result<MetaService<FileMetaStorage, SV>, BuildError> {
         let schemas = Schemas::default();
-        let client = ServiceClient::from_options(options.discovery, AssumeRoleCacheMode::None);
+        let client = ServiceClient::from_options(options.discovery, AssumeRoleCacheMode::None)?;
         Ok(MetaService::new(
             schemas.clone(),
             FileMetaStorage::new(options.schema_storage_path)?,

@@ -198,12 +198,12 @@ impl Configuration {
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
-                    .map(|_| "worker.invoker.service_client.http.proxy_uri".into()),
+                    .map(|_| "worker.invoker.service_client.http.http_proxy".into()),
             )
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
-                    .map(|_| "meta.service_client.http.proxy_uri".into()),
+                    .map(|_| "meta.service_client.http.http_proxy".into()),
             )
             .merge(
                 Env::raw()

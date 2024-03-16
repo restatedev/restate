@@ -26,6 +26,8 @@ futures = { workspace = true }
 http-serde = { version = "1.1.2" }
 humantime = { workspace = true }
 hyper = { workspace = true }
+itertools = { workspace = true }
+tokio = { workspace = true }
 hyper-rustls = { workspace = true }
 once_cell = { workspace = true }
 rustls = { workspace = true }
@@ -33,9 +35,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+
+pem = "3.0.3"
+ring = "0.17.8"
+bs58 = "0.5.0"
 
 aws-config = { version = "1.1.5", features = ["sso"] }
 aws-credential-types = "1.1.5"
 aws-sdk-lambda = "1.13.0"
 aws-sdk-sts = "1.13.0"
 aws-smithy-runtime = "1.1.5"
+
+[dev-dependencies]
+tempfile = { workspace = true }

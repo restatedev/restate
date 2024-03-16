@@ -1009,6 +1009,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5353f36341f7451062466f0b755b96ac3a9547e4d7f6b70d603fc721a7d7896"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bstr"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5686,6 +5695,7 @@ dependencies = [
  "aws-sdk-sts",
  "aws-smithy-runtime",
  "base64 0.21.7",
+ "bs58",
  "bytestring",
  "derive-getters",
  "derive_builder",
@@ -5694,15 +5704,21 @@ dependencies = [
  "humantime",
  "hyper 0.14.28",
  "hyper-rustls",
+ "itertools 0.11.0",
  "once_cell",
+ "pem 3.0.3",
  "restate-schema-api",
  "restate-types",
+ "ring 0.17.8",
  "rustls",
  "schemars",
  "serde",
  "serde_json",
  "serde_with",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
