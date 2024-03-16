@@ -83,17 +83,16 @@ impl NodeConfig {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+)]
 pub enum AdvertisedAddress {
     /// Unix domain socket
     #[display(fmt = "unix:{}", _0)]
     Uds(String),
     /// Hostname or host:port pair, or any unrecognizable string.
     #[display(fmt = "{}", _0)]
-    #[cfg_attr(
-        feature = "serde",
-        serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-    )]
     Http(Uri),
 }
 
