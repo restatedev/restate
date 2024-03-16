@@ -92,26 +92,12 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 
 pub fn restate_configuration() -> Configuration {
     let meta_options = MetaOptionsBuilder::default()
-        .storage_path(
-            tempfile::tempdir()
-                .expect("tempdir failed")
-                .into_path()
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-        )
+        .storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
         .expect("building meta options should work");
 
     let rocksdb_options = RocksdbOptionsBuilder::default()
-        .path(
-            tempfile::tempdir()
-                .expect("tempdir failed")
-                .into_path()
-                .into_os_string()
-                .into_string()
-                .unwrap(),
-        )
+        .path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
         .expect("building rocksdb options should work");
 

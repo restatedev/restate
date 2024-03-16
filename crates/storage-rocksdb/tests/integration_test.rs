@@ -36,11 +36,7 @@ fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     // create a rocksdb storage from options
     //
     let temp_dir = tempdir().unwrap();
-    let path = temp_dir
-        .path()
-        .to_str()
-        .expect("can not convert a path to string")
-        .to_string();
+    let path = temp_dir.into_path();
 
     let opts = restate_storage_rocksdb::Options {
         path,

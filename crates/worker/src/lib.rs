@@ -30,6 +30,7 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
+use std::path::Path;
 use tracing::debug;
 
 mod invoker_integration;
@@ -143,8 +144,8 @@ pub enum BuildError {
 }
 
 impl Options {
-    pub fn storage_path(&self) -> &str {
-        &self.storage_rocksdb.path
+    pub fn storage_path(&self) -> &Path {
+        self.storage_rocksdb.path.as_path()
     }
 
     pub fn build(

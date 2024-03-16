@@ -15,7 +15,7 @@ mod storage;
 use restate_schema_impl::Schemas;
 use restate_service_client::AssumeRoleCacheMode;
 use restate_types::retries::RetryPolicy;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use error::Error;
 pub use restate_service_client::{
@@ -51,7 +51,7 @@ pub struct Options {
     /// # Storage path
     ///
     /// Root path for Meta storage.
-    storage_path: String,
+    storage_path: PathBuf,
 
     service_client: ServiceClientOptions,
 }
@@ -59,19 +59,15 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            storage_path: Path::new(DEFAULT_STORAGE_DIRECTORY)
-                .join("meta")
-                .into_os_string()
-                .into_string()
-                .expect("valid path"),
+            storage_path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("meta"),
             service_client: Default::default(),
         }
     }
 }
 
 impl Options {
-    pub fn storage_path(&self) -> &str {
-        &self.storage_path
+    pub fn storage_path(&self) -> &Path {
+        self.storage_path.as_path()
     }
 
     pub fn build<SV: SubscriptionValidator>(
@@ -82,7 +78,7 @@ impl Options {
         let client = self.service_client.build(AssumeRoleCacheMode::None);
         Ok(MetaService::new(
             schemas.clone(),
-            FileMetaStorage::new(self.storage_path.into())?,
+            FileMetaStorage::new(self.storage_path)?,
             subscription_validator,
             // Total duration roughly 66 seconds
             RetryPolicy::exponential(

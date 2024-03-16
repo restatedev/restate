@@ -21,7 +21,7 @@ use crate::metadata::LogletParams;
 use crate::{Error, LogRecord, Options};
 
 pub fn default_config() -> serde_json::Value {
-    json!( {"path": Path::new(DEFAULT_STORAGE_DIRECTORY).join("logs").into_os_string()})
+    json!( {"path": Path::new(DEFAULT_STORAGE_DIRECTORY).join("logs")})
 }
 
 #[derive(Debug)]

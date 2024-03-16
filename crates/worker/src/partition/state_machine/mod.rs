@@ -136,7 +136,7 @@ mod tests {
             let temp_dir = tempdir().unwrap();
             info!("Using RocksDB temp directory {}", temp_dir.path().display());
             let (rocksdb_storage, writer) = restate_storage_rocksdb::OptionsBuilder::default()
-                .path(temp_dir.into_path().to_str().unwrap().to_string())
+                .path(temp_dir.into_path())
                 .build()
                 .unwrap()
                 .build()

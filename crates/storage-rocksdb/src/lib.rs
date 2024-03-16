@@ -45,7 +45,7 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
 use rocksdb::{BlockBasedOptions, WriteOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
@@ -149,7 +149,7 @@ pub struct Options {
     /// # Storage path
     ///
     /// The root path to use for the Rocksdb storage.
-    pub path: String,
+    pub path: PathBuf,
 
     /// # Threads
     ///
@@ -181,11 +181,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            path: Path::new(DEFAULT_STORAGE_DIRECTORY)
-                .join("db")
-                .into_os_string()
-                .into_string()
-                .expect("valid path"),
+            path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("db"),
             threads: 10,
             write_buffer_size: 0,
             max_total_wal_size: 2 * (1 << 30), // 2 GiB
@@ -893,11 +889,7 @@ mod tests {
         // create a rocksdb storage from options
         //
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir
-            .path()
-            .to_str()
-            .expect("can not convert a path to string")
-            .to_string();
+        let path = temp_dir.into_path();
 
         let opts = crate::Options {
             path,
