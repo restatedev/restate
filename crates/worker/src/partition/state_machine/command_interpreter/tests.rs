@@ -592,11 +592,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
         effects,
         unordered_elements_are![
             terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
-            store_canceled_completion_matcher(3),
             store_canceled_completion_matcher(4),
             store_canceled_completion_matcher(5),
             store_canceled_completion_matcher(6),
-            forward_canceled_completion_matcher(3),
             forward_canceled_completion_matcher(4),
             forward_canceled_completion_matcher(5),
             forward_canceled_completion_matcher(6),
@@ -641,7 +639,6 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         effects,
         unordered_elements_are![
             terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
-            store_canceled_completion_matcher(3),
             store_canceled_completion_matcher(4),
             store_canceled_completion_matcher(5),
             store_canceled_completion_matcher(6),
@@ -665,9 +662,7 @@ fn create_termination_journal(
         completed_invoke_entry(finished_call_fid),
         background_invoke_entry(background_fid),
         JournalEntry::Entry(EnrichedRawEntry::new(
-            EnrichedEntryHeader::PollInputStream {
-                is_completed: false,
-            },
+            EnrichedEntryHeader::Input {},
             Bytes::default(),
         )),
         JournalEntry::Entry(EnrichedRawEntry::new(

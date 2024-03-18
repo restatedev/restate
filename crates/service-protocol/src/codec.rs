@@ -10,7 +10,6 @@
 
 use super::pb::protocol;
 
-use crate::pb::protocol::poll_input_stream_entry_message;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
@@ -40,11 +39,12 @@ macro_rules! match_decode {
 pub struct ProtobufRawEntryCodec;
 
 impl RawEntryCodec for ProtobufRawEntryCodec {
-    fn serialize_as_unary_input_entry(value: Bytes) -> EnrichedRawEntry {
+    fn serialize_as_input_entry(value: Bytes) -> EnrichedRawEntry {
         RawEntry::new(
-            EnrichedEntryHeader::PollInputStream { is_completed: true },
-            protocol::PollInputStreamEntryMessage {
-                result: Some(poll_input_stream_entry_message::Result::Value(value)),
+            EnrichedEntryHeader::Input {},
+            protocol::InputEntryMessage {
+                headers: vec![],
+                value,
             }
             .encode_to_vec()
             .into(),
@@ -66,8 +66,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         // We clone the entry Bytes here to ensure that the generated Message::decode
         // invocation reuses the same underlying byte array.
         match_decode!(entry_type, entry_value, {
-            PollInputStream,
-            OutputStream,
+            Input,
+            Output,
             GetState,
             SetState,
             ClearState,
@@ -134,36 +134,34 @@ mod mocks {
     use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
         awakeable_entry_message, complete_awakeable_entry_message, get_state_entry_message,
-        get_state_keys_entry_message, invoke_entry_message, output_stream_entry_message,
+        get_state_keys_entry_message, invoke_entry_message, output_entry_message,
         AwakeableEntryMessage, BackgroundInvokeEntryMessage, ClearAllStateEntryMessage,
         ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage,
-        GetStateKeysEntryMessage, InvokeEntryMessage, OutputStreamEntryMessage,
-        PollInputStreamEntryMessage, SetStateEntryMessage,
+        GetStateKeysEntryMessage, InputEntryMessage, InvokeEntryMessage, OutputEntryMessage,
+        SetStateEntryMessage,
     };
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
-        GetStateKeysResult, GetStateResult, PollInputStreamEntry,
+        GetStateKeysResult, GetStateResult, InputEntry,
     };
 
     impl ProtobufRawEntryCodec {
         pub fn serialize(entry: Entry) -> PlainRawEntry {
             match entry {
-                Entry::PollInputStream(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::PollInputStream { is_completed: true },
-                    Self::serialize_poll_input_stream_entry(entry),
+                Entry::Input(entry) => PlainRawEntry::new(
+                    PlainEntryHeader::Input {},
+                    Self::serialize_input_entry(entry),
                 ),
-                Entry::OutputStream(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::OutputStream {},
-                    OutputStreamEntryMessage {
+                Entry::Output(entry) => PlainRawEntry::new(
+                    PlainEntryHeader::Output {},
+                    OutputEntryMessage {
                         result: Some(match entry.result {
-                            EntryResult::Success(s) => {
-                                output_stream_entry_message::Result::Value(s)
-                            }
+                            EntryResult::Success(s) => output_entry_message::Result::Value(s),
                             EntryResult::Failure(code, msg) => {
-                                output_stream_entry_message::Result::Failure(Failure {
+                                output_entry_message::Result::Failure(Failure {
                                     code: code.into(),
                                     message: msg.to_string(),
                                 })
@@ -267,9 +265,9 @@ mod mocks {
 
         pub fn serialize_enriched(entry: Entry) -> EnrichedRawEntry {
             match entry {
-                Entry::PollInputStream(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::PollInputStream { is_completed: true },
-                    Self::serialize_poll_input_stream_entry(entry),
+                Entry::Input(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Input {},
+                    Self::serialize_input_entry(entry),
                 ),
                 Entry::CompleteAwakeable(entry) => {
                     let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&entry.id)
@@ -321,21 +319,10 @@ mod mocks {
             }
         }
 
-        fn serialize_poll_input_stream_entry(
-            PollInputStreamEntry { result }: PollInputStreamEntry,
-        ) -> Bytes {
-            PollInputStreamEntryMessage {
-                result: Some(match result {
-                    EntryResult::Success(value) => {
-                        poll_input_stream_entry_message::Result::Value(value)
-                    }
-                    EntryResult::Failure(code, reason) => {
-                        poll_input_stream_entry_message::Result::Failure(Failure {
-                            code: code.into(),
-                            message: reason.to_string(),
-                        })
-                    }
-                }),
+        fn serialize_input_entry(InputEntry { value }: InputEntry) -> Bytes {
+            InputEntryMessage {
+                headers: vec![],
+                value,
             }
             .encode_to_vec()
             .into()

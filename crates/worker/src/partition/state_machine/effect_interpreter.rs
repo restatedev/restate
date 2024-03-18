@@ -498,7 +498,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             )
         } else {
             let poll_input_stream_entry =
-                Codec::serialize_as_unary_input_entry(service_invocation.argument.clone());
+                Codec::serialize_as_input_entry(service_invocation.argument.clone());
             let (header, serialized_entry) = poll_input_stream_entry.into_inner();
 
             collector.push(Action::Invoke {

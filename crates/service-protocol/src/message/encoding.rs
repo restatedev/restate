@@ -285,10 +285,8 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::End => unreachable!(),
         MessageType::EntryAck => unreachable!(),
 
-        MessageType::PollInputStreamEntry => PlainEntryHeader::PollInputStream {
-            is_completed: expect_flag!(message_header, completed),
-        },
-        MessageType::OutputStreamEntry => PlainEntryHeader::OutputStream {},
+        MessageType::InputEntry => PlainEntryHeader::Input {},
+        MessageType::OutputEntry => PlainEntryHeader::Output {},
         MessageType::GetStateEntry => PlainEntryHeader::GetState {
             is_completed: expect_flag!(message_header, completed),
         },
@@ -320,8 +318,8 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
 
 fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
     match entry_header {
-        PlainEntryHeader::PollInputStream { .. } => MessageType::PollInputStreamEntry,
-        PlainEntryHeader::OutputStream { .. } => MessageType::OutputStreamEntry,
+        PlainEntryHeader::Input { .. } => MessageType::InputEntry,
+        PlainEntryHeader::Output { .. } => MessageType::OutputEntry,
         PlainEntryHeader::GetState { .. } => MessageType::GetStateEntry,
         PlainEntryHeader::SetState { .. } => MessageType::SetStateEntry,
         PlainEntryHeader::ClearState { .. } => MessageType::ClearStateEntry,
@@ -359,15 +357,12 @@ mod tests {
             1,
             true,
             vec![],
-            vec![],
         );
 
         let expected_msg_1: ProtocolMessage =
-            ProtobufRawEntryCodec::serialize_as_unary_input_entry(Bytes::from_static(
-                "input".as_bytes(),
-            ))
-            .erase_enrichment()
-            .into();
+            ProtobufRawEntryCodec::serialize_as_input_entry(Bytes::from_static("input".as_bytes()))
+                .erase_enrichment()
+                .into();
         let expected_msg_2: ProtocolMessage = Completion {
             entry_index: 1,
             result: CompletionResult::Empty,
@@ -387,11 +382,8 @@ mod tests {
         assert_eq!(actual_msg_0, expected_msg_0);
 
         let (actual_msg_header_1, actual_msg_1) = decoder.consume_next().unwrap().unwrap();
-        assert_eq!(
-            actual_msg_header_1.message_type(),
-            MessageType::PollInputStreamEntry
-        );
-        assert_eq!(actual_msg_header_1.completed(), Some(true));
+        assert_eq!(actual_msg_header_1.message_type(), MessageType::InputEntry);
+        assert_eq!(actual_msg_header_1.completed(), None);
         assert_eq!(actual_msg_1, expected_msg_1);
 
         let (actual_msg_header_2, actual_msg_2) = decoder.consume_next().unwrap().unwrap();
@@ -415,11 +407,10 @@ mod tests {
         let encoder = Encoder::new(0);
         let mut decoder = Decoder::default();
 
-        let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_unary_input_entry(
-            Bytes::from_static("input".as_bytes()),
-        )
-        .erase_enrichment()
-        .into();
+        let expected_msg: ProtocolMessage =
+            ProtobufRawEntryCodec::serialize_as_input_entry(Bytes::from_static("input".as_bytes()))
+                .erase_enrichment()
+                .into();
         let expected_msg_encoded = encoder.encode(expected_msg.clone());
 
         decoder.push(expected_msg_encoded.slice(0..split_index));
@@ -428,11 +419,8 @@ mod tests {
         decoder.push(expected_msg_encoded.slice(split_index..));
 
         let (actual_msg_header, actual_msg) = decoder.consume_next().unwrap().unwrap();
-        assert_eq!(
-            actual_msg_header.message_type(),
-            MessageType::PollInputStreamEntry
-        );
-        assert_eq!(actual_msg_header.completed(), Some(true));
+        assert_eq!(actual_msg_header.message_type(), MessageType::InputEntry);
+        assert_eq!(actual_msg_header.completed(), None);
         assert_eq!(actual_msg, expected_msg);
 
         assert!(decoder.consume_next().unwrap().is_none());
@@ -444,7 +432,7 @@ mod tests {
 
         let encoder = Encoder::new(0);
         let message = ProtocolMessage::from(
-            ProtobufRawEntryCodec::serialize_as_unary_input_entry(
+            ProtobufRawEntryCodec::serialize_as_input_entry(
                 (0..=u8::MAX).collect::<Vec<_>>().into(),
             )
             .erase_enrichment(),

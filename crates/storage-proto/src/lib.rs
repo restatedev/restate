@@ -23,7 +23,7 @@ pub mod storage {
             use crate::storage::v1::dedup_sequence_number::Variant;
             use crate::storage::v1::enriched_entry_header::{
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
-                GetState, GetStateKeys, Invoke, OutputStream, PollInputStream, SetState, Sleep,
+                GetState, GetStateKeys, Input, Invoke, Output, SetState, Sleep,
             };
             use crate::storage::v1::invocation_status::{Free, Invoked, Suspended};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
@@ -1099,13 +1099,12 @@ pub mod storage {
                         .kind
                         .ok_or(ConversionError::missing_field("kind"))?
                     {
-                        enriched_entry_header::Kind::PollInputStream(poll_input_stream) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
-                                                            is_completed: poll_input_stream.is_completed,
+                        enriched_entry_header::Kind::Input(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Input {
                             }
                         }
-                        enriched_entry_header::Kind::OutputStream(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::OutputStream {
+                        enriched_entry_header::Kind::Output(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Output {
                                                         }
                         }
                         enriched_entry_header::Kind::GetState(get_state) => {
@@ -1192,14 +1191,12 @@ pub mod storage {
                     // when reading an entry from storage, we never need to send the ack back for it.
 
                     let kind = match value {
-                        restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
-                            is_completed,
+                        restate_types::journal::enriched::EnrichedEntryHeader::Input {
                             ..
-                        } => enriched_entry_header::Kind::PollInputStream(PollInputStream {
-                            is_completed,
+                        } => enriched_entry_header::Kind::Input(Input {
                         }),
-                        restate_types::journal::enriched::EnrichedEntryHeader::OutputStream{..} => {
-                            enriched_entry_header::Kind::OutputStream(OutputStream {})
+                        restate_types::journal::enriched::EnrichedEntryHeader::Output {..} => {
+                            enriched_entry_header::Kind::Output(Output {})
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::GetState { is_completed, .. } => {
                             enriched_entry_header::Kind::GetState(GetState { is_completed })

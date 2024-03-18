@@ -602,7 +602,6 @@ where
                 Some(self.full_invocation_id.service_id.key.clone()),
                 journal_size,
                 is_partial,
-                iter::empty(),
                 state_entries,
             ),
         )

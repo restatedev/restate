@@ -633,7 +633,6 @@ where
                     }
                     EnrichedEntryHeader::Awakeable { is_completed }
                     | EnrichedEntryHeader::GetState { is_completed }
-                    | EnrichedEntryHeader::PollInputStream { is_completed }
                         if !is_completed =>
                     {
                         resume_invocation |= Self::cancel_journal_entry_with(
@@ -942,16 +941,11 @@ where
 
         match journal_entry.header() {
             // nothing to do
-            EnrichedEntryHeader::PollInputStream { is_completed, .. } => {
-                debug_assert!(
-                    !is_completed,
-                    "Poll input stream entry must not be completed."
-                );
-            }
-            EnrichedEntryHeader::OutputStream { .. } => {
+            EnrichedEntryHeader::Input { .. } => {}
+            EnrichedEntryHeader::Output { .. } => {
                 if let Some(ref response_sink) = invocation_metadata.response_sink {
                     let_assert!(
-                        Entry::OutputStream(OutputStreamEntry { result }) =
+                        Entry::Output(OutputEntry { result }) =
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 

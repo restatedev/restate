@@ -205,11 +205,10 @@ message BackgroundCallResolutionResult {
 }
 message EnrichedEntryHeader {
 
-    message PollInputStream {
-        bool is_completed = 1;
+    message Input {
     }
 
-    message OutputStream {
+    message Output {
     }
 
     message GetState {
@@ -256,8 +255,8 @@ message EnrichedEntryHeader {
     }
 
     oneof kind {
-        PollInputStream poll_input_stream = 1;
-        OutputStream output_stream = 2;
+        Input input = 1;
+        Output output = 2;
         GetState get_state = 3;
         SetState set_state = 4;
         ClearState clear_state = 5;

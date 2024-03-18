@@ -47,7 +47,6 @@ impl ProtocolMessage {
         key: Option<Bytes>,
         known_entries: u32,
         partial_state: bool,
-        headers: impl IntoIterator<Item = (String, String)>,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
     ) -> Self {
         Self::Start(pb::protocol::StartMessage {
@@ -62,10 +61,6 @@ impl ProtocolMessage {
             key: key
                 .and_then(|b| String::from_utf8(b.to_vec()).ok())
                 .unwrap_or_default(),
-            headers: headers
-                .into_iter()
-                .map(|(key, value)| pb::protocol::Header { key, value })
-                .collect(),
         })
     }
 

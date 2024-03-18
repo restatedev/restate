@@ -32,8 +32,8 @@ pub enum MessageType {
     Error,
     End,
     EntryAck,
-    PollInputStreamEntry,
-    OutputStreamEntry,
+    InputEntry,
+    OutputEntry,
     GetStateEntry,
     SetStateEntry,
     ClearStateEntry,
@@ -56,8 +56,8 @@ impl MessageType {
             MessageType::Error => MessageKind::Core,
             MessageType::End => MessageKind::Core,
             MessageType::EntryAck => MessageKind::Core,
-            MessageType::PollInputStreamEntry => MessageKind::IO,
-            MessageType::OutputStreamEntry => MessageKind::IO,
+            MessageType::InputEntry => MessageKind::IO,
+            MessageType::OutputEntry => MessageKind::IO,
             MessageType::GetStateEntry => MessageKind::State,
             MessageType::SetStateEntry => MessageKind::State,
             MessageType::ClearStateEntry => MessageKind::State,
@@ -75,8 +75,7 @@ impl MessageType {
     fn has_completed_flag(&self) -> bool {
         matches!(
             self,
-            MessageType::PollInputStreamEntry
-                | MessageType::GetStateEntry
+            MessageType::GetStateEntry
                 | MessageType::GetStateKeysEntry
                 | MessageType::SleepEntry
                 | MessageType::InvokeEntry
@@ -102,8 +101,8 @@ const SUSPENSION_MESSAGE_TYPE: u16 = 0x0002;
 const ERROR_MESSAGE_TYPE: u16 = 0x0003;
 const ENTRY_ACK_MESSAGE_TYPE: u16 = 0x0004;
 const END_MESSAGE_TYPE: u16 = 0x0005;
-const POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
-const OUTPUT_STREAM_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
+const INPUT_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
+const OUTPUT_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
 const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
 const SET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0801;
 const CLEAR_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0802;
@@ -124,8 +123,8 @@ impl From<MessageType> for MessageTypeId {
             MessageType::Error => ERROR_MESSAGE_TYPE,
             MessageType::End => END_MESSAGE_TYPE,
             MessageType::EntryAck => ENTRY_ACK_MESSAGE_TYPE,
-            MessageType::PollInputStreamEntry => POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE,
-            MessageType::OutputStreamEntry => OUTPUT_STREAM_ENTRY_MESSAGE_TYPE,
+            MessageType::InputEntry => INPUT_ENTRY_MESSAGE_TYPE,
+            MessageType::OutputEntry => OUTPUT_ENTRY_MESSAGE_TYPE,
             MessageType::GetStateEntry => GET_STATE_ENTRY_MESSAGE_TYPE,
             MessageType::SetStateEntry => SET_STATE_ENTRY_MESSAGE_TYPE,
             MessageType::ClearStateEntry => CLEAR_STATE_ENTRY_MESSAGE_TYPE,
@@ -156,8 +155,8 @@ impl TryFrom<MessageTypeId> for MessageType {
             ERROR_MESSAGE_TYPE => Ok(MessageType::Error),
             END_MESSAGE_TYPE => Ok(MessageType::End),
             ENTRY_ACK_MESSAGE_TYPE => Ok(MessageType::EntryAck),
-            POLL_INPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::PollInputStreamEntry),
-            OUTPUT_STREAM_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputStreamEntry),
+            INPUT_ENTRY_MESSAGE_TYPE => Ok(MessageType::InputEntry),
+            OUTPUT_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputEntry),
             GET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateEntry),
             SET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::SetStateEntry),
             CLEAR_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::ClearStateEntry),
