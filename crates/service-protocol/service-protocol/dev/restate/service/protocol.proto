@@ -40,10 +40,8 @@ message StartMessage {
   repeated StateEntry state_map = 4;
   bool partial_state = 5;
 
-  repeated Header headers = 6;
-
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
-  string key = 7;
+  string key = 6;
 }
 
 // Type: 0x0000 + 1
@@ -106,20 +104,19 @@ message EndMessage {
 
 // ------ Input and output ------
 
-// Completable: Yes
+// Completable: No
 // Fallible: No
 // Type: 0x0400 + 0
-message PollInputStreamEntryMessage {
-  oneof result {
-    bytes value = 14;
-    Failure failure = 15;
-  }
+message InputEntryMessage {
+  repeated Header headers = 1;
+
+  bytes value = 14;
 }
 
 // Completable: No
 // Fallible: No
 // Type: 0x0400 + 1
-message OutputStreamEntryMessage {
+message OutputEntryMessage {
   oneof result {
     bytes value = 14;
     Failure failure = 15;
