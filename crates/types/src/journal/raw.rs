@@ -101,10 +101,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
-    PollInputStream {
-        is_completed: bool,
-    },
-    OutputStream,
+    Input,
+    Output,
     GetState {
         is_completed: bool,
     },
@@ -140,8 +138,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 {
     pub fn is_completed(&self) -> Option<bool> {
         match self {
-            EntryHeader::PollInputStream { is_completed, .. } => Some(*is_completed),
-            EntryHeader::OutputStream { .. } => None,
+            EntryHeader::Input { .. } => None,
+            EntryHeader::Output { .. } => None,
             EntryHeader::GetState { is_completed, .. } => Some(*is_completed),
             EntryHeader::SetState { .. } => None,
             EntryHeader::ClearState { .. } => None,
@@ -158,8 +156,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn mark_completed(&mut self) {
         match self {
-            EntryHeader::PollInputStream { is_completed, .. } => *is_completed = true,
-            EntryHeader::OutputStream { .. } => {}
+            EntryHeader::Input { .. } => {}
+            EntryHeader::Output { .. } => {}
             EntryHeader::GetState { is_completed, .. } => *is_completed = true,
             EntryHeader::SetState { .. } => {}
             EntryHeader::ClearState { .. } => {}
@@ -176,8 +174,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn as_entry_type(&self) -> EntryType {
         match self {
-            EntryHeader::PollInputStream { .. } => EntryType::PollInputStream,
-            EntryHeader::OutputStream { .. } => EntryType::OutputStream,
+            EntryHeader::Input { .. } => EntryType::Input,
+            EntryHeader::Output { .. } => EntryType::Output,
             EntryHeader::GetState { .. } => EntryType::GetState,
             EntryHeader::SetState { .. } => EntryType::SetState,
             EntryHeader::ClearState { .. } => EntryType::ClearState,
@@ -194,10 +192,8 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 
     pub fn erase_enrichment(self) -> PlainEntryHeader {
         match self {
-            EntryHeader::PollInputStream { is_completed } => {
-                EntryHeader::PollInputStream { is_completed }
-            }
-            EntryHeader::OutputStream {} => EntryHeader::OutputStream {},
+            EntryHeader::Input {} => EntryHeader::Input {},
+            EntryHeader::Output {} => EntryHeader::Output {},
             EntryHeader::GetState { is_completed } => EntryHeader::GetState { is_completed },
             EntryHeader::SetState {} => EntryHeader::SetState {},
             EntryHeader::ClearState {} => EntryHeader::ClearState {},
@@ -249,7 +245,7 @@ pub enum ErrorKind {
 }
 
 pub trait RawEntryCodec {
-    fn serialize_as_unary_input_entry(input_message: Bytes) -> enriched::EnrichedRawEntry;
+    fn serialize_as_input_entry(input_message: Bytes) -> enriched::EnrichedRawEntry;
 
     fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult;
 

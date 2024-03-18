@@ -20,8 +20,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     // IO
-    PollInputStream(PollInputStreamEntry),
-    OutputStream(OutputStreamEntry),
+    Input(InputEntry),
+    Output(OutputEntry),
 
     // State access
     GetState(GetStateEntry),
@@ -40,14 +40,14 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn poll_input_stream(result: impl Into<Bytes>) -> Self {
-        Entry::PollInputStream(PollInputStreamEntry {
-            result: EntryResult::Success(result.into()),
+    pub fn input(result: impl Into<Bytes>) -> Self {
+        Entry::Input(InputEntry {
+            value: result.into(),
         })
     }
 
-    pub fn output_stream(result: EntryResult) -> Self {
-        Entry::OutputStream(OutputStreamEntry { result })
+    pub fn output(result: EntryResult) -> Self {
+        Entry::Output(OutputEntry { result })
     }
 
     pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateResult>) -> Self {
@@ -143,8 +143,8 @@ impl From<&InvocationError> for CompletionResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryType {
-    PollInputStream,
-    OutputStream,
+    Input,
+    Output,
     GetState,
     SetState,
     ClearState,
@@ -196,12 +196,12 @@ mod private {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PollInputStreamEntry {
-    pub result: EntryResult,
+pub struct InputEntry {
+    pub value: Bytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputStreamEntry {
+pub struct OutputEntry {
     pub result: EntryResult,
 }
 

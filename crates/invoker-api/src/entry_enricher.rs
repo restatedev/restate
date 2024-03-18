@@ -43,10 +43,8 @@ pub mod mocks {
         ) -> Result<EnrichedRawEntry, InvocationError> {
             let (header, entry) = raw_entry.into_inner();
             let enriched_header = match header {
-                PlainEntryHeader::PollInputStream { is_completed } => {
-                    EnrichedEntryHeader::PollInputStream { is_completed }
-                }
-                PlainEntryHeader::OutputStream {} => EnrichedEntryHeader::OutputStream {},
+                PlainEntryHeader::Input {} => EnrichedEntryHeader::Input {},
+                PlainEntryHeader::Output {} => EnrichedEntryHeader::Output {},
                 PlainEntryHeader::GetState { is_completed } => {
                     EnrichedEntryHeader::GetState { is_completed }
                 }
