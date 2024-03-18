@@ -1,0 +1,22 @@
+[package]
+name = "restate-metadata-store"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+
+[dependencies]
+restate-types = { workspace = true }
+
+async-trait = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

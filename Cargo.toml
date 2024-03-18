@@ -44,6 +44,7 @@ restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
 restate-meta = { path = "crates/meta" }
 restate-meta-rest-model = { path = "crates/meta-rest-model" }
+restate-metadata-store = { path = "crates/metadata-store" }
 restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
 restate-node-protocol = { path = "crates/node-protocol" }
