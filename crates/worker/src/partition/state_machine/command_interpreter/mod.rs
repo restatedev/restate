@@ -22,9 +22,7 @@ use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInvocation};
-use restate_storage_api::invocation_status_table::{
-    InvocationMetadata, InvocationStatus, NotificationTarget,
-};
+use restate_storage_api::invocation_status_table::{InvocationMetadata, InvocationStatus};
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::ServiceStatus;
@@ -34,7 +32,7 @@ use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId, WithPartitionKey,
+    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -259,7 +257,6 @@ where
                 for nbis_effect in nbis_effects {
                     self.on_built_in_invoker_effect(
                         effects,
-                        state,
                         &full_invocation_id,
                         &invocation_metadata,
                         nbis_effect,
@@ -278,48 +275,14 @@ where
         }
     }
 
-    async fn on_built_in_invoker_effect<State: StateReader>(
+    async fn on_built_in_invoker_effect(
         &mut self,
         effects: &mut Effects,
-        state: &mut State,
         full_invocation_id: &FullInvocationId,
         invocation_metadata: &InvocationMetadata,
         nbis_effect: BuiltinServiceEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
-            BuiltinServiceEffect::CreateJournal {
-                invocation_id,
-                span_context,
-                completion_notification_target,
-                kill_notification_target,
-            } => {
-                effects.create_virtual_journal(
-                    invocation_id,
-                    span_context,
-                    completion_notification_target,
-                    kill_notification_target,
-                );
-            }
-            BuiltinServiceEffect::StoreEntry {
-                invocation_id,
-                entry_index,
-                journal_entry,
-            } => {
-                let invocation_status = state.get_invocation_status(&invocation_id).await?;
-
-                effects.append_journal_entry(
-                    invocation_id,
-                    invocation_status,
-                    entry_index,
-                    journal_entry,
-                );
-            }
-            BuiltinServiceEffect::DropJournal {
-                invocation_id,
-                journal_length,
-            } => {
-                effects.drop_journal(invocation_id, journal_length);
-            }
             BuiltinServiceEffect::SetState { key, value } => {
                 effects.set_state(
                     full_invocation_id.service_id.clone(),
@@ -427,28 +390,6 @@ where
 
                 Ok((Some(fid), related_span))
             }
-            InvocationStatus::Virtual {
-                kill_notification_target,
-                journal_metadata,
-                ..
-            } => {
-                self.kill_child_invocations(
-                    &invocation_id,
-                    state,
-                    effects,
-                    journal_metadata.length,
-                )
-                .await?;
-
-                effects.notify_virtual_journal_kill(
-                    kill_notification_target.service,
-                    kill_notification_target.method,
-                    invocation_id,
-                );
-                // We don't need to drop the journal here,
-                // it's up to the registered notification service to take care of it.
-                Ok((None, SpanRelation::None))
-            }
             _ => {
                 self.try_terminate_inboxed_invocation(
                     TerminationFlavor::Kill,
@@ -541,32 +482,6 @@ where
                 }
 
                 Ok((Some(fid), related_span))
-            }
-            InvocationStatus::Virtual {
-                journal_metadata,
-                completion_notification_target,
-                ..
-            } => {
-                // Note: We create a "Fake" FullInvocationId for the sake of not making this cancel_journal_leaves more complicated.
-                // This still works because For virtual journal, only invocation id is used for cancelling.
-                // We can clean this up once the invoker won't need FullInvocationId anymore.
-                let fid = FullInvocationId {
-                    service_id: ServiceId::with_partition_key(
-                        invocation_id.partition_key(),
-                        "Virtual",
-                        Bytes::default(),
-                    ),
-                    invocation_uuid: invocation_id.invocation_uuid(),
-                };
-                self.cancel_journal_leaves(
-                    fid,
-                    InvocationStatusProjection::Virtual(completion_notification_target),
-                    journal_metadata.length,
-                    state,
-                    effects,
-                )
-                .await?;
-                Ok((None, SpanRelation::None))
             }
             _ => {
                 self.try_terminate_inboxed_invocation(
@@ -785,15 +700,6 @@ where
                     waiting_for_completed_entry,
                     effects,
                 )
-            }
-            InvocationStatusProjection::Virtual(notification_target) => {
-                Self::handle_completion_for_virtual(
-                    InvocationId::from(full_invocation_id),
-                    Completion::new(journal_index, canceled_result),
-                    notification_target.clone(),
-                    effects,
-                );
-                false
             }
         }
     }
@@ -1332,17 +1238,6 @@ where
                 }
                 related_sid = Some(full_invocation_id);
             }
-            InvocationStatus::Virtual {
-                completion_notification_target,
-                ..
-            } => {
-                Self::handle_completion_for_virtual(
-                    invocation_id,
-                    completion,
-                    completion_notification_target,
-                    effects,
-                );
-            }
             _ => {
                 debug!(
                     restate.invocation.id = %invocation_id,
@@ -1353,21 +1248,6 @@ where
         }
 
         Ok((related_sid, span_relation))
-    }
-
-    fn handle_completion_for_virtual(
-        invocation_id: InvocationId,
-        completion: Completion,
-        completion_notification_target: NotificationTarget,
-        effects: &mut Effects,
-    ) {
-        effects.store_completion(invocation_id.clone(), completion.clone());
-        effects.notify_virtual_journal_completion(
-            completion_notification_target.service,
-            completion_notification_target.method,
-            invocation_id,
-            completion,
-        );
     }
 
     fn handle_completion_for_suspended(
@@ -1517,7 +1397,6 @@ where
 enum InvocationStatusProjection {
     Invoked,
     Suspended(HashSet<EntryIndex>),
-    Virtual(NotificationTarget),
 }
 
 #[cfg(test)]

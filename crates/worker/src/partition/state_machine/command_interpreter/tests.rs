@@ -1,26 +1,25 @@
 use super::*;
 
-use std::collections::HashMap;
-
 use bytestring::ByteString;
 use futures::stream;
 use googletest::matcher::Matcher;
 use googletest::{all, any, assert_that, pat, unordered_elements_are};
 use prost::Message;
-use test_log::test;
-
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
-use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
+use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
 use restate_types::errors::UserErrorCode;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
+use std::collections::HashMap;
+use test_log::test;
 
 use crate::partition::state_machine::command_interpreter::StateReader;
 use crate::partition::state_machine::effects::Effect;
@@ -101,28 +100,6 @@ impl StateReaderMock {
                     service_id,
                 ),
                 waiting_for_completed_entries: HashSet::from_iter(waiting_for_completed_entries),
-            },
-            journal,
-        );
-    }
-
-    fn register_virtual_status_and_locked(
-        &mut self,
-        invocation_id: InvocationId,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-        journal: Vec<JournalEntry>,
-    ) {
-        self.register_invocation_status(
-            invocation_id,
-            InvocationStatus::Virtual {
-                journal_metadata: JournalMetadata {
-                    length: u32::try_from(journal.len()).unwrap(),
-                    span_context: ServiceInvocationSpanContext::empty(),
-                },
-                completion_notification_target,
-                kill_notification_target,
-                timestamps: StatusTimestamps::now(),
             },
             journal,
         );
@@ -675,70 +652,6 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     Ok(())
 }
 
-#[test(tokio::test)]
-async fn cancel_virtual_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
-    let mut state_reader = StateReaderMock::default();
-    let mut effects = Effects::default();
-
-    let fid = FullInvocationId::mock_random();
-    let call_fid = FullInvocationId::mock_random();
-    let background_fid = FullInvocationId::mock_random();
-    let finished_call_fid = FullInvocationId::mock_random();
-
-    let notification_service_id = ServiceId::new("notification", "key");
-
-    let completion_notification_target = NotificationTarget {
-        service: notification_service_id.clone(),
-        method: "completion".to_owned(),
-    };
-    let kill_notification_target = NotificationTarget {
-        service: notification_service_id,
-        method: "kill".to_owned(),
-    };
-
-    state_reader.register_virtual_status_and_locked(
-        InvocationId::from(&fid),
-        completion_notification_target,
-        kill_notification_target,
-        create_termination_journal(
-            call_fid.clone(),
-            background_fid.clone(),
-            finished_call_fid.clone(),
-        ),
-    );
-
-    command_interpreter
-        .on_apply(
-            Command::TerminateInvocation(InvocationTermination::cancel(
-                MaybeFullInvocationId::from(fid.clone()),
-            )),
-            &mut effects,
-            &mut state_reader,
-        )
-        .await?;
-
-    let effects = effects.into_inner();
-
-    assert_that!(
-        effects,
-        unordered_elements_are![
-            terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
-            store_canceled_completion_matcher(3),
-            store_canceled_completion_matcher(4),
-            store_canceled_completion_matcher(5),
-            store_canceled_completion_matcher(6),
-            notify_virtual_journal_canceled_completion_matcher(3),
-            notify_virtual_journal_canceled_completion_matcher(4),
-            notify_virtual_journal_canceled_completion_matcher(5),
-            notify_virtual_journal_canceled_completion_matcher(6),
-            delete_timer(5),
-        ]
-    );
-
-    Ok(())
-}
-
 fn create_termination_journal(
     call_fid: FullInvocationId,
     background_fid: FullInvocationId,
@@ -807,14 +720,6 @@ fn delete_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Effect> {
         journal_index: eq(entry_index),
         timestamp: eq(1337),
     })))
-}
-
-fn notify_virtual_journal_canceled_completion_matcher(
-    entry_index: EntryIndex,
-) -> impl Matcher<ActualT = Effect> {
-    pat!(Effect::NotifyVirtualJournalCompletion {
-        completion: canceled_completion_matcher(entry_index),
-    })
 }
 
 fn terminate_invocation_outbox_message_matcher(

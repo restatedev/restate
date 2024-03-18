@@ -11,7 +11,6 @@
 use crate::partition::services::non_deterministic;
 use crate::partition::shuffle;
 use futures::{Stream, StreamExt};
-use restate_types::invocation::ServiceInvocation;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::timer::TimerValue;
 use std::ops::DerefMut;
@@ -51,7 +50,6 @@ pub(crate) enum ActionEffect {
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
     BuiltInInvoker(BuiltinServiceEffects),
-    Invocation(ServiceInvocation),
 }
 
 impl Stream for ActionEffectStream {

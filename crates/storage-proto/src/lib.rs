@@ -25,7 +25,7 @@ pub mod storage {
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
                 GetState, GetStateKeys, Invoke, OutputStream, PollInputStream, SetState, Sleep,
             };
-            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended, Virtual};
+            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
@@ -147,20 +147,6 @@ pub mod storage {
                                 waiting_for_completed_entries,
                             }
                         }
-                        invocation_status::Status::Virtual(r#virtual) => {
-                            let (
-                                journal_metadata,
-                                completion_notification_target,
-                                kill_notification_target,
-                                timestamps,
-                            ) = r#virtual.try_into()?;
-                            restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
-                                journal_metadata,
-                                completion_notification_target,
-                                kill_notification_target,
-                                timestamps,
-                            }
-                        }
                         invocation_status::Status::Free(_) => {
                             restate_storage_api::invocation_status_table::InvocationStatus::Free
                         }
@@ -184,17 +170,6 @@ pub mod storage {
                         } => invocation_status::Status::Suspended(Suspended::from((
                             metadata,
                             waiting_for_completed_entries,
-                        ))),
-                        restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
-                            journal_metadata,
-                            completion_notification_target,
-                            kill_notification_target,
-                            timestamps,
-                        } => invocation_status::Status::Virtual(Virtual::from((
-                            journal_metadata,
-                            completion_notification_target,
-                            kill_notification_target,
-                            timestamps,
                         ))),
                         restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
@@ -400,100 +375,6 @@ pub mod storage {
                         modification_time: metadata.timestamps.modification_time().as_u64(),
                         waiting_for_completed_entries,
                         source: Some(Source::from(metadata.source)),
-                    }
-                }
-            }
-
-            impl TryFrom<Virtual>
-                for (
-                    restate_storage_api::invocation_status_table::JournalMetadata,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::StatusTimestamps,
-                )
-            {
-                type Error = ConversionError;
-
-                fn try_from(value: Virtual) -> Result<Self, Self::Error> {
-                    let journal_metadata =
-                        restate_storage_api::invocation_status_table::JournalMetadata::try_from(
-                            value
-                                .journal_meta
-                                .ok_or(ConversionError::missing_field("journal_meta"))?,
-                        )?;
-                    let completion_notification_target =
-                        restate_storage_api::invocation_status_table::NotificationTarget {
-                            service: restate_types::identifiers::ServiceId::new(
-                                value.completion_notification_target_service_name,
-                                value.completion_notification_target_service_key,
-                            ),
-                            method: value.completion_notification_target_method,
-                        };
-                    let kill_notification_target =
-                        restate_storage_api::invocation_status_table::NotificationTarget {
-                            service: restate_types::identifiers::ServiceId::new(
-                                value.kill_notification_target_service_name,
-                                value.kill_notification_target_service_key,
-                            ),
-                            method: value.kill_notification_target_method,
-                        };
-                    let timestamps =
-                        restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                            MillisSinceEpoch::new(value.creation_time),
-                            MillisSinceEpoch::new(value.modification_time),
-                        );
-
-                    Ok((
-                        journal_metadata,
-                        completion_notification_target,
-                        kill_notification_target,
-                        timestamps,
-                    ))
-                }
-            }
-
-            impl
-                From<(
-                    restate_storage_api::invocation_status_table::JournalMetadata,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::StatusTimestamps,
-                )> for Virtual
-            {
-                fn from(
-                    (
-                        journal_metadata,
-                        completion_notification_target,
-                        kill_notification_target,
-                        timestamps,
-                    ): (
-                        restate_storage_api::invocation_status_table::JournalMetadata,
-                        restate_storage_api::invocation_status_table::NotificationTarget,
-                        restate_storage_api::invocation_status_table::NotificationTarget,
-                        restate_storage_api::invocation_status_table::StatusTimestamps,
-                    ),
-                ) -> Self {
-                    let journal_meta = JournalMeta::from(journal_metadata);
-
-                    Virtual {
-                        journal_meta: Some(journal_meta),
-                        completion_notification_target_service_name: completion_notification_target
-                            .service
-                            .service_name
-                            .to_string(),
-                        completion_notification_target_service_key: completion_notification_target
-                            .service
-                            .key,
-                        completion_notification_target_method: completion_notification_target
-                            .method,
-                        kill_notification_target_service_name: kill_notification_target
-                            .service
-                            .service_name
-                            .to_string(),
-                        kill_notification_target_service_key: kill_notification_target.service.key,
-                        kill_notification_target_method: kill_notification_target.method,
-                        creation_time: timestamps.creation_time().as_u64(),
-                        modification_time: timestamps.modification_time().as_u64(),
                     }
                 }
             }

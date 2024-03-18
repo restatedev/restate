@@ -87,23 +87,10 @@ message InvocationStatus {
     message Free {
     }
 
-    message Virtual {
-        JournalMeta journal_meta = 2;
-        string completion_notification_target_service_name = 3;
-        bytes completion_notification_target_service_key = 4;
-        string completion_notification_target_method = 5;
-        uint64 creation_time = 6;
-        uint64 modification_time = 7;
-        string kill_notification_target_service_name = 8;
-        bytes kill_notification_target_service_key = 9;
-        string kill_notification_target_method = 10;
-    }
-
     oneof status {
         Invoked invoked = 1;
         Suspended suspended = 2;
         Free free = 3;
-        Virtual virtual = 4;
     }
 }
 
