@@ -99,7 +99,7 @@ impl NodesConfiguration {
         self.version += Version::from(1);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_version(&mut self, version: Version) {
         self.version = version;
     }
@@ -173,10 +173,6 @@ impl NodesConfiguration {
 impl Versioned for NodesConfiguration {
     fn version(&self) -> Version {
         self.version()
-    }
-
-    fn increment_version(&mut self) {
-        self.increment_version();
     }
 }
 

@@ -45,7 +45,4 @@ impl Default for Version {
 pub trait Versioned {
     /// Returns the version of the versioned value
     fn version(&self) -> Version;
-
-    /// Increments the version of the versioned value
-    fn increment_version(&mut self);
 }

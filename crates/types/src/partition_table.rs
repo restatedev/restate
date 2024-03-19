@@ -49,6 +49,11 @@ impl FixedPartitionTable {
         self.version = self.version.next();
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_version(&mut self, version: Version) {
+        self.version = version;
+    }
+
     pub fn partitioner(&self) -> Partitioner {
         Partitioner::new(self.num_partitions)
     }
@@ -96,10 +101,6 @@ impl FixedPartitionTable {
 impl Versioned for FixedPartitionTable {
     fn version(&self) -> Version {
         self.version()
-    }
-
-    fn increment_version(&mut self) {
-        self.increment_version();
     }
 }
 

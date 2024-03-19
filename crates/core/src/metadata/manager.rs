@@ -305,6 +305,7 @@ mod tests {
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
             |metadata| metadata.nodes_config_version(),
+            |value, version| value.set_version(version),
         )
         .await
     }
@@ -315,14 +316,21 @@ mod tests {
             FixedPartitionTable::new(Version::MIN, 42),
             MetadataKind::PartitionTable,
             |metadata| metadata.partition_table_version(),
+            |value, version| value.set_version(version),
         )
         .await
     }
 
-    async fn test_updates<T, F>(value: T, kind: MetadataKind, config_version: F) -> Result<()>
+    async fn test_updates<T, F, S>(
+        value: T,
+        kind: MetadataKind,
+        config_version: F,
+        set_version_to: S,
+    ) -> Result<()>
     where
         T: Into<MetadataContainer> + Versioned + Clone,
         F: Fn(&Metadata) -> Version,
+        S: Fn(&mut T, Version),
     {
         let network_sender = MockNetworkSender::default();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
@@ -359,14 +367,11 @@ mod tests {
             }
         });
 
-        // let's bump the version a couple of times.
-        let mut value = value.clone();
-        value.increment_version();
-        value.increment_version();
-        value.increment_version();
-        value.increment_version();
+        // let's set the version to 3
+        let mut update_value = value.clone();
+        set_version_to(&mut update_value, Version::from(3));
 
-        metadata_writer.update(value).await?;
+        metadata_writer.update(update_value).await?;
         assert_eq!(true, updated.load(Ordering::Acquire));
 
         tc.cancel_tasks(None, None).await;
@@ -379,6 +384,7 @@ mod tests {
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
             |metadata| metadata.nodes_config_version(),
+            |value| value.increment_version(),
         )
         .await
     }
@@ -389,14 +395,21 @@ mod tests {
             FixedPartitionTable::new(Version::MIN, 42),
             MetadataKind::PartitionTable,
             |metadata| metadata.partition_table_version(),
+            |value| value.increment_version(),
         )
         .await
     }
 
-    async fn test_watchers<T, F>(value: T, kind: MetadataKind, config_version: F) -> Result<()>
+    async fn test_watchers<T, F, I>(
+        value: T,
+        kind: MetadataKind,
+        config_version: F,
+        increment_version: I,
+    ) -> Result<()>
     where
         T: Into<MetadataContainer> + Versioned + Clone,
         F: Fn(&Metadata) -> Version,
+        I: Fn(&mut T),
     {
         let network_sender = MockNetworkSender::default();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
@@ -424,13 +437,13 @@ mod tests {
 
         // let's push multiple updates
         let mut value = value.clone();
-        value.increment_version();
+        increment_version(&mut value);
         metadata_writer.update(value.clone()).await?;
-        value.increment_version();
+        increment_version(&mut value);
         metadata_writer.update(value.clone()).await?;
-        value.increment_version();
+        increment_version(&mut value);
         metadata_writer.update(value.clone()).await?;
-        value.increment_version();
+        increment_version(&mut value);
         metadata_writer.update(value.clone()).await?;
 
         // Watcher sees the latest value only.

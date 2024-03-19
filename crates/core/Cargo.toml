@@ -34,6 +34,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 rand = { workspace = true }
