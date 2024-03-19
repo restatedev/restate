@@ -23,12 +23,11 @@ pub use restate_schema_api::subscription::{ListSubscriptionFilter, Subscription}
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSubscriptionRequest {
-    /// # Identifier
     /// # Source
     ///
     /// Source uri. Accepted forms:
     ///
-    /// * `kafka://<cluster_name>/<topic_name>`, e.g. `service://my-cluster/my-topic`
+    /// * `kafka://<cluster_name>/<topic_name>`, e.g. `kafka://my-cluster/my-topic`
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schema", schemars(with = "String"))]
     pub source: Uri,
@@ -36,7 +35,7 @@ pub struct CreateSubscriptionRequest {
     ///
     /// Sink uri. Accepted forms:
     ///
-    /// * `service://<service_name>/<method_name>`, e.g. `service://com.example.MySvc/MyMethod`
+    /// * `component://<component_name>/<component_name>`, e.g. `component://MySvc/MyMethod`
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schema", schemars(with = "String"))]
     pub sink: Uri,

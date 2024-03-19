@@ -171,7 +171,7 @@ pub mod deployment {
 
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
 
-        fn get_deployment_and_services(
+        fn get_deployment_and_components(
             &self,
             deployment_id: &DeploymentId,
         ) -> Option<(Deployment, Vec<ComponentMetadata>)>;
@@ -252,7 +252,7 @@ pub mod deployment {
                     })
             }
 
-            fn get_deployment_and_services(
+            fn get_deployment_and_components(
                 &self,
                 deployment_id: &DeploymentId,
             ) -> Option<(Deployment, Vec<ComponentMetadata>)> {

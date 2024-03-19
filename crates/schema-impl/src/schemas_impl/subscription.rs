@@ -61,7 +61,7 @@ impl SchemasInner {
                 if !component_schemas.handlers.contains_key(handler_name) {
                     return Err(SchemasUpdateError::InvalidSink(
                         sink,
-                        "cannot find service method specified in the sink URI",
+                        "cannot find component handler specified in the sink URI",
                     ));
                 }
 
@@ -78,10 +78,12 @@ impl SchemasInner {
                     ty,
                 }
             }
-            _ => return Err(SchemasUpdateError::InvalidSink(
-                sink,
-                "sink URI must have a scheme segment, with supported schemes: [service, component]",
-            )),
+            _ => {
+                return Err(SchemasUpdateError::InvalidSink(
+                    sink,
+                    "sink URI must have a scheme segment, with supported schemes: [component]",
+                ))
+            }
         };
 
         let subscription = validator

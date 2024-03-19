@@ -7,7 +7,7 @@ use crate::schemas_impl::component::{check_reserved_name, to_component_type};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::META0006)]
-pub enum IncompatibleServiceChangeError {
+pub enum IncompatibleComponentChangeError {
     #[error("detected a new component {0} revision with a component type different from the previous revision")]
     #[code(restate_errors::META0006)]
     DifferentComponentInstanceType(String),
@@ -126,8 +126,8 @@ impl SchemasInner {
                             removed_handlers
                         );
                     } else {
-                        return Err(SchemasUpdateError::IncompatibleServiceChange(
-                            IncompatibleServiceChangeError::RemovedHandlers(
+                        return Err(SchemasUpdateError::IncompatibleComponentChange(
+                            IncompatibleComponentChangeError::RemovedHandlers(
                                 component_name,
                                 removed_handlers,
                             ),
@@ -146,8 +146,8 @@ impl SchemasInner {
                             component_type
                         );
                     } else {
-                        return Err(SchemasUpdateError::IncompatibleServiceChange(
-                            IncompatibleServiceChangeError::DifferentComponentInstanceType(
+                        return Err(SchemasUpdateError::IncompatibleComponentChange(
+                            IncompatibleComponentChangeError::DifferentComponentInstanceType(
                                 component_name,
                             ),
                         ));
@@ -435,7 +435,7 @@ mod tests {
                 false,
             );
 
-            assert!(let Err(SchemasUpdateError::IncompatibleServiceChange(IncompatibleServiceChangeError::DifferentComponentInstanceType(_))) = compute_result);
+            assert!(let Err(SchemasUpdateError::IncompatibleComponentChange(IncompatibleComponentChangeError::DifferentComponentInstanceType(_))) = compute_result);
         }
     }
 
@@ -667,8 +667,8 @@ mod tests {
             schemas.assert_component_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-                Err(SchemasUpdateError::IncompatibleServiceChange(
-                    IncompatibleServiceChangeError::RemovedHandlers(service, missing_methods)
+                Err(SchemasUpdateError::IncompatibleComponentChange(
+                    IncompatibleComponentChangeError::RemovedHandlers(service, missing_methods)
                 )) = rejection
             );
             check!(service == GREETER_SERVICE_NAME);

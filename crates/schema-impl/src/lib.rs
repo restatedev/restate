@@ -16,7 +16,7 @@ use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
-use schemas_impl::deployment::IncompatibleServiceChangeError;
+use schemas_impl::deployment::IncompatibleComponentChangeError;
 use schemas_impl::{HandlerSchemas, SchemasInner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -121,18 +121,9 @@ pub enum SchemasUpdateError {
         requested: DeploymentId,
         existing: DeploymentId,
     },
-    #[error("missing service {0} in descriptor")]
-    #[code(restate_errors::META0005)]
-    MissingServiceInDescriptor(String),
-    #[error("service {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownService(String),
     #[error("component {0} does not exist in the registry")]
     #[code(restate_errors::META0005)]
     UnknownComponent(String),
-    #[error("cannot insert/modify service {0} as it's a reserved name")]
-    #[code(restate_errors::META0005)]
-    ModifyInternalService(String),
     #[error("cannot insert/modify component {0} as it contains a reserved name")]
     #[code(restate_errors::META0005)]
     ReservedName(String),
@@ -149,10 +140,10 @@ pub enum SchemasUpdateError {
     #[error("a subscription with the same id {0} already exists in the registry")]
     OverrideSubscription(SubscriptionId),
     #[error(transparent)]
-    IncompatibleServiceChange(
+    IncompatibleComponentChange(
         #[from]
         #[code]
-        IncompatibleServiceChangeError,
+        IncompatibleComponentChangeError,
     ),
 }
 

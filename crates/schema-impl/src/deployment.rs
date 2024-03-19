@@ -47,7 +47,7 @@ impl DeploymentResolver for Schemas {
             })
     }
 
-    fn get_deployment_and_services(
+    fn get_deployment_and_components(
         &self,
         deployment_id: &DeploymentId,
     ) -> Option<(Deployment, Vec<ComponentMetadata>)> {

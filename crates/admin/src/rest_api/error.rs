@@ -72,17 +72,11 @@ impl IntoResponse for MetaApiError {
                 SchemasUpdateError::OverrideDeployment(_),
             ))
             | MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::IncompatibleServiceChange(_),
+                SchemasUpdateError::IncompatibleComponentChange(_),
             )) => StatusCode::CONFLICT,
-            MetaApiError::Meta(MetaError::SchemaRegistry(SchemasUpdateError::UnknownService(
-                _,
-            ))) => StatusCode::NOT_FOUND,
             MetaApiError::Meta(MetaError::SchemaRegistry(
                 SchemasUpdateError::UnknownDeployment(_),
             )) => StatusCode::NOT_FOUND,
-            MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::ModifyInternalService(_),
-            )) => StatusCode::FORBIDDEN,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
