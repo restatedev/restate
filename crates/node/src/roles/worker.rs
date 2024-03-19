@@ -70,7 +70,7 @@ pub enum SchemaError {
     Update(
         #[from]
         #[code]
-        restate_schema_impl::SchemasUpdateError,
+        restate_schema_impl::ErrorKind,
     ),
     #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
@@ -279,7 +279,9 @@ where
 {
     // hack to suppress repeated logging of schema registrations
     // todo: Fix it
-    tracing::subscriber::with_default(NoSubscriber::new(), || schemas.overwrite(schema_updates))?;
+    let _ = tracing::subscriber::with_default(NoSubscriber::new(), || {
+        schemas.overwrite(schema_updates)
+    });
 
     if let Some(subscription_controller) = subscription_controller {
         let subscriptions = schemas.list_subscriptions(&[]);

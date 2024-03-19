@@ -17,7 +17,7 @@ use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
 use restate_meta::Error as MetaError;
-use restate_schema_impl::SchemasUpdateError;
+use restate_schema_impl::{ComponentErrorKind, DeploymentErrorKind, ErrorKind};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -68,17 +68,21 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::OverrideDeployment(_),
-            ))
-            | MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::IncompatibleComponentChange(_),
-            )) => StatusCode::CONFLICT,
-            MetaApiError::Meta(MetaError::SchemaRegistry(
-                SchemasUpdateError::UnknownDeployment(_),
-            )) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
             MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
+            MetaApiError::Meta(MetaError::SchemaRegistry(schema_registry_error)) => {
+                match schema_registry_error.kind() {
+                    ErrorKind::NotFound => StatusCode::NOT_FOUND,
+                    ErrorKind::Override
+                    | ErrorKind::Component(ComponentErrorKind::DifferentType { .. })
+                    | ErrorKind::Component(ComponentErrorKind::RemovedHandlers { .. })
+                    | ErrorKind::Deployment(DeploymentErrorKind::IncorrectId { .. }) => {
+                        StatusCode::CONFLICT
+                    }
+                    ErrorKind::Component(_) => StatusCode::BAD_REQUEST,
+                    _ => StatusCode::BAD_REQUEST,
+                }
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {

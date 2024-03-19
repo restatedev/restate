@@ -1,14 +1,27 @@
 use super::*;
 
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum ComponentErrorKind {
+    #[error("cannot insert/modify component '{0}' as it contains a reserved name")]
+    #[code(restate_errors::META0005)]
+    ReservedName(String),
+    #[error("detected a new component '{0}' revision with a component type different from the previous revision. Component type cannot be changed across revisions")]
+    #[code(restate_errors::META0006)]
+    DifferentType(String),
+    #[error("the component '{0}' already exists but the new revision removed the handlers {1:?}")]
+    #[code(restate_errors::META0006)]
+    RemovedHandlers(String, Vec<String>),
+}
+
 impl SchemasInner {
     pub(crate) fn compute_modify_component_updates(
         &self,
         name: String,
         public: bool,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
+    ) -> Result<SchemasUpdateCommand, ErrorKind> {
         check_reserved_name(&name)?;
         if !self.components.contains_key(&name) {
-            return Err(SchemasUpdateError::UnknownComponent(name));
+            return Err(ErrorKind::NotFound);
         }
 
         Ok(SchemasUpdateCommand::ModifyComponent { name, public })
@@ -21,7 +34,7 @@ impl SchemasInner {
         ty: ComponentType,
         deployment_id: DeploymentId,
         handlers: Vec<DiscoveredHandlerMetadata>,
-    ) -> Result<(), SchemasUpdateError> {
+    ) {
         info!(rpc.service = name, "Registering component");
 
         if tracing::enabled!(tracing::Level::DEBUG) {
@@ -71,37 +84,22 @@ impl SchemasInner {
                     .as_component_metadata(name)
                     .expect("Should not be a built-in service"),
             );
-
-        Ok(())
     }
 
-    pub(crate) fn apply_modify_component(
-        &mut self,
-        name: String,
-        new_public_value: bool,
-    ) -> Result<(), SchemasUpdateError> {
-        let schemas = self
-            .components
-            .get_mut(&name)
-            .ok_or_else(|| SchemasUpdateError::UnknownComponent(name.clone()))?;
-
-        // Update the public field
-        if let ComponentLocation::Deployment {
-            public: old_public_value,
-            ..
-        } = &mut schemas.location
-        {
-            *old_public_value = new_public_value;
+    pub(crate) fn apply_modify_component(&mut self, name: String, new_public_value: bool) {
+        if let Some(schemas) = self.components.get_mut(&name) {
+            // Update the public field
+            if let ComponentLocation::Deployment {
+                public: old_public_value,
+                ..
+            } = &mut schemas.location
+            {
+                *old_public_value = new_public_value;
+            }
         }
-
-        Ok(())
     }
 
-    pub(crate) fn apply_remove_component(
-        &mut self,
-        name: String,
-        revision: ComponentRevision,
-    ) -> Result<(), SchemasUpdateError> {
+    pub(crate) fn apply_remove_component(&mut self, name: String, revision: ComponentRevision) {
         let entry = self.components.entry(name);
         match entry {
             Entry::Occupied(e) if e.get().revision == revision => {
@@ -109,16 +107,14 @@ impl SchemasInner {
             }
             _ => {}
         }
-
-        Ok(())
     }
 }
 
-pub(crate) fn check_reserved_name(name: &str) -> Result<(), SchemasUpdateError> {
+pub(crate) fn check_reserved_name(name: &str) -> Result<(), ComponentErrorKind> {
     if name.to_lowercase().starts_with("restate")
         || name.to_lowercase().eq_ignore_ascii_case("openapi")
     {
-        return Err(SchemasUpdateError::ReservedName(name.to_string()));
+        return Err(ComponentErrorKind::ReservedName(name.to_string()));
     }
     Ok(())
 }

@@ -1,19 +1,17 @@
 use super::*;
 
+use super::component::{check_reserved_name, to_component_type, ComponentErrorKind};
 use restate_schema_api::deployment::DeploymentType;
 use restate_types::identifiers::DeploymentId;
 
-use crate::schemas_impl::component::{check_reserved_name, to_component_type};
-
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(restate_errors::META0006)]
-pub enum IncompatibleComponentChangeError {
-    #[error("detected a new component {0} revision with a component type different from the previous revision")]
-    #[code(restate_errors::META0006)]
-    DifferentComponentInstanceType(String),
-    #[error("the component {0} already exists but the new revision removed the handlers {1:?}")]
-    #[code(restate_errors::META0006)]
-    RemovedHandlers(String, Vec<String>),
+pub enum DeploymentErrorKind {
+    #[error("existing deployment id is different from requested (requested = {requested}, existing = {existing})")]
+    #[code(restate_errors::META0004)]
+    IncorrectId {
+        requested: DeploymentId,
+        existing: DeploymentId,
+    },
 }
 
 impl SchemasInner {
@@ -41,7 +39,7 @@ impl SchemasInner {
         deployment_metadata: DeploymentMetadata,
         components: Vec<schema::Component>,
         force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, ErrorKind> {
         let mut result_commands = Vec::with_capacity(1 + components.len());
         let deployment_id: Option<DeploymentId>;
 
@@ -59,10 +57,10 @@ impl SchemasInner {
             if requested_deployment_id.is_some_and(|dp| &dp != existing_deployment_id) {
                 // The deployment id is different from the existing one, we don't accept that even
                 // if force is used. It means that the user intended to update another deployment.
-                return Err(SchemasUpdateError::IncorrectDeploymentId {
+                return Err(ErrorKind::Deployment(DeploymentErrorKind::IncorrectId {
                     requested: requested_deployment_id.expect("must be set"),
                     existing: *existing_deployment_id,
-                });
+                }));
             }
 
             if force {
@@ -84,9 +82,7 @@ impl SchemasInner {
                     }
                 }
             } else {
-                return Err(SchemasUpdateError::OverrideDeployment(
-                    *existing_deployment_id,
-                ));
+                return Err(ErrorKind::Override);
             }
         } else {
             // New deployment. Use the supplied deployment_id if passed, otherwise, generate one.
@@ -126,12 +122,10 @@ impl SchemasInner {
                             removed_handlers
                         );
                     } else {
-                        return Err(SchemasUpdateError::IncompatibleComponentChange(
-                            IncompatibleComponentChangeError::RemovedHandlers(
-                                component_name,
-                                removed_handlers,
-                            ),
-                        ));
+                        return Err(ErrorKind::Component(ComponentErrorKind::RemovedHandlers(
+                            component_name,
+                            removed_handlers,
+                        )));
                     }
                 }
 
@@ -146,11 +140,9 @@ impl SchemasInner {
                             component_type
                         );
                     } else {
-                        return Err(SchemasUpdateError::IncompatibleComponentChange(
-                            IncompatibleComponentChangeError::DifferentComponentInstanceType(
-                                component_name,
-                            ),
-                        ));
+                        return Err(ErrorKind::Component(ComponentErrorKind::DifferentType(
+                            component_name,
+                        )));
                     }
                 }
 
@@ -193,7 +185,7 @@ impl SchemasInner {
         &mut self,
         deployment_id: DeploymentId,
         metadata: DeploymentMetadata,
-    ) -> Result<(), SchemasUpdateError> {
+    ) {
         info!(
             restate.deployment.id = %deployment_id,
             restate.deployment.address = %metadata.address_display(),
@@ -207,16 +199,14 @@ impl SchemasInner {
                 components: vec![],
             },
         );
-
-        Ok(())
     }
 
     pub(crate) fn compute_remove_deployment(
         &self,
         deployment_id: DeploymentId,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, ErrorKind> {
         if !self.deployments.contains_key(&deployment_id) {
-            return Err(SchemasUpdateError::UnknownDeployment(deployment_id));
+            return Err(ErrorKind::NotFound);
         }
         let deployment_schemas = self.deployments.get(&deployment_id).unwrap();
 
@@ -232,13 +222,8 @@ impl SchemasInner {
         Ok(commands)
     }
 
-    pub(crate) fn apply_remove_deployment(
-        &mut self,
-        deployment_id: DeploymentId,
-    ) -> Result<(), SchemasUpdateError> {
+    pub(crate) fn apply_remove_deployment(&mut self, deployment_id: DeploymentId) {
         self.deployments.remove(&deployment_id);
-
-        Ok(())
     }
 }
 
@@ -371,7 +356,7 @@ mod tests {
 
     /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
     #[test]
-    fn force_deploy_private_service() -> Result<(), SchemasUpdateError> {
+    fn force_deploy_private_service() -> Result<(), crate::Error> {
         let schemas = Schemas::default();
         let deployment = Deployment::mock();
 
@@ -435,7 +420,9 @@ mod tests {
                 false,
             );
 
-            assert!(let Err(SchemasUpdateError::IncompatibleComponentChange(IncompatibleComponentChangeError::DifferentComponentInstanceType(_))) = compute_result);
+            assert!(let &ErrorKind::Component(
+                ComponentErrorKind::DifferentType(_)
+            ) = compute_result.unwrap_err().kind());
         }
     }
 
@@ -497,11 +484,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(let Err(SchemasUpdateError::OverrideDeployment(_)) = schemas.compute_new_deployment(
+        assert!(let ErrorKind::Override = schemas.compute_new_deployment(
             Some(deployment.id),
             deployment.metadata,
             vec![greeter_service()],
-            false)
+            false).unwrap_err().kind()
         );
     }
 
@@ -525,16 +512,19 @@ mod tests {
 
         let new_id = DeploymentId::new();
 
-        let_assert!(
-            Err(SchemasUpdateError::IncorrectDeploymentId {
-                requested,
-                existing
-            }) = schemas.compute_new_deployment(
+        let rejection = schemas
+            .compute_new_deployment(
                 Some(new_id),
                 deployment.metadata,
                 vec![greeter_service()],
-                false
+                false,
             )
+            .unwrap_err();
+        let_assert!(
+            &ErrorKind::Deployment(DeploymentErrorKind::IncorrectId {
+                requested,
+                existing
+            }) = rejection.kind()
         );
         assert_eq!(new_id, requested);
         assert_eq!(deployment.id, existing);
@@ -657,22 +647,25 @@ mod tests {
                 .unwrap();
             schemas.assert_component_revision(GREETER_SERVICE_NAME, 1);
 
-            let rejection = schemas.compute_new_deployment(
-                Some(deployment_2.id),
-                deployment_2.metadata,
-                vec![greeter_v2_service()],
-                false,
-            );
+            let rejection = schemas
+                .compute_new_deployment(
+                    Some(deployment_2.id),
+                    deployment_2.metadata,
+                    vec![greeter_v2_service()],
+                    false,
+                )
+                .unwrap_err();
 
             schemas.assert_component_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-                Err(SchemasUpdateError::IncompatibleComponentChange(
-                    IncompatibleComponentChangeError::RemovedHandlers(service, missing_methods)
-                )) = rejection
+                ErrorKind::Component(ComponentErrorKind::RemovedHandlers(
+                    service,
+                    missing_methods
+                )) = rejection.kind()
             );
             check!(service == GREETER_SERVICE_NAME);
-            check!(missing_methods == std::vec!["doSomething"]);
+            check!(missing_methods == &["doSomething"]);
         }
     }
 }
