@@ -17,12 +17,12 @@ use datafusion::arrow::record_batch::RecordBatch;
 
 use crate::context::QueryContext;
 use crate::generic_table::{GenericTableProvider, RangeScanner};
-use crate::service_status::row::append_service_status_row;
-use crate::service_status::schema::ServiceStatusBuilder;
+use crate::virtual_object_status::row::append_virtual_object_status_row;
+use crate::virtual_object_status::schema::VirtualObjectStatusBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::service_status_table::OwnedServiceStatusRow;
+use restate_storage_rocksdb::service_status_table::OwnedVirtualObjectStatusRow;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
@@ -32,19 +32,19 @@ pub(crate) fn register_self(
     storage: RocksDBStorage,
 ) -> datafusion::common::Result<()> {
     let status_table = GenericTableProvider::new(
-        ServiceStatusBuilder::schema(),
-        Arc::new(ServiceStatusScanner(storage)),
+        VirtualObjectStatusBuilder::schema(),
+        Arc::new(VirtualObjectStatusScanner(storage)),
     );
 
     ctx.as_ref()
-        .register_table("sys_service_status", Arc::new(status_table))
+        .register_table("sys_virtual_object_status", Arc::new(status_table))
         .map(|_| ())
 }
 
 #[derive(Debug, Clone)]
-struct ServiceStatusScanner(RocksDBStorage);
+struct VirtualObjectStatusScanner(RocksDBStorage);
 
-impl RangeScanner for ServiceStatusScanner {
+impl RangeScanner for VirtualObjectStatusScanner {
     fn scan(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -55,7 +55,7 @@ impl RangeScanner for ServiceStatusScanner {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
         let background_task = move || {
-            let rows = db.all_service_status(range);
+            let rows = db.all_virtual_object_status(range);
             for_each_status(schema, tx, rows);
             Ok(())
         };
@@ -69,12 +69,12 @@ fn for_each_status<'a, I>(
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: I,
 ) where
-    I: Iterator<Item = OwnedServiceStatusRow> + 'a,
+    I: Iterator<Item = OwnedVirtualObjectStatusRow> + 'a,
 {
-    let mut builder = ServiceStatusBuilder::new(schema.clone());
+    let mut builder = VirtualObjectStatusBuilder::new(schema.clone());
     let mut temp = String::new();
     for row in rows {
-        append_service_status_row(&mut builder, &mut temp, row);
+        append_virtual_object_status_row(&mut builder, &mut temp, row);
         if builder.full() {
             let batch = builder.finish();
             if tx.blocking_send(Ok(batch)).is_err() {
@@ -83,7 +83,7 @@ fn for_each_status<'a, I>(
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = ServiceStatusBuilder::new(schema.clone());
+            builder = VirtualObjectStatusBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {

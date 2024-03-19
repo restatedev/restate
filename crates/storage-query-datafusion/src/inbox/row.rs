@@ -36,10 +36,10 @@ pub(crate) fn append_inbox_row(
         let mut row = builder.row();
         row.partition_key(fid.partition_key());
 
-        row.service(&fid.service_id.service_name);
-        row.method(&method_name);
+        row.component(&fid.service_id.service_name);
+        row.handler(&method_name);
 
-        row.service_key(
+        row.component_key(
             std::str::from_utf8(&fid.service_id.key).expect("The key must be a string!"),
         );
 
@@ -51,8 +51,8 @@ pub(crate) fn append_inbox_row(
 
         match caller {
             Source::Service(caller) => {
-                row.invoked_by("service");
-                row.invoked_by_service(&caller.service_id.service_name);
+                row.invoked_by("component");
+                row.invoked_by_component(&caller.service_id.service_name);
                 if row.is_invoked_by_id_defined() {
                     row.invoked_by_id(format_using(output, &caller));
                 }

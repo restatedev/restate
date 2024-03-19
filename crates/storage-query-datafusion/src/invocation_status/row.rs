@@ -27,8 +27,8 @@ pub(crate) fn append_invocation_status_row(
 
     row.partition_key(status_row.partition_key);
     if let Some(service_id) = status_row.invocation_status.service_id() {
-        row.service(&service_id.service_name);
-        row.service_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
+        row.component(&service_id.service_name);
+        row.component_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
     }
 
     // Invocation id
@@ -80,14 +80,14 @@ fn fill_invocation_metadata(
     meta: InvocationMetadata,
 ) {
     // journal_metadata and stats are filled by other functions
-    row.method(meta.method);
+    row.handler(meta.method);
     if let Some(deployment_id) = meta.deployment_id {
         row.pinned_deployment_id(deployment_id.to_string());
     }
     match meta.source {
         Source::Service(caller) => {
-            row.invoked_by("service");
-            row.invoked_by_service(&caller.service_id.service_name);
+            row.invoked_by("component");
+            row.invoked_by_component(&caller.service_id.service_name);
             if row.is_invoked_by_id_defined() {
                 row.invoked_by_id(format_using(output, &caller));
             }

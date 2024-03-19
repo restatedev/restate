@@ -13,25 +13,28 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 use std::future::Future;
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub enum ServiceStatus {
+pub enum VirtualObjectStatus {
     Locked(InvocationId),
     #[default]
     Unlocked,
 }
 
-pub trait ReadOnlyServiceStatusTable {
-    fn get_service_status(
+pub trait ReadOnlyVirtualObjectStatusTable {
+    fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Future<Output = Result<ServiceStatus>> + Send;
+    ) -> impl Future<Output = Result<VirtualObjectStatus>> + Send;
 }
 
-pub trait ServiceStatusTable: ReadOnlyServiceStatusTable {
-    fn put_service_status(
+pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {
+    fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
-        status: ServiceStatus,
+        status: VirtualObjectStatus,
     ) -> impl Future<Output = ()> + Send;
 
-    fn delete_service_status(&mut self, service_id: &ServiceId) -> impl Future<Output = ()> + Send;
+    fn delete_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = ()> + Send;
 }

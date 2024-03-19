@@ -27,7 +27,7 @@ use crate::partition::state_machine::effects::Effect;
 
 #[derive(Default)]
 struct StateReaderMock {
-    services: HashMap<ServiceId, ServiceStatus>,
+    services: HashMap<ServiceId, VirtualObjectStatus>,
     inboxes: HashMap<ServiceId, Vec<SequenceNumberInboxEntry>>,
     invocations: HashMap<InvocationId, InvocationStatus>,
     journals: HashMap<InvocationId, Vec<JournalEntry>>,
@@ -51,7 +51,7 @@ impl StateReaderMock {
     fn lock_service(&mut self, service_id: ServiceId) {
         self.services.insert(
             service_id.clone(),
-            ServiceStatus::Locked(InvocationId::new(
+            VirtualObjectStatus::Locked(InvocationId::new(
                 service_id.partition_key(),
                 InvocationUuid::new(),
             )),
@@ -68,7 +68,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            ServiceStatus::Locked(invocation_id.clone()),
+            VirtualObjectStatus::Locked(invocation_id.clone()),
         );
         self.register_invocation_status(
             invocation_id,
@@ -91,7 +91,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            ServiceStatus::Locked(invocation_id.clone()),
+            VirtualObjectStatus::Locked(invocation_id.clone()),
         );
         self.register_invocation_status(
             invocation_id,
@@ -154,12 +154,15 @@ impl StateReaderMock {
 }
 
 impl StateReader for StateReaderMock {
-    async fn get_service_status(&mut self, service_id: &ServiceId) -> StorageResult<ServiceStatus> {
+    async fn get_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> StorageResult<VirtualObjectStatus> {
         Ok(self
             .services
             .get(service_id)
             .cloned()
-            .unwrap_or(ServiceStatus::Unlocked))
+            .unwrap_or(VirtualObjectStatus::Unlocked))
     }
 
     async fn get_invocation_status(

@@ -46,7 +46,7 @@ pub trait Storage {
 pub trait Transaction:
     state_table::StateTable
     + invocation_status_table::InvocationStatusTable
-    + service_status_table::ServiceStatusTable
+    + service_status_table::VirtualObjectStatusTable
     + inbox_table::InboxTable
     + outbox_table::OutboxTable
     + deduplication_table::DeduplicationTable

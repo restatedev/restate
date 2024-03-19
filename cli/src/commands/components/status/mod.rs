@@ -14,7 +14,7 @@ mod detailed_status;
 use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    ComponentMethodLockedKeysMap, ComponentStatus, ComponentStatusMap, InvocationState,
+    ComponentHandlerLockedKeysMap, ComponentStatus, ComponentStatusMap, InvocationState,
 };
 use crate::clients::MetasClient;
 use crate::ui::component_methods::icon_for_component_type;
@@ -40,7 +40,7 @@ pub struct Status {
     sample_invocations_limit: usize,
 
     /// Service name, prints all services if omitted
-    service: Option<String>,
+    component: Option<String>,
 
     #[clap(flatten)]
     watch: Watch,
@@ -54,7 +54,7 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
     let metas_client = MetasClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
 
-    if let Some(svc) = &opts.service {
+    if let Some(svc) = &opts.component {
         detailed_status::run_detailed_status(env, svc, opts, metas_client, sql_client).await
     } else {
         agg_status::run_aggregated_status(env, opts, metas_client, sql_client).await
@@ -78,7 +78,7 @@ async fn render_components_status(
         "OLDEST NON-SUSPENDED INVOCATION",
     ]);
     for svc in services {
-        let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
+        let svc_status = status_map.get_component_status(&svc.name).unwrap_or(&empty);
         // Service title
         let flavor = icon_for_component_type(&svc.ty);
         let svc_title = format!("{} {}", svc.name, flavor);
@@ -93,14 +93,14 @@ async fn render_components_status(
     Ok(())
 }
 
-fn render_method_state_stats(
+fn render_handler_state_stats(
     svc_status: &ComponentStatus,
     method: &str,
     state: InvocationState,
 ) -> Cell {
     use comfy_table::Color;
     // Pending
-    if let Some(state_stats) = svc_status.get_method_stats(state, method) {
+    if let Some(state_stats) = svc_status.get_handler_stats(state, method) {
         let cell = Cell::new(state_stats.num_invocations);
         let color = match state {
             InvocationState::Unknown => Color::Magenta,
@@ -121,46 +121,46 @@ async fn render_methods_status(
     svc: ComponentMetadata,
     svc_status: &ComponentStatus,
 ) -> Result<()> {
-    for method in svc.handlers {
+    for handler in svc.handlers {
         let mut row = vec![];
-        row.push(Cell::new(format!("  {}", &method.name)));
+        row.push(Cell::new(format!("  {}", &handler.name)));
         // Pending
-        row.push(render_method_state_stats(
+        row.push(render_handler_state_stats(
             svc_status,
-            &method.name,
+            &handler.name,
             InvocationState::Pending,
         ));
 
         // Ready
-        row.push(render_method_state_stats(
+        row.push(render_handler_state_stats(
             svc_status,
-            &method.name,
+            &handler.name,
             InvocationState::Ready,
         ));
 
         // Running
-        row.push(render_method_state_stats(
+        row.push(render_handler_state_stats(
             svc_status,
-            &method.name,
+            &handler.name,
             InvocationState::Running,
         ));
 
         // Backing-off
-        row.push(render_method_state_stats(
+        row.push(render_handler_state_stats(
             svc_status,
-            &method.name,
+            &handler.name,
             InvocationState::BackingOff,
         ));
 
-        row.push(render_method_state_stats(
+        row.push(render_handler_state_stats(
             svc_status,
-            &method.name,
+            &handler.name,
             InvocationState::Suspended,
         ));
 
-        let oldest_cell = if let Some(current_method) = svc_status.get_method(&method.name) {
+        let oldest_cell = if let Some(current_handler) = svc_status.get_handler(&handler.name) {
             if let Some((oldest_state, oldest_stats)) =
-                current_method.oldest_non_suspended_invocation_state()
+                current_handler.oldest_non_suspended_invocation_state()
             {
                 let dur = chrono::Local::now().signed_duration_since(oldest_stats.oldest_at);
                 let style = if dur.num_seconds() < 60 {
@@ -194,7 +194,7 @@ async fn render_methods_status(
 }
 async fn render_locked_keys(
     env: &CliEnv,
-    locked_keys: ComponentMethodLockedKeysMap,
+    locked_keys: ComponentHandlerLockedKeysMap,
     limit_per_service: usize,
 ) -> Result<()> {
     let locked_keys = locked_keys.into_inner();
@@ -203,7 +203,7 @@ async fn render_locked_keys(
     }
 
     let mut table = Table::new_styled(&env.ui_config);
-    table.set_styled_header(vec!["", "QUEUE", "LOCKED BY", "METHOD", "NOTES"]);
+    table.set_styled_header(vec!["", "QUEUE", "LOCKED BY", "HANDLER", "NOTES"]);
     for (svc_name, locked_keys) in locked_keys {
         let mut keys: Vec<_> = locked_keys.into_iter().collect();
         keys.sort_by(|(_, a), (_, b)| b.num_pending.cmp(&a.num_pending));

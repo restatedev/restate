@@ -157,9 +157,9 @@ impl Display for InvocationState {
 #[derive(Debug, Clone)]
 pub struct OutgoingInvoke {
     pub invocation_id: Option<String>,
-    pub invoked_service: Option<String>,
-    pub invoked_method: Option<String>,
-    pub invoked_service_key: Option<String>,
+    pub invoked_component: Option<String>,
+    pub invoked_handler: Option<String>,
+    pub invoked_component_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,13 +243,13 @@ pub struct InvocationDetailed {
 #[derive(Debug, Clone, Default)]
 pub struct Invocation {
     pub id: String,
-    pub service: String,
-    pub method: String,
+    pub component: String,
+    pub handler: String,
     pub key: Option<String>, // Set only on keyed service
     pub created_at: chrono::DateTime<Local>,
     // None if invoked directly (e.g. ingress)
     pub invoked_by_id: Option<String>,
-    pub invoked_by_service: Option<String>,
+    pub invoked_by_component: Option<String>,
     pub status: InvocationState,
     pub trace_id: Option<String>,
 
@@ -300,32 +300,32 @@ pub struct ComponentHandlerUsage {
 pub struct ComponentStatusMap(HashMap<String, ComponentStatus>);
 
 impl ComponentStatusMap {
-    fn set_method_stats(
+    fn set_handler_stats(
         &mut self,
-        service: &str,
-        method: &str,
+        component: &str,
+        handler: &str,
         state: InvocationState,
         stats: HandlerStateStats,
     ) {
-        let svc_methods = self
+        let comp_handlers = self
             .0
-            .entry(service.to_owned())
+            .entry(component.to_owned())
             .or_insert_with(|| ComponentStatus {
                 handlers: HashMap::new(),
             });
 
-        let method_info = svc_methods
+        let handler_info = comp_handlers
             .handlers
-            .entry(method.to_owned())
+            .entry(handler.to_owned())
             .or_insert_with(|| HandlerInfo {
                 per_state_totals: HashMap::new(),
             });
 
-        method_info.per_state_totals.insert(state, stats);
+        handler_info.per_state_totals.insert(state, stats);
     }
 
-    pub fn get_service_status(&self, service: &str) -> Option<&ComponentStatus> {
-        self.0.get(service)
+    pub fn get_component_status(&self, component: &str) -> Option<&ComponentStatus> {
+        self.0.get(component)
     }
 }
 
@@ -335,7 +335,7 @@ pub struct ComponentStatus {
 }
 
 impl ComponentStatus {
-    pub fn get_method_stats(
+    pub fn get_handler_stats(
         &self,
         state: InvocationState,
         method: &str,
@@ -343,8 +343,8 @@ impl ComponentStatus {
         self.handlers.get(method).and_then(|x| x.get_stats(state))
     }
 
-    pub fn get_method(&self, method: &str) -> Option<&HandlerInfo> {
-        self.handlers.get(method)
+    pub fn get_handler(&self, handler: &str) -> Option<&HandlerInfo> {
+        self.handlers.get(handler)
     }
 }
 
@@ -390,12 +390,12 @@ pub async fn count_deployment_active_inv_by_method(
 
     let query = format!(
         "SELECT 
-            service,
-            method,
+            component,
+            handler,
             COUNT(id) AS inv_count
             FROM sys_invocation_status
             WHERE pinned_deployment_id = '{}'
-            GROUP BY pinned_deployment_id, service, method",
+            GROUP BY pinned_deployment_id, component, handler",
         deployment_id
     );
 
@@ -413,13 +413,13 @@ pub async fn count_deployment_active_inv_by_method(
 
 pub async fn get_components_status(
     client: &DataFusionHttpClient,
-    services_filter: impl IntoIterator<Item = impl AsRef<str>>,
+    components_filter: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<ComponentStatusMap> {
     let mut status_map = ComponentStatusMap::default();
 
     let query_filter = format!(
         "({})",
-        services_filter
+        components_filter
             .into_iter()
             .map(|x| format!("'{}'", x.as_ref()))
             .collect::<Vec<_>>()
@@ -429,20 +429,20 @@ pub async fn get_components_status(
     {
         let query = format!(
             "SELECT 
-                service, 
-                method,
+                component,
+                handler,
                 COUNT(id),
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
-             FROM sys_inbox WHERE service IN {}
-             GROUP BY service, method",
+             FROM sys_inbox WHERE component IN {}
+             GROUP BY component, handler",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i32>().value_string(i);
-                let method = batch.column(1).as_string::<i32>().value_string(i);
+                let component = batch.column(0).as_string::<i32>().value_string(i);
+                let handler = batch.column(1).as_string::<i32>().value_string(i);
                 let num_invocations = batch
                     .column(2)
                     .as_primitive::<arrow::datatypes::Int64Type>()
@@ -460,7 +460,7 @@ pub async fn get_components_status(
                     oldest_at,
                     oldest_invocation,
                 };
-                status_map.set_method_stats(&service, &method, InvocationState::Pending, stats);
+                status_map.set_handler_stats(&component, &handler, InvocationState::Pending, stats);
             }
         }
     }
@@ -470,8 +470,8 @@ pub async fn get_components_status(
         let query = format!(
             "WITH enriched_invokes AS
             (SELECT
-                ss.service,
-                ss.method,
+                ss.component,
+                ss.handler,
                 CASE
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
@@ -482,17 +482,17 @@ pub async fn get_components_status(
                 ss.created_at
             FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.service IN {}
+            WHERE ss.component IN {}
             )
-            SELECT service, method, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
-            FROM enriched_invokes GROUP BY service, method, combined_status ORDER BY method",
+            SELECT component, handler, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
+            FROM enriched_invokes GROUP BY component, handler, combined_status ORDER BY method",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = value_as_string(&batch, 0, i);
-                let method = value_as_string(&batch, 1, i);
+                let component = value_as_string(&batch, 0, i);
+                let handler = value_as_string(&batch, 1, i);
                 let status = value_as_string(&batch, 2, i);
 
                 let stats = HandlerStateStats {
@@ -501,7 +501,7 @@ pub async fn get_components_status(
                     oldest_invocation: value_as_string(&batch, 5, i),
                 };
 
-                status_map.set_method_stats(&service, &method, status.parse().unwrap(), stats);
+                status_map.set_handler_stats(&component, &handler, status.parse().unwrap(), stats);
             }
         }
     }
@@ -509,9 +509,9 @@ pub async fn get_components_status(
     Ok(status_map)
 }
 
-// Service -> Locked Keys
+// Component -> Locked Keys
 #[derive(Default)]
-pub struct ComponentMethodLockedKeysMap {
+pub struct ComponentHandlerLockedKeysMap {
     components: HashMap<String, HashMap<String, LockedKeyInfo>>,
 }
 
@@ -537,14 +537,14 @@ pub struct LockedKeyInfo {
     pub last_attempt_deployment_id: Option<String>,
 }
 
-impl ComponentMethodLockedKeysMap {
-    fn insert(&mut self, service: &str, key: String, info: LockedKeyInfo) {
-        let locked_keys = self.components.entry(service.to_owned()).or_default();
+impl ComponentHandlerLockedKeysMap {
+    fn insert(&mut self, component: &str, key: String, info: LockedKeyInfo) {
+        let locked_keys = self.components.entry(component.to_owned()).or_default();
         locked_keys.insert(key.to_owned(), info);
     }
 
-    fn locked_key_info_mut(&mut self, service: &str, key: &str) -> &mut LockedKeyInfo {
-        let locked_keys = self.components.entry(service.to_owned()).or_default();
+    fn locked_key_info_mut(&mut self, component: &str, key: &str) -> &mut LockedKeyInfo {
+        let locked_keys = self.components.entry(component.to_owned()).or_default();
         locked_keys.entry(key.to_owned()).or_default()
     }
 
@@ -559,37 +559,37 @@ impl ComponentMethodLockedKeysMap {
 
 pub async fn get_locked_keys_status(
     client: &DataFusionHttpClient,
-    services_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ComponentMethodLockedKeysMap> {
-    let mut key_map = ComponentMethodLockedKeysMap::default();
-    let quoted_service_names = services_filter
+    components_filter: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<ComponentHandlerLockedKeysMap> {
+    let mut key_map = ComponentHandlerLockedKeysMap::default();
+    let quoted_component_names = components_filter
         .into_iter()
         .map(|x| format!("'{}'", x.as_ref()))
         .collect::<Vec<_>>();
-    if quoted_service_names.is_empty() {
+    if quoted_component_names.is_empty() {
         return Ok(key_map);
     }
 
-    let query_filter = format!("({})", quoted_service_names.join(","));
+    let query_filter = format!("({})", quoted_component_names.join(","));
 
     // Inbox analysis (pending invocations)....
     {
         let query = format!(
             "SELECT 
-                service,
-                service_key,
+                component,
+                component_key,
                 COUNT(id),
                 MIN(created_at)
              FROM sys_inbox
-             WHERE service IN {}
-             GROUP BY service, service_key
+             WHERE component IN {}
+             GROUP BY component, component_key
              ORDER BY COUNT(id) DESC",
             query_filter
         );
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = batch.column(0).as_string::<i32>().value(i);
+                let component = batch.column(0).as_string::<i32>().value(i);
                 let key = value_as_string(&batch, 1, i);
                 let num_pending = value_as_i64(&batch, 2, i);
                 let oldest_pending = value_as_dt_opt(&batch, 3, i);
@@ -599,7 +599,7 @@ pub async fn get_locked_keys_status(
                     oldest_pending,
                     ..LockedKeyInfo::default()
                 };
-                key_map.insert(service, key, info);
+                key_map.insert(component, key, info);
             }
         }
     }
@@ -609,9 +609,9 @@ pub async fn get_locked_keys_status(
         let query = format!(
             "WITH enriched_invokes AS
             (SELECT
-                ss.service,
-                ss.method,
-                ss.service_key,
+                ss.component,
+                ss.handler,
+                ss.component_key,
                 CASE
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
@@ -632,11 +632,11 @@ pub async fn get_locked_keys_status(
             WHERE ss.service IN {}
             )
             SELECT
-                service,
-                service_key,
+                component,
+                component_key,
                 combined_status,
                 first_value(id),
-                first_value(method),
+                first_value(handler),
                 first_value(created_at),
                 first_value(modified_at),
                 first_value(pinned_deployment_id),
@@ -645,14 +645,14 @@ pub async fn get_locked_keys_status(
                 first_value(next_retry_at),
                 first_value(last_start_at),
                 sum(retry_count)
-            FROM enriched_invokes GROUP BY service, service_key, combined_status",
+            FROM enriched_invokes GROUP BY component, component_key, combined_status",
             query_filter
         );
 
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let service = value_as_string(&batch, 0, i);
+                let component = value_as_string(&batch, 0, i);
                 let key = value_as_string(&batch, 1, i);
                 let status = batch
                     .column(2)
@@ -661,7 +661,7 @@ pub async fn get_locked_keys_status(
                     .parse()
                     .expect("Unexpected status");
                 let id = value_as_string_opt(&batch, 3, i);
-                let method = value_as_string_opt(&batch, 4, i);
+                let handler = value_as_string_opt(&batch, 4, i);
                 let created_at = value_as_dt_opt(&batch, 5, i);
                 let modified_at = value_as_dt_opt(&batch, 6, i);
                 let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
@@ -671,11 +671,11 @@ pub async fn get_locked_keys_status(
                 let last_start = value_as_dt_opt(&batch, 11, i);
                 let num_retries = value_as_u64_opt(&batch, 12, i);
 
-                let info = key_map.locked_key_info_mut(&service, &key);
+                let info = key_map.locked_key_info_mut(&component, &key);
 
                 info.invocation_status = Some(status);
                 info.invocation_holding_lock = id;
-                info.invocation_method_holding_lock = method;
+                info.invocation_method_holding_lock = handler;
                 info.invocation_created_at = created_at;
 
                 // Running duration
@@ -714,9 +714,9 @@ pub async fn find_active_invocations(
         "WITH enriched_invocations AS
         (SELECT
             ss.id,
-            ss.service,
-            ss.method,
-            ss.service_key,
+            ss.component,
+            ss.handler,
+            ss.component_key,
             CASE
              WHEN ss.status = 'suspended' THEN 'suspended'
              WHEN sis.in_flight THEN 'running'
@@ -732,14 +732,14 @@ pub async fn find_active_invocations(
             sis.next_retry_at,
             sis.last_start_at,
             ss.invoked_by_id,
-            ss.invoked_by_service,
+            ss.invoked_by_component,
             comp.ty,
             comp.deployment_id as comp_latest_deployment,
             dp.id as known_deployment_id,
             ss.trace_id
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-        LEFT JOIN sys_component comp ON comp.name = ss.service
+        LEFT JOIN sys_component comp ON comp.name = ss.component
         LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
         {}
         {}
@@ -756,9 +756,9 @@ pub async fn find_active_invocations(
                 full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
             }
             let id = value_as_string(&batch, 0, i);
-            let service = value_as_string(&batch, 1, i);
-            let method = value_as_string(&batch, 2, i);
-            let service_key = value_as_string_opt(&batch, 3, i);
+            let component = value_as_string(&batch, 1, i);
+            let handler = value_as_string(&batch, 2, i);
+            let component_key = value_as_string_opt(&batch, 3, i);
             let status: InvocationState = value_as_string(&batch, 4, i)
                 .parse()
                 .expect("Unexpected status");
@@ -777,7 +777,7 @@ pub async fn find_active_invocations(
             let last_start = value_as_dt_opt(&batch, 12, i);
 
             let invoked_by_id = value_as_string_opt(&batch, 13, i);
-            let invoked_by_service = value_as_string_opt(&batch, 14, i);
+            let invoked_by_component = value_as_string_opt(&batch, 14, i);
             let component_type = parse_component_type(&value_as_string(&batch, 15, i));
             let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
 
@@ -785,7 +785,7 @@ pub async fn find_active_invocations(
             let trace_id = value_as_string_opt(&batch, 18, i);
 
             let key = if component_type == ComponentType::VirtualObject {
-                service_key
+                component_key
             } else {
                 None
             };
@@ -793,12 +793,12 @@ pub async fn find_active_invocations(
             let mut invocation = Invocation {
                 id,
                 status,
-                service,
+                component,
                 key,
-                method,
+                handler,
                 created_at,
                 invoked_by_id,
-                invoked_by_service,
+                invoked_by_component,
                 state_modified_at,
                 num_retries,
                 next_retry_at,
@@ -840,17 +840,17 @@ pub async fn find_inbox_invocations(
         let query = format!(
             "WITH inbox_table AS
             (SELECT
-                ss.service,
-                ss.method,
+                ss.component,
+                ss.handler,
                 ss.id,
                 ss.created_at,
                 ss.invoked_by_id,
-                ss.invoked_by_service,
-                ss.service_key,
+                ss.invoked_by_component,
+                ss.component_key,
                 comp.ty,
                 ss.trace_id
              FROM sys_inbox ss
-             LEFT JOIN sys_component comp ON comp.name = ss.service
+             LEFT JOIN sys_component comp ON comp.name = ss.component
              {}
              {}
             )
@@ -873,13 +873,13 @@ pub async fn find_inbox_invocations(
 
                 let invocation = Invocation {
                     status: InvocationState::Pending,
-                    service: value_as_string(&batch, 0, i),
-                    method: value_as_string(&batch, 1, i),
+                    component: value_as_string(&batch, 0, i),
+                    handler: value_as_string(&batch, 1, i),
                     id: value_as_string(&batch, 2, i),
                     created_at: value_as_dt_opt(&batch, 3, i).expect("Missing created_at"),
                     key,
                     invoked_by_id: value_as_string_opt(&batch, 4, i),
-                    invoked_by_service: value_as_string_opt(&batch, 5, i),
+                    invoked_by_component: value_as_string_opt(&batch, 5, i),
                     trace_id: value_as_string_opt(&batch, 8, i),
                     ..Default::default()
                 };
@@ -892,14 +892,14 @@ pub async fn find_inbox_invocations(
 
 pub async fn get_component_invocations(
     client: &DataFusionHttpClient,
-    service: &str,
+    component: &str,
     limit_inbox: usize,
     limit_active: usize,
 ) -> Result<(Vec<Invocation>, Vec<Invocation>)> {
     // Inbox...
     let inbox: Vec<Invocation> = find_inbox_invocations(
         client,
-        &format!("WHERE ss.service = '{}'", service),
+        &format!("WHERE ss.component = '{}'", component),
         "ORDER BY ss.created_at DESC",
         limit_inbox,
     )
@@ -909,7 +909,7 @@ pub async fn get_component_invocations(
     // Active invocations analysis
     let active: Vec<Invocation> = find_active_invocations(
         client,
-        &format!("WHERE ss.service = '{}'", service),
+        &format!("WHERE ss.component = '{}'", component),
         "",
         "ORDER BY ss.created_at DESC",
         limit_active,
@@ -968,9 +968,9 @@ pub async fn get_invocation_journal(
             sj.entry_type,
             sj.completed,
             sj.invoked_id,
-            sj.invoked_service,
-            sj.invoked_method,
-            sj.invoked_service_key,
+            sj.invoked_component,
+            sj.invoked_handler,
+            sj.invoked_component_key,
             sj.sleep_wakeup_at
         FROM sys_journal sj
         WHERE
@@ -993,24 +993,24 @@ pub async fn get_invocation_journal(
             let entry_type = value_as_string(&batch, 1, i);
             let completed = batch.column(2).as_boolean().value(i);
             let outgoing_invocation_id = value_as_string_opt(&batch, 3, i);
-            let invoked_service = value_as_string_opt(&batch, 4, i);
-            let invoked_method = value_as_string_opt(&batch, 5, i);
-            let invoked_service_key = value_as_string_opt(&batch, 6, i);
+            let invoked_component = value_as_string_opt(&batch, 4, i);
+            let invoked_handler = value_as_string_opt(&batch, 5, i);
+            let invoked_component_key = value_as_string_opt(&batch, 6, i);
             let wakeup_at = value_as_dt_opt(&batch, 7, i);
 
             let entry_type = match entry_type.as_str() {
                 "Sleep" => JournalEntryType::Sleep { wakeup_at },
                 "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_service,
-                    invoked_method,
-                    invoked_service_key,
+                    invoked_component,
+                    invoked_handler,
+                    invoked_component_key,
                 }),
                 "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_service,
-                    invoked_method,
-                    invoked_service_key,
+                    invoked_component,
+                    invoked_handler,
+                    invoked_component_key,
                 }),
                 "Awakeable" => JournalEntryType::Awakeable(AwakeableIdentifier::new(
                     my_invocation_id.clone(),
