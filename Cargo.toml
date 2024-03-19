@@ -139,6 +139,7 @@ tokio-util = { version = "0.7.10" }
 tokio-stream = "0.1.14"
 tonic = { version = "0.10.2", default-features = false }
 tonic-reflection = { version = "0.10.2" }
+tonic-health = "0.10.2"
 tonic-build = "0.11.0"
 tower = "0.4"
 tower-http = { version = "0.4", default-features = false }

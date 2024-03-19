@@ -46,3 +46,21 @@ pub trait Versioned {
     /// Returns the version of the versioned value
     fn version(&self) -> Version;
 }
+
+impl<T: Versioned> Versioned for &T {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+}
+
+impl<T: Versioned> Versioned for &mut T {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+}
+
+impl<T: Versioned> Versioned for Box<T> {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+}

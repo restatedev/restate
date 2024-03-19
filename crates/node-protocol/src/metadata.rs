@@ -15,7 +15,7 @@ use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::codec::{Targeted, WireSerde};
+use crate::codec::{decode_default, encode_default, Targeted, WireSerde};
 use crate::common::ProtocolVersion;
 use crate::common::TargetName;
 use crate::CodecError;
@@ -43,14 +43,12 @@ impl Targeted for MetadataMessage {
 }
 
 impl WireSerde for MetadataMessage {
-    fn encode(&self, _protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        // serialize message to bytes
-        Ok(bincode::serde::encode_to_vec(self, bincode::config::standard())?.into())
+    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
+        encode_default(self, protocol_version)
     }
 
-    fn decode(payload: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
-        let (output, _) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
-        Ok(output)
+    fn decode(payload: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
+        decode_default(payload, protocol_version)
     }
 }
 

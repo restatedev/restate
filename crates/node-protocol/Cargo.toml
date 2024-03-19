@@ -15,6 +15,7 @@ restate-types = { workspace = true, features = ["serde"] }
 
 bincode = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 prost = { workspace = true }

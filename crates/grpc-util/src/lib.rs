@@ -10,6 +10,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use http::Uri;
@@ -59,7 +60,7 @@ pub enum Error {
     },
     #[error("failed opening uds '{uds_path}': {source}")]
     UdsBinding {
-        uds_path: String,
+        uds_path: PathBuf,
         #[source]
         source: io::Error,
     },

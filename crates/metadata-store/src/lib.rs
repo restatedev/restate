@@ -10,38 +10,41 @@
 
 #![allow(dead_code)]
 
+mod grpc_svc;
+mod local;
+
 use async_trait::async_trait;
 use bytes::Bytes;
+use bytestring::ByteString;
+use restate_types::errors::GenericError;
 use restate_types::{Version, Versioned};
-use serde::de::{DeserializeOwned, StdError};
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
-pub enum NetworkError {
-    #[error("unreachable")]
-    Unreachable,
-}
-
-#[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    #[error(transparent)]
-    Network(NetworkError),
-    #[error("deserialize failed: {0}")]
-    Deserialize(Box<dyn StdError>),
+    #[error("network error: {0}")]
+    Network(GenericError),
+    #[error("internal error: {0}")]
+    Internal(String),
+    #[error("deserialization failed: {0}")]
+    Deserialization(GenericError),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
-    #[error("violated precondition: {0}")]
-    PreconditionViolation(String),
-    #[error(transparent)]
-    Network(NetworkError),
-    #[error("serialize failed: {0}")]
-    Serialize(Box<dyn StdError>),
+    #[error("failed precondition: {0}")]
+    FailedPrecondition(String),
+    #[error("network error: {0}")]
+    Network(GenericError),
+    #[error("internal error: {0}")]
+    Internal(String),
+    #[error("serialization failed: {0}")]
+    Serialization(GenericError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VersionedValue {
     pub version: Version,
     pub value: Bytes,
@@ -54,7 +57,7 @@ impl VersionedValue {
 }
 
 /// Preconditions for the write operations of the [`MetadataStore`].
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Precondition {
     /// No precondition
     None,
@@ -70,26 +73,27 @@ pub enum Precondition {
 pub trait MetadataStore {
     /// Gets the value and its current version for the given key. If key-value pair is not present,
     /// then return [`None`].
-    async fn get(&self, key: &str) -> Result<Option<VersionedValue>, ReadError>;
+    async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError>;
 
     /// Gets the current version for the given key. If key-value pair is not present, then return
     /// [`None`].
-    async fn get_version(&self, key: &str) -> Result<Option<Version>, ReadError>;
+    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError>;
 
     /// Puts the versioned value under the given key following the provided precondition. If the
     /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
     async fn put(
         &self,
-        key: &str,
+        key: ByteString,
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError>;
 
     /// Deletes the key-value pair for the given key following the provided precondition. If the
     /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
-    async fn delete(&self, key: &str, precondition: Precondition) -> Result<(), WriteError>;
+    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError>;
 }
 
+/// Metadata store client which allows storing [`Versioned`] values into a [`MetadataStore`].
 #[derive(Clone)]
 struct MetadataStoreClient {
     // premature optimization? Maybe introduce trait object once we have multiple implementations?
@@ -108,7 +112,7 @@ impl MetadataStoreClient {
 
     async fn get<T: Versioned + DeserializeOwned>(
         &self,
-        key: &str,
+        key: ByteString,
     ) -> Result<Option<T>, ReadError> {
         let value = self.inner.get(key).await?;
 
@@ -118,7 +122,7 @@ impl MetadataStoreClient {
                 versioned_value.value.as_ref(),
                 bincode::config::standard(),
             )
-            .map_err(|err| ReadError::Deserialize(err.into()))?;
+            .map_err(|err| ReadError::Deserialization(err.into()))?;
 
             assert_eq!(
                 versioned_value.version,
@@ -132,13 +136,13 @@ impl MetadataStoreClient {
         }
     }
 
-    async fn get_version(&self, key: &str) -> Result<Option<Version>, ReadError> {
+    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         self.inner.get_version(key).await
     }
 
     async fn put<T>(
         &self,
-        key: &str,
+        key: ByteString,
         value: T,
         precondition: Precondition,
     ) -> Result<(), WriteError>
@@ -149,7 +153,7 @@ impl MetadataStoreClient {
 
         // todo add proper format version
         let value = bincode::serde::encode_to_vec(value, bincode::config::standard())
-            .map_err(|err| WriteError::Serialize(err.into()))?;
+            .map_err(|err| WriteError::Serialization(err.into()))?;
 
         self.inner
             .put(
@@ -160,7 +164,7 @@ impl MetadataStoreClient {
             .await
     }
 
-    async fn delete(&self, key: &str, precondition: Precondition) -> Result<(), WriteError> {
+    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
         self.inner.delete(key, precondition).await
     }
 }

@@ -5233,13 +5233,36 @@ dependencies = [
 name = "restate-metadata-store"
 version = "0.9.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bincode",
  "bytes",
+ "bytestring",
+ "futures",
+ "googletest",
+ "hyper 0.14.28",
+ "prost 0.12.3",
+ "prost-types",
+ "restate-core",
+ "restate-grpc-util",
+ "restate-node-protocol",
  "restate-types",
+ "rocksdb",
  "serde",
  "static_assertions",
+ "tempfile",
+ "test-log",
  "thiserror",
+ "tokio",
+ "tokio-retry",
+ "tonic 0.10.2",
+ "tonic-build",
+ "tonic-health",
+ "tonic-reflection",
+ "tower",
+ "tower-http 0.4.4",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5350,6 +5373,7 @@ version = "0.9.0"
 dependencies = [
  "bincode",
  "bytes",
+ "bytestring",
  "derive_more",
  "enum-map",
  "prost 0.12.3",
@@ -6881,6 +6905,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-retry"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
+dependencies = [
+ "pin-project",
+ "rand",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-rustls"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6998,6 +7033,19 @@ dependencies = [
  "prost-build",
  "quote",
  "syn 2.0.53",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f80db390246dfb46553481f6024f0082ba00178ea495dbb99e70ba9a4fafb5e1"
+dependencies = [
+ "async-stream",
+ "prost 0.12.3",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.10.2",
 ]
 
 [[package]]

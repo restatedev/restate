@@ -10,6 +10,7 @@
 
 use http::Uri;
 use std::net::{AddrParseError, SocketAddr};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
@@ -19,8 +20,8 @@ use std::str::FromStr;
 )]
 pub enum AdvertisedAddress {
     /// Unix domain socket
-    #[display(fmt = "unix:{}", _0)]
-    Uds(String),
+    #[display(fmt = "unix:{}", "_0.display()")]
+    Uds(PathBuf),
     /// Hostname or host:port pair, or any unrecognizable string.
     #[display(fmt = "{}", _0)]
     Http(Uri),
@@ -31,7 +32,9 @@ impl FromStr for AdvertisedAddress {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(stripped_address) = s.strip_prefix("unix:") {
-            Ok(AdvertisedAddress::Uds(stripped_address.to_owned()))
+            Ok(AdvertisedAddress::Uds(
+                stripped_address.parse().expect("infallible"),
+            ))
         } else {
             // try to parse as a URI
             Ok(AdvertisedAddress::Http(s.parse()?))
@@ -46,8 +49,8 @@ impl FromStr for AdvertisedAddress {
 )]
 pub enum BindAddress {
     /// Unix domain socket
-    #[display(fmt = "unix:{}", _0)]
-    Uds(String),
+    #[display(fmt = "unix:{}", "_0.display()")]
+    Uds(PathBuf),
     /// Socket addr.
     #[display(fmt = "{}", _0)]
     Socket(SocketAddr),
@@ -58,7 +61,9 @@ impl FromStr for BindAddress {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(stripped_address) = s.strip_prefix("unix:") {
-            Ok(BindAddress::Uds(stripped_address.to_owned()))
+            Ok(BindAddress::Uds(
+                stripped_address.parse().expect("infallible"),
+            ))
         } else {
             // try to parse as a URI
             Ok(BindAddress::Socket(s.parse()?))
@@ -78,7 +83,10 @@ mod tests {
         restate_test_util::assert_eq!(tcp, AdvertisedAddress::Http("127.0.0.1:5123".parse()?));
 
         let tcp: AdvertisedAddress = "unix:/tmp/unix.socket".parse()?;
-        restate_test_util::assert_eq!(tcp, AdvertisedAddress::Uds("/tmp/unix.socket".to_owned()));
+        restate_test_util::assert_eq!(
+            tcp,
+            AdvertisedAddress::Uds("/tmp/unix.socket".parse().unwrap())
+        );
 
         let tcp: AdvertisedAddress = "localhost:5123".parse()?;
         restate_test_util::assert_eq!(tcp, AdvertisedAddress::Http("localhost:5123".parse()?));

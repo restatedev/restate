@@ -11,6 +11,8 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::common::ProtocolVersion;
 use crate::common::TargetName;
@@ -160,4 +162,37 @@ pub fn deserialize_message(
         ));
     };
     Ok(binary)
+}
+
+/// Helper function for default encoding of values.
+pub fn encode_default<T: Serialize>(
+    value: T,
+    protocol_version: ProtocolVersion,
+) -> Result<Bytes, CodecError> {
+    match protocol_version {
+        ProtocolVersion::Bincoded => {
+            bincode::serde::encode_to_vec(value, bincode::config::standard())
+                .map(Into::into)
+                .map_err(Into::into)
+        }
+        ProtocolVersion::Unknown => {
+            unreachable!("unknown protocol version should never be set")
+        }
+    }
+}
+
+pub fn decode_default<T: DeserializeOwned>(
+    bytes: Bytes,
+    protocol_version: ProtocolVersion,
+) -> Result<T, CodecError> {
+    match protocol_version {
+        ProtocolVersion::Bincoded => {
+            bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
+                .map(|(value, _)| value)
+                .map_err(Into::into)
+        }
+        ProtocolVersion::Unknown => {
+            unreachable!("unknown protocol version should never be set")
+        }
+    }
 }
