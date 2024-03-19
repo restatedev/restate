@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 
-mocks = []
+test-util = []
 serde = ["dep:serde", "dep:serde_with", "enumset/serde"]
 serde_schema = ["serde", "dep:schemars"]
 

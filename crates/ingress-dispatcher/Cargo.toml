@@ -35,7 +35,7 @@ tracing = { workspace = true }
 restate-bifrost = { workspace = true, features = ["memory_loglet"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
-restate-types = { workspace = true, features = ["mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 test-log = { workspace = true }

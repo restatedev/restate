@@ -548,7 +548,7 @@ impl From<TraceId> for TraceIdDef {
     }
 }
 
-#[cfg(any(test, feature = "mocks"))]
+#[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;
 

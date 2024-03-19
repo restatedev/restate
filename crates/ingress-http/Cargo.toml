@@ -62,7 +62,7 @@ pin-project-lite = "0.2.13"
 restate-core = { workspace = true, features = ["test-util"] }
 restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
-restate-types = { workspace = true, features = ["mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"]}
 
 hyper = { version = "1.0", features = ["full"] }

@@ -659,7 +659,7 @@ impl FromStr for LambdaARN {
     }
 }
 
-#[cfg(any(test, feature = "mocks"))]
+#[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;
 

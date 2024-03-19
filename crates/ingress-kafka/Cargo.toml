@@ -41,7 +41,7 @@ restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-schema-impl = { workspace = true }
 restate-test-util = { workspace = true }
-restate-types = { workspace = true, features = ["mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
 
 base64 = { workspace = true }
 serde_json = { workspace = true }
