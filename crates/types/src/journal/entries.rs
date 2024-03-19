@@ -12,7 +12,7 @@
 
 use super::*;
 
-use crate::errors::{InvocationError, UserErrorCode};
+use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::EntryIndex;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
@@ -121,7 +121,7 @@ impl Completion {
 pub enum CompletionResult {
     Empty,
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<ResponseResult> for CompletionResult {
@@ -137,7 +137,7 @@ impl From<ResponseResult> for CompletionResult {
 
 impl From<&InvocationError> for CompletionResult {
     fn from(value: &InvocationError) -> Self {
-        CompletionResult::Failure(UserErrorCode::from(value.code()), value.message().into())
+        CompletionResult::Failure(value.code(), value.message().into())
     }
 }
 
@@ -167,7 +167,7 @@ impl fmt::Display for EntryType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryResult {
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<EntryResult> for ResponseResult {
@@ -209,7 +209,7 @@ pub struct OutputEntry {
 pub enum GetStateResult {
     Empty,
     Result(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +238,7 @@ pub struct ClearStateEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetStateKeysResult {
     Result(Vec<Bytes>),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,7 +255,7 @@ impl CompletableEntry for GetStateKeysEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SleepResult {
     Fired,
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

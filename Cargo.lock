@@ -5740,7 +5740,6 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
- "tonic 0.10.2",
  "tracing",
  "tracing-opentelemetry",
  "ulid",

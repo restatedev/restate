@@ -14,7 +14,7 @@ use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
-use restate_types::errors::UserErrorCode;
+use restate_types::errors::codes;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
@@ -311,7 +311,7 @@ async fn awakeable_with_failure() {
             id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
                 .to_string()
                 .into(),
-            result: EntryResult::Failure(UserErrorCode::FailedPrecondition, "Some failure".into()),
+            result: EntryResult::Failure(codes::BAD_REQUEST, "Some failure".into()),
         },
     ));
     let cmd = Command::InvokerEffect(InvokerEffect {
@@ -341,7 +341,7 @@ async fn awakeable_with_failure() {
         OutboxMessage::ServiceResponse(InvocationResponse {
             id,
             entry_index,
-            result: ResponseResult::Failure(UserErrorCode::FailedPrecondition, failure_reason),
+            result: ResponseResult::Failure(codes::BAD_REQUEST, failure_reason),
         }) = message
     );
     assert_eq!(
@@ -438,7 +438,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
                             id: eq(MaybeFullInvocationId::from(caller_fid)),
                             entry_index: eq(0),
                             result: pat!(ResponseResult::Failure(
-                                eq(UserErrorCode::Aborted),
+                                eq(codes::ABORTED),
                                 eq(ByteString::from_static("killed"))
                             ))
                         }
@@ -695,7 +695,7 @@ fn canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<ActualT 
     pat!(Completion {
         entry_index: eq(entry_index),
         result: pat!(CompletionResult::Failure(
-            eq(UserErrorCode::Cancelled),
+            eq(codes::ABORTED),
             eq(ByteString::from_static("canceled"))
         ))
     })

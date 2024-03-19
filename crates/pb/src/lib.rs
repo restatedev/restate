@@ -86,7 +86,7 @@ pub mod builtin_service {
         }
 
         pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
-            ResponseResult::Failure(err.code().into(), err.message().into())
+            ResponseResult::Failure(err.code(), err.message().into())
         }
     }
 

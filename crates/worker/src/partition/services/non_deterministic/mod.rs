@@ -88,7 +88,7 @@ impl ServiceInvoker {
                     .invoke_builtin(method, argument)
                     .await
             }
-            _ => Err(InvocationError::service_not_found(
+            _ => Err(InvocationError::component_not_found(
                 &full_invocation_id.service_id.service_name,
             )),
         };
