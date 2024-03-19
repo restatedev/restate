@@ -13,6 +13,10 @@ use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
 
+/// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
+/// if you don't know the actual error type or if it is not important.
+pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
