@@ -14,7 +14,7 @@ use restate_pb::builtin_service::BuiltInService;
 use restate_pb::restate::internal::AwakeablesInvoker;
 use restate_pb::restate::internal::ProxyInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::FullInvocationId;
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
@@ -89,7 +89,7 @@ impl ServiceInvoker<'_> {
             restate_pb::PROXY_SERVICE_NAME => {
                 ProxyInvoker(self).invoke_builtin(method, argument).await
             }
-            _ => Err(InvocationError::service_not_found(
+            _ => Err(InvocationError::component_not_found(
                 &self.fid.service_id.service_name,
             )),
         }

@@ -10,7 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
-use crate::errors::{InvocationError, UserErrorCode};
+use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionKey, WithPartitionKey,
 };
@@ -132,7 +132,7 @@ pub struct InvocationResponse {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ResponseResult {
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
@@ -157,13 +157,13 @@ impl From<ResponseResult> for Result<Bytes, InvocationError> {
 
 impl From<InvocationError> for ResponseResult {
     fn from(e: InvocationError) -> Self {
-        ResponseResult::Failure(e.code().into(), e.message().into())
+        ResponseResult::Failure(e.code(), e.message().into())
     }
 }
 
 impl From<&InvocationError> for ResponseResult {
     fn from(e: &InvocationError) -> Self {
-        ResponseResult::Failure(e.code().into(), e.message().into())
+        ResponseResult::Failure(e.code(), e.message().into())
     }
 }
 

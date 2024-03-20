@@ -120,7 +120,7 @@ mod built_in_service_gen {
                         r#""{}" => {{
                             use prost::Message;
 
-                            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::codes::BAD_REQUEST, e.to_string()))?;
                             let output_t = T::{}(&mut self.0, input_t).await?;
                             Ok(output_t.encode_to_vec().into())
                         }},"#,
@@ -142,7 +142,7 @@ mod built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -240,7 +240,7 @@ mod manual_response_built_in_service_gen {
                         r#""{}" => {{
                             use prost::Message;
 
-                            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::codes::BAD_REQUEST, e.to_string()))?;
                             T::{}(&mut self.0, input_t, crate::builtin_service::ResponseSerializer::default()).await?;
                             Ok(())
                         }},"#,
@@ -263,7 +263,7 @@ mod manual_response_built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}

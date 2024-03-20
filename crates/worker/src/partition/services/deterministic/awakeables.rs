@@ -15,12 +15,13 @@ use crate::partition::services::deterministic::*;
 use restate_pb::restate::internal::AwakeablesBuiltInService;
 use restate_pb::restate::internal::*;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
+use restate_types::errors::codes;
 use restate_types::invocation::ResponseResult;
 
 impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
     async fn resolve(&mut self, req: ResolveAwakeableRequest) -> Result<(), InvocationError> {
         let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&req.id)
-            .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
+            .map_err(|e| InvocationError::new(codes::BAD_REQUEST, e.to_string()))?
             .into_inner();
 
         self.outbox_message(OutboxMessage::from_awakeable_completion(
@@ -33,16 +34,13 @@ impl AwakeablesBuiltInService for &mut ServiceInvoker<'_> {
 
     async fn reject(&mut self, req: RejectAwakeableRequest) -> Result<(), InvocationError> {
         let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&req.id)
-            .map_err(|e| InvocationError::new(UserErrorCode::InvalidArgument, e.to_string()))?
+            .map_err(|e| InvocationError::new(codes::BAD_REQUEST, e.to_string()))?
             .into_inner();
 
         self.outbox_message(OutboxMessage::from_awakeable_completion(
             invocation_id,
             entry_index,
-            ResponseResult::from(Err(InvocationError::new(
-                UserErrorCode::Unknown,
-                req.reason,
-            ))),
+            ResponseResult::from(Err(InvocationError::new(codes::UNKNOWN, req.reason))),
         ));
 
         Ok(())

@@ -93,7 +93,7 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_rocksdb::RocksDBStorage;
     use restate_test_util::matchers::*;
-    use restate_types::errors::UserErrorCode;
+    use restate_types::errors::codes;
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     };
@@ -357,7 +357,7 @@ mod tests {
                         id: eq(MaybeFullInvocationId::Full(caller_fid)),
                         entry_index: eq(0),
                         result: pat!(ResponseResult::Failure(
-                            eq(UserErrorCode::Aborted),
+                            eq(codes::ABORTED),
                             eq(ByteString::from_static("killed"))
                         ))
                     }

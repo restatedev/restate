@@ -12,7 +12,7 @@ use super::APPLICATION_JSON;
 
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::InvocationError;
 use serde::Serialize;
 use std::string;
 
@@ -82,7 +82,7 @@ impl HandlerError {
             HandlerError::BadAwakeablesPath => StatusCode::BAD_REQUEST,
             HandlerError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             HandlerError::Invocation(e) => {
-                invocation_status_code_to_http_status_code(e.code().into())
+                StatusCode::from_u16(e.code().into()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             }
             HandlerError::BadHeader(_, _) => StatusCode::BAD_REQUEST,
         };
@@ -107,26 +107,5 @@ impl HandlerError {
 
     pub(crate) fn into_response<B: http_body::Body + Default + From<Bytes>>(self) -> Response<B> {
         self.fill_builder(http::response::Builder::new())
-    }
-}
-
-fn invocation_status_code_to_http_status_code(code: UserErrorCode) -> StatusCode {
-    match code {
-        UserErrorCode::Cancelled => StatusCode::REQUEST_TIMEOUT,
-        UserErrorCode::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
-        UserErrorCode::InvalidArgument => StatusCode::BAD_REQUEST,
-        UserErrorCode::DeadlineExceeded => StatusCode::REQUEST_TIMEOUT,
-        UserErrorCode::NotFound => StatusCode::NOT_FOUND,
-        UserErrorCode::AlreadyExists => StatusCode::CONFLICT,
-        UserErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
-        UserErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
-        UserErrorCode::ResourceExhausted => StatusCode::TOO_MANY_REQUESTS,
-        UserErrorCode::FailedPrecondition => StatusCode::PRECONDITION_FAILED,
-        UserErrorCode::Aborted => StatusCode::CONFLICT,
-        UserErrorCode::OutOfRange => StatusCode::BAD_REQUEST,
-        UserErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
-        UserErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        UserErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        UserErrorCode::DataLoss => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

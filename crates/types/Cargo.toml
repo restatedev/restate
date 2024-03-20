@@ -13,7 +13,6 @@ default = []
 mocks = []
 serde = ["dep:serde", "dep:serde_with", "enumset/serde"]
 serde_schema = ["serde", "dep:schemars"]
-tonic_conversions = ["dep:tonic"]
 
 [dependencies]
 restate-base64-util = { workspace = true }
@@ -39,7 +38,6 @@ strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
-tonic = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
