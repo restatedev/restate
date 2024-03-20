@@ -1,6 +1,6 @@
-pub use crate::schemas_impl::component::ComponentErrorKind;
-pub use crate::schemas_impl::deployment::DeploymentErrorKind;
-pub use crate::schemas_impl::subscription::SubscriptionErrorKind;
+pub use crate::schemas_impl::component::ComponentError;
+pub use crate::schemas_impl::deployment::DeploymentError;
+pub use crate::schemas_impl::subscription::SubscriptionError;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[error("error when trying to {op} '{id}': {inner:?}")]
@@ -41,18 +41,18 @@ pub enum ErrorKind {
     Component(
         #[from]
         #[code]
-        ComponentErrorKind,
+        ComponentError,
     ),
     #[error(transparent)]
     Deployment(
         #[from]
         #[code]
-        DeploymentErrorKind,
+        DeploymentError,
     ),
     #[error(transparent)]
     Subscription(
         #[from]
         #[code]
-        SubscriptionErrorKind,
+        SubscriptionError,
     ),
 }

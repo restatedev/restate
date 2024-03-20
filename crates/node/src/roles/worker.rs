@@ -279,9 +279,7 @@ where
 {
     // hack to suppress repeated logging of schema registrations
     // todo: Fix it
-    let _ = tracing::subscriber::with_default(NoSubscriber::new(), || {
-        schemas.overwrite(schema_updates)
-    });
+    tracing::subscriber::with_default(NoSubscriber::new(), || schemas.overwrite(schema_updates));
 
     if let Some(subscription_controller) = subscription_controller {
         let subscriptions = schemas.list_subscriptions(&[]);

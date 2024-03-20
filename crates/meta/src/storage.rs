@@ -341,7 +341,7 @@ mod tests {
 
         // Generate some commands for a new deployment, with a new and old service
         // We need to apply updates to generate a new command list
-        schemas.apply_updates(commands_1.clone()).unwrap();
+        schemas.apply_updates(commands_1.clone());
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
         let commands_2 = schemas
             .compute_new_deployment(
@@ -355,7 +355,7 @@ mod tests {
         file_storage.store(commands_2.clone()).await.unwrap();
 
         // Check we can apply these commands
-        schemas.apply_updates(commands_2.clone()).unwrap();
+        schemas.apply_updates(commands_2.clone());
 
         let mut expected_commands = vec![];
         expected_commands.extend(commands_1);

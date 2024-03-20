@@ -35,7 +35,7 @@ pub struct CreateSubscriptionRequest {
     ///
     /// Sink uri. Accepted forms:
     ///
-    /// * `component://<component_name>/<component_name>`, e.g. `component://MySvc/MyMethod`
+    /// * `component://<component_name>/<component_name>`, e.g. `component://Counter/count`
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schema", schemars(with = "String"))]
     pub sink: Uri,

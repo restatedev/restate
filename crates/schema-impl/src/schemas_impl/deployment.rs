@@ -1,11 +1,11 @@
 use super::*;
 
-use super::component::{check_reserved_name, to_component_type, ComponentErrorKind};
+use super::component::{check_reserved_name, to_component_type, ComponentError};
 use restate_schema_api::deployment::DeploymentType;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum DeploymentErrorKind {
+pub enum DeploymentError {
     #[error("existing deployment id is different from requested (requested = {requested}, existing = {existing})")]
     #[code(restate_errors::META0004)]
     IncorrectId {
@@ -57,7 +57,7 @@ impl SchemasInner {
             if requested_deployment_id.is_some_and(|dp| &dp != existing_deployment_id) {
                 // The deployment id is different from the existing one, we don't accept that even
                 // if force is used. It means that the user intended to update another deployment.
-                return Err(ErrorKind::Deployment(DeploymentErrorKind::IncorrectId {
+                return Err(ErrorKind::Deployment(DeploymentError::IncorrectId {
                     requested: requested_deployment_id.expect("must be set"),
                     existing: *existing_deployment_id,
                 }));
@@ -122,7 +122,7 @@ impl SchemasInner {
                             removed_handlers
                         );
                     } else {
-                        return Err(ErrorKind::Component(ComponentErrorKind::RemovedHandlers(
+                        return Err(ErrorKind::Component(ComponentError::RemovedHandlers(
                             component_name,
                             removed_handlers,
                         )));
@@ -140,7 +140,7 @@ impl SchemasInner {
                             component_type
                         );
                     } else {
-                        return Err(ErrorKind::Component(ComponentErrorKind::DifferentType(
+                        return Err(ErrorKind::Component(ComponentError::DifferentType(
                             component_name,
                         )));
                     }
@@ -302,7 +302,7 @@ mod tests {
         );
         assert_eq!(insert_component_cmd.name, GREETER_SERVICE_NAME);
 
-        schemas.apply_updates(commands).unwrap();
+        schemas.apply_updates(commands);
 
         schemas.assert_component_revision(GREETER_SERVICE_NAME, 1);
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_id);
@@ -317,36 +317,32 @@ mod tests {
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
         // Register first deployment
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment_1.id),
-                        deployment_1.metadata.clone(),
-                        vec![greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment_1.id),
+                    deployment_1.metadata.clone(),
+                    vec![greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_1.id);
         assert!(schemas
             .resolve_latest_component(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
 
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment_2.id),
-                        deployment_2.metadata.clone(),
-                        vec![greeter_service(), another_greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment_2.id),
+                    deployment_2.metadata.clone(),
+                    vec![greeter_service(), another_greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
@@ -365,13 +361,13 @@ mod tests {
             deployment.metadata.clone(),
             vec![greeter_service()],
             false,
-        )?)?;
+        )?);
         assert!(schemas.assert_component(GREETER_SERVICE_NAME).public);
 
         schemas.apply_updates(vec![SchemasUpdateCommand::ModifyComponent {
             name: GREETER_SERVICE_NAME.to_owned(),
             public: false,
-        }])?;
+        }]);
         assert!(!schemas.assert_component(GREETER_SERVICE_NAME).public);
 
         schemas.apply_updates(schemas.compute_new_deployment(
@@ -379,7 +375,7 @@ mod tests {
             deployment.metadata.clone(),
             vec![greeter_service()],
             true,
-        )?)?;
+        )?);
         assert!(!schemas.assert_component(GREETER_SERVICE_NAME).public);
 
         Ok(())
@@ -398,18 +394,16 @@ mod tests {
             let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
             let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-            schemas
-                .apply_updates(
-                    schemas
-                        .compute_new_deployment(
-                            Some(deployment_1.id),
-                            deployment_1.metadata.clone(),
-                            vec![greeter_service()],
-                            false,
-                        )
-                        .unwrap(),
-                )
-                .unwrap();
+            schemas.apply_updates(
+                schemas
+                    .compute_new_deployment(
+                        Some(deployment_1.id),
+                        deployment_1.metadata.clone(),
+                        vec![greeter_service()],
+                        false,
+                    )
+                    .unwrap(),
+            );
 
             schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_1.id);
 
@@ -421,7 +415,7 @@ mod tests {
             );
 
             assert!(let &ErrorKind::Component(
-                ComponentErrorKind::DifferentType(_)
+                ComponentError::DifferentType(_)
             ) = compute_result.unwrap_err().kind());
         }
     }
@@ -431,34 +425,30 @@ mod tests {
         let schemas = Schemas::default();
 
         let deployment = Deployment::mock();
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment.id),
-                        deployment.metadata.clone(),
-                        vec![greeter_service(), another_greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment.id),
+                    deployment.metadata.clone(),
+                    vec![greeter_service(), another_greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment.id);
         schemas.assert_component_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment.id),
-                        deployment.metadata.clone(),
-                        vec![greeter_service()],
-                        true,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment.id),
+                    deployment.metadata.clone(),
+                    vec![greeter_service()],
+                    true,
+                )
+                .unwrap(),
+        );
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment.id);
         assert!(schemas
@@ -471,18 +461,16 @@ mod tests {
         let schemas = Schemas::default();
 
         let deployment = Deployment::mock();
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment.id),
-                        deployment.metadata.clone(),
-                        vec![greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment.id),
+                    deployment.metadata.clone(),
+                    vec![greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         assert!(let ErrorKind::Override = schemas.compute_new_deployment(
             Some(deployment.id),
@@ -497,18 +485,16 @@ mod tests {
         let schemas = Schemas::default();
 
         let deployment = Deployment::mock();
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment.id),
-                        deployment.metadata.clone(),
-                        vec![greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment.id),
+                    deployment.metadata.clone(),
+                    vec![greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         let new_id = DeploymentId::new();
 
@@ -521,7 +507,7 @@ mod tests {
             )
             .unwrap_err();
         let_assert!(
-            &ErrorKind::Deployment(DeploymentErrorKind::IncorrectId {
+            &ErrorKind::Deployment(DeploymentError::IncorrectId {
                 requested,
                 existing
             }) = rejection.kind()
@@ -537,30 +523,26 @@ mod tests {
         let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment_1.id),
-                        deployment_1.metadata.clone(),
-                        vec![greeter_service(), another_greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-        schemas
-            .apply_updates(
-                schemas
-                    .compute_new_deployment(
-                        Some(deployment_2.id),
-                        deployment_2.metadata.clone(),
-                        vec![greeter_service()],
-                        false,
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment_1.id),
+                    deployment_1.metadata.clone(),
+                    vec![greeter_service(), another_greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
+        schemas.apply_updates(
+            schemas
+                .compute_new_deployment(
+                    Some(deployment_2.id),
+                    deployment_2.metadata.clone(),
+                    vec![greeter_service()],
+                    false,
+                )
+                .unwrap(),
+        );
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
@@ -579,7 +561,7 @@ mod tests {
             let Some(SchemasUpdateCommand::RemoveDeployment { .. }) = commands.get(2)
         );
 
-        schemas.apply_updates(commands).unwrap();
+        schemas.apply_updates(commands);
 
         schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
@@ -633,18 +615,16 @@ mod tests {
             let deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
             let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-            schemas
-                .apply_updates(
-                    schemas
-                        .compute_new_deployment(
-                            Some(deployment_1.id),
-                            deployment_1.metadata,
-                            vec![greeter_v1_service()],
-                            false,
-                        )
-                        .unwrap(),
-                )
-                .unwrap();
+            schemas.apply_updates(
+                schemas
+                    .compute_new_deployment(
+                        Some(deployment_1.id),
+                        deployment_1.metadata,
+                        vec![greeter_v1_service()],
+                        false,
+                    )
+                    .unwrap(),
+            );
             schemas.assert_component_revision(GREETER_SERVICE_NAME, 1);
 
             let rejection = schemas
@@ -659,10 +639,8 @@ mod tests {
             schemas.assert_component_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-                ErrorKind::Component(ComponentErrorKind::RemovedHandlers(
-                    service,
-                    missing_methods
-                )) = rejection.kind()
+                ErrorKind::Component(ComponentError::RemovedHandlers(service, missing_methods)) =
+                    rejection.kind()
             );
             check!(service == GREETER_SERVICE_NAME);
             check!(missing_methods == &["doSomething"]);

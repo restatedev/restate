@@ -197,15 +197,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn apply_updates(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), Error> {
+    pub fn apply_updates(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
         schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 
     /// Overwrites the existing schema registry with the provided schema updates
@@ -213,15 +208,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn overwrite(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), Error> {
+    pub fn overwrite(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = SchemasInner::default();
         schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 }
 

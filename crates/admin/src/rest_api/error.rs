@@ -17,7 +17,7 @@ use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
 use restate_meta::Error as MetaError;
-use restate_schema_impl::{ComponentErrorKind, DeploymentErrorKind, ErrorKind};
+use restate_schema_impl::{ComponentError, DeploymentError, ErrorKind};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -74,9 +74,9 @@ impl IntoResponse for MetaApiError {
                 match schema_registry_error.kind() {
                     ErrorKind::NotFound => StatusCode::NOT_FOUND,
                     ErrorKind::Override
-                    | ErrorKind::Component(ComponentErrorKind::DifferentType { .. })
-                    | ErrorKind::Component(ComponentErrorKind::RemovedHandlers { .. })
-                    | ErrorKind::Deployment(DeploymentErrorKind::IncorrectId { .. }) => {
+                    | ErrorKind::Component(ComponentError::DifferentType { .. })
+                    | ErrorKind::Component(ComponentError::RemovedHandlers { .. })
+                    | ErrorKind::Deployment(DeploymentError::IncorrectId { .. }) => {
                         StatusCode::CONFLICT
                     }
                     ErrorKind::Component(_) => StatusCode::BAD_REQUEST,

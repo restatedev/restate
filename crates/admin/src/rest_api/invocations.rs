@@ -39,7 +39,7 @@ pub struct DeleteInvocationParams {
     summary = "Terminate an invocation",
     description = "Terminate the given invocation. By default, an invocation is terminated by gracefully \
     cancelling it. This ensures virtual object state consistency. Alternatively, an invocation can be killed which \
-    does not guarantee consistency for virtual object instance state, in-flight invocation to other services, etc.",
+    does not guarantee consistency for virtual object instance state, in-flight invocations to other components, etc.",
     operation_id = "terminate_invocation",
     tags = "invocation",
     parameters(

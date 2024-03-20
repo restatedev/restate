@@ -3,7 +3,7 @@ use restate_schema_api::subscription::EventReceiverComponentType;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::META0009)]
-pub enum SubscriptionErrorKind {
+pub enum SubscriptionError {
     #[error(
         "invalid source URI '{0}': must have a scheme segment, with supported schemes: [kafka]."
     )]
@@ -50,7 +50,7 @@ impl SchemasInner {
                 let cluster_name = source
                     .authority()
                     .ok_or_else(|| {
-                        ErrorKind::Subscription(SubscriptionErrorKind::InvalidKafkaSourceAuthority(
+                        ErrorKind::Subscription(SubscriptionError::InvalidKafkaSourceAuthority(
                             source.clone(),
                         ))
                     })?
@@ -64,7 +64,7 @@ impl SchemasInner {
             }
             _ => {
                 return Err(ErrorKind::Subscription(
-                    SubscriptionErrorKind::InvalidSourceScheme(source),
+                    SubscriptionError::InvalidSourceScheme(source),
                 ))
             }
         };
@@ -75,22 +75,20 @@ impl SchemasInner {
                 let component_name = sink
                     .authority()
                     .ok_or_else(|| {
-                        ErrorKind::Subscription(
-                            SubscriptionErrorKind::InvalidComponentSinkAuthority(sink.clone()),
-                        )
+                        ErrorKind::Subscription(SubscriptionError::InvalidComponentSinkAuthority(
+                            sink.clone(),
+                        ))
                     })?
                     .as_str();
                 let handler_name = &sink.path()[1..];
 
                 // Retrieve component and handler in the schema registry
                 let component_schemas = self.components.get(component_name).ok_or_else(|| {
-                    ErrorKind::Subscription(SubscriptionErrorKind::SinkComponentNotFound(
-                        sink.clone(),
-                    ))
+                    ErrorKind::Subscription(SubscriptionError::SinkComponentNotFound(sink.clone()))
                 })?;
                 if !component_schemas.handlers.contains_key(handler_name) {
                     return Err(ErrorKind::Subscription(
-                        SubscriptionErrorKind::SinkComponentNotFound(sink),
+                        SubscriptionError::SinkComponentNotFound(sink),
                     ));
                 }
 
@@ -109,7 +107,7 @@ impl SchemasInner {
             }
             _ => {
                 return Err(ErrorKind::Subscription(
-                    SubscriptionErrorKind::InvalidSinkScheme(sink),
+                    SubscriptionError::InvalidSinkScheme(sink),
                 ))
             }
         };
@@ -121,7 +119,7 @@ impl SchemasInner {
                 sink,
                 metadata.unwrap_or_default(),
             ))
-            .map_err(|e| ErrorKind::Subscription(SubscriptionErrorKind::Validation(e.into())))?;
+            .map_err(|e| ErrorKind::Subscription(SubscriptionError::Validation(e.into())))?;
 
         Ok((
             subscription.clone(),

@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum ComponentErrorKind {
+pub enum ComponentError {
     #[error("cannot insert/modify component '{0}' as it contains a reserved name")]
     #[code(restate_errors::META0005)]
     ReservedName(String),
@@ -110,11 +110,11 @@ impl SchemasInner {
     }
 }
 
-pub(crate) fn check_reserved_name(name: &str) -> Result<(), ComponentErrorKind> {
+pub(crate) fn check_reserved_name(name: &str) -> Result<(), ComponentError> {
     if name.to_lowercase().starts_with("restate")
         || name.to_lowercase().eq_ignore_ascii_case("openapi")
     {
-        return Err(ComponentErrorKind::ReservedName(name.to_string()));
+        return Err(ComponentError::ReservedName(name.to_string()));
     }
     Ok(())
 }
