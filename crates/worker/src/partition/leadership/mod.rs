@@ -11,6 +11,7 @@
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage};
 use assert2::let_assert;
+use futures::future::OptionFuture;
 use futures::{future, StreamExt};
 use restate_core::network::NetworkSender;
 use restate_core::{
@@ -22,10 +23,6 @@ use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::{Deref, RangeInclusive};
-
-use bytes::Bytes;
-use futures::future::OptionFuture;
-use prost::Message;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -40,14 +37,12 @@ use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
-use restate_schema_impl::Schemas;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::dedup::EpochSequenceNumber;
-use restate_types::identifiers::{FullInvocationId, InvocationId, PartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
-use restate_types::journal::{CompletionResult, EntryType};
+use restate_types::journal::EntryType;
 use restate_wal_protocol::timer::TimerValue;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
@@ -78,8 +73,6 @@ pub(crate) enum Error {
     Invoker(NotRunningError),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error("action effect handler failed: {0}")]
-    ActionEffectHandler(anyhow::Error),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -129,16 +122,15 @@ where
         self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-        schemas: Schemas,
     ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower { .. } = self {
-            self.unchecked_become_leader(epoch_sequence_number, partition_storage, schemas)
+            self.unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         } else {
             let (follower_state, _) = self.become_follower().await?;
 
             follower_state
-                .unchecked_become_leader(epoch_sequence_number, partition_storage, schemas)
+                .unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         }
     }
@@ -147,11 +139,10 @@ where
         self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-        schemas: Schemas,
     ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower(mut follower_state) = self {
             let (mut service_invoker, service_invoker_output_rx) =
-                non_deterministic::ServiceInvoker::new(partition_storage.clone(), schemas);
+                non_deterministic::ServiceInvoker::new(partition_storage.clone());
 
             let leader_epoch = epoch_sequence_number.leader_epoch;
 
@@ -375,7 +366,6 @@ where
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
-                        &mut leader_state.action_effect_handler,
                         &follower_state.networking,
                     )
                     .await?;
@@ -394,7 +384,6 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker,
-        action_effect_handler: &mut ActionEffectHandler,
         networking: &Networking,
     ) -> Result<(), Error> {
         match action {
@@ -457,69 +446,6 @@ where
                         argument,
                     )
                     .await;
-            }
-            Action::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                invocation_id,
-                completion,
-            } => {
-                let journal_notification_request = Bytes::from(restate_pb::restate::internal::JournalCompletionNotificationRequest {
-                    entry_index: completion.entry_index,
-                    invocation_uuid: invocation_id.invocation_uuid().into(),
-                    result: Some(match completion.result {
-                        CompletionResult::Empty =>
-                            restate_pb::restate::internal::journal_completion_notification_request::Result::Empty(()),
-                        CompletionResult::Success(s) =>
-                            restate_pb::restate::internal::journal_completion_notification_request::Result::Success(s),
-                        CompletionResult::Failure(code, msg) =>               restate_pb::restate::internal::journal_completion_notification_request::Result::Failure(
-                            restate_pb::restate::internal::InvocationFailure {
-                                code: code.into(),
-                                message: msg.to_string(),
-                            }
-                        ),
-                    }),
-                }.encode_to_vec());
-
-                // We need this to agree on the invocation uuid, which is randomly generated
-                // We could get rid of it if invocation uuids are deterministically generated.
-                let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::generate(target_service),
-                    method_name,
-                    journal_notification_request,
-                    Source::Internal,
-                    None,
-                    SpanRelation::None,
-                );
-
-                action_effect_handler
-                    .handle(ActionEffect::Invocation(service_invocation))
-                    .await
-                    .map_err(Error::ActionEffectHandler)?;
-            }
-            Action::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                invocation_id,
-            } => {
-                // We need this to agree on the invocation uuid, which is randomly generated
-                // We could get rid of it if invocation uuids are deterministically generated.
-                let service_invocation = ServiceInvocation::new(
-                    FullInvocationId::generate(target_service),
-                    method_name,
-                    restate_pb::restate::internal::KillNotificationRequest {
-                        invocation_uuid: invocation_id.invocation_uuid().into(),
-                    }
-                    .encode_to_vec(),
-                    Source::Internal,
-                    None,
-                    SpanRelation::None,
-                );
-
-                action_effect_handler
-                    .handle(ActionEffect::Invocation(service_invocation))
-                    .await
-                    .map_err(Error::ActionEffectHandler)?;
             }
             Action::IngressResponse(ingress_response) => {
                 let invocation_id: InvocationId = ingress_response.full_invocation_id.into();

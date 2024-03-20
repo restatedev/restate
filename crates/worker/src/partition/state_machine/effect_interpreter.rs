@@ -338,52 +338,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     completion,
                 });
             }
-            Effect::CreateVirtualJournal {
-                invocation_id,
-                span_context,
-                completion_notification_target,
-                kill_notification_target,
-            } => {
-                state_storage
-                    .store_invocation_status(
-                        &invocation_id,
-                        InvocationStatus::Virtual {
-                            journal_metadata: JournalMetadata::initialize(span_context),
-                            completion_notification_target,
-                            timestamps: StatusTimestamps::now(),
-                            kill_notification_target,
-                        },
-                    )
-                    .await?;
-            }
-            Effect::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                invocation_id,
-                completion,
-            } => collector.push(Action::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                invocation_id,
-                completion,
-            }),
-            Effect::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                invocation_id,
-            } => collector.push(Action::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                invocation_id,
-            }),
-            Effect::DropJournal {
-                invocation_id,
-                journal_length,
-            } => {
-                state_storage
-                    .drop_journal(&invocation_id, journal_length)
-                    .await?;
-            }
             Effect::DropJournalAndPopInbox {
                 full_invocation_id,
                 journal_length,

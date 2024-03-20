@@ -262,7 +262,6 @@ impl Worker {
                     channel_size,
                     invoker_sender,
                     rocksdb_storage.clone(),
-                    schemas.clone(),
                 )
             })
             .collect();
@@ -289,7 +288,6 @@ impl Worker {
         channel_size: usize,
         invoker_sender: InvokerChannelServiceHandle,
         rocksdb_storage: RocksDBStorage,
-        schemas: Schemas,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
             partition_id,
@@ -298,7 +296,6 @@ impl Worker {
             channel_size,
             invoker_sender,
             rocksdb_storage,
-            schemas,
         )
     }
 

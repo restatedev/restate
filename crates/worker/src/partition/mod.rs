@@ -17,7 +17,6 @@ use futures::StreamExt;
 use metrics::counter;
 use restate_core::metadata;
 use restate_network::Networking;
-use restate_schema_impl::Schemas;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
@@ -55,8 +54,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
 
     rocksdb_storage: RocksDBStorage,
 
-    schemas: Schemas,
-
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
@@ -73,7 +70,6 @@ where
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         rocksdb_storage: RocksDBStorage,
-        schemas: Schemas,
     ) -> Self {
         Self {
             partition_id,
@@ -83,7 +79,6 @@ where
             invoker_tx,
             _entry_codec: Default::default(),
             rocksdb_storage,
-            schemas,
         }
     }
 
@@ -96,7 +91,6 @@ where
             channel_size,
             invoker_tx,
             rocksdb_storage,
-            schemas,
             ..
         } = self;
 
@@ -161,7 +155,7 @@ where
                         action_collector.clear();
 
                         if announce_leader.node_id == metadata().my_node_id() {
-                            (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage, schemas.clone()).await?;
+                            (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage).await?;
                         } else {
                             (state, action_effect_stream) = state.become_follower().await?;
                         }

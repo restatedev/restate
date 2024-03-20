@@ -15,7 +15,7 @@ use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use tracing::{instrument, trace};
@@ -113,7 +113,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
                 method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
             }),
-            SpanRelation::None,
+            self.span_context.as_parent(),
         )));
 
         Ok(())

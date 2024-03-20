@@ -59,10 +59,6 @@ pub(crate) fn append_invocation_status_row(
             row.status("suspended");
             Some(metadata)
         }
-        InvocationStatus::Virtual { .. } => {
-            row.status("virtual");
-            None
-        }
         InvocationStatus::Free => {
             row.status("free");
             None

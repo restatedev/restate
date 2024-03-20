@@ -13,9 +13,7 @@ use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::InvocationMetadata;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, JournalMetadata, NotificationTarget,
-};
+use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::errors::InvocationErrorCode;
@@ -63,10 +61,6 @@ pub(crate) enum Effect {
         message: OutboxMessage,
     },
     TruncateOutbox(MessageIndex),
-    DropJournal {
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    },
     DropJournalAndPopInbox {
         full_invocation_id: FullInvocationId,
         journal_length: EntryIndex,
@@ -126,27 +120,6 @@ pub(crate) enum Effect {
         // TODO this can be invocation_id once the invoker uses only InvocationId
         full_invocation_id: FullInvocationId,
         completion: Completion,
-    },
-
-    // Virtual journal
-    CreateVirtualJournal {
-        invocation_id: InvocationId,
-        span_context: ServiceInvocationSpanContext,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-    },
-    NotifyVirtualJournalCompletion {
-        target_service: ServiceId,
-        method_name: String,
-        // TODO perhaps we should rename this type JournalId
-        invocation_id: InvocationId,
-        completion: Completion,
-    },
-    NotifyVirtualJournalKill {
-        target_service: ServiceId,
-        method_name: String,
-        // TODO perhaps we should rename this type JournalId
-        invocation_id: InvocationId,
     },
 
     // Effects used only for tracing purposes
@@ -338,13 +311,6 @@ impl Effect {
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
-            Effect::DropJournal { journal_length, .. } => {
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.length = journal_length,
-                    "Effect: Drop journal"
-                );
-            }
             Effect::DropJournalAndPopInbox { journal_length, .. } => {
                 debug_if_leader!(
                     is_leader,
@@ -505,44 +471,6 @@ impl Effect {
                 "Effect: Forward completion {} to deployment",
                 CompletionResultFmt(result)
             ),
-            Effect::CreateVirtualJournal { invocation_id, .. } => {
-                debug_if_leader!(
-                    is_leader,
-                    restate.invocation.id = %invocation_id,
-                    "Effect: Create virtual journal"
-                )
-            }
-            Effect::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                completion:
-                    Completion {
-                        entry_index,
-                        result,
-                    },
-                ..
-            } => {
-                debug_if_leader!(
-                    is_leader,
-                    restate.journal.index = entry_index,
-                    "Effect: Notify virtual journal completion {} to service {:?} method {}",
-                    CompletionResultFmt(result),
-                    target_service,
-                    method_name
-                )
-            }
-            Effect::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                ..
-            } => {
-                debug_if_leader!(
-                    is_leader,
-                    "Effect: Notify virtual journal kill to service {:?} method {}",
-                    target_service,
-                    method_name
-                )
-            }
             Effect::TraceBackgroundInvoke {
                 full_invocation_id,
                 service_method,
@@ -819,56 +747,6 @@ impl Effects {
         self.effects.push(Effect::ForwardCompletion {
             full_invocation_id,
             completion,
-        });
-    }
-
-    pub(crate) fn create_virtual_journal(
-        &mut self,
-        invocation_id: InvocationId,
-        span_context: ServiceInvocationSpanContext,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-    ) {
-        self.effects.push(Effect::CreateVirtualJournal {
-            invocation_id,
-            span_context,
-            completion_notification_target,
-            kill_notification_target,
-        })
-    }
-
-    pub(crate) fn notify_virtual_journal_completion(
-        &mut self,
-        target_service: ServiceId,
-        method_name: String,
-        invocation_id: InvocationId,
-        completion: Completion,
-    ) {
-        self.effects.push(Effect::NotifyVirtualJournalCompletion {
-            target_service,
-            method_name,
-            invocation_id,
-            completion,
-        });
-    }
-
-    pub(crate) fn notify_virtual_journal_kill(
-        &mut self,
-        target_service: ServiceId,
-        method_name: String,
-        invocation_id: InvocationId,
-    ) {
-        self.effects.push(Effect::NotifyVirtualJournalKill {
-            target_service,
-            method_name,
-            invocation_id,
-        });
-    }
-
-    pub(crate) fn drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex) {
-        self.effects.push(Effect::DropJournal {
-            invocation_id,
-            journal_length,
         });
     }
 
