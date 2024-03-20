@@ -67,7 +67,7 @@ impl ServiceInvoker {
         &mut self,
         full_invocation_id: FullInvocationId,
         method: &str,
-        _span_context: ServiceInvocationSpanContext,
+        span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
         argument: Bytes,
     ) {
@@ -79,6 +79,7 @@ impl ServiceInvoker {
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
             state_transitions: &mut state_and_journal_transitions,
+            span_context: &span_context,
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
@@ -144,6 +145,7 @@ struct InvocationContext<'a, S> {
     full_invocation_id: &'a FullInvocationId,
     state_reader: &'a mut S,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
+    span_context: &'a ServiceInvocationSpanContext,
 
     effects_buffer: &'a mut Vec<BuiltinServiceEffect>,
     state_transitions: &'a mut StateTransitions,
@@ -326,6 +328,7 @@ mod tests {
                 full_invocation_id: &fid,
                 state_reader: &mut self.state_reader,
                 response_sink: self.response_sink.as_ref(),
+                span_context: &Default::default(),
                 effects_buffer: &mut out_effects,
                 state_transitions: &mut state_and_journal_transitions,
             };
