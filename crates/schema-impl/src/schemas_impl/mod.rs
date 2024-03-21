@@ -10,16 +10,15 @@
 
 use super::*;
 
-use anyhow::anyhow;
 use restate_schema_api::subscription::{Sink, Source};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-mod component;
+pub(crate) mod component;
 pub(crate) mod deployment;
-mod subscription;
+pub(crate) mod subscription;
 
 impl Schemas {
     pub(crate) fn use_component_schema<F, R>(
@@ -45,26 +44,23 @@ pub(crate) struct SchemasInner {
 }
 
 impl SchemasInner {
-    pub fn apply_updates(
-        &mut self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn apply_updates(&mut self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         for cmd in updates {
             match cmd {
                 SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
-                    self.apply_remove_deployment(deployment_id)?;
+                    self.apply_remove_deployment(deployment_id);
                 }
                 SchemasUpdateCommand::AddSubscription(sub) => {
-                    self.apply_add_subscription(sub)?;
+                    self.apply_add_subscription(sub);
                 }
                 SchemasUpdateCommand::RemoveSubscription(sub_id) => {
-                    self.apply_remove_subscription(sub_id)?;
+                    self.apply_remove_subscription(sub_id);
                 }
                 SchemasUpdateCommand::InsertDeployment {
                     metadata,
                     deployment_id,
                 } => {
-                    self.apply_insert_deployment(deployment_id, metadata)?;
+                    self.apply_insert_deployment(deployment_id, metadata);
                 }
                 SchemasUpdateCommand::InsertComponent(InsertComponentUpdateCommand {
                     name,
@@ -73,18 +69,16 @@ impl SchemasInner {
                     deployment_id,
                     handlers,
                 }) => {
-                    self.apply_insert_component(name, revision, ty, deployment_id, handlers)?;
+                    self.apply_insert_component(name, revision, ty, deployment_id, handlers);
                 }
                 SchemasUpdateCommand::RemoveComponent { name, revision } => {
-                    self.apply_remove_component(name, revision)?;
+                    self.apply_remove_component(name, revision);
                 }
                 SchemasUpdateCommand::ModifyComponent { name, public } => {
-                    self.apply_modify_component(name, public)?;
+                    self.apply_modify_component(name, public);
                 }
             }
         }
-
-        Ok(())
     }
 }
 

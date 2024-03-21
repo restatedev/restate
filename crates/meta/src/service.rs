@@ -313,7 +313,7 @@ where
 
     async fn reload_schemas(&mut self) -> Result<(), Error> {
         let update_commands = self.storage.reload().await?;
-        self.schemas.apply_updates(update_commands)?;
+        self.schemas.apply_updates(update_commands);
         self.reloaded = true;
         Ok(())
     }
@@ -432,7 +432,7 @@ where
         self.storage.store(commands.clone()).await?;
 
         // Propagate updates in memory
-        self.schemas.apply_updates(commands)?;
+        self.schemas.apply_updates(commands);
 
         Ok(())
     }

@@ -16,7 +16,6 @@ use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
-use schemas_impl::deployment::IncompatibleServiceChangeError;
 use schemas_impl::{HandlerSchemas, SchemasInner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,8 +23,11 @@ use std::sync::Arc;
 
 mod component;
 mod deployment;
+mod error;
 mod schemas_impl;
 mod subscriptions;
+
+pub use error::*;
 
 // --- Update commands data structure
 
@@ -107,55 +109,6 @@ pub enum SchemasUpdateCommand {
 #[derive(Debug, Default, Clone)]
 pub struct Schemas(Arc<ArcSwap<SchemasInner>>);
 
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(unknown)]
-pub enum SchemasUpdateError {
-    #[error("a deployment with the same id {0} already exists in the registry")]
-    #[code(restate_errors::META0004)]
-    OverrideDeployment(DeploymentId),
-    #[error(
-        "existing deployment id is different from requested (requested = {requested}, existing = {existing})"
-    )]
-    #[code(restate_errors::META0004)]
-    IncorrectDeploymentId {
-        requested: DeploymentId,
-        existing: DeploymentId,
-    },
-    #[error("missing service {0} in descriptor")]
-    #[code(restate_errors::META0005)]
-    MissingServiceInDescriptor(String),
-    #[error("service {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownService(String),
-    #[error("component {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownComponent(String),
-    #[error("cannot insert/modify service {0} as it's a reserved name")]
-    #[code(restate_errors::META0005)]
-    ModifyInternalService(String),
-    #[error("cannot insert/modify component {0} as it contains a reserved name")]
-    #[code(restate_errors::META0005)]
-    ReservedName(String),
-    #[error("unknown deployment id {0}")]
-    UnknownDeployment(DeploymentId),
-    #[error("unknown subscription id {0}")]
-    UnknownSubscription(SubscriptionId),
-    #[error("invalid subscription: {0}")]
-    #[code(restate_errors::META0009)]
-    InvalidSubscription(anyhow::Error),
-    #[error("invalid subscription sink '{0}': {1}")]
-    #[code(restate_errors::META0009)]
-    InvalidSink(Uri, &'static str),
-    #[error("a subscription with the same id {0} already exists in the registry")]
-    OverrideSubscription(SubscriptionId),
-    #[error(transparent)]
-    IncompatibleServiceChange(
-        #[from]
-        #[code]
-        IncompatibleServiceChangeError,
-    ),
-}
-
 impl Schemas {
     /// Compute the commands to update the schema registry with a new deployment.
     /// This method doesn't execute any in-memory update of the registry.
@@ -178,27 +131,36 @@ impl Schemas {
         deployment_metadata: DeploymentMetadata,
         components: Vec<schema::Component>,
         force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, Error> {
+        let debug_id = deployment_id
+            .as_ref()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| deployment_metadata.address_display().to_string());
         self.0
             .load()
             .compute_new_deployment(deployment_id, deployment_metadata, components, force)
+            .map_err(|e| Error::new("add new deployment", debug_id, e))
     }
 
     pub fn compute_modify_component(
         &self,
         component_name: String,
         public: bool,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
+    ) -> Result<SchemasUpdateCommand, Error> {
         self.0
             .load()
-            .compute_modify_component_updates(component_name, public)
+            .compute_modify_component_updates(component_name.clone(), public)
+            .map_err(|e| Error::new("modify component", component_name, e))
     }
 
     pub fn compute_remove_deployment(
         &self,
         deployment_id: DeploymentId,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().compute_remove_deployment(deployment_id)
+    ) -> Result<Vec<SchemasUpdateCommand>, Error> {
+        self.0
+            .load()
+            .compute_remove_deployment(deployment_id)
+            .map_err(|e| Error::new("remove deployment", deployment_id, e))
     }
 
     // Returns the [`Subscription`] id together with the update command
@@ -209,17 +171,25 @@ impl Schemas {
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: &V,
-    ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
+    ) -> Result<(Subscription, SchemasUpdateCommand), Error> {
+        let debug_id = id
+            .as_ref()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| format!("{} to {}", source, sink));
         self.0
             .load()
             .compute_add_subscription(id, source, sink, metadata, validator)
+            .map_err(|e| Error::new("add subscription", debug_id, e))
     }
 
     pub fn compute_remove_subscription(
         &self,
         id: SubscriptionId,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
-        self.0.load().compute_remove_subscription(id)
+    ) -> Result<SchemasUpdateCommand, Error> {
+        self.0
+            .load()
+            .compute_remove_subscription(id)
+            .map_err(|e| Error::new("remove subscription", id, e))
     }
 
     /// Apply the updates to the schema registry.
@@ -227,15 +197,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn apply_updates(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn apply_updates(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-        schemas_inner.apply_updates(updates)?;
+        schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 
     /// Overwrites the existing schema registry with the provided schema updates
@@ -243,15 +208,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn overwrite(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn overwrite(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = SchemasInner::default();
-        schemas_inner.apply_updates(updates)?;
+        schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 }
 
