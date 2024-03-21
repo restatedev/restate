@@ -87,7 +87,9 @@ impl From<Completion> for ProtocolMessage {
             CompletionResult::Empty => {
                 ProtocolMessage::Completion(pb::protocol::CompletionMessage {
                     entry_index: completion.entry_index,
-                    result: Some(pb::protocol::completion_message::Result::Empty(())),
+                    result: Some(pb::protocol::completion_message::Result::Empty(
+                        pb::protocol::Empty {},
+                    )),
                 })
             }
             CompletionResult::Success(b) => {

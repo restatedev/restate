@@ -10,6 +10,7 @@
 
 use super::*;
 
+use restate_schema_api::invocation_target::InvocationTargetMetadata;
 use restate_schema_api::subscription::{Sink, Source};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 use std::collections::hash_map::Entry;
@@ -84,15 +85,7 @@ impl SchemasInner {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HandlerSchemas {
-    input_schema: Option<Bytes>,
-    output_schema: Option<Bytes>,
-}
-
-impl HandlerSchemas {
-    pub(crate) fn schema_to_description(_schema: Bytes) -> String {
-        // TODO to implement
-        "any".to_string()
-    }
+    pub(crate) target_meta: InvocationTargetMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -104,39 +97,45 @@ pub(crate) struct ComponentSchemas {
 }
 
 impl ComponentSchemas {
-    fn new_built_in<'a>(
-        ty: ComponentType,
-        ingress_available: bool,
-        handlers: impl IntoIterator<Item = &'a str>,
-    ) -> Self {
+    fn new_built_in<'a>(ty: ComponentType, handlers: impl IntoIterator<Item = &'a str>) -> Self {
         Self {
             revision: 0,
             handlers: Self::compute_handlers(
+                ty,
                 handlers
                     .into_iter()
                     .map(|s| DiscoveredHandlerMetadata {
                         name: s.to_owned(),
-                        input_schema: None,
-                        output_schema: None,
+                        // This seems to be fine for the time being,
+                        // we might need to change it in the future.
+                        ty: HandlerType::Exclusive,
+                        input: InputRules::default(),
+                        output: OutputRules::default(),
                     })
                     .collect(),
             ),
-            location: ComponentLocation::BuiltIn { ingress_available },
+            location: ComponentLocation::BuiltIn,
             ty,
         }
     }
 
     pub(crate) fn compute_handlers(
+        component_ty: ComponentType,
         handlers: Vec<DiscoveredHandlerMetadata>,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
             .into_iter()
-            .map(|m| {
+            .map(|handler| {
                 (
-                    m.name,
+                    handler.name,
                     HandlerSchemas {
-                        input_schema: m.input_schema,
-                        output_schema: m.output_schema,
+                        target_meta: InvocationTargetMetadata {
+                            public: true,
+                            component_ty,
+                            handler_ty: handler.ty,
+                            input_rules: handler.input,
+                            output_rules: handler.output,
+                        },
                     },
                 )
             })
@@ -156,14 +155,9 @@ impl ComponentSchemas {
                     .iter()
                     .map(|(h_name, h_schemas)| HandlerMetadata {
                         name: h_name.clone(),
-                        input_description: h_schemas
-                            .input_schema
-                            .clone()
-                            .map(HandlerSchemas::schema_to_description),
-                        output_description: h_schemas
-                            .output_schema
-                            .clone()
-                            .map(HandlerSchemas::schema_to_description),
+                        ty: h_schemas.target_meta.handler_ty,
+                        input_description: h_schemas.target_meta.input_rules.to_string(),
+                        output_description: h_schemas.target_meta.output_rules.to_string(),
                     })
                     .collect(),
                 ty: self.ty,
@@ -177,26 +171,12 @@ impl ComponentSchemas {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ComponentLocation {
-    BuiltIn {
-        // Available at the ingress
-        ingress_available: bool,
-    },
+    BuiltIn,
     Deployment {
         // None if this is a built-in service
         latest_deployment: DeploymentId,
         public: bool,
     },
-}
-
-impl ComponentLocation {
-    pub(crate) fn is_ingress_available(&self) -> bool {
-        match self {
-            ComponentLocation::BuiltIn {
-                ingress_available, ..
-            } => *ingress_available,
-            ComponentLocation::Deployment { public, .. } => *public,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -216,52 +196,32 @@ impl Default for SchemasInner {
             subscriptions: Default::default(),
         };
 
-        #[allow(dead_code)]
-        enum Visibility {
-            Public,
-            IngressAvailable,
-            Internal,
-        }
-
         // Register built-in services
-        let mut register_built_in = |component_name: &'static str,
-                                     ty: ComponentType,
-                                     visibility: Visibility,
-                                     handlers: Vec<&str>| {
-            inner.components.insert(
-                component_name.to_string(),
-                ComponentSchemas::new_built_in(
-                    ty,
-                    matches!(
-                        visibility,
-                        Visibility::Public | Visibility::IngressAvailable
-                    ),
-                    handlers,
-                ),
-            );
-        };
+        let mut register_built_in =
+            |component_name: &'static str, ty: ComponentType, handlers: Vec<&str>| {
+                inner.components.insert(
+                    component_name.to_string(),
+                    ComponentSchemas::new_built_in(ty, handlers),
+                );
+            };
         register_built_in(
             restate_pb::PROXY_SERVICE_NAME,
             ComponentType::Service,
-            Visibility::Internal,
             vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
         );
         register_built_in(
             restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
             ComponentType::VirtualObject,
-            Visibility::Internal,
             vec!["Start", "Send", "Recv", "GetResult", "Cleanup"],
         );
         register_built_in(
             restate_pb::PROXY_SERVICE_NAME,
             ComponentType::Service,
-            Visibility::Internal,
             vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
         );
         register_built_in(
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
             ComponentType::Service,
-            Visibility::Internal,
             vec![
                 restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME,
                 restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME,

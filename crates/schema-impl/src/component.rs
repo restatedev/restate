@@ -10,26 +10,16 @@
 
 use super::*;
 
-use restate_schema_api::component::{BasicComponentMetadata, ComponentMetadataResolver};
+use restate_schema_api::component::ComponentMetadataResolver;
 
 impl ComponentMetadataResolver for Schemas {
-    fn resolve_latest_component_handler(
+    fn resolve_latest_component(
         &self,
         component_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<BasicComponentMetadata> {
-        self.use_component_schema(component_name.as_ref(), |component_schemas| {
-            if component_schemas
-                .handlers
-                .contains_key(handler_name.as_ref())
-            {
-                Some(BasicComponentMetadata {
-                    public: component_schemas.location.is_ingress_available(),
-                    ty: component_schemas.ty,
-                })
-            } else {
-                None
-            }
+    ) -> Option<ComponentMetadata> {
+        let name = component_name.as_ref();
+        self.use_component_schema(name, |component_schemas| {
+            component_schemas.as_component_metadata(name.to_owned())
         })
         .flatten()
     }
@@ -41,17 +31,6 @@ impl ComponentMetadataResolver for Schemas {
         self.use_component_schema(component_name.as_ref(), |component_schemas| {
             component_schemas.ty
         })
-    }
-
-    fn resolve_latest_component(
-        &self,
-        component_name: impl AsRef<str>,
-    ) -> Option<ComponentMetadata> {
-        let name = component_name.as_ref();
-        self.use_component_schema(name, |component_schemas| {
-            component_schemas.as_component_metadata(name.to_owned())
-        })
-        .flatten()
     }
 
     fn list_components(&self) -> Vec<ComponentMetadata> {

@@ -101,7 +101,9 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {
-            CompletionResult::Empty => protocol::completion_message::Result::Empty(()),
+            CompletionResult::Empty => {
+                protocol::completion_message::Result::Empty(protocol::Empty {})
+            }
             CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
                 protocol::completion_message::Result::Failure(protocol::Failure {
@@ -185,7 +187,9 @@ mod mocks {
                     GetStateEntryMessage {
                         key: entry.key,
                         result: entry.value.map(|value| match value {
-                            GetStateResult::Empty => get_state_entry_message::Result::Empty(()),
+                            GetStateResult::Empty => {
+                                get_state_entry_message::Result::Empty(protocol::Empty {})
+                            }
                             GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
                             GetStateResult::Failure(code, reason) => {
                                 get_state_entry_message::Result::Failure(Failure {

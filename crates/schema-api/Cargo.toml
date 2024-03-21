@@ -15,6 +15,7 @@ mocks = []
 serde = ["dep:serde", "dep:serde_with", "restate-types?/serde", "dep:restate-serde-util"]
 serde_schema = ["serde", "dep:schemars", "restate-types?/serde_schema", "restate-serde-util?/schema"]
 component = ["dep:bytes", "dep:restate-types"]
+invocation_target = ["component", "dep:bytes", "dep:restate-types", "dep:thiserror", "dep:http", "dep:restate-serde-util", "dep:bytestring", "dep:itertools"]
 subscription = ["dep:anyhow", "dep:restate-types"]
 
 [dependencies]
@@ -27,6 +28,8 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 bytestring = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+itertools = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }

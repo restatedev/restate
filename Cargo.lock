@@ -2357,6 +2357,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluent-uri"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2583,15 +2592,6 @@ name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
-
-[[package]]
-name = "hashbrown"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
-dependencies = [
- "ahash",
-]
 
 [[package]]
 name = "hashbrown"
@@ -3055,6 +3055,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29c15563dc2726973df627357ce0c9ddddbea194836909d655df6a75d2cf296d"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jsonptr"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c6e529149475ca0b2820835d3dce8fcc41c6b943ca608d32f35b449255e4627"
+dependencies = [
+ "fluent-uri",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4694,11 +4705,11 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
 name = "regress"
-version = "0.7.1"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ed9969cad8051328011596bf549629f1b800cf1731e7964b1eef8dfc480d2c2"
+checksum = "4f5f39ba4513916c1b2657b72af6ec671f091cd637992f58d0ede5cae4e5dea0"
 dependencies = [
- "hashbrown 0.13.2",
+ "hashbrown 0.14.3",
  "memchr",
 ]
 
@@ -5056,6 +5067,7 @@ dependencies = [
  "codederror",
  "derive_builder",
  "futures",
+ "http 0.2.12",
  "http 1.1.0",
  "http-body 1.0.0",
  "http-body-util",
@@ -5439,12 +5451,14 @@ dependencies = [
  "bytes",
  "bytestring",
  "http 0.2.12",
+ "itertools 0.11.0",
  "restate-base64-util",
  "restate-serde-util",
  "restate-types",
  "schemars",
  "serde",
  "serde_with",
+ "thiserror",
 ]
 
 [[package]]
@@ -5561,6 +5575,7 @@ dependencies = [
  "bytes-utils",
  "codederror",
  "hyper 0.14.28",
+ "jsonptr",
  "paste",
  "prettyplease",
  "prost 0.12.3",
@@ -7295,9 +7310,9 @@ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 
 [[package]]
 name = "typify"
-version = "0.0.15"
+version = "0.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63ed4d717aa95e598e2f9183376b060e95669ef8f444701ea6afb990fde1cf69"
+checksum = "5c61e9db210bbff218e6535c664b37ec47da449169b98e7866d0580d0db75529"
 dependencies = [
  "typify-impl",
  "typify-macro",
@@ -7305,15 +7320,15 @@ dependencies = [
 
 [[package]]
 name = "typify-impl"
-version = "0.0.15"
+version = "0.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89057244dfade7c58af9e62beccbcbeb7a7e7701697a33b06dbe0b7331fb79cf"
+checksum = "95e32f38493804f88e2dc7a5412eccd872ea5452b4db9b0a77de4df180f2a87e"
 dependencies = [
  "heck 0.4.1",
  "log",
  "proc-macro2",
  "quote",
- "regress 0.7.1",
+ "regress 0.8.0",
  "schemars",
  "serde_json",
  "syn 2.0.55",
@@ -7323,9 +7338,9 @@ dependencies = [
 
 [[package]]
 name = "typify-macro"
-version = "0.0.15"
+version = "0.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ddade397f5957d2cd7fb27f905a9a569db20e8e1e3ea589edce40be07b92825"
+checksum = "cc09508b72f63d521d68e42c7f172c7416d67986df44b3c7d1f7f9963948ed32"
 dependencies = [
  "proc-macro2",
  "quote",

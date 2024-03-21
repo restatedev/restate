@@ -12,6 +12,7 @@ use super::HyperServerIngress;
 
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::invocation_target::InvocationTargetResolver;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -49,7 +50,8 @@ impl Options {
         schemas: Schemas,
     ) -> HyperServerIngress<Schemas, IngressDispatcher>
     where
-        Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+        Schemas:
+            ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     {
         let Options {
             bind_address,

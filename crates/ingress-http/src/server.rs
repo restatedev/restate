@@ -21,6 +21,7 @@ use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::invocation_target::InvocationTargetResolver;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -63,7 +64,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
 
 impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
@@ -301,7 +302,7 @@ mod tests {
         let (ingress, start_signal) = HyperServerIngress::new(
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
-            mock_component_resolver(),
+            mock_schemas(),
             MockDispatcher::new(ingress_request_tx),
         );
         node_env

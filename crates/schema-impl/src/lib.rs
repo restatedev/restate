@@ -9,14 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::ArcSwap;
-use bytes::Bytes;
 use http::Uri;
-use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
+use restate_schema_api::component::{
+    ComponentMetadata, ComponentType, HandlerMetadata, HandlerType,
+};
 use restate_schema_api::deployment::DeploymentMetadata;
+use restate_schema_api::invocation_target::{InputRules, OutputRules};
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
-use schemas_impl::{HandlerSchemas, SchemasInner};
+use schemas_impl::SchemasInner;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,6 +26,7 @@ use std::sync::Arc;
 mod component;
 mod deployment;
 mod error;
+mod invocation_target;
 mod schemas_impl;
 mod subscriptions;
 
@@ -31,25 +34,21 @@ pub use error::*;
 
 // --- Update commands data structure
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredHandlerMetadata {
     name: String,
-    input_schema: Option<Bytes>,
-    output_schema: Option<Bytes>,
+    ty: HandlerType,
+    input: InputRules,
+    output: OutputRules,
 }
 
 impl DiscoveredHandlerMetadata {
     pub fn as_handler_metadata(&self) -> HandlerMetadata {
         HandlerMetadata {
             name: self.name.clone(),
-            input_description: self
-                .clone()
-                .input_schema
-                .map(HandlerSchemas::schema_to_description),
-            output_description: self
-                .clone()
-                .output_schema
-                .map(HandlerSchemas::schema_to_description),
+            ty: HandlerType::Exclusive,
+            input_description: self.input.to_string(),
+            output_description: self.output.to_string(),
         }
     }
 }
@@ -220,13 +219,14 @@ mod tests {
     use super::*;
 
     use restate_schema_api::component::ComponentMetadataResolver;
+    use restate_schema_api::invocation_target::InvocationTargetResolver;
     use restate_test_util::assert_eq;
 
     impl Schemas {
         #[track_caller]
         pub(crate) fn assert_component_handler(&self, component_name: &str, handler_name: &str) {
             assert!(self
-                .resolve_latest_component_handler(component_name, handler_name)
+                .resolve_latest_invocation_target(component_name, handler_name)
                 .is_some());
         }
 

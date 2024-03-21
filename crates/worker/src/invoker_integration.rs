@@ -42,7 +42,7 @@ impl<Schemas, Codec> EntryEnricher<Schemas, Codec> {
 
 impl<Schemas, Codec> EntryEnricher<Schemas, Codec>
 where
-    Schemas: restate_schema_api::component::ComponentMetadataResolver,
+    Schemas: restate_schema_api::invocation_target::InvocationTargetResolver,
     Codec: RawEntryCodec,
 {
     fn resolve_service_invocation_target(
@@ -58,9 +58,9 @@ where
 
         let service_id = match self
             .schemas
-            .resolve_latest_component_handler(&request.service_name, &request.method_name)
+            .resolve_latest_invocation_target(&request.service_name, &request.method_name)
         {
-            Some(meta) => match meta.ty {
+            Some(meta) => match meta.component_ty {
                 ComponentType::Service => ServiceId::unkeyed(request.service_name.clone()),
                 ComponentType::VirtualObject => {
                     ServiceId::new(request.service_name.clone(), request.key.into_bytes())
@@ -97,7 +97,7 @@ where
 
 impl<Schemas, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<Schemas, Codec>
 where
-    Schemas: restate_schema_api::component::ComponentMetadataResolver,
+    Schemas: restate_schema_api::invocation_target::InvocationTargetResolver,
     Codec: RawEntryCodec,
 {
     fn enrich_entry(

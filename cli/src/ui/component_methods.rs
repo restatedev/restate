@@ -25,8 +25,8 @@ pub fn create_component_handlers_table(
     for handler in handlers {
         table.add_row(vec![
             Cell::new(&handler.name),
-            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
-            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
+            Cell::new(&handler.input_description),
+            Cell::new(&handler.output_description),
         ]);
     }
     table
@@ -58,8 +58,8 @@ pub fn create_component_handlers_table_diff(
             row.push(Cell::new(&handler.name).fg(Color::Green));
         }
         row.extend_from_slice(&[
-            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
-            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
+            Cell::new(&handler.input_description),
+            Cell::new(&handler.output_description),
         ]);
         table.add_row(row);
     }
@@ -69,8 +69,8 @@ pub fn create_component_handlers_table_diff(
         let row = vec![
             Cell::new("--").fg(Color::Red),
             Cell::new(&handler.name).fg(Color::Red),
-            Cell::new(handler.input_description.as_deref().unwrap_or("any")),
-            Cell::new(handler.output_description.as_deref().unwrap_or("any")),
+            Cell::new(&handler.input_description),
+            Cell::new(&handler.output_description),
         ];
 
         table.add_row(row);
