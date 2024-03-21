@@ -103,7 +103,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// By default, this is `true` but it might change in future to `false`.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<true>")]
         force: bool,
 
@@ -137,7 +137,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// By default, this is `true` but it might change in future to `false`.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/services/upgrades-removal) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<true>")]
         force: bool,
 
