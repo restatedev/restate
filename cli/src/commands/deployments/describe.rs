@@ -152,8 +152,8 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
             methods_table.add_row(vec![
                 Cell::new(&handler.name),
-                Cell::new(handler.input_description.as_deref().unwrap_or("any")),
-                Cell::new(handler.output_description.as_deref().unwrap_or("any")),
+                Cell::new(&handler.input_description),
+                Cell::new(&handler.output_description),
                 render_active_invocations(active_inv),
             ]);
         }

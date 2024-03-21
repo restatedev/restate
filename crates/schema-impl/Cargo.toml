@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 restate-errors = { workspace = true }
 restate-pb = { workspace = true }
-restate-schema-api = { workspace = true, features = ["component", "deployment", "subscription", "serde"] }
+restate-schema-api = { workspace = true, features = ["component", "deployment", "subscription", "invocation_target", "serde"] }
 restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }

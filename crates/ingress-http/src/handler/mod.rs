@@ -19,6 +19,7 @@ use hyper::{Request, Response};
 use path_parsing::RequestType;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::invocation_target::InvocationTargetResolver;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 
@@ -50,7 +51,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
 
 impl<Schemas, Dispatcher, Body> tower::Service<Request<Body>> for Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,

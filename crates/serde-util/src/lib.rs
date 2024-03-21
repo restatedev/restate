@@ -13,7 +13,9 @@ mod header_map;
 mod proto;
 
 pub mod default;
+pub mod header_value;
 
 pub use header_map::SerdeableHeaderHashMap;
+pub use header_value::HeaderValueSerde;
 #[cfg(feature = "proto")]
 pub use proto::ProtobufEncoded;

@@ -301,8 +301,9 @@ mod tests {
             fully_qualified_component_name: "greeter".parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
-                input_schema: None,
-                output_schema: None,
+                handler_type: None,
+                input: None,
+                output: None,
             }],
         }
     }
@@ -313,8 +314,9 @@ mod tests {
             fully_qualified_component_name: "another-greeter".parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "another_greeter".parse().unwrap(),
-                input_schema: None,
-                output_schema: None,
+                handler_type: None,
+                input: None,
+                output: None,
             }],
         }
     }

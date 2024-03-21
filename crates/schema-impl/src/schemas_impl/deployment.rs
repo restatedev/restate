@@ -160,20 +160,8 @@ impl SchemasInner {
                     handlers: component
                         .handlers
                         .into_iter()
-                        .map(|h| DiscoveredHandlerMetadata {
-                            name: h.name.to_string(),
-                            input_schema: h.input_schema.map(|v| {
-                                serde_json::to_vec(&v)
-                                    .expect("Serializing Values must never fail")
-                                    .into()
-                            }),
-                            output_schema: h.output_schema.map(|v| {
-                                serde_json::to_vec(&v)
-                                    .expect("Serializing Values must never fail")
-                                    .into()
-                            }),
-                        })
-                        .collect(),
+                        .map(|h| DiscoveredHandlerMetadata::from_schema(component_type, h))
+                        .collect::<Result<Vec<_>, _>>()?,
                 },
             ));
         }
@@ -245,8 +233,9 @@ mod tests {
             fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
-                input_schema: None,
-                output_schema: None,
+                handler_type: None,
+                input: None,
+                output: None,
             }],
         }
     }
@@ -257,8 +246,9 @@ mod tests {
             fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
-                input_schema: None,
-                output_schema: None,
+                handler_type: None,
+                input: None,
+                output: None,
             }],
         }
     }
@@ -269,8 +259,9 @@ mod tests {
             fully_qualified_component_name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "another_greeter".parse().unwrap(),
-                input_schema: None,
-                output_schema: None,
+                handler_type: None,
+                input: None,
+                output: None,
             }],
         }
     }
@@ -584,13 +575,15 @@ mod tests {
                 handlers: vec![
                     schema::Handler {
                         name: "greet".parse().unwrap(),
-                        input_schema: None,
-                        output_schema: None,
+                        handler_type: None,
+                        input: None,
+                        output: None,
                     },
                     schema::Handler {
                         name: "doSomething".parse().unwrap(),
-                        input_schema: None,
-                        output_schema: None,
+                        handler_type: None,
+                        input: None,
+                        output: None,
                     },
                 ],
             }
@@ -602,8 +595,9 @@ mod tests {
                 fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![schema::Handler {
                     name: "greet".parse().unwrap(),
-                    input_schema: None,
-                    output_schema: None,
+                    handler_type: None,
+                    input: None,
+                    output: None,
                 }],
             }
         }

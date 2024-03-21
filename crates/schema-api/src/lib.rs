@@ -10,6 +10,9 @@
 
 //! This crate contains all the different APIs for accessing schemas.
 
+#[cfg(feature = "invocation_target")]
+pub mod invocation_target;
+
 #[cfg(feature = "deployment")]
 pub mod deployment {
     use crate::component::ComponentMetadata;
@@ -306,6 +309,23 @@ pub mod component {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum HandlerType {
+        Exclusive,
+        Shared,
+    }
+
+    impl HandlerType {
+        pub fn default_for_component_type(component_type: ComponentType) -> Self {
+            match component_type {
+                ComponentType::Service => HandlerType::Shared,
+                ComponentType::VirtualObject => HandlerType::Exclusive,
+            }
+        }
+    }
+
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -343,43 +363,30 @@ pub mod component {
     pub struct HandlerMetadata {
         pub name: String,
 
+        pub ty: HandlerType,
+
         // # Human readable input description
         //
         // If empty, no schema was provided by the user at discovery time.
-        pub input_description: Option<String>,
+        pub input_description: String,
 
         // # Human readable output description
         //
         // If empty, no schema was provided by the user at discovery time.
-        pub output_description: Option<String>,
-    }
-
-    #[derive(Debug, Clone)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct BasicComponentMetadata {
-        pub public: bool,
-        pub ty: ComponentType,
+        pub output_description: String,
     }
 
     /// This API will return components registered by the user.
     pub trait ComponentMetadataResolver {
-        /// Returns None if the component handler doesn't exist, Some(basic_component_metadata) otherwise.
-        fn resolve_latest_component_handler(
+        fn resolve_latest_component(
             &self,
             component_name: impl AsRef<str>,
-            handler_name: impl AsRef<str>,
-        ) -> Option<BasicComponentMetadata>;
+        ) -> Option<ComponentMetadata>;
 
         fn resolve_latest_component_type(
             &self,
             component_name: impl AsRef<str>,
         ) -> Option<ComponentType>;
-
-        fn resolve_latest_component(
-            &self,
-            component_name: impl AsRef<str>,
-        ) -> Option<ComponentMetadata>;
 
         fn list_components(&self) -> Vec<ComponentMetadata>;
     }
@@ -402,25 +409,11 @@ pub mod component {
         }
 
         impl ComponentMetadataResolver for MockComponentMetadataResolver {
-            fn resolve_latest_component_handler(
+            fn resolve_latest_component(
                 &self,
                 component_name: impl AsRef<str>,
-                handler_name: impl AsRef<str>,
-            ) -> Option<BasicComponentMetadata> {
-                let component = self.0.get(component_name.as_ref());
-                if let Some(meta) = component {
-                    if meta
-                        .handlers
-                        .iter()
-                        .any(|m| m.name == handler_name.as_ref())
-                    {
-                        return Some(BasicComponentMetadata {
-                            public: meta.public,
-                            ty: meta.ty,
-                        });
-                    }
-                }
-                None
+            ) -> Option<ComponentMetadata> {
+                self.0.get(component_name.as_ref()).cloned()
             }
 
             fn resolve_latest_component_type(
@@ -428,13 +421,6 @@ pub mod component {
                 component_name: impl AsRef<str>,
             ) -> Option<ComponentType> {
                 self.0.get(component_name.as_ref()).map(|c| c.ty)
-            }
-
-            fn resolve_latest_component(
-                &self,
-                component_name: impl AsRef<str>,
-            ) -> Option<ComponentMetadata> {
-                self.0.get(component_name.as_ref()).cloned()
             }
 
             fn list_components(&self) -> Vec<ComponentMetadata> {
@@ -453,8 +439,9 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
-                            input_description: None,
-                            output_description: None,
+                            ty: HandlerType::Shared,
+                            input_description: "any".to_string(),
+                            output_description: "any".to_string(),
                         })
                         .collect(),
                     ty: ComponentType::Service,
@@ -474,8 +461,9 @@ pub mod component {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
-                            input_description: None,
-                            output_description: None,
+                            ty: HandlerType::Exclusive,
+                            input_description: "any".to_string(),
+                            output_description: "any".to_string(),
                         })
                         .collect(),
                     ty: ComponentType::VirtualObject,

@@ -12,6 +12,7 @@ use super::APPLICATION_JSON;
 
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
+use restate_schema_api::invocation_target::InputValidationError;
 use restate_types::errors::InvocationError;
 use serde::Serialize;
 use std::string;
@@ -48,6 +49,8 @@ pub(crate) enum HandlerError {
     SendAndIdempotencyKey,
     #[error("invocation error: {0:?}")]
     Invocation(InvocationError),
+    #[error("input validation error: {0}")]
+    InputValidation(#[from] InputValidationError),
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +88,7 @@ impl HandlerError {
                 StatusCode::from_u16(e.code().into()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             }
             HandlerError::BadHeader(_, _) => StatusCode::BAD_REQUEST,
+            HandlerError::InputValidation(_) => StatusCode::BAD_REQUEST,
         };
 
         let error_response = match self {
