@@ -35,23 +35,32 @@ use crate::{Error, LogRecord, LsnExt, Options};
     strum_macros::Display,
 )]
 pub enum ProviderKind {
-    /// A file-backed loglet.
-    File,
+    #[cfg(any(test, feature = "local_loglet"))]
+    /// A local rocksdb-backed loglet.
+    Local,
     #[cfg(any(test, feature = "memory_loglet"))]
     Memory,
 }
 
 pub fn provider_default_config(kind: ProviderKind) -> serde_json::Value {
     match kind {
-        ProviderKind::File => crate::loglets::file_loglet::default_config(),
+        #[cfg(any(test, feature = "local_loglet"))]
+        ProviderKind::Local => crate::loglets::local_loglet::default_config(),
         #[cfg(any(test, feature = "memory_loglet"))]
         ProviderKind::Memory => crate::loglets::memory_loglet::default_config(),
     }
 }
 
+// why? because if all loglet features are disabled, clippy will complain about options being
+// unused.
+#[allow(unused_variables)]
 pub fn create_provider(kind: ProviderKind, options: &Options) -> Arc<dyn LogletProvider> {
     match kind {
-        ProviderKind::File => crate::loglets::file_loglet::FileLogletProvider::new(options),
+        #[cfg(any(test, feature = "local_loglet"))]
+        ProviderKind::Local => crate::loglets::local_loglet::LocalLogletProvider::new(
+            &options.local_loglet_storage_path(),
+            &options.providers_config[kind],
+        ),
         #[cfg(any(test, feature = "memory_loglet"))]
         ProviderKind::Memory => crate::loglets::memory_loglet::MemoryLogletProvider::new(),
     }
