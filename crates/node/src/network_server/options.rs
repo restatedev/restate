@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
 use std::str::FromStr;
 
 use serde_with::serde_as;
 
 use restate_network::ConnectionManager;
-use restate_types::net::AdvertisedAddress;
+use restate_types::net::{AdvertisedAddress, BindAddress};
 
 use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDependencies};
 
@@ -26,7 +25,8 @@ use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDep
 #[cfg_attr(feature = "options_schema", schemars(default))]
 pub struct Options {
     /// Address to bind for the Node server.
-    pub bind_address: SocketAddr,
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub bind_address: BindAddress,
 
     /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
     /// unset.

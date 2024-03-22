@@ -11,7 +11,10 @@ publish = false
 restate-types = { workspace = true }
 
 http = { workspace = true }
+hyper = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }

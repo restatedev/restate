@@ -8,15 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
-
 use axum::routing::get;
-use codederror::CodedError;
 use tower_http::trace::TraceLayer;
-use tracing::info;
 
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{cancellation_watcher, task_center};
+use restate_grpc_util::run_hyper_server;
 use restate_meta::FileMetaReader;
 use restate_network::ConnectionManager;
 use restate_node_protocol::{common, node};
@@ -35,23 +32,6 @@ use crate::network_server::metrics::install_global_prometheus_recorder;
 use crate::network_server::multiplex::MultiplexService;
 use crate::network_server::options::Options;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
-
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum Error {
-    #[error("failed binding to address '{address}' specified in 'server.bind_address'")]
-    #[code(restate_errors::RT0004)]
-    Binding {
-        address: SocketAddr,
-        #[source]
-        source: hyper::Error,
-    },
-    #[error("error while running server service: {0}")]
-    #[code(unknown)]
-    Running(hyper::Error),
-    #[error("error while running server server grpc reflection service: {0}")]
-    #[code(unknown)]
-    Grpc(#[from] tonic_reflection::server::Error),
-}
 
 pub struct NetworkServer {
     opts: Options,
@@ -129,29 +109,15 @@ impl NetworkServer {
         // Multiplex both grpc and http based on content-type
         let service = MultiplexService::new(router, server_builder.into_service());
 
-        // Bind and serve
-        let server = hyper::Server::try_bind(&self.opts.bind_address)
-            .map_err(|err| Error::Binding {
-                address: self.opts.bind_address,
-                source: err,
-            })?
-            .serve(tower::make::Shared::new(service));
+        run_hyper_server(
+            self.opts.bind_address,
+            service,
+            cancellation_watcher(),
+            "node-grpc",
+        )
+        .await?;
 
-        info!(
-            net.host.addr = %server.local_addr().ip(),
-            net.host.port = %server.local_addr().port(),
-            "Node server listening"
-        );
-
-        // Wait server graceful shutdown
-        Ok(server
-            .with_graceful_shutdown(cancellation_watcher())
-            .await
-            .map_err(Error::Running)?)
-    }
-
-    pub fn port(&self) -> u16 {
-        self.opts.bind_address.port()
+        Ok(())
     }
 }
 
