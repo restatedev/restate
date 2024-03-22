@@ -15,11 +15,11 @@ use std::str::FromStr;
 use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
+use crate::ui::component_methods::{
+    create_component_handlers_table, create_component_handlers_table_diff, icon_for_component_type,
+};
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::service_methods::{
-    create_component_handlers_table, create_service_methods_table_diff, icon_for_component_type,
-};
 use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 
@@ -195,7 +195,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             c_eprintln!();
             c_warn!(
                 "This deployment is already known to the server under the ID \"{}\". \
-                Confirming this operation will overwrite services defined by the existing \
+                Confirming this operation will overwrite components defined by the existing \
                 deployment. Inflight invocations to this deployment might move to an unrecoverable \
                 failure state afterwards!.\
                 \n\nThis is a DANGEROUS operation! \n
@@ -207,10 +207,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         }
     }
 
-    let discovered_service_names = dry_run_result
+    let discovered_component_names = dry_run_result
         .components
         .iter()
-        .map(|svc| svc.name.clone())
+        .map(|component| component.name.clone())
         .collect::<HashSet<_>>();
 
     // Services found in this discovery
@@ -227,16 +227,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     if !added.is_empty() {
         c_println!();
         c_println!(
-            "❯ SERVICES THAT WILL BE {}:",
+            "❯ COMPONENTS THAT WILL BE {}:",
             Styled(Style::Success, "ADDED")
         );
-        for svc in added {
-            c_indentln!(1, "- {}", Styled(Style::Success, &svc.name),);
-            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
+        for component in added {
+            c_indentln!(1, "- {}", Styled(Style::Success, &component.name),);
+            c_indentln!(
+                2,
+                "Type: {:?} {}",
+                component.ty,
+                icon_for_component_type(&component.ty),
+            );
 
             c_indent_table!(
                 2,
-                create_component_handlers_table(&env.ui_config, &svc.handlers)
+                create_component_handlers_table(&env.ui_config, &component.handlers)
             );
             c_println!();
         }
@@ -255,21 +260,29 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
-        let mut existing_services: HashMap<String, ComponentMetadata> = HashMap::new();
-        for svc in &updated {
+        let mut existing_components: HashMap<String, ComponentMetadata> = HashMap::new();
+        for component in &updated {
             // Get the current service information by querying the server.
-            progress.set_message(format!("Fetching information about service '{}'", svc.name,));
-            match client.get_component(&svc.name).await?.into_body().await {
-                Ok(svc_metadata) => {
-                    existing_services.insert(svc.name.clone(), svc_metadata);
+            progress.set_message(format!(
+                "Fetching information about component '{}'",
+                component.name,
+            ));
+            match client
+                .get_component(&component.name)
+                .await?
+                .into_body()
+                .await
+            {
+                Ok(component_metadata) => {
+                    existing_components.insert(component.name.clone(), component_metadata);
                 }
                 Err(e) => {
                     // Let the spinner pause to print the error.
                     progress.suspend(|| {
                         c_eprintln!(
-                        "Warning: Couldn't fetch information about service {} from Restate server. \
-                         We will not be able to show the detailed changes for this service.",
-                        svc.name,
+                        "Warning: Couldn't fetch information about component {} from Restate server. \
+                         We will not be able to show the detailed changes for this component.",
+                        component.name,
                     );
                         c_error!("{}", e);
                     });
@@ -279,14 +292,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         progress.finish_and_clear();
 
         c_println!(
-            "❯ SERVICES THAT WILL BE {}:",
+            "❯ COMPONENTS THAT WILL BE {}:",
             Styled(Style::Warn, "UPDATED")
         );
         for svc in updated {
             c_indentln!(1, "- {}", Styled(Style::Info, &svc.name),);
             c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
 
-            if let Some(existing_svc) = existing_services.get(&svc.name) {
+            if let Some(existing_svc) = existing_components.get(&svc.name) {
                 c_indentln!(
                     2,
                     "Revision: {} -> {}",
@@ -310,7 +323,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     );
                 }
 
-                let tt = create_service_methods_table_diff(
+                let tt = create_component_handlers_table_diff(
                     &env.ui_config,
                     &existing_svc.handlers,
                     &svc.handlers,
@@ -328,21 +341,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         c_println!();
     }
 
-    // The following services will be removed/forgotten:
+    // The following components will be removed/forgotten:
     if let Some(existing_endpoint) = existing_deployment {
-        // The following services will be removed/forgotten:
-        let services_removed = existing_endpoint
+        // The following components will be removed/forgotten:
+        let components_removed = existing_endpoint
             .components
             .iter()
-            .filter(|svc| !discovered_service_names.contains(&svc.name))
+            .filter(|component| !discovered_component_names.contains(&component.name))
             .collect::<Vec<_>>();
-        if !services_removed.is_empty() {
+        if !components_removed.is_empty() {
             c_println!();
             c_println!(
-                "❯ SERVICES THAT WILL BE {}:",
+                "❯ COMPONENTS THAT WILL BE {}:",
                 Styled(Style::Danger, "REMOVED")
             );
-            for svc in services_removed {
+            for svc in components_removed {
                 c_indentln!(2, "- {}", Styled(Style::Danger, &svc.name));
             }
             c_println!();
@@ -374,7 +387,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // print the result of the discovery
     c_success!("DEPLOYMENT:");
     let mut table = Table::new_styled(&env.ui_config);
-    table.set_styled_header(vec!["SERVICE", "REV"]);
+    table.set_styled_header(vec!["COMPONENT", "REV"]);
     for svc in dry_run_result.components {
         table.add_row(vec![svc.name, svc.revision.to_string()]);
     }
@@ -410,9 +423,9 @@ async fn resolve_deployment(
         .await
         .ok()
         .map(|endpoint| {
-            let service_endpoint = endpoint.deployment;
-            cache.insert(deployment_id.to_string(), service_endpoint.clone());
-            Some(service_endpoint)
+            let component_endpoint = endpoint.deployment;
+            cache.insert(deployment_id.to_string(), component_endpoint.clone());
+            Some(component_endpoint)
         })?;
     progress.finish_and_clear();
 

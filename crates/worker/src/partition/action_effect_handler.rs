@@ -96,14 +96,6 @@ impl ActionEffectHandler {
                     .await?;
                 }
             }
-            ActionEffect::Invocation(service_invocation) => {
-                let header = self.create_header(service_invocation.fid.partition_key());
-                append_envelope_to_bifrost(
-                    &mut self.bifrost,
-                    Envelope::new(header, Command::Invoke(service_invocation)),
-                )
-                .await?;
-            }
         };
 
         Ok(())

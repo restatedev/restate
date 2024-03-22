@@ -53,12 +53,12 @@ pub(crate) fn append_journal_row(
                 | EnrichedEntryHeader::BackgroundInvoke {
                     enrichment_result, ..
                 } => {
-                    row.invoked_service_key(
+                    row.invoked_component_key(
                         std::str::from_utf8(&enrichment_result.service_key)
                             .expect("The key must be a string!"),
                     );
 
-                    row.invoked_service(&enrichment_result.service_name);
+                    row.invoked_component(&enrichment_result.service_name);
 
                     if row.is_invoked_id_defined() {
                         let partition_key = ServiceId::new(
@@ -73,9 +73,9 @@ pub(crate) fn append_journal_row(
                         ));
                     }
 
-                    if row.is_invoked_method_defined() {
+                    if row.is_invoked_handler_defined() {
                         if let Some(request) = deserialize_invocation_request(&entry) {
-                            row.invoked_method(&request.method_name);
+                            row.invoked_handler(&request.method_name);
                         }
                     }
                 }

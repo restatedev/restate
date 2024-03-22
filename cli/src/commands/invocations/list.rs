@@ -30,22 +30,22 @@ use itertools::Itertools;
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
 pub struct List {
-    /// Service to list invocations for
-    #[clap(long, visible_alias = "svc", value_delimiter = ',')]
-    service: Vec<String>,
-    /// Filter by invocation on this method name
+    /// Component to list invocations for
+    #[clap(long, visible_alias = "component", value_delimiter = ',')]
+    component: Vec<String>,
+    /// Filter by invocation on this handler name
     #[clap(long, value_delimiter = ',')]
-    method: Vec<String>,
+    handler: Vec<String>,
     /// Filter by status(es)
     #[clap(long, ignore_case = true, value_delimiter = ',')]
     status: Vec<InvocationState>,
     /// Filter by deployment ID
     #[clap(long, visible_alias = "dp", value_delimiter = ',')]
     deployment: Vec<String>,
-    /// Only list invocations on keyed services only
+    /// Only list invocations on keyed components only
     #[clap(long)]
-    keyed_only: bool,
-    /// Filter by invocations on this service key
+    virtual_objects_only: bool,
+    /// Filter by invocations on this component key
     #[clap(long, value_delimiter = ',')]
     key: Vec<String>,
     /// Limit the number of results
@@ -94,29 +94,32 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         || opts.status.contains(&InvocationState::Unknown)
         || !(opts.status.contains(&InvocationState::Pending) && statuses.len() == 1);
 
-    if !opts.service.is_empty() {
+    if !opts.component.is_empty() {
         inbox_filters.push(format!(
-            "ss.service IN ({})",
-            opts.service.iter().map(|x| format!("'{}'", x)).format(",")
+            "ss.component IN ({})",
+            opts.component
+                .iter()
+                .map(|x| format!("'{}'", x))
+                .format(",")
         ));
     }
 
-    if !opts.method.is_empty() {
+    if !opts.handler.is_empty() {
         inbox_filters.push(format!(
-            "ss.method IN ({})",
-            opts.method.iter().map(|x| format!("'{}'", x)).format(",")
+            "ss.handler IN ({})",
+            opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
         inbox_filters.push(format!(
-            "ss.service_key IN ({})",
+            "ss.component_key IN ({})",
             opts.key.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
-    if opts.keyed_only {
-        inbox_filters.push("svc.instance_type = 'keyed'".to_owned());
+    if opts.virtual_objects_only {
+        inbox_filters.push("comp.ty = 'virtual_object'".to_owned());
     }
 
     if opts.zombie {

@@ -10,11 +10,8 @@
 
 use crate::partition::storage::PartitionStorage;
 use bytes::Bytes;
-use restate_storage_api::invocation_status_table::JournalMetadata;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationId, ServiceId};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::EntryIndex;
+use restate_types::identifiers::ServiceId;
 use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
@@ -31,17 +28,6 @@ trait StateReader {
         service_id: &ServiceId,
         key: &str,
     ) -> impl Future<Output = Result<Option<Bytes>, anyhow::Error>> + Send;
-
-    fn read_virtual_journal_metadata(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> impl Future<Output = Result<Option<JournalMetadata>, anyhow::Error>> + Send;
-
-    fn read_virtual_journal_entry(
-        &mut self,
-        invocation_id: &InvocationId,
-        entry_index: EntryIndex,
-    ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, anyhow::Error>> + Send;
 }
 
 impl StateReader for PartitionStorage<RocksDBStorage> {
@@ -54,27 +40,6 @@ impl StateReader for PartitionStorage<RocksDBStorage> {
             // TODO modify the load_state interface to get rid of the Bytes for the key
             .load_state(service_id, &Bytes::copy_from_slice(key.as_bytes()))
             .await?)
-    }
-
-    async fn read_virtual_journal_metadata(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> Result<Option<JournalMetadata>, anyhow::Error> {
-        Ok(match self.get_invocation_status(invocation_id).await? {
-            restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
-                journal_metadata,
-                ..
-            } => Some(journal_metadata),
-            _ => None,
-        })
-    }
-
-    async fn read_virtual_journal_entry(
-        &mut self,
-        invocation_id: &InvocationId,
-        entry_index: EntryIndex,
-    ) -> Result<Option<EnrichedRawEntry>, anyhow::Error> {
-        Ok(self.load_journal_entry(invocation_id, entry_index).await?)
     }
 }
 
@@ -144,6 +109,7 @@ impl<T: serde::Serialize + for<'de> serde::Deserialize<'de>> StateSerde for Binc
 struct StateKey<Serde>(Cow<'static, str>, PhantomData<Serde>);
 
 impl StateKey<Raw> {
+    #[allow(dead_code)]
     pub const fn new_raw(name: &'static str) -> StateKey<Raw> {
         Self(Cow::Borrowed(name), PhantomData)
     }
@@ -178,57 +144,20 @@ mod tests {
     use super::*;
 
     use anyhow::Error;
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_test_util::assert;
-    use restate_types::invocation::ServiceInvocationSpanContext;
-    use restate_types::journal::raw::RawEntryCodec;
-    use restate_types::journal::{Completion, Entry};
     use std::collections::HashMap;
-    use std::ops::Range;
 
     #[derive(Clone, Default)]
-    pub(super) struct MockStateReader(
-        pub(super) HashMap<String, Bytes>,
-        pub(super) Option<(JournalMetadata, Vec<EnrichedRawEntry>)>,
-    );
+    pub(super) struct MockStateReader(pub(super) HashMap<String, Bytes>);
 
     impl MockStateReader {
+        #[allow(dead_code)]
         pub(super) fn set<Serde: StateSerde>(
             &mut self,
             k: &StateKey<Serde>,
             val: Serde::MaterializedType,
         ) -> &mut Self {
             self.0.insert(k.0.to_string(), Serde::encode(&val).unwrap());
-            self
-        }
-
-        pub(super) fn append_journal_entry(&mut self, entry: Entry) -> &mut Self {
-            self.append_enriched_journal_entry(ProtobufRawEntryCodec::serialize_enriched(entry))
-        }
-
-        pub(super) fn append_enriched_journal_entry(
-            &mut self,
-            entry: EnrichedRawEntry,
-        ) -> &mut Self {
-            let (meta, v) = self.1.get_or_insert_with(|| {
-                (
-                    JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
-                    vec![],
-                )
-            });
-            meta.length += 1;
-            v.push(entry);
-            self
-        }
-
-        pub(super) fn complete_entry(&mut self, completion: Completion) -> &mut Self {
-            let (_, v) = self.1.as_mut().expect("There must be a journal");
-            ProtobufRawEntryCodec::write_completion(
-                v.get_mut(completion.entry_index as usize)
-                    .expect("There must be an entry"),
-                completion.result,
-            )
-            .expect("Writing a completion must succeed");
             self
         }
 
@@ -255,37 +184,6 @@ mod tests {
         pub(super) fn assert_is_empty(&self) {
             assert!(self.0.is_empty());
         }
-
-        pub(super) fn assert_has_journal(&self) -> (JournalMetadata, Vec<EnrichedRawEntry>) {
-            self.1.clone().expect("There should be a journal")
-        }
-
-        pub(super) fn assert_has_no_journal(&self) {
-            assert!(self.1.is_none())
-        }
-
-        pub(super) fn assert_has_journal_entry(&self, entry_index: usize) -> EnrichedRawEntry {
-            self.1
-                .clone()
-                .expect("There should be a journal")
-                .1
-                .get(entry_index)
-                .expect("There should be a journal entry")
-                .clone()
-        }
-
-        pub(super) fn assert_has_journal_entries(
-            &self,
-            entry_index_range: Range<usize>,
-        ) -> Vec<EnrichedRawEntry> {
-            self.1
-                .clone()
-                .expect("There should be a journal")
-                .1
-                .get(entry_index_range)
-                .expect("There must be journal entries")
-                .to_vec()
-        }
     }
 
     impl StateReader for MockStateReader {
@@ -295,25 +193,6 @@ mod tests {
             key: &str,
         ) -> Result<Option<Bytes>, Error> {
             Ok(self.0.get(key).cloned())
-        }
-
-        async fn read_virtual_journal_metadata(
-            &mut self,
-            _: &InvocationId,
-        ) -> Result<Option<JournalMetadata>, Error> {
-            Ok(self.1.as_ref().map(|(m, _)| m.clone()))
-        }
-
-        async fn read_virtual_journal_entry(
-            &mut self,
-            _: &InvocationId,
-            entry_index: EntryIndex,
-        ) -> Result<Option<EnrichedRawEntry>, Error> {
-            Ok(self
-                .1
-                .as_ref()
-                .and_then(|(_, v)| v.get(entry_index as usize))
-                .cloned())
         }
     }
 }

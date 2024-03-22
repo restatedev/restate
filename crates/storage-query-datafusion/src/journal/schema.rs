@@ -21,8 +21,8 @@ define_table!(journal(
     entry_type: DataType::LargeUtf8,
     completed: DataType::Boolean,
     invoked_id: DataType::LargeUtf8,
-    invoked_service: DataType::LargeUtf8,
-    invoked_method: DataType::LargeUtf8,
-    invoked_service_key: DataType::LargeUtf8,
+    invoked_component: DataType::LargeUtf8,
+    invoked_handler: DataType::LargeUtf8,
+    invoked_component_key: DataType::LargeUtf8,
     sleep_wakeup_at: DataType::Date64,
 ));

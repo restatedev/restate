@@ -11,17 +11,18 @@
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 
+pub mod component_methods;
 pub mod console;
 pub mod deployments;
 pub mod invocations;
 pub mod output;
-pub mod service_methods;
 pub mod stylesheet;
 pub mod watcher;
 
 pub fn duration_to_human_precise(duration: Duration, tense: Tense) -> String {
-    let duration =
-        chrono_humanize::HumanTime::from(Duration::milliseconds(duration.num_milliseconds()));
+    let duration = chrono_humanize::HumanTime::from(
+        Duration::try_milliseconds(duration.num_milliseconds()).expect("valid milliseconds"),
+    );
     duration.to_text_en(Accuracy::Precise, tense)
 }
 

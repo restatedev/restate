@@ -10,7 +10,7 @@
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
-pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 1;
+pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 2;
 
 #[cfg(feature = "codec")]
 pub mod codec;
@@ -18,8 +18,6 @@ pub mod codec;
 pub mod discovery;
 #[cfg(feature = "message")]
 pub mod message;
-#[cfg(feature = "discovery")]
-pub mod old_discovery;
 
 #[cfg(feature = "awakeable-id")]
 pub mod awakeable_id;
@@ -42,29 +40,22 @@ mod pb_into {
 
     use restate_types::journal::*;
 
-    impl TryFrom<PollInputStreamEntryMessage> for Entry {
+    impl TryFrom<InputEntryMessage> for Entry {
         type Error = &'static str;
 
-        fn try_from(msg: PollInputStreamEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Self::PollInputStream(PollInputStreamEntry {
-                result: match msg.result.ok_or("result")? {
-                    poll_input_stream_entry_message::Result::Value(r) => EntryResult::Success(r),
-                    poll_input_stream_entry_message::Result::Failure(Failure { code, message }) => {
-                        EntryResult::Failure(code.into(), message.into())
-                    }
-                },
-            }))
+        fn try_from(msg: InputEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::Input(InputEntry { value: msg.value }))
         }
     }
 
-    impl TryFrom<OutputStreamEntryMessage> for Entry {
+    impl TryFrom<OutputEntryMessage> for Entry {
         type Error = &'static str;
 
-        fn try_from(msg: OutputStreamEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Entry::OutputStream(OutputStreamEntry {
+        fn try_from(msg: OutputEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Entry::Output(OutputEntry {
                 result: match msg.result.ok_or("result")? {
-                    output_stream_entry_message::Result::Value(r) => EntryResult::Success(r),
-                    output_stream_entry_message::Result::Failure(Failure { code, message }) => {
+                    output_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    output_entry_message::Result::Failure(Failure { code, message }) => {
                         EntryResult::Failure(code.into(), message.into())
                     }
                 },

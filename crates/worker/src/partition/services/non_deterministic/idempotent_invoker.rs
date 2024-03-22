@@ -15,7 +15,7 @@ use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::{ServiceInvocation, SpanRelation};
+use restate_types::invocation::ServiceInvocation;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use tracing::{instrument, trace};
@@ -113,7 +113,8 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
                 method: restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME.to_string(),
                 caller_context: Default::default(),
             }),
-            SpanRelation::None,
+            self.span_context.as_parent(),
+            vec![], // TODO we need to fix the data structure passed as input of this invoke method to be as close as possible to the original ServiceInvocation.
         )));
 
         Ok(())
@@ -236,29 +237,23 @@ mod tests {
             Bytes::copy_from_slice(b"123456"),
         ));
 
-        let expected_greeter_invocation_fid = FullInvocationId::generate(ServiceId::new(
-            restate_pb::mocks::GREETER_SERVICE_NAME,
-            Bytes::copy_from_slice(b"654321"),
-        ));
-        let expected_req = restate_pb::mocks::greeter::GreetingRequest {
-            person: "Francesco".to_string(),
-        };
-        let expected_res = restate_pb::mocks::greeter::GreetingResponse {
-            greeting: "Hello Francesco!".to_string(),
-        };
+        const GREETER: &str = "Greeter";
+        const GREET: &str = "greet";
+
+        let expected_greeter_invocation_fid =
+            FullInvocationId::generate(ServiceId::new(GREETER, Bytes::copy_from_slice(b"654321")));
+        let expected_req = Bytes::from_static(b"{}");
+        let expected_res = Bytes::from_static(b"{}");
 
         let (expected_fid, effects) = ctx
             .invoke(|ctx| {
                 ctx.invoke(
                     IdempotentInvokeRequest {
-                        service_name: expected_greeter_invocation_fid
-                            .service_id
-                            .service_name
-                            .to_string(),
+                        service_name: GREETER.to_owned(),
                         service_key: expected_greeter_invocation_fid.service_id.key.clone(),
                         invocation_uuid: expected_greeter_invocation_fid.invocation_uuid.into(),
-                        method: "Greet".to_string(),
-                        argument: expected_req.encode_to_vec().into(),
+                        method: GREET.to_owned(),
+                        argument: expected_req.clone(),
                         ..IdempotentInvokeRequest::default()
                     },
                     ResponseSerializer::default(),
@@ -272,8 +267,8 @@ mod tests {
         assert_that!(
             ctx.state().assert_has_state(&REQUEST_META),
             pat!(RequestMetaState {
-                service_name: eq(restate_pb::mocks::GREETER_SERVICE_NAME),
-                method_name: eq("Greet"),
+                service_name: displays_as(eq(GREETER)),
+                method_name: eq(GREET),
                 retention_period_sec: eq(DEFAULT_RETENTION_PERIOD)
             })
         );
@@ -291,9 +286,9 @@ mod tests {
             effects,
             contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
                 OutboxMessage::ServiceInvocation(pat!(ServiceInvocation {
-                    fid: eq(expected_greeter_invocation_fid),
-                    method_name: displays_as(eq("Greet")),
-                    argument: protobuf_decoded(eq(expected_req.clone())),
+                    fid: eq(expected_greeter_invocation_fid.clone()),
+                    method_name: displays_as(eq(GREET)),
+                    argument: eq(expected_req.clone()),
                     response_sink: some(pat!(ServiceInvocationResponseSink::NewInvocation {
                         target: pat!(FullInvocationId {
                             service_id: eq(expected_fid.service_id.clone())
@@ -318,9 +313,7 @@ mod tests {
                     ctx,
                     ServiceInvocationSinkRequest {
                         caller_context: Default::default(),
-                        response: Some(
-                            ResponseResult::Success(expected_res.encode_to_vec().into()).into(),
-                        ),
+                        response: Some(ResponseResult::Success(expected_res.clone()).into()),
                     },
                     ResponseSerializer::default(),
                 )
@@ -343,9 +336,9 @@ mod tests {
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
                                 response: some(pat!(
-                                    idempotent_invoke_response::Response::Success(
-                                        protobuf_decoded(eq(expected_res.clone()))
-                                    )
+                                    idempotent_invoke_response::Response::Success(eq(
+                                        expected_res.clone()
+                                    ))
                                 ))
                             }
                         ))))
@@ -365,9 +358,9 @@ mod tests {
             .invoke(|ctx| {
                 ctx.invoke(
                     IdempotentInvokeRequest {
-                        service_name: restate_pb::mocks::GREETER_SERVICE_NAME.to_string(),
-                        method: "Greet".to_string(),
-                        argument: expected_req.encode_to_vec().into(),
+                        service_name: GREETER.to_owned(),
+                        method: GREET.to_owned(),
+                        argument: expected_req.clone(),
                         ..IdempotentInvokeRequest::default()
                     },
                     ResponseSerializer::default(),
@@ -387,9 +380,9 @@ mod tests {
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
                                 response: some(pat!(
-                                    idempotent_invoke_response::Response::Success(
-                                        protobuf_decoded(eq(expected_res.clone()))
-                                    )
+                                    idempotent_invoke_response::Response::Success(eq(
+                                        expected_res.clone()
+                                    ))
                                 ))
                             }
                         ))))

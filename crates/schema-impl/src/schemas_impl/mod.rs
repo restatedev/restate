@@ -10,33 +10,17 @@
 
 use super::*;
 
-use crate::service::map_to_service_metadata;
-use anyhow::anyhow;
-use prost_reflect::{DescriptorPool, Kind, MethodDescriptor, ServiceDescriptor};
-use proto_symbol::ProtoSymbols;
-use restate_schema_api::service::InstanceType;
-use restate_schema_api::subscription::{
-    EventReceiverServiceInstanceType, FieldRemapType, InputEventRemap, Sink, Source,
-};
+use restate_schema_api::subscription::{Sink, Source};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-mod component;
+pub(crate) mod component;
 pub(crate) mod deployment;
-mod service;
-mod subscription;
+pub(crate) mod subscription;
 
 impl Schemas {
-    pub(crate) fn use_service_schema<F, R>(&self, service_name: impl AsRef<str>, f: F) -> Option<R>
-    where
-        F: FnOnce(&ServiceSchemas) -> R,
-    {
-        let guard = self.0.load();
-        guard.services.get(service_name.as_ref()).map(f)
-    }
-
     pub(crate) fn use_component_schema<F, R>(
         &self,
         component_name: impl AsRef<str>,
@@ -55,52 +39,28 @@ impl Schemas {
 pub(crate) struct SchemasInner {
     pub(crate) components: HashMap<String, ComponentSchemas>,
 
-    pub(crate) services: HashMap<String, ServiceSchemas>,
     pub(crate) deployments: HashMap<DeploymentId, DeploymentSchemas>,
     pub(crate) subscriptions: HashMap<SubscriptionId, Subscription>,
-    pub(crate) proto_symbols: ProtoSymbols,
 }
 
 impl SchemasInner {
-    pub fn apply_updates(
-        &mut self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn apply_updates(&mut self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         for cmd in updates {
             match cmd {
-                SchemasUpdateCommand::OldInsertDeployment {
-                    deployment_id,
-                    metadata,
-                    services,
-                    descriptor_pool,
-                } => {
-                    self.apply_old_insert_deployment(
-                        deployment_id,
-                        metadata,
-                        services,
-                        descriptor_pool,
-                    )?;
-                }
                 SchemasUpdateCommand::RemoveDeployment { deployment_id } => {
-                    self.apply_remove_deployment(deployment_id)?;
-                }
-                SchemasUpdateCommand::RemoveService { name, revision } => {
-                    self.apply_remove_service(name, revision)?;
-                }
-                SchemasUpdateCommand::ModifyService { name, public } => {
-                    self.apply_modify_service(name, public)?;
+                    self.apply_remove_deployment(deployment_id);
                 }
                 SchemasUpdateCommand::AddSubscription(sub) => {
-                    self.apply_add_subscription(sub)?;
+                    self.apply_add_subscription(sub);
                 }
                 SchemasUpdateCommand::RemoveSubscription(sub_id) => {
-                    self.apply_remove_subscription(sub_id)?;
+                    self.apply_remove_subscription(sub_id);
                 }
                 SchemasUpdateCommand::InsertDeployment {
                     metadata,
                     deployment_id,
                 } => {
-                    self.apply_insert_deployment(deployment_id, metadata)?;
+                    self.apply_insert_deployment(deployment_id, metadata);
                 }
                 SchemasUpdateCommand::InsertComponent(InsertComponentUpdateCommand {
                     name,
@@ -109,18 +69,16 @@ impl SchemasInner {
                     deployment_id,
                     handlers,
                 }) => {
-                    self.apply_insert_component(name, revision, ty, deployment_id, handlers)?;
+                    self.apply_insert_component(name, revision, ty, deployment_id, handlers);
                 }
                 SchemasUpdateCommand::RemoveComponent { name, revision } => {
-                    self.apply_remove_component(name, revision)?;
+                    self.apply_remove_component(name, revision);
                 }
                 SchemasUpdateCommand::ModifyComponent { name, public } => {
-                    self.apply_modify_component(name, public)?;
+                    self.apply_modify_component(name, public);
                 }
             }
         }
-
-        Ok(())
     }
 }
 
@@ -142,7 +100,7 @@ pub(crate) struct ComponentSchemas {
     pub(crate) revision: ComponentRevision,
     pub(crate) handlers: HashMap<String, HandlerSchemas>,
     pub(crate) ty: ComponentType,
-    pub(crate) location: ServiceLocation,
+    pub(crate) location: ComponentLocation,
 }
 
 impl ComponentSchemas {
@@ -163,7 +121,7 @@ impl ComponentSchemas {
                     })
                     .collect(),
             ),
-            location: ServiceLocation::BuiltIn { ingress_available },
+            location: ComponentLocation::BuiltIn { ingress_available },
             ty,
         }
     }
@@ -187,8 +145,8 @@ impl ComponentSchemas {
 
     pub(crate) fn as_component_metadata(&self, name: String) -> Option<ComponentMetadata> {
         match &self.location {
-            ServiceLocation::BuiltIn { .. } => None,
-            ServiceLocation::Deployment {
+            ComponentLocation::BuiltIn { .. } => None,
+            ComponentLocation::Deployment {
                 latest_deployment,
                 public,
             } => Some(ComponentMetadata {
@@ -218,141 +176,7 @@ impl ComponentSchemas {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MethodSchemas {
-    descriptor: MethodDescriptor,
-    input_fields_annotations: HashMap<FieldAnnotation, u32>,
-}
-
-impl MethodSchemas {
-    pub(crate) fn new(
-        descriptor: MethodDescriptor,
-        input_fields_annotations: HashMap<FieldAnnotation, u32>,
-    ) -> Self {
-        Self {
-            descriptor,
-            input_fields_annotations,
-        }
-    }
-
-    pub(crate) fn descriptor(&self) -> &MethodDescriptor {
-        &self.descriptor
-    }
-
-    pub(crate) fn input_field_annotated(&self, annotation: FieldAnnotation) -> Option<u32> {
-        self.input_fields_annotations.get(&annotation).cloned()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ServiceSchemas {
-    pub(crate) revision: ComponentRevision,
-    pub(crate) methods: HashMap<String, MethodSchemas>,
-    pub(crate) instance_type: InstanceTypeMetadata,
-    pub(crate) location: ServiceLocation,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum InstanceTypeMetadata {
-    Keyed {
-        key_structure: KeyStructure,
-        service_methods_key_field_root_number: HashMap<String, u32>,
-    },
-    Unkeyed,
-    Singleton,
-    #[allow(dead_code)]
-    Custom {
-        // If method is missing, it means there's no key, hence a random key will be generated
-        structure_per_method: HashMap<String, (u32, KeyStructure)>,
-    },
-}
-
-impl InstanceTypeMetadata {
-    pub(crate) fn from_discovered_metadata(
-        instance_type: DiscoveredInstanceType,
-        methods: &HashMap<String, DiscoveredMethodMetadata>,
-    ) -> Self {
-        match instance_type.clone() {
-            DiscoveredInstanceType::Keyed(key_structure) => InstanceTypeMetadata::Keyed {
-                key_structure,
-                service_methods_key_field_root_number: methods
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            *v.input_fields_annotations
-                                .get(&FieldAnnotation::Key)
-                                .expect("At this point there must be a field annotated with key"),
-                        )
-                    })
-                    .collect(),
-            },
-            DiscoveredInstanceType::Unkeyed => InstanceTypeMetadata::Unkeyed,
-            DiscoveredInstanceType::Singleton => InstanceTypeMetadata::Singleton,
-        }
-    }
-}
-
-impl TryFrom<&InstanceTypeMetadata> for InstanceType {
-    type Error = ();
-
-    fn try_from(value: &InstanceTypeMetadata) -> Result<Self, Self::Error> {
-        match value {
-            InstanceTypeMetadata::Keyed { .. } => Ok(InstanceType::Keyed),
-            InstanceTypeMetadata::Unkeyed => Ok(InstanceType::Unkeyed),
-            InstanceTypeMetadata::Singleton => Ok(InstanceType::Singleton),
-            _ => Err(()),
-        }
-    }
-}
-
-impl ServiceSchemas {
-    pub(crate) fn new(
-        revision: ComponentRevision,
-        methods: HashMap<String, MethodSchemas>,
-        instance_type: InstanceTypeMetadata,
-        latest_deployment: DeploymentId,
-    ) -> Self {
-        Self {
-            revision,
-            methods,
-            instance_type,
-            location: ServiceLocation::Deployment {
-                latest_deployment,
-                public: true,
-            },
-        }
-    }
-
-    pub(crate) fn compute_service_methods(
-        svc_desc: &ServiceDescriptor,
-        method_meta: &HashMap<String, DiscoveredMethodMetadata>,
-    ) -> HashMap<String, MethodSchemas> {
-        svc_desc
-            .methods()
-            .flat_map(|descriptor| {
-                let method_name = descriptor.name().to_string();
-                method_meta.get(&method_name).map(|metadata| {
-                    (
-                        method_name,
-                        MethodSchemas::new(descriptor, metadata.input_fields_annotations.clone()),
-                    )
-                })
-            })
-            .collect()
-    }
-
-    fn service_descriptor(&self) -> &ServiceDescriptor {
-        self.methods
-            .values()
-            .next()
-            .expect("A service should have at least one method")
-            .descriptor
-            .parent_service()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ServiceLocation {
+pub(crate) enum ComponentLocation {
     BuiltIn {
         // Available at the ingress
         ingress_available: bool,
@@ -364,13 +188,13 @@ pub(crate) enum ServiceLocation {
     },
 }
 
-impl ServiceLocation {
+impl ComponentLocation {
     pub(crate) fn is_ingress_available(&self) -> bool {
         match self {
-            ServiceLocation::BuiltIn {
+            ComponentLocation::BuiltIn {
                 ingress_available, ..
             } => *ingress_available,
-            ServiceLocation::Deployment { public, .. } => *public,
+            ComponentLocation::Deployment { public, .. } => *public,
         }
     }
 }
@@ -379,10 +203,8 @@ impl ServiceLocation {
 pub(crate) struct DeploymentSchemas {
     pub(crate) metadata: DeploymentMetadata,
 
-    // We need to store ServiceSchemas and DescriptorPool here only for queries
+    // We need to store ComponentMetadata here only for queries
     // We could optimize the memory impact of this by reading these info from disk
-    pub(crate) services: Vec<ServiceMetadata>,
-    pub(crate) descriptor_pool: DescriptorPool,
     pub(crate) components: Vec<ComponentMetadata>,
 }
 
@@ -390,10 +212,8 @@ impl Default for SchemasInner {
     fn default() -> Self {
         let mut inner = Self {
             components: Default::default(),
-            services: Default::default(),
             deployments: Default::default(),
             subscriptions: Default::default(),
-            proto_symbols: Default::default(),
         };
 
         #[allow(dead_code)]

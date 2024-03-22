@@ -13,7 +13,6 @@
 #[cfg(feature = "deployment")]
 pub mod deployment {
     use crate::component::ComponentMetadata;
-    use bytes::Bytes;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
@@ -172,9 +171,7 @@ pub mod deployment {
 
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
 
-        fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes>;
-
-        fn get_deployment_and_services(
+        fn get_deployment_and_components(
             &self,
             deployment_id: &DeploymentId,
         ) -> Option<(Deployment, Vec<ComponentMetadata>)>;
@@ -255,14 +252,7 @@ pub mod deployment {
                     })
             }
 
-            fn get_deployment_descriptor_pool(
-                &self,
-                _deployment_id: &DeploymentId,
-            ) -> Option<Bytes> {
-                todo!()
-            }
-
-            fn get_deployment_and_services(
+            fn get_deployment_and_components(
                 &self,
                 deployment_id: &DeploymentId,
             ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
@@ -498,256 +488,6 @@ pub mod component {
     }
 }
 
-#[cfg(feature = "service")]
-pub mod service {
-    use bytes::Bytes;
-    use restate_types::identifiers::{ComponentRevision, DeploymentId};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum InstanceType {
-        Keyed,
-        Unkeyed,
-        Singleton,
-    }
-
-    #[derive(Debug, Clone)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct ServiceMetadata {
-        pub name: String,
-        pub methods: Vec<MethodMetadata>,
-        pub instance_type: InstanceType,
-        /// # Deployment Id
-        ///
-        /// Deployment exposing the latest revision of the service.
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-        pub deployment_id: DeploymentId,
-        /// # Revision
-        ///
-        /// Latest revision of the service.
-        pub revision: ComponentRevision,
-        /// # Public
-        ///
-        /// If true, the service can be invoked through the ingress.
-        /// If false, the service can be invoked only from another Restate service.
-        pub public: bool,
-    }
-
-    #[derive(Debug, Clone)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct MethodMetadata {
-        pub name: String,
-        /// # Input type
-        ///
-        /// Fully qualified message name of the input to the method
-        pub input_type: String,
-        /// # Output type
-        ///
-        /// Fully qualified message name of the output of the method
-        pub output_type: String,
-        /// # Key field number
-        ///
-        /// If this is a keyed service, the Protobuf field number of the key within the input type,
-        /// Otherwise `null`.
-        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-        pub key_field_number: Option<u32>,
-    }
-
-    /// This API will return services registered by the user. It won't include built-in services.
-    pub trait ServiceMetadataResolver {
-        fn resolve_latest_service_metadata(
-            &self,
-            service_name: impl AsRef<str>,
-        ) -> Option<ServiceMetadata>;
-
-        fn descriptors(&self, service_name: impl AsRef<str>) -> Option<Vec<Bytes>>;
-
-        fn list_services(&self) -> Vec<ServiceMetadata>;
-
-        /// Returns None if the service doesn't exists, Some(is_public) otherwise.
-        fn is_service_public(&self, service_name: impl AsRef<str>) -> Option<bool>;
-    }
-}
-
-#[cfg(feature = "json_conversion")]
-pub mod json {
-    use bytes::Bytes;
-
-    pub trait JsonToProtobufMapper {
-        fn json_to_protobuf(
-            self,
-            json: Bytes,
-            deserialize_options: &prost_reflect::DeserializeOptions,
-        ) -> Result<Bytes, anyhow::Error>;
-
-        fn json_value_to_protobuf(
-            self,
-            json: serde_json::Value,
-            deserialize_options: &prost_reflect::DeserializeOptions,
-        ) -> Result<Bytes, anyhow::Error>;
-    }
-
-    pub trait ProtobufToJsonMapper {
-        fn protobuf_to_json(
-            self,
-            protobuf: Bytes,
-            serialize_options: &prost_reflect::SerializeOptions,
-        ) -> Result<Bytes, anyhow::Error>;
-
-        fn protobuf_to_json_value(
-            self,
-            protobuf: Bytes,
-            serialize_options: &prost_reflect::SerializeOptions,
-        ) -> Result<serde_json::Value, anyhow::Error>;
-    }
-
-    pub trait JsonMapperResolver {
-        type JsonToProtobufMapper: JsonToProtobufMapper;
-        type ProtobufToJsonMapper: ProtobufToJsonMapper;
-
-        fn resolve_json_mapper_for_service(
-            &self,
-            service_name: impl AsRef<str>,
-            method_name: impl AsRef<str>,
-        ) -> Option<(Self::JsonToProtobufMapper, Self::ProtobufToJsonMapper)>;
-    }
-}
-
-#[cfg(any(
-    feature = "key_extraction",
-    feature = "key_expansion",
-    feature = "json_key_conversion"
-))]
-pub mod key {
-    #[cfg(feature = "key_extraction")]
-    pub mod extraction {
-        use bytes::Bytes;
-
-        #[derive(thiserror::Error, Debug)]
-        pub enum Error {
-            #[error("unexpected end of buffer when decoding")]
-            UnexpectedEndOfBuffer,
-            #[error("unexpected value when parsing the payload. It looks like the message schema and the parser directives don't match")]
-            UnexpectedValue,
-            #[error("error when decoding the payload to extract the message: {0}")]
-            Decode(#[from] prost::DecodeError),
-            #[error("cannot resolve key extractor")]
-            NotFound,
-        }
-
-        /// A key extractor provides the logic to extract a key out of a request payload.
-        pub trait KeyExtractor {
-            /// Extract performs key extraction from a request payload, returning the key in a Restate internal format.
-            ///
-            /// To perform the inverse operation, check the [`KeyExpander`] trait.
-            fn extract(
-                &self,
-                service_name: impl AsRef<str>,
-                service_method: impl AsRef<str>,
-                payload: Bytes,
-            ) -> Result<Bytes, Error>;
-        }
-    }
-
-    #[cfg(feature = "key_expansion")]
-    pub mod expansion {
-        use bytes::Bytes;
-        use prost_reflect::DynamicMessage;
-
-        #[derive(thiserror::Error, Debug)]
-        pub enum Error {
-            #[error("unexpected end of buffer when decoding")]
-            UnexpectedEndOfBuffer,
-            #[error("unexpected value when parsing the payload. It looks like the message schema and the parser directives don't match")]
-            UnexpectedValue,
-            #[error("error when decoding the payload to extract the message: {0}")]
-            Decode(#[from] prost::DecodeError),
-            #[error("cannot resolve key extractor")]
-            NotFound,
-            #[error("unexpected service instance type to expand the key. Only keys of keyed services can be expanded")]
-            UnexpectedServiceInstanceType,
-        }
-
-        /// A key expander provides the inverse function of a [`KeyExtractor`].
-        pub trait KeyExpander {
-            /// Expand takes a Restate key and assigns it to the key field of a [`prost_reflect::DynamicMessage`] generated from the given `descriptor`.
-            ///
-            /// The provided [`descriptor`] MUST be the same descriptor of the request message of the given `service_name` and `service_method`.
-            ///
-            /// The result of this method is a message matching the provided `descriptor` with only the key field filled.
-            ///
-            /// This message can be mapped back and forth to JSON using `prost-reflect` `serde` feature.
-            fn expand(
-                &self,
-                service_name: impl AsRef<str>,
-                service_method: impl AsRef<str>,
-                key: Bytes,
-            ) -> Result<DynamicMessage, Error>;
-        }
-    }
-
-    #[cfg(feature = "json_key_conversion")]
-    pub mod json_conversion {
-        use bytes::Bytes;
-        use serde_json::Value;
-
-        #[derive(thiserror::Error, Debug)]
-        pub enum Error {
-            #[error(transparent)]
-            Extraction(#[from] super::KeyExtractorError),
-            #[error(transparent)]
-            Expansion(#[from] super::KeyExpanderError),
-            #[error("cannot resolve key extractor")]
-            NotFound,
-            #[error("unexpected service instance type to expand the key. Only keys of keyed services can be expanded")]
-            UnexpectedServiceInstanceType,
-            #[error("unexpected value for a singleton service. Singleton service have no service key associated")]
-            UnexpectedNonNullSingletonKey,
-            #[error("bad unkeyed service key. Expected a string")]
-            BadUnkeyedKey,
-            #[error("error when decoding the json key: {0}")]
-            DecodeJson(#[from] serde_json::Error),
-        }
-
-        pub trait RestateKeyConverter {
-            fn key_to_json(
-                &self,
-                service_name: impl AsRef<str>,
-                key: impl AsRef<[u8]>,
-            ) -> Result<Value, Error>;
-            fn json_to_key(
-                &self,
-                service_name: impl AsRef<str>,
-                key: Value,
-            ) -> Result<Bytes, Error>;
-        }
-    }
-
-    // Re-exports
-    #[cfg(feature = "key_expansion")]
-    pub use expansion::{Error as KeyExpanderError, KeyExpander};
-    #[cfg(feature = "key_extraction")]
-    pub use extraction::{Error as KeyExtractorError, KeyExtractor};
-    #[cfg(feature = "json_key_conversion")]
-    pub use json_conversion::{Error as RestateKeyConverterError, RestateKeyConverter};
-}
-
-#[cfg(feature = "proto_symbol")]
-pub mod proto_symbol {
-    use bytes::Bytes;
-
-    pub trait ProtoSymbolResolver {
-        fn list_services(&self) -> Vec<String>;
-
-        fn get_file_descriptors_by_symbol_name(&self, symbol: &str) -> Option<Vec<Bytes>>;
-
-        fn get_file_descriptor(&self, file_name: &str) -> Option<Bytes>;
-    }
-}
-
 #[cfg(feature = "subscription")]
 pub mod subscription {
     use std::collections::HashMap;
@@ -791,41 +531,6 @@ pub mod subscription {
         }
     }
 
-    #[derive(Debug, Clone, Eq, PartialEq, Default)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum FieldRemapType {
-        #[default]
-        Bytes,
-        String,
-    }
-
-    /// Defines how to remap the Event to the target.
-    #[derive(Debug, Clone, Eq, PartialEq, Default)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct InputEventRemap {
-        /// Index and type to remap the event.key field
-        pub key: Option<(u32, FieldRemapType)>,
-        /// Index and type to remap the event.payload field
-        pub payload: Option<(u32, FieldRemapType)>,
-        /// If != 0, index to remap the event.metadata field
-        pub attributes_index: Option<u32>,
-    }
-
-    /// Specialized version of [super::key::ServiceInstanceType]
-    #[derive(Debug, Clone, Eq, PartialEq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum EventReceiverServiceInstanceType {
-        Keyed {
-            // If true, event.ordering_key is the key, otherwise event.key is the key
-            ordering_key_is_key: bool,
-        },
-        Unkeyed,
-        Singleton,
-    }
-
     /// Specialized version of [super::component::ComponentType]
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -842,13 +547,6 @@ pub mod subscription {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum Sink {
-        Service {
-            name: String,
-            method: String,
-            // If none, the dev.restate.Event will be delivered as is.
-            input_event_remap: Option<InputEventRemap>,
-            instance_type: EventReceiverServiceInstanceType,
-        },
         Component {
             name: String,
             handler: String,
@@ -859,9 +557,6 @@ pub mod subscription {
     impl fmt::Display for Sink {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Sink::Service { name, method, .. } => {
-                    write!(f, "service://{}/{}", name, method)
-                }
                 Sink::Component { name, handler, .. } => {
                     write!(f, "component://{}/{}", name, handler)
                 }

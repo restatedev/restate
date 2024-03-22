@@ -16,8 +16,8 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(state(
     partition_key: DataType::UInt64,
-    service: DataType::LargeUtf8,
-    service_key: DataType::LargeUtf8,
+    component: DataType::LargeUtf8,
+    component_key: DataType::LargeUtf8,
     key: DataType::LargeUtf8,
     value_utf8: DataType::LargeUtf8,
     value: DataType::LargeBinary,

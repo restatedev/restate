@@ -8,91 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schemas_impl::{HandlerSchemas, SchemasInner};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::Uri;
-use prost_reflect::{DescriptorPool, ServiceDescriptor};
 use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
 use restate_schema_api::deployment::DeploymentMetadata;
-use restate_schema_api::service::ServiceMetadata;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
+use schemas_impl::{HandlerSchemas, SchemasInner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 mod component;
 mod deployment;
-mod json;
-mod json_key_conversion;
-mod key_expansion;
-mod key_extraction;
-mod proto_symbol;
+mod error;
 mod schemas_impl;
-mod service;
 mod subscriptions;
 
-use self::schemas_impl::deployment::{BadDescriptorError, IncompatibleServiceChangeError};
-use self::schemas_impl::InstanceTypeMetadata;
-use self::schemas_impl::ServiceSchemas;
+pub use error::*;
 
 // --- Update commands data structure
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FieldAnnotation {
-    Key,
-    EventPayload,
-    EventMetadata,
-}
-
-/// This structure provides the directives to the key parser to parse nested messages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KeyStructure {
-    Scalar,
-    Nested(std::collections::BTreeMap<u32, KeyStructure>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiscoveredInstanceType {
-    Keyed(KeyStructure),
-    Unkeyed,
-    Singleton,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct DiscoveredMethodMetadata {
-    input_fields_annotations: HashMap<FieldAnnotation, u32>,
-}
-
-/// Insert (or replace) service
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OldInsertServiceUpdateCommand {
-    pub name: String,
-    pub revision: ComponentRevision,
-    pub instance_type: DiscoveredInstanceType,
-    pub methods: HashMap<String, DiscoveredMethodMetadata>,
-}
-
-impl OldInsertServiceUpdateCommand {
-    pub fn as_service_metadata(
-        &self,
-        latest_deployment_id: DeploymentId,
-        service_descriptor: &ServiceDescriptor,
-    ) -> Option<ServiceMetadata> {
-        let schemas = ServiceSchemas::new(
-            self.revision,
-            ServiceSchemas::compute_service_methods(service_descriptor, &self.methods),
-            InstanceTypeMetadata::from_discovered_metadata(
-                self.instance_type.clone(),
-                &self.methods,
-            ),
-            latest_deployment_id,
-        );
-        service::map_to_service_metadata(&self.name, &schemas)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DiscoveredHandlerMetadata {
@@ -148,23 +85,6 @@ impl InsertComponentUpdateCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SchemasUpdateCommand {
     /// Insert (or replace) deployment
-    OldInsertDeployment {
-        deployment_id: DeploymentId,
-        metadata: DeploymentMetadata,
-        services: Vec<OldInsertServiceUpdateCommand>,
-        #[serde(with = "descriptor_pool_serde")]
-        descriptor_pool: DescriptorPool,
-    },
-    /// Remove only if the revision is matching
-    RemoveService {
-        name: String,
-        revision: ComponentRevision,
-    },
-    ModifyService {
-        name: String,
-        public: bool,
-    },
-    /// Insert (or replace) deployment
     InsertDeployment {
         deployment_id: DeploymentId,
         metadata: DeploymentMetadata,
@@ -185,119 +105,11 @@ pub enum SchemasUpdateCommand {
     RemoveSubscription(SubscriptionId),
 }
 
-mod descriptor_pool_serde {
-    use bytes::Bytes;
-    use prost_reflect::DescriptorPool;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(descriptor_pool: &DescriptorPool, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(&descriptor_pool.encode_to_vec())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DescriptorPool, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let b = Bytes::deserialize(deserializer)?;
-        DescriptorPool::decode(b).map_err(serde::de::Error::custom)
-    }
-}
-
 /// The schema registry
 #[derive(Debug, Default, Clone)]
-pub struct Schemas(Arc<ArcSwap<schemas_impl::SchemasInner>>);
-
-#[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(unknown)]
-pub enum SchemasUpdateError {
-    #[error("a deployment with the same id {0} already exists in the registry")]
-    #[code(restate_errors::META0004)]
-    OverrideDeployment(DeploymentId),
-    #[error(
-        "existing deployment id is different from requested (requested = {requested}, existing = {existing})"
-    )]
-    #[code(restate_errors::META0004)]
-    IncorrectDeploymentId {
-        requested: DeploymentId,
-        existing: DeploymentId,
-    },
-    #[error("missing service {0} in descriptor")]
-    #[code(restate_errors::META0005)]
-    MissingServiceInDescriptor(String),
-    #[error("service {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownService(String),
-    #[error("component {0} does not exist in the registry")]
-    #[code(restate_errors::META0005)]
-    UnknownComponent(String),
-    #[error("cannot insert/modify service {0} as it's a reserved name")]
-    #[code(restate_errors::META0005)]
-    ModifyInternalService(String),
-    #[error("cannot insert/modify component {0} as it contains a reserved name")]
-    #[code(restate_errors::META0005)]
-    ReservedName(String),
-    #[error("unknown deployment id {0}")]
-    UnknownDeployment(DeploymentId),
-    #[error("unknown subscription id {0}")]
-    UnknownSubscription(SubscriptionId),
-    #[error("invalid subscription: {0}")]
-    #[code(restate_errors::META0009)]
-    InvalidSubscription(anyhow::Error),
-    #[error("invalid subscription sink '{0}': {1}")]
-    #[code(restate_errors::META0009)]
-    InvalidSink(Uri, &'static str),
-    #[error("a subscription with the same id {0} already exists in the registry")]
-    OverrideSubscription(SubscriptionId),
-    #[error(transparent)]
-    IncompatibleServiceChange(
-        #[from]
-        #[code]
-        IncompatibleServiceChangeError,
-    ),
-    #[error(transparent)]
-    BadDescriptor(
-        #[from]
-        #[code]
-        BadDescriptorError,
-    ),
-}
+pub struct Schemas(Arc<ArcSwap<SchemasInner>>);
 
 impl Schemas {
-    /// Compute the commands to update the schema registry with a new deployment.
-    /// This method doesn't execute any in-memory update of the registry.
-    /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
-    ///
-    /// If `allow_override` is true, this method compares the deployment registered services with the given `services`,
-    /// and generates remove commands for services no longer available at that deployment.
-    ///
-    /// If `deployment_id` is set, it's assumed that:
-    ///   - This ID should be used if it's is a new deployment
-    ///   - or if conflicting/existing deployment exists, it must match.
-    /// Otherwise, a new deployment id is generated for this deployment, or the existing
-    /// deployment_id will be reused.
-    ///
-    /// IMPORTANT: It is not safe to consecutively call this method several times and apply the updates all-together with a single [`Self::apply_updates`],
-    /// as one change set might depend on the previously computed change set.
-    pub fn old_compute_new_deployment(
-        &self,
-        deployment_id: Option<DeploymentId>,
-        deployment_metadata: DeploymentMetadata,
-        services: Vec<String>,
-        descriptor_pool: DescriptorPool,
-        force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().old_compute_new_deployment(
-            deployment_id,
-            deployment_metadata,
-            services,
-            descriptor_pool,
-            force,
-        )
-    }
-
     /// Compute the commands to update the schema registry with a new deployment.
     /// This method doesn't execute any in-memory update of the registry.
     /// To update the registry, compute the commands and apply them with [`Self::apply_updates`].
@@ -319,37 +131,36 @@ impl Schemas {
         deployment_metadata: DeploymentMetadata,
         components: Vec<schema::Component>,
         force: bool,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
+    ) -> Result<Vec<SchemasUpdateCommand>, Error> {
+        let debug_id = deployment_id
+            .as_ref()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| deployment_metadata.address_display().to_string());
         self.0
             .load()
             .compute_new_deployment(deployment_id, deployment_metadata, components, force)
-    }
-
-    pub fn compute_modify_service(
-        &self,
-        service_name: String,
-        public: bool,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
-        self.0
-            .load()
-            .compute_modify_service_updates(service_name, public)
+            .map_err(|e| Error::new("add new deployment", debug_id, e))
     }
 
     pub fn compute_modify_component(
         &self,
         component_name: String,
         public: bool,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
+    ) -> Result<SchemasUpdateCommand, Error> {
         self.0
             .load()
-            .compute_modify_component_updates(component_name, public)
+            .compute_modify_component_updates(component_name.clone(), public)
+            .map_err(|e| Error::new("modify component", component_name, e))
     }
 
     pub fn compute_remove_deployment(
         &self,
         deployment_id: DeploymentId,
-    ) -> Result<Vec<SchemasUpdateCommand>, SchemasUpdateError> {
-        self.0.load().compute_remove_deployment(deployment_id)
+    ) -> Result<Vec<SchemasUpdateCommand>, Error> {
+        self.0
+            .load()
+            .compute_remove_deployment(deployment_id)
+            .map_err(|e| Error::new("remove deployment", deployment_id, e))
     }
 
     // Returns the [`Subscription`] id together with the update command
@@ -360,17 +171,25 @@ impl Schemas {
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
         validator: &V,
-    ) -> Result<(Subscription, SchemasUpdateCommand), SchemasUpdateError> {
+    ) -> Result<(Subscription, SchemasUpdateCommand), Error> {
+        let debug_id = id
+            .as_ref()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| format!("{} to {}", source, sink));
         self.0
             .load()
             .compute_add_subscription(id, source, sink, metadata, validator)
+            .map_err(|e| Error::new("add subscription", debug_id, e))
     }
 
     pub fn compute_remove_subscription(
         &self,
         id: SubscriptionId,
-    ) -> Result<SchemasUpdateCommand, SchemasUpdateError> {
-        self.0.load().compute_remove_subscription(id)
+    ) -> Result<SchemasUpdateCommand, Error> {
+        self.0
+            .load()
+            .compute_remove_subscription(id)
+            .map_err(|e| Error::new("remove subscription", id, e))
     }
 
     /// Apply the updates to the schema registry.
@@ -378,15 +197,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn apply_updates(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn apply_updates(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-        schemas_inner.apply_updates(updates)?;
+        schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 
     /// Overwrites the existing schema registry with the provided schema updates
@@ -394,15 +208,10 @@ impl Schemas {
     /// propagating the changes to every component consuming it.
     ///
     /// IMPORTANT: This method is not thread safe! This method should be called only by a single thread.
-    pub fn overwrite(
-        &self,
-        updates: impl IntoIterator<Item = SchemasUpdateCommand>,
-    ) -> Result<(), SchemasUpdateError> {
+    pub fn overwrite(&self, updates: impl IntoIterator<Item = SchemasUpdateCommand>) {
         let mut schemas_inner = SchemasInner::default();
-        schemas_inner.apply_updates(updates)?;
+        schemas_inner.apply_updates(updates);
         self.0.store(Arc::new(schemas_inner));
-
-        Ok(())
     }
 }
 
@@ -414,14 +223,6 @@ mod tests {
     use restate_test_util::assert_eq;
 
     impl Schemas {
-        pub(crate) fn add_mock_service(&self, service_name: &str, service_schemas: ServiceSchemas) {
-            let mut schemas_inner = schemas_impl::SchemasInner::clone(self.0.load().as_ref());
-            schemas_inner
-                .services
-                .insert(service_name.to_string(), service_schemas);
-            self.0.store(Arc::new(schemas_inner));
-        }
-
         #[track_caller]
         pub(crate) fn assert_component_handler(&self, component_name: &str, handler_name: &str) {
             assert!(self
@@ -461,19 +262,5 @@ mod tests {
         pub(crate) fn assert_component(&self, component_name: &str) -> ComponentMetadata {
             self.resolve_latest_component(component_name).unwrap()
         }
-    }
-
-    #[macro_export]
-    macro_rules! load_mock_descriptor {
-        ($name:ident, $path:literal) => {
-            static $name: once_cell::sync::Lazy<DescriptorPool> =
-                once_cell::sync::Lazy::new(|| {
-                    DescriptorPool::decode(
-                        include_bytes!(concat!(env!("OUT_DIR"), "/pb/", $path, "/descriptor.bin"))
-                            .as_ref(),
-                    )
-                    .expect("The built-in descriptor pool should be valid")
-                });
-        };
     }
 }

@@ -82,6 +82,7 @@ pub fn create_response_message(
                 Source::Service(callee.clone()),
                 None,
                 SpanRelation::None,
+                vec![],
             )))
         }
     }

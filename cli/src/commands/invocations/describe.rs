@@ -61,13 +61,18 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     );
     if let Some(key) = &inv.key {
         table.add_kv_row(
-            "Service:",
-            format!("{} {} {}", inv.service, style("@").dim(), style(key).dim(),),
+            "Component:",
+            format!(
+                "{} {} {}",
+                inv.component,
+                style("@").dim(),
+                style(key).dim(),
+            ),
         );
     } else {
-        table.add_kv_row("Service:", &inv.service);
+        table.add_kv_row("Component:", &inv.component);
     }
-    table.add_kv_row("Method:", &inv.method);
+    table.add_kv_row("Method:", &inv.handler);
     add_invocation_to_kv_table(&mut table, &inv);
     table.add_kv_row_if(
         || inv.state_modified_at.is_some(),
@@ -97,7 +102,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     if let Some(parent) = &inv.invoked_by_id {
         c_println!(
             "{} {}",
-            inv.invoked_by_service
+            inv.invoked_by_component
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),

@@ -54,12 +54,8 @@ impl Watchdog {
                 });
             }
 
-            WatchdogCommand::StartProvider(provider) => {
-                // TODO: Convert to a managed background task
+            WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
-                tokio::spawn(async move {
-                    let _ = provider.start().await;
-                });
             }
         }
     }
@@ -136,5 +132,5 @@ pub enum WatchdogCommand {
     /// i.e. attempting to write to a sealed segment.
     #[allow(dead_code)]
     ScheduleMetadataSync,
-    StartProvider(Arc<dyn LogletProvider>),
+    WatchProvider(Arc<dyn LogletProvider>),
 }

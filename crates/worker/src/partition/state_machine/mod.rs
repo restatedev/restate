@@ -85,8 +85,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::InboxTable;
     use restate_storage_api::invocation_status_table::{
-        InvocationMetadata, InvocationStatus, JournalMetadata, NotificationTarget,
-        ReadOnlyInvocationStatusTable,
+        InvocationMetadata, InvocationStatus, ReadOnlyInvocationStatusTable,
     };
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
@@ -94,10 +93,9 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_rocksdb::RocksDBStorage;
     use restate_test_util::matchers::*;
-    use restate_types::errors::UserErrorCode;
+    use restate_types::errors::codes;
     use restate_types::identifiers::{
-        FullInvocationId, InvocationId, InvocationUuid, PartitionId, PartitionKey, ServiceId,
-        WithPartitionKey,
+        FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     };
     use restate_types::invocation::{
         InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
@@ -138,7 +136,7 @@ mod tests {
             let temp_dir = tempdir().unwrap();
             info!("Using RocksDB temp directory {}", temp_dir.path().display());
             let (rocksdb_storage, writer) = restate_storage_rocksdb::OptionsBuilder::default()
-                .path(temp_dir.into_path().to_str().unwrap().to_string())
+                .path(temp_dir.into_path())
                 .build()
                 .unwrap()
                 .build()
@@ -359,7 +357,7 @@ mod tests {
                         id: eq(MaybeFullInvocationId::Full(caller_fid)),
                         entry_index: eq(0),
                         result: pat!(ResponseResult::Failure(
-                            eq(UserErrorCode::Aborted),
+                            eq(codes::ABORTED),
                             eq(ByteString::from_static("killed"))
                         ))
                     }
@@ -529,211 +527,6 @@ mod tests {
         state_machine.shutdown().await
     }
 
-    mod virtual_invocation {
-        use super::*;
-
-        use googletest::{all, assert_that, elements_are, pat};
-        use restate_storage_api::invocation_status_table::{
-            InvocationStatusTable, StatusTimestamps,
-        };
-        use restate_types::identifiers::InvocationId;
-        use restate_types::invocation::{
-            InvocationResponse, MaybeFullInvocationId, ResponseResult,
-        };
-        use restate_types::journal::enriched::EnrichedRawEntry;
-        use restate_types::journal::EntryType;
-        use restate_types::journal::{AwakeableEntry, Completion, CompletionResult, Entry};
-        use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
-        use test_log::test;
-
-        #[test(tokio::test)]
-        async fn create() -> TestResult {
-            let mut state_machine = MockStateMachine::default();
-
-            // Notification receiving service
-            let notification_service_service_id =
-                ServiceId::new("NotificationReceiver", Bytes::copy_from_slice(b"456"));
-            let notification_service_target = NotificationTarget {
-                service: notification_service_service_id.clone(),
-                method: "InternalMethod".to_string(),
-            };
-
-            // Fill the InvocationStatus for notification_service_service_id
-            let fid_virtual_invocation_creator =
-                FullInvocationId::generate(notification_service_service_id.clone());
-            let mut t = state_machine.storage().transaction();
-            t.put_invocation_status(
-                &InvocationId::from(&fid_virtual_invocation_creator),
-                InvocationStatus::Invoked(InvocationMetadata::mock()),
-            )
-            .await;
-            t.commit().await.unwrap();
-
-            // Virtual invocation identifiers
-            let virtual_invocation_id = InvocationId::from_parts(
-                fid_virtual_invocation_creator.partition_key(),
-                InvocationUuid::new(),
-            );
-
-            let actions = state_machine
-                .apply(Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                    fid_virtual_invocation_creator,
-                    vec![BuiltinServiceEffect::CreateJournal {
-                        invocation_id: virtual_invocation_id.clone(),
-                        span_context: Default::default(),
-                        completion_notification_target: notification_service_target.clone(),
-                        kill_notification_target: notification_service_target.clone(),
-                    }],
-                )))
-                .await;
-
-            assert!(actions.is_empty());
-
-            let invocation_status = state_machine
-                .storage()
-                .transaction()
-                .get_invocation_status(&virtual_invocation_id)
-                .await
-                .unwrap();
-            assert_that!(
-                invocation_status,
-                pat!(InvocationStatus::Virtual {
-                    journal_metadata: pat!(JournalMetadata { length: eq(0) }),
-                    completion_notification_target: eq(notification_service_target),
-                })
-            );
-
-            state_machine.shutdown().await
-        }
-
-        #[test(tokio::test)]
-        async fn write_entry_and_notify_completion() -> TestResult {
-            let mut state_machine = MockStateMachine::default();
-
-            // Notification receiving service
-            let notification_service_service_id =
-                ServiceId::new("NotificationReceiver", Bytes::copy_from_slice(b"456"));
-            let notification_service_target = NotificationTarget {
-                service: notification_service_service_id.clone(),
-                method: "Handle".to_string(),
-            };
-            let fid_virtual_invocation_creator =
-                FullInvocationId::generate(notification_service_service_id.clone());
-
-            // Virtual invocation id
-            let virtual_invocation_id = InvocationId::new(
-                fid_virtual_invocation_creator.partition_key(),
-                InvocationUuid::new(),
-            );
-
-            // Setup a valid journal for the virtual invocation and the virtual invocation creator
-            let mut t = state_machine.storage().transaction();
-            t.put_invocation_status(
-                &virtual_invocation_id,
-                InvocationStatus::Virtual {
-                    journal_metadata: JournalMetadata {
-                        length: 0,
-                        span_context: Default::default(),
-                    },
-                    timestamps: StatusTimestamps::now(),
-                    completion_notification_target: notification_service_target.clone(),
-                    kill_notification_target: notification_service_target.clone(),
-                },
-            )
-            .await;
-            t.put_invocation_status(
-                &InvocationId::from(&fid_virtual_invocation_creator),
-                InvocationStatus::Invoked(InvocationMetadata::mock()),
-            )
-            .await;
-            t.commit().await.unwrap();
-
-            // Create the entry
-            let actions = state_machine
-                .apply(Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                    fid_virtual_invocation_creator,
-                    vec![
-                        BuiltinServiceEffect::StoreEntry {
-                            invocation_id: virtual_invocation_id.clone(),
-                            entry_index: 0,
-                            journal_entry: ProtobufRawEntryCodec::serialize_enriched(
-                                Entry::Awakeable(AwakeableEntry { result: None }),
-                            ),
-                        },
-                        BuiltinServiceEffect::End(None),
-                    ],
-                )))
-                .await;
-
-            assert!(actions.is_empty());
-
-            // Assert entry is stored
-            assert_that!(
-                state_machine
-                    .storage()
-                    .transaction()
-                    .get_invocation_status(&virtual_invocation_id)
-                    .await
-                    .unwrap(),
-                pat!(InvocationStatus::Virtual {
-                    journal_metadata: pat!(JournalMetadata { length: eq(1) }),
-                })
-            );
-            assert_that!(
-                state_machine
-                    .storage()
-                    .transaction()
-                    .get_journal_entry(&virtual_invocation_id, 0)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                pat!(JournalEntry::Entry(property!(
-                    EnrichedRawEntry.ty(),
-                    eq(EntryType::Awakeable)
-                )))
-            );
-
-            // Now send completion
-            let actions = state_machine
-                .apply(Command::InvocationResponse(InvocationResponse {
-                    id: MaybeFullInvocationId::Partial(virtual_invocation_id.clone()),
-                    entry_index: 0,
-                    result: ResponseResult::Success(Bytes::from_static(b"123")),
-                }))
-                .await;
-
-            // Assert entry has been updated
-            assert_that!(
-                state_machine
-                    .storage()
-                    .transaction()
-                    .get_journal_entry(&virtual_invocation_id, 0)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                pat!(JournalEntry::Entry(all!(
-                    property!(EnrichedRawEntry.ty(), eq(EntryType::Awakeable)),
-                    predicate(|e: &EnrichedRawEntry| e.header().is_completed() == Some(true))
-                )))
-            );
-            // Assert notify action is created
-            assert_that!(
-                actions,
-                elements_are![pat!(Action::NotifyVirtualJournalCompletion {
-                    target_service: eq(notification_service_service_id),
-                    method_name: eq("Handle".to_string()),
-                    invocation_id: eq(virtual_invocation_id),
-                    completion: eq(Completion::new(
-                        0,
-                        CompletionResult::Success(Bytes::from_static(b"123"))
-                    )),
-                })]
-            );
-
-            state_machine.shutdown().await
-        }
-    }
-
     async fn mock_start_invocation_with_service_id(
         state_machine: &mut MockStateMachine,
         service_id: ServiceId,
@@ -748,6 +541,7 @@ mod tests {
                 source: Source::Ingress,
                 response_sink: None,
                 span_context: Default::default(),
+                headers: vec![],
             }))
             .await;
 

@@ -12,7 +12,7 @@
 
 use super::*;
 
-use crate::errors::{InvocationError, UserErrorCode};
+use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::EntryIndex;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
@@ -20,8 +20,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
     // IO
-    PollInputStream(PollInputStreamEntry),
-    OutputStream(OutputStreamEntry),
+    Input(InputEntry),
+    Output(OutputEntry),
 
     // State access
     GetState(GetStateEntry),
@@ -40,14 +40,14 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn poll_input_stream(result: impl Into<Bytes>) -> Self {
-        Entry::PollInputStream(PollInputStreamEntry {
-            result: EntryResult::Success(result.into()),
+    pub fn input(result: impl Into<Bytes>) -> Self {
+        Entry::Input(InputEntry {
+            value: result.into(),
         })
     }
 
-    pub fn output_stream(result: EntryResult) -> Self {
-        Entry::OutputStream(OutputStreamEntry { result })
+    pub fn output(result: EntryResult) -> Self {
+        Entry::Output(OutputEntry { result })
     }
 
     pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateResult>) -> Self {
@@ -121,7 +121,7 @@ impl Completion {
 pub enum CompletionResult {
     Empty,
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<ResponseResult> for CompletionResult {
@@ -137,14 +137,14 @@ impl From<ResponseResult> for CompletionResult {
 
 impl From<&InvocationError> for CompletionResult {
     fn from(value: &InvocationError) -> Self {
-        CompletionResult::Failure(UserErrorCode::from(value.code()), value.message().into())
+        CompletionResult::Failure(value.code(), value.message().into())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryType {
-    PollInputStream,
-    OutputStream,
+    Input,
+    Output,
     GetState,
     SetState,
     ClearState,
@@ -167,7 +167,7 @@ impl fmt::Display for EntryType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryResult {
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<EntryResult> for ResponseResult {
@@ -196,12 +196,12 @@ mod private {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PollInputStreamEntry {
-    pub result: EntryResult,
+pub struct InputEntry {
+    pub value: Bytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputStreamEntry {
+pub struct OutputEntry {
     pub result: EntryResult,
 }
 
@@ -209,7 +209,7 @@ pub struct OutputStreamEntry {
 pub enum GetStateResult {
     Empty,
     Result(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +238,7 @@ pub struct ClearStateEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetStateKeysResult {
     Result(Vec<Bytes>),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,7 +255,7 @@ impl CompletableEntry for GetStateKeysEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SleepResult {
     Fired,
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

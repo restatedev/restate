@@ -11,12 +11,10 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
-use restate_pb::restate::Event;
-use restate_schema_api::subscription::{
-    EventReceiverComponentType, EventReceiverServiceInstanceType, Sink, Subscription,
-};
+use restate_pb::restate::internal::Event;
+use restate_schema_api::subscription::{EventReceiverComponentType, Sink, Subscription};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId, WithPartitionKey};
+use restate_types::identifiers::{FullInvocationId, ServiceId, WithPartitionKey};
 use restate_types::invocation::{ServiceInvocation, ServiceInvocationSpanContext, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
@@ -26,11 +24,9 @@ use tokio::sync::oneshot;
 
 mod dispatcher;
 pub mod error;
-mod event_remapping;
 
 pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
 
-pub use event_remapping::Error as EventError;
 use restate_core::metadata;
 use restate_types::dedup::DedupInformation;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
@@ -59,6 +55,7 @@ pub struct IngressRequest {
     span_context: ServiceInvocationSpanContext,
     request_mode: IngressRequestMode,
     idempotency: IdempotencyMode,
+    headers: Vec<restate_types::invocation::Header>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +65,7 @@ pub struct ExpiringIngressResponse {
 }
 
 impl ExpiringIngressResponse {
-    pub fn idempotency_expire_time(&self) -> Option<&String> {
+    pub fn idempotency_expiry_time(&self) -> Option<&String> {
         self.idempotency_expiry_time.as_ref()
     }
 }
@@ -108,6 +105,7 @@ impl IngressRequest {
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         idempotency: IdempotencyMode,
+        headers: Vec<restate_types::invocation::Header>,
     ) -> (Self, IngressResponseReceiver) {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         let (result_tx, result_rx) = oneshot::channel();
@@ -120,6 +118,7 @@ impl IngressRequest {
                 request_mode: IngressRequestMode::RequestResponse(result_tx),
                 span_context,
                 idempotency,
+                headers,
             },
             result_rx,
         )
@@ -131,6 +130,7 @@ impl IngressRequest {
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         ingress_deduplication_id: Option<IngressDeduplicationId>,
+        headers: Vec<restate_types::invocation::Header>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         IngressRequest {
@@ -143,15 +143,17 @@ impl IngressRequest {
                 Some(dedup_id) => IngressRequestMode::DedupFireAndForget(dedup_id),
             },
             idempotency: IdempotencyMode::None,
+            headers,
         }
     }
 
     pub fn event<D: DeduplicationId>(
         subscription: &Subscription,
-        mut event: Event,
+        event: Event,
         related_span: SpanRelation,
         deduplication: Option<(D, MessageIndex)>,
-    ) -> Result<Self, EventError> {
+        headers: Vec<restate_types::invocation::Header>,
+    ) -> Result<Self, anyhow::Error> {
         // Check if we need to proxy or not
         let (proxying_key, request_mode) = if let Some((dedup_id, dedup_index)) = deduplication {
             let dedup_id = dedup_id.to_string();
@@ -167,46 +169,6 @@ impl IngressRequest {
             (None, IngressRequestMode::FireAndForget)
         };
         let (target_fid, handler, argument) = match subscription.sink() {
-            Sink::Service {
-                ref name,
-                ref method,
-                ref input_event_remap,
-                ref instance_type,
-            } => {
-                // Old logic to route events
-                let target_fid = FullInvocationId::generate(ServiceId::new(
-                    &**name,
-                    // TODO This should probably live somewhere and be unified with the rest of the key extraction logic
-                    match instance_type {
-                        EventReceiverServiceInstanceType::Keyed {
-                            ordering_key_is_key,
-                        } => Bytes::from(if *ordering_key_is_key {
-                            event.ordering_key.clone()
-                        } else {
-                            std::str::from_utf8(&event.key)
-                                .map_err(|e| EventError {
-                                    field_name: "key",
-                                    tag: 2,
-                                    reason: e,
-                                })?
-                                .to_owned()
-                        }),
-                        EventReceiverServiceInstanceType::Unkeyed => {
-                            Bytes::from(InvocationUuid::new().to_string())
-                        }
-                        EventReceiverServiceInstanceType::Singleton => Bytes::new(),
-                    },
-                ));
-
-                // Perform event remapping
-                let argument = Bytes::from(if let Some(event_remap) = input_event_remap.as_ref() {
-                    event_remapping::MappedEvent::new(&mut event, event_remap)?.encode_to_vec()
-                } else {
-                    event.encode_to_vec()
-                });
-
-                (target_fid, method, argument)
-            }
             Sink::Component {
                 ref name,
                 ref handler,
@@ -221,11 +183,7 @@ impl IngressRequest {
                             event.ordering_key.clone()
                         } else {
                             std::str::from_utf8(&event.key)
-                                .map_err(|e| EventError {
-                                    field_name: "key",
-                                    tag: 2,
-                                    reason: e,
-                                })?
+                                .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
                                 .to_owned()
                         },
                     ),
@@ -261,6 +219,7 @@ impl IngressRequest {
                 span_context,
                 request_mode,
                 idempotency: IdempotencyMode::None,
+                headers,
             }
         } else {
             IngressRequest {
@@ -270,6 +229,7 @@ impl IngressRequest {
                 span_context,
                 request_mode,
                 idempotency: IdempotencyMode::None,
+                headers,
             }
         })
     }
@@ -338,6 +298,7 @@ pub mod mocks {
             ServiceInvocationSpanContext,
             IdempotencyMode,
             IngressResponseSender,
+            Vec<restate_types::invocation::Header>,
         ) {
             let_assert!(
                 IngressRequest {
@@ -347,6 +308,7 @@ pub mod mocks {
                     span_context,
                     request_mode: IngressRequestMode::RequestResponse(ingress_response_sender),
                     idempotency,
+                    headers,
                     ..
                 } = self
             );
@@ -357,6 +319,7 @@ pub mod mocks {
                 span_context,
                 idempotency,
                 ingress_response_sender,
+                headers,
             )
         }
 

@@ -63,13 +63,6 @@ impl StatusTimestamps {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct NotificationTarget {
-    pub service: ServiceId,
-    pub method: String,
-}
-
 /// Status of an invocation.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum InvocationStatus {
@@ -77,12 +70,6 @@ pub enum InvocationStatus {
     Suspended {
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
-    },
-    Virtual {
-        journal_metadata: JournalMetadata,
-        timestamps: StatusTimestamps,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
     },
     /// Service instance is currently not invoked
     #[default]
@@ -105,9 +92,6 @@ impl InvocationStatus {
             InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.journal_metadata),
             InvocationStatus::Free => None,
-            InvocationStatus::Virtual {
-                journal_metadata, ..
-            } => Some(journal_metadata),
         }
     }
 
@@ -117,9 +101,6 @@ impl InvocationStatus {
             InvocationStatus::Invoked(metadata) => Some(&metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.journal_metadata),
             InvocationStatus::Free => None,
-            InvocationStatus::Virtual {
-                journal_metadata, ..
-            } => Some(journal_metadata),
         }
     }
 
@@ -129,9 +110,6 @@ impl InvocationStatus {
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.journal_metadata),
             InvocationStatus::Free => None,
-            InvocationStatus::Virtual {
-                journal_metadata, ..
-            } => Some(journal_metadata),
         }
     }
 
@@ -141,7 +119,6 @@ impl InvocationStatus {
             InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
             InvocationStatus::Free => None,
-            InvocationStatus::Virtual { timestamps, .. } => Some(timestamps),
         }
     }
 
@@ -149,7 +126,6 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => metadata.timestamps.update(),
             InvocationStatus::Suspended { metadata, .. } => metadata.timestamps.update(),
-            InvocationStatus::Virtual { timestamps, .. } => timestamps.update(),
             InvocationStatus::Free => {}
         }
     }
@@ -187,6 +163,7 @@ pub struct InvocationMetadata {
 }
 
 impl InvocationMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         service_id: ServiceId,
         journal_metadata: JournalMetadata,

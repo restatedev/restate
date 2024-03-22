@@ -12,219 +12,68 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
-use std::fmt::Display;
 
-/// This error code set matches the [gRPC error code set](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc),
-/// representing all the error codes visible to the user code. Note, it does not include the Ok
-/// variant because only error cases are contained.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[repr(u16)]
-pub enum UserErrorCode {
-    /// The operation was cancelled.
-    Cancelled = 1,
-
-    /// Unknown error.
-    Unknown = 2,
-
-    /// Client specified an invalid argument.
-    InvalidArgument = 3,
-
-    /// Deadline expired before operation could complete.
-    DeadlineExceeded = 4,
-
-    /// Some requested entity was not found.
-    NotFound = 5,
-
-    /// Some entity that we attempted to create already exists.
-    AlreadyExists = 6,
-
-    /// The caller does not have permission to execute the specified operation.
-    PermissionDenied = 7,
-
-    /// Some resource has been exhausted.
-    ResourceExhausted = 8,
-
-    /// The system is not in a state required for the operation's execution.
-    FailedPrecondition = 9,
-
-    /// The operation was aborted, for example due to killing an invocation forcefully.
-    Aborted = 10,
-
-    /// Operation was attempted past the valid range.
-    OutOfRange = 11,
-
-    /// Operation is not implemented or not supported.
-    Unimplemented = 12,
-
-    /// Internal error.
-    Internal = 13,
-
-    /// The service is currently unavailable.
-    Unavailable = 14,
-
-    /// Unrecoverable data loss or corruption.
-    DataLoss = 15,
-
-    /// The request does not have valid authentication credentials.
-    Unauthenticated = 16,
-}
-
-impl Display for UserErrorCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-impl From<u32> for UserErrorCode {
-    fn from(value: u32) -> Self {
-        use UserErrorCode::*;
-
-        match value {
-            1 => Cancelled,
-            2 => Unknown,
-            3 => InvalidArgument,
-            4 => DeadlineExceeded,
-            5 => NotFound,
-            6 => AlreadyExists,
-            7 => PermissionDenied,
-            8 => ResourceExhausted,
-            9 => FailedPrecondition,
-            10 => Aborted,
-            11 => OutOfRange,
-            12 => Unimplemented,
-            13 => Internal,
-            14 => Unavailable,
-            15 => DataLoss,
-            16 => Unauthenticated,
-            _ => Unknown,
-        }
-    }
-}
-
-impl From<UserErrorCode> for u32 {
-    fn from(value: UserErrorCode) -> Self {
-        value as u32
-    }
-}
-
-/// Error parsing/decoding a resource ID.
-#[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
-pub enum IdDecodeError {
-    #[error("bad length")]
-    Length,
-    #[error("base62 decode error")]
-    Codec,
-    #[error("bad format")]
-    Format,
-    #[error("unrecognized codec version")]
-    Version,
-    #[error("id doesn't match the expected type")]
-    TypeMismatch,
-    #[error("unrecognized resource type: {0}")]
-    UnrecognizedType(String),
-}
-
-/// Error codes used by Restate to carry Restate specific error codes.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[repr(u16)]
-pub enum RestateErrorCode {
-    // The invocation cannot be replayed due to the mismatch between the journal and the actual code.
-    JournalMismatch = 32,
-
-    // Violation of the protocol state machine.
-    ProtocolViolation = 33,
-
-    // The invocation was killed by Restate
-    Killed = 64,
-}
-
-impl Display for RestateErrorCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
-    }
-}
-
-impl From<RestateErrorCode> for u32 {
-    fn from(value: RestateErrorCode) -> Self {
-        value as u32
-    }
-}
-
-/// Error codes representing the possible error variants that can arise during an invocation.
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum InvocationErrorCode {
-    User(UserErrorCode),
-    Restate(RestateErrorCode),
-    Unknown(u32),
+#[cfg_attr(feature = "serde", serde(transparent))]
+pub struct InvocationErrorCode(u16);
+
+impl InvocationErrorCode {
+    pub const fn new(code: u16) -> Self {
+        InvocationErrorCode(code)
+    }
 }
 
 impl fmt::Debug for InvocationErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            InvocationErrorCode::User(c) => fmt::Debug::fmt(c, f),
-            InvocationErrorCode::Restate(c) => fmt::Debug::fmt(c, f),
-            InvocationErrorCode::Unknown(c) => write!(f, "{}", c),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
-impl Display for InvocationErrorCode {
+impl fmt::Display for InvocationErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
+    }
+}
+
+impl From<u16> for InvocationErrorCode {
+    fn from(value: u16) -> Self {
+        InvocationErrorCode(value)
     }
 }
 
 impl From<u32> for InvocationErrorCode {
     fn from(value: u32) -> Self {
-        use InvocationErrorCode::*;
-        use RestateErrorCode::*;
+        value
+            .try_into()
+            .map(InvocationErrorCode)
+            .unwrap_or(codes::INTERNAL)
+    }
+}
 
-        if value <= 16 {
-            return User(value.into());
-        }
-        match value {
-            32 => Restate(JournalMismatch),
-            33 => Restate(ProtocolViolation),
-            64 => Restate(Killed),
-
-            c => Unknown(c),
-        }
+impl From<InvocationErrorCode> for u16 {
+    fn from(value: InvocationErrorCode) -> Self {
+        value.0
     }
 }
 
 impl From<InvocationErrorCode> for u32 {
     fn from(value: InvocationErrorCode) -> Self {
-        match value {
-            InvocationErrorCode::User(c) => c as u32,
-            InvocationErrorCode::Restate(c) => c as u32,
-            InvocationErrorCode::Unknown(c) => c,
-        }
+        value.0 as u32
     }
 }
 
-impl From<InvocationErrorCode> for UserErrorCode {
-    fn from(value: InvocationErrorCode) -> Self {
-        match value {
-            InvocationErrorCode::User(u) => u,
-            InvocationErrorCode::Restate(RestateErrorCode::Killed) => UserErrorCode::Aborted,
-            _ => UserErrorCode::Unknown,
-        }
-    }
-}
+pub mod codes {
+    use super::InvocationErrorCode;
 
-impl From<UserErrorCode> for InvocationErrorCode {
-    fn from(value: UserErrorCode) -> Self {
-        InvocationErrorCode::User(value)
-    }
-}
-
-impl From<RestateErrorCode> for InvocationErrorCode {
-    fn from(value: RestateErrorCode) -> Self {
-        InvocationErrorCode::Restate(value)
-    }
+    pub const BAD_REQUEST: InvocationErrorCode = InvocationErrorCode(400);
+    pub const NOT_FOUND: InvocationErrorCode = InvocationErrorCode(404);
+    pub const INTERNAL: InvocationErrorCode = InvocationErrorCode(500);
+    pub const UNKNOWN: InvocationErrorCode = INTERNAL;
+    pub const ABORTED: InvocationErrorCode = InvocationErrorCode(409);
+    pub const KILLED: InvocationErrorCode = ABORTED;
+    pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
+    pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
 }
 
 /// This struct represents errors arisen when processing a service invocation.
@@ -237,7 +86,7 @@ pub struct InvocationError {
 }
 
 pub const UNKNOWN_INVOCATION_ERROR: InvocationError =
-    InvocationError::new_static(InvocationErrorCode::User(UserErrorCode::Unknown), "unknown");
+    InvocationError::new_static(codes::UNKNOWN, "unknown");
 
 impl Default for InvocationError {
     fn default() -> Self {
@@ -245,7 +94,7 @@ impl Default for InvocationError {
     }
 }
 
-impl Display for InvocationError {
+impl fmt::Display for InvocationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{:?}] {}", self.code(), self.message())?;
         if self.description.is_some() {
@@ -266,7 +115,7 @@ impl InvocationError {
         }
     }
 
-    pub fn new(code: impl Into<InvocationErrorCode>, message: impl Display) -> Self {
+    pub fn new(code: impl Into<InvocationErrorCode>, message: impl fmt::Display) -> Self {
         Self {
             code: code.into(),
             message: Cow::Owned(message.to_string()),
@@ -274,26 +123,29 @@ impl InvocationError {
         }
     }
 
-    pub fn internal(message: impl Display) -> Self {
+    pub fn internal(message: impl fmt::Display) -> Self {
         Self {
-            code: UserErrorCode::Internal.into(),
+            code: codes::INTERNAL,
             message: Cow::Owned(message.to_string()),
             description: None,
         }
     }
 
-    pub fn service_not_found(service: impl Display) -> Self {
+    pub fn component_not_found(component: impl fmt::Display) -> Self {
         Self {
-            code: UserErrorCode::NotFound.into(),
-            message: Cow::Owned(format!("Service '{}' not found. Check whether the deployment containing the service is registered.", service)),
+            code: codes::NOT_FOUND,
+            message: Cow::Owned(format!("Component '{}' not found. Check whether the deployment containing the component is registered.", component)),
             description: None,
         }
     }
 
-    pub fn service_method_not_found(service: impl Display, method: impl Display) -> Self {
+    pub fn component_handler_not_found(
+        component: impl fmt::Display,
+        handler: impl fmt::Display,
+    ) -> Self {
         Self {
-            code: UserErrorCode::NotFound.into(),
-            message: Cow::Owned(format!("Service method '{}/{}' not found. Check whether you've registered the correct version of your service.", service, method)),
+            code: codes::NOT_FOUND,
+            message: Cow::Owned(format!("Component handler '{}/{}' not found. Check whether you've registered the correct version of your component.", component, handler)),
             description: None,
         }
     }
@@ -303,7 +155,7 @@ impl InvocationError {
         self
     }
 
-    pub fn with_message(mut self, message: impl Display) -> InvocationError {
+    pub fn with_message(mut self, message: impl fmt::Display) -> InvocationError {
         self.message = Cow::Owned(message.to_string());
         self
     }
@@ -313,7 +165,7 @@ impl InvocationError {
         self
     }
 
-    pub fn with_description(mut self, description: impl Display) -> InvocationError {
+    pub fn with_description(mut self, description: impl fmt::Display) -> InvocationError {
         self.description = Some(Cow::Owned(description.to_string()));
         self
     }
@@ -339,58 +191,29 @@ impl From<anyhow::Error> for InvocationError {
 
 // -- Some known errors
 
-pub const KILLED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
-    InvocationErrorCode::Restate(RestateErrorCode::Killed),
-    "killed",
-);
+pub const KILLED_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::KILLED, "killed");
 
 // TODO: Once we want to distinguish server side cancellations from user code returning the
 //  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.
-pub const CANCELED_INVOCATION_ERROR: InvocationError = InvocationError::new_static(
-    InvocationErrorCode::User(UserErrorCode::Cancelled),
-    "canceled",
-);
+pub const CANCELED_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::ABORTED, "canceled");
 
-#[cfg(feature = "tonic_conversions")]
-mod tonic_conversions_impl {
-    use super::{InvocationError, InvocationErrorCode};
-    use crate::errors::UserErrorCode;
-    use tonic::{Code, Status};
-
-    impl From<UserErrorCode> for Code {
-        fn from(value: UserErrorCode) -> Self {
-            match value {
-                UserErrorCode::Cancelled => Code::Cancelled,
-                UserErrorCode::Unknown => Code::Unknown,
-                UserErrorCode::InvalidArgument => Code::InvalidArgument,
-                UserErrorCode::DeadlineExceeded => Code::DeadlineExceeded,
-                UserErrorCode::NotFound => Code::NotFound,
-                UserErrorCode::AlreadyExists => Code::AlreadyExists,
-                UserErrorCode::PermissionDenied => Code::PermissionDenied,
-                UserErrorCode::ResourceExhausted => Code::ResourceExhausted,
-                UserErrorCode::FailedPrecondition => Code::FailedPrecondition,
-                UserErrorCode::Aborted => Code::Aborted,
-                UserErrorCode::OutOfRange => Code::OutOfRange,
-                UserErrorCode::Unimplemented => Code::Unimplemented,
-                UserErrorCode::Internal => Code::Internal,
-                UserErrorCode::Unavailable => Code::Unavailable,
-                UserErrorCode::DataLoss => Code::DataLoss,
-                UserErrorCode::Unauthenticated => Code::Unauthenticated,
-            }
-        }
-    }
-
-    impl From<InvocationErrorCode> for Code {
-        fn from(value: InvocationErrorCode) -> Self {
-            UserErrorCode::from(value).into()
-        }
-    }
-
-    impl From<InvocationError> for Status {
-        fn from(value: InvocationError) -> Self {
-            Status::new(value.code().into(), value.message)
-        }
-    }
+/// Error parsing/decoding a resource ID.
+#[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
+pub enum IdDecodeError {
+    #[error("bad length")]
+    Length,
+    #[error("base62 decode error")]
+    Codec,
+    #[error("bad format")]
+    Format,
+    #[error("unrecognized codec version")]
+    Version,
+    #[error("id doesn't match the expected type")]
+    TypeMismatch,
+    #[error("unrecognized resource type: {0}")]
+    UnrecognizedType(String),
 }
 
 #[derive(Debug, thiserror::Error)]

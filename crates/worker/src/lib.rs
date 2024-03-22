@@ -12,6 +12,7 @@ extern crate core;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
+use anyhow::Context;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -30,6 +31,7 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
+use std::path::Path;
 use tracing::debug;
 
 mod invoker_integration;
@@ -121,7 +123,7 @@ impl Default for Options {
             ingress: Default::default(),
             kafka: Default::default(),
             invoker: Default::default(),
-            partitions: 1024,
+            partitions: 64,
         }
     }
 }
@@ -143,8 +145,8 @@ pub enum BuildError {
 }
 
 impl Options {
-    pub fn storage_path(&self) -> &str {
-        &self.storage_rocksdb.path
+    pub fn storage_path(&self) -> &Path {
+        self.storage_rocksdb.path.as_path()
     }
 
     pub fn build(
@@ -262,7 +264,6 @@ impl Worker {
                     channel_size,
                     invoker_sender,
                     rocksdb_storage.clone(),
-                    schemas.clone(),
                 )
             })
             .collect();
@@ -289,7 +290,6 @@ impl Worker {
         channel_size: usize,
         invoker_sender: InvokerChannelServiceHandle,
         rocksdb_storage: RocksDBStorage,
-        schemas: Schemas,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
             partition_id,
@@ -298,7 +298,6 @@ impl Worker {
             channel_size,
             invoker_sender,
             rocksdb_storage,
-            schemas,
         )
     }
 
@@ -314,7 +313,7 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self, mut bifrost: Bifrost) -> anyhow::Result<()> {
+    pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
         let tc = task_center();
         let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
@@ -356,38 +355,44 @@ impl Worker {
         )?;
 
         let node_id = metadata().my_node_id();
+        // This only temporary measure until we can acquire leadership plan from
+        // cluster controller.
+        let leader_epoch = LeaderEpoch::from(restate_types::time::MillisSinceEpoch::now().as_u64());
         let announce_leader = AnnounceLeader {
             node_id,
-            // todo: This only works as long as we have an ephemeral log. Once the log becomes
-            //  durable, we need to generate an increasing leader epoch.
-            leader_epoch: LeaderEpoch::INITIAL,
+            leader_epoch,
         };
 
         // Create partition processors
         for processor in self.processors {
             let networking = self.networking.clone();
-
-            let header = Header {
-                dest: Destination::Processor {
-                    partition_key: *processor.partition_key_range.start(),
-                    dedup: None,
-                },
-                source: Source::ControlPlane {},
-            };
-
-            let envelope = Envelope::new(header, Command::AnnounceLeader(announce_leader.clone()));
-            let payload = Payload::from(envelope.encode_with_bincode()?);
-
-            // todo: Remove once we have proper leader election
-            bifrost
-                .append(LogId::from(processor.partition_id), payload)
-                .await?;
+            let announce_leader = announce_leader.clone();
+            let mut bifrost = bifrost.clone();
 
             tc.spawn_child(
                 TaskKind::PartitionProcessor,
                 "partition-processor",
                 Some(processor.partition_id),
-                processor.run(networking, bifrost.clone()),
+                async move {
+                    let header = Header {
+                        dest: Destination::Processor {
+                            partition_key: *processor.partition_key_range.start(),
+                            dedup: None,
+                        },
+                        source: Source::ControlPlane {},
+                    };
+
+                    let envelope =
+                        Envelope::new(header, Command::AnnounceLeader(announce_leader.clone()));
+                    let payload = Payload::from(envelope.encode_with_bincode()?);
+
+                    // todo: Remove once we have proper leader election
+                    bifrost
+                        .append(LogId::from(processor.partition_id), payload)
+                        .await
+                        .context("failed to write AnnounceLeader record to bifrost")?;
+                    processor.run(networking, bifrost).await
+                },
             )?;
         }
 

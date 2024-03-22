@@ -21,7 +21,7 @@ use restate_storage_api::invocation_status_table::{
     InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_storage_api::service_status_table::ServiceStatus;
+use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, ServiceId};
@@ -41,7 +41,7 @@ pub trait StateStorage {
     fn store_service_status(
         &mut self,
         service_id: &ServiceId,
-        service_status: ServiceStatus,
+        service_status: VirtualObjectStatus,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn store_invocation_status(
@@ -338,52 +338,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     completion,
                 });
             }
-            Effect::CreateVirtualJournal {
-                invocation_id,
-                span_context,
-                completion_notification_target,
-                kill_notification_target,
-            } => {
-                state_storage
-                    .store_invocation_status(
-                        &invocation_id,
-                        InvocationStatus::Virtual {
-                            journal_metadata: JournalMetadata::initialize(span_context),
-                            completion_notification_target,
-                            timestamps: StatusTimestamps::now(),
-                            kill_notification_target,
-                        },
-                    )
-                    .await?;
-            }
-            Effect::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                invocation_id,
-                completion,
-            } => collector.push(Action::NotifyVirtualJournalCompletion {
-                target_service,
-                method_name,
-                invocation_id,
-                completion,
-            }),
-            Effect::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                invocation_id,
-            } => collector.push(Action::NotifyVirtualJournalKill {
-                target_service,
-                method_name,
-                invocation_id,
-            }),
-            Effect::DropJournal {
-                invocation_id,
-                journal_length,
-            } => {
-                state_storage
-                    .drop_journal(&invocation_id, journal_length)
-                    .await?;
-            }
             Effect::DropJournalAndPopInbox {
                 full_invocation_id,
                 journal_length,
@@ -447,7 +401,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
 
         state_storage
-            .store_service_status(service_id, ServiceStatus::Unlocked)
+            .store_service_status(service_id, VirtualObjectStatus::Unlocked)
             .await?;
 
         Ok(())
@@ -508,7 +462,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_storage
             .store_service_status(
                 &service_invocation.fid.service_id,
-                ServiceStatus::Locked(invocation_id.clone()),
+                VirtualObjectStatus::Locked(invocation_id.clone()),
             )
             .await?;
         state_storage
@@ -543,8 +497,10 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 service_invocation.argument,
             )
         } else {
-            let poll_input_stream_entry =
-                Codec::serialize_as_unary_input_entry(service_invocation.argument.clone());
+            let poll_input_stream_entry = Codec::serialize_as_input_entry(
+                service_invocation.headers,
+                service_invocation.argument.clone(),
+            );
             let (header, serialized_entry) = poll_input_stream_entry.into_inner();
 
             collector.push(Action::Invoke {

@@ -9,10 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use super::Schemas;
-use bytes::Bytes;
-use restate_schema_api::component::ComponentMetadata;
 
-use crate::schemas_impl::ServiceLocation;
+use crate::schemas_impl::ComponentLocation;
+use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
@@ -24,8 +23,8 @@ impl DeploymentResolver for Schemas {
         let schemas = self.0.load();
         let component = schemas.components.get(component_name.as_ref())?;
         match &component.location {
-            ServiceLocation::BuiltIn { .. } => None,
-            ServiceLocation::Deployment {
+            ComponentLocation::BuiltIn { .. } => None,
+            ComponentLocation::Deployment {
                 latest_deployment, ..
             } => schemas
                 .deployments
@@ -48,15 +47,7 @@ impl DeploymentResolver for Schemas {
             })
     }
 
-    fn get_deployment_descriptor_pool(&self, deployment_id: &DeploymentId) -> Option<Bytes> {
-        let schemas = self.0.load();
-        schemas
-            .deployments
-            .get(deployment_id)
-            .map(|schemas| schemas.descriptor_pool.encode_to_vec().into())
-    }
-
-    fn get_deployment_and_services(
+    fn get_deployment_and_components(
         &self,
         deployment_id: &DeploymentId,
     ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
@@ -84,7 +75,7 @@ impl DeploymentResolver for Schemas {
                         metadata: schemas.metadata.clone(),
                     },
                     schemas
-                        .services
+                        .components
                         .iter()
                         .map(|s| (s.name.clone(), s.revision))
                         .collect(),

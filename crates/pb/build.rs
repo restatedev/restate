@@ -11,8 +11,6 @@
 use crate::built_in_service_gen::RestateBuiltInServiceGen;
 use crate::manual_response_built_in_service_gen::ManualResponseRestateBuiltInServiceGen;
 use crate::multi_service_generator::MultiServiceGenerator;
-use std::env;
-use std::path::PathBuf;
 
 mod multi_service_generator {
     use prost_build::{Service, ServiceGenerator};
@@ -122,7 +120,7 @@ mod built_in_service_gen {
                         r#""{}" => {{
                             use prost::Message;
 
-                            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            let mut input_t = {}::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::codes::BAD_REQUEST, e.to_string()))?;
                             let output_t = T::{}(&mut self.0, input_t).await?;
                             Ok(output_t.encode_to_vec().into())
                         }},"#,
@@ -144,7 +142,7 @@ mod built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -242,7 +240,7 @@ mod manual_response_built_in_service_gen {
                         r#""{}" => {{
                             use prost::Message;
 
-                            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::UserErrorCode::InvalidArgument, e.to_string()))?;
+                            let mut input_t = <{}>::decode(&mut input).map_err(|e| restate_types::errors::InvocationError::new(restate_types::errors::codes::BAD_REQUEST, e.to_string()))?;
                             T::{}(&mut self.0, input_t, crate::builtin_service::ResponseSerializer::default()).await?;
                             Ok(())
                         }},"#,
@@ -265,7 +263,7 @@ mod manual_response_built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::service_method_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -283,7 +281,10 @@ fn main() -> std::io::Result<()> {
         .bytes(["."])
         .service_generator(Box::new(
             MultiServiceGenerator::new()
-                .with_svc("dev.restate.Awakeables", Box::new(RestateBuiltInServiceGen))
+                .with_svc(
+                    "dev.restate.internal.Awakeables",
+                    Box::new(RestateBuiltInServiceGen),
+                )
                 .with_svc(
                     "dev.restate.internal.Proxy",
                     Box::new(RestateBuiltInServiceGen),
@@ -332,30 +333,11 @@ fn main() -> std::io::Result<()> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(
             &[
-                "proto/dev/restate/ext.proto",
-                "proto/dev/restate/services.proto",
                 "proto/dev/restate/internal/services.proto",
-                "proto/dev/restate/events.proto",
+                "proto/dev/restate/internal/events.proto",
                 "proto/dev/restate/internal/messages.proto",
             ],
             &["proto"],
-        )?;
-
-    prost_build::Config::new()
-        .file_descriptor_set_path(
-            PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable not set"))
-                .join("file_descriptor_set_test.bin"),
-        )
-        .bytes(["."])
-        .service_generator(tonic_build::configure().service_generator())
-        .extern_path(".dev.restate", "crate::restate")
-        .compile_protos(
-            &[
-                "tests/proto/test.proto",
-                "tests/proto/greeter.proto",
-                "tests/proto/event_handler.proto",
-            ],
-            &["proto", "tests/proto"],
         )?;
 
     Ok(())

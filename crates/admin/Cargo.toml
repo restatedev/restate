@@ -19,9 +19,9 @@ restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
-restate-node-services = { workspace = true, features = ["servers"] }
+restate-node-services = { workspace = true, features = ["servers", "clients"] }
 restate-pb = { workspace = true }
-restate-schema-api = { workspace = true, features = ["service", "deployment", "serde", "serde_schema"] }
+restate-schema-api = { workspace = true, features = ["deployment", "serde", "serde_schema"] }
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
@@ -43,7 +43,6 @@ futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 okapi-operation = { version = "0.2.2", features = ["axum-integration"] }
-prost = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
@@ -56,7 +55,6 @@ tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 

@@ -13,7 +13,7 @@ use bytestring::ByteString;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
 use restate_types::journal::Completion;
@@ -32,17 +32,6 @@ pub enum Action {
         span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
         argument: Bytes,
-    },
-    NotifyVirtualJournalCompletion {
-        target_service: ServiceId,
-        method_name: String,
-        invocation_id: InvocationId,
-        completion: Completion,
-    },
-    NotifyVirtualJournalKill {
-        target_service: ServiceId,
-        method_name: String,
-        invocation_id: InvocationId,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,

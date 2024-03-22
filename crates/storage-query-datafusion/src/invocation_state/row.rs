@@ -25,8 +25,8 @@ pub(crate) fn append_state_row(
     let invocation_id = status_row.full_invocation_id();
 
     row.partition_key(invocation_id.service_id.partition_key());
-    row.service(&invocation_id.service_id.service_name);
-    row.service_key(
+    row.component(&invocation_id.service_id.service_name);
+    row.component_key(
         std::str::from_utf8(&invocation_id.service_id.key).expect("The key must be a string!"),
     );
     if row.is_id_defined() {

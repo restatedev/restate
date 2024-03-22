@@ -32,6 +32,7 @@ use crate::{Error, LogRecord, LsnExt, Options};
     serde::Deserialize,
     Enum,
     strum_macros::EnumIter,
+    strum_macros::Display,
 )]
 pub enum ProviderKind {
     /// A file-backed loglet.
@@ -95,9 +96,7 @@ pub trait LogletProvider: Send + Sync {
     async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>, Error>;
 
     // Hook for handling lazy initialization
-    async fn start(&self) -> Result<(), Error> {
-        Ok(())
-    }
+    fn start(&self) -> Result<(), Error>; // {
 
     // Hook for handling graceful shutdown
     async fn shutdown(&self) -> Result<(), Error> {

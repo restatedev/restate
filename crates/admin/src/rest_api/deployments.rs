@@ -131,7 +131,7 @@ pub async fn get_deployment(
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, components) = state
         .schemas()
-        .get_deployment_and_services(&deployment_id)
+        .get_deployment_and_components(&deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(DetailedDeploymentResponse {

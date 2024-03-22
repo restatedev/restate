@@ -23,9 +23,9 @@ pub mod storage {
             use crate::storage::v1::dedup_sequence_number::Variant;
             use crate::storage::v1::enriched_entry_header::{
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
-                GetState, GetStateKeys, Invoke, OutputStream, PollInputStream, SetState, Sleep,
+                GetState, GetStateKeys, Input, Invoke, Output, SetState, Sleep,
             };
-            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended, Virtual};
+            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
@@ -42,7 +42,7 @@ pub mod storage {
                 invocation_status, maybe_full_invocation_id, outbox_message, response_result,
                 service_status, source, span_relation, timer, BackgroundCallResolutionResult,
                 DedupSequenceNumber, EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId,
-                InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
+                Header, InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
                 JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage, ResponseResult,
                 ServiceId, ServiceInvocation, ServiceInvocationResponseSink, ServiceStatus, Source,
                 SpanContext, SpanRelation, StateMutation, Timer,
@@ -102,10 +102,12 @@ pub mod storage {
                 }
             }
 
-            impl From<restate_storage_api::service_status_table::ServiceStatus> for ServiceStatus {
-                fn from(value: restate_storage_api::service_status_table::ServiceStatus) -> Self {
+            impl From<restate_storage_api::service_status_table::VirtualObjectStatus> for ServiceStatus {
+                fn from(
+                    value: restate_storage_api::service_status_table::VirtualObjectStatus,
+                ) -> Self {
                     match value {
-                        restate_storage_api::service_status_table::ServiceStatus::Locked(
+                        restate_storage_api::service_status_table::VirtualObjectStatus::Locked(
                             invocation_id,
                         ) => ServiceStatus {
                             status: Some(service_status::Status::Locked(service_status::Locked {
@@ -116,7 +118,7 @@ pub mod storage {
                                     .into(),
                             })),
                         },
-                        restate_storage_api::service_status_table::ServiceStatus::Unlocked => {
+                        restate_storage_api::service_status_table::VirtualObjectStatus::Unlocked => {
                             unreachable!("Nothing should be stored for unlocked")
                         }
                     }
@@ -147,20 +149,6 @@ pub mod storage {
                                 waiting_for_completed_entries,
                             }
                         }
-                        invocation_status::Status::Virtual(r#virtual) => {
-                            let (
-                                journal_metadata,
-                                completion_notification_target,
-                                kill_notification_target,
-                                timestamps,
-                            ) = r#virtual.try_into()?;
-                            restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
-                                journal_metadata,
-                                completion_notification_target,
-                                kill_notification_target,
-                                timestamps,
-                            }
-                        }
                         invocation_status::Status::Free(_) => {
                             restate_storage_api::invocation_status_table::InvocationStatus::Free
                         }
@@ -184,17 +172,6 @@ pub mod storage {
                         } => invocation_status::Status::Suspended(Suspended::from((
                             metadata,
                             waiting_for_completed_entries,
-                        ))),
-                        restate_storage_api::invocation_status_table::InvocationStatus::Virtual {
-                            journal_metadata,
-                            completion_notification_target,
-                            kill_notification_target,
-                            timestamps,
-                        } => invocation_status::Status::Virtual(Virtual::from((
-                            journal_metadata,
-                            completion_notification_target,
-                            kill_notification_target,
-                            timestamps,
                         ))),
                         restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
@@ -404,100 +381,6 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Virtual>
-                for (
-                    restate_storage_api::invocation_status_table::JournalMetadata,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::StatusTimestamps,
-                )
-            {
-                type Error = ConversionError;
-
-                fn try_from(value: Virtual) -> Result<Self, Self::Error> {
-                    let journal_metadata =
-                        restate_storage_api::invocation_status_table::JournalMetadata::try_from(
-                            value
-                                .journal_meta
-                                .ok_or(ConversionError::missing_field("journal_meta"))?,
-                        )?;
-                    let completion_notification_target =
-                        restate_storage_api::invocation_status_table::NotificationTarget {
-                            service: restate_types::identifiers::ServiceId::new(
-                                value.completion_notification_target_service_name,
-                                value.completion_notification_target_service_key,
-                            ),
-                            method: value.completion_notification_target_method,
-                        };
-                    let kill_notification_target =
-                        restate_storage_api::invocation_status_table::NotificationTarget {
-                            service: restate_types::identifiers::ServiceId::new(
-                                value.kill_notification_target_service_name,
-                                value.kill_notification_target_service_key,
-                            ),
-                            method: value.kill_notification_target_method,
-                        };
-                    let timestamps =
-                        restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                            MillisSinceEpoch::new(value.creation_time),
-                            MillisSinceEpoch::new(value.modification_time),
-                        );
-
-                    Ok((
-                        journal_metadata,
-                        completion_notification_target,
-                        kill_notification_target,
-                        timestamps,
-                    ))
-                }
-            }
-
-            impl
-                From<(
-                    restate_storage_api::invocation_status_table::JournalMetadata,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::NotificationTarget,
-                    restate_storage_api::invocation_status_table::StatusTimestamps,
-                )> for Virtual
-            {
-                fn from(
-                    (
-                        journal_metadata,
-                        completion_notification_target,
-                        kill_notification_target,
-                        timestamps,
-                    ): (
-                        restate_storage_api::invocation_status_table::JournalMetadata,
-                        restate_storage_api::invocation_status_table::NotificationTarget,
-                        restate_storage_api::invocation_status_table::NotificationTarget,
-                        restate_storage_api::invocation_status_table::StatusTimestamps,
-                    ),
-                ) -> Self {
-                    let journal_meta = JournalMeta::from(journal_metadata);
-
-                    Virtual {
-                        journal_meta: Some(journal_meta),
-                        completion_notification_target_service_name: completion_notification_target
-                            .service
-                            .service_name
-                            .to_string(),
-                        completion_notification_target_service_key: completion_notification_target
-                            .service
-                            .key,
-                        completion_notification_target_method: completion_notification_target
-                            .method,
-                        kill_notification_target_service_name: kill_notification_target
-                            .service
-                            .service_name
-                            .to_string(),
-                        kill_notification_target_service_key: kill_notification_target.service.key,
-                        kill_notification_target_method: kill_notification_target.method,
-                        creation_time: timestamps.creation_time().as_u64(),
-                        modification_time: timestamps.modification_time().as_u64(),
-                    }
-                }
-            }
-
             impl TryFrom<JournalMeta> for restate_storage_api::invocation_status_table::JournalMetadata {
                 type Error = ConversionError;
 
@@ -636,6 +519,7 @@ pub mod storage {
                         span_context,
                         argument,
                         source,
+                        headers,
                     } = value;
 
                     let id = restate_types::identifiers::FullInvocationId::try_from(
@@ -660,6 +544,11 @@ pub mod storage {
                         source.ok_or(ConversionError::missing_field("source"))?,
                     )?;
 
+                    let headers = headers
+                        .into_iter()
+                        .map(|h| restate_types::invocation::Header::try_from(h))
+                        .collect::<Result<Vec<_>, ConversionError>>()?;
+
                     Ok(restate_types::invocation::ServiceInvocation {
                         fid: id,
                         method_name,
@@ -667,6 +556,7 @@ pub mod storage {
                         source,
                         response_sink,
                         span_context,
+                        headers,
                     })
                 }
             }
@@ -678,6 +568,7 @@ pub mod storage {
                     let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
                     let method_name = value.method_name.into_bytes();
                     let source = Source::from(value.source);
+                    let headers = value.headers.into_iter().map(Into::into).collect();
 
                     ServiceInvocation {
                         id: Some(id),
@@ -686,6 +577,7 @@ pub mod storage {
                         method_name,
                         argument: value.argument,
                         source: Some(source),
+                        headers,
                     }
                 }
             }
@@ -1052,6 +944,25 @@ pub mod storage {
                 }
             }
 
+            impl TryFrom<Header> for restate_types::invocation::Header {
+                type Error = ConversionError;
+
+                fn try_from(value: Header) -> Result<Self, Self::Error> {
+                    let Header { name, value } = value;
+
+                    Ok(restate_types::invocation::Header::new(name, value))
+                }
+            }
+
+            impl From<restate_types::invocation::Header> for Header {
+                fn from(value: restate_types::invocation::Header) -> Self {
+                    Self {
+                        name: value.name.to_string(),
+                        value: value.value.to_string(),
+                    }
+                }
+            }
+
             impl From<GenerationalNodeId> for super::GenerationalNodeId {
                 fn from(value: GenerationalNodeId) -> Self {
                     super::GenerationalNodeId {
@@ -1216,13 +1127,12 @@ pub mod storage {
                         .kind
                         .ok_or(ConversionError::missing_field("kind"))?
                     {
-                        enriched_entry_header::Kind::PollInputStream(poll_input_stream) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
-                                                            is_completed: poll_input_stream.is_completed,
+                        enriched_entry_header::Kind::Input(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Input {
                             }
                         }
-                        enriched_entry_header::Kind::OutputStream(_) => {
-                            restate_types::journal::enriched::EnrichedEntryHeader::OutputStream {
+                        enriched_entry_header::Kind::Output(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::Output {
                                                         }
                         }
                         enriched_entry_header::Kind::GetState(get_state) => {
@@ -1309,14 +1219,12 @@ pub mod storage {
                     // when reading an entry from storage, we never need to send the ack back for it.
 
                     let kind = match value {
-                        restate_types::journal::enriched::EnrichedEntryHeader::PollInputStream {
-                            is_completed,
+                        restate_types::journal::enriched::EnrichedEntryHeader::Input {
                             ..
-                        } => enriched_entry_header::Kind::PollInputStream(PollInputStream {
-                            is_completed,
+                        } => enriched_entry_header::Kind::Input(Input {
                         }),
-                        restate_types::journal::enriched::EnrichedEntryHeader::OutputStream{..} => {
-                            enriched_entry_header::Kind::OutputStream(OutputStream {})
+                        restate_types::journal::enriched::EnrichedEntryHeader::Output {..} => {
+                            enriched_entry_header::Kind::Output(Output {})
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::GetState { is_completed, .. } => {
                             enriched_entry_header::Kind::GetState(GetState { is_completed })

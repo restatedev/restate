@@ -12,7 +12,7 @@ default = []
 
 awakeable-id = ["dep:base64", "dep:restate-base64-util", "dep:restate-types"]
 codec = ["protocol", "dep:restate-types", "dep:paste"]
-discovery = ["dep:serde", "dep:serde_json", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:restate-schema-api", "dep:hyper", "dep:restate-service-client", "dep:prost-reflect", "dep:restate-types", "dep:tokio"]
+discovery = ["dep:serde", "dep:serde_json", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:restate-schema-api", "dep:hyper", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
 message = ["protocol", "dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
 mocks = ["awakeable-id"]
 protocol = []
@@ -31,13 +31,10 @@ codederror = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
-prost-reflect = { workspace = true, optional = true }
-prost-types = { workspace = true }
 size = { version = "0.4.1", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["time"] }
 tracing = { workspace = true, optional = true }
-
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 regress = { version = "0.9", optional = true }
@@ -52,7 +49,6 @@ uuid = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
-
 prettyplease = "0.2"
 schemars = { workspace = true }
 serde_json = { workspace = true }

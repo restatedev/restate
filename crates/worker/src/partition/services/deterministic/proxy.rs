@@ -34,6 +34,7 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
             Source::Ingress,
             None,
             self.span_context.as_parent(),
+            vec![],
         )));
 
         Ok(())

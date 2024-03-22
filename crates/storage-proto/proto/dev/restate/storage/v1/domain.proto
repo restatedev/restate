@@ -87,23 +87,10 @@ message InvocationStatus {
     message Free {
     }
 
-    message Virtual {
-        JournalMeta journal_meta = 2;
-        string completion_notification_target_service_name = 3;
-        bytes completion_notification_target_service_key = 4;
-        string completion_notification_target_method = 5;
-        uint64 creation_time = 6;
-        uint64 modification_time = 7;
-        string kill_notification_target_service_name = 8;
-        bytes kill_notification_target_service_key = 9;
-        string kill_notification_target_method = 10;
-    }
-
     oneof status {
         Invoked invoked = 1;
         Suspended suspended = 2;
         Free free = 3;
-        Virtual virtual = 4;
     }
 }
 
@@ -170,6 +157,11 @@ message SpanRelation {
     }
 }
 
+message Header {
+    string name = 1;
+    string value = 2;
+}
+
 message ServiceInvocation {
     FullInvocationId id = 1;
     bytes method_name = 2;
@@ -177,6 +169,7 @@ message ServiceInvocation {
     ServiceInvocationResponseSink response_sink = 4;
     SpanContext span_context = 5;
     Source source = 6;
+    repeated Header headers = 7;
 }
 
 message StateMutation {
@@ -218,11 +211,10 @@ message BackgroundCallResolutionResult {
 }
 message EnrichedEntryHeader {
 
-    message PollInputStream {
-        bool is_completed = 1;
+    message Input {
     }
 
-    message OutputStream {
+    message Output {
     }
 
     message GetState {
@@ -269,8 +261,8 @@ message EnrichedEntryHeader {
     }
 
     oneof kind {
-        PollInputStream poll_input_stream = 1;
-        OutputStream output_stream = 2;
+        Input input = 1;
+        Output output = 2;
         GetState get_state = 3;
         SetState set_state = 4;
         ClearState clear_state = 5;

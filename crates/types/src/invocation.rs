@@ -10,7 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
-use crate::errors::{InvocationError, UserErrorCode};
+use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionKey, WithPartitionKey,
 };
@@ -40,6 +40,7 @@ pub struct ServiceInvocation {
     pub source: Source,
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub span_context: ServiceInvocationSpanContext,
+    pub headers: Vec<Header>,
 }
 
 impl ServiceInvocation {
@@ -56,6 +57,7 @@ impl ServiceInvocation {
         source: Source,
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
+        headers: Vec<Header>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
@@ -65,6 +67,7 @@ impl ServiceInvocation {
             source,
             response_sink,
             span_context,
+            headers,
         }
     }
 }
@@ -129,7 +132,7 @@ pub struct InvocationResponse {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ResponseResult {
     Success(Bytes),
-    Failure(UserErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString),
 }
 
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
@@ -154,13 +157,13 @@ impl From<ResponseResult> for Result<Bytes, InvocationError> {
 
 impl From<InvocationError> for ResponseResult {
     fn from(e: InvocationError) -> Self {
-        ResponseResult::Failure(e.code().into(), e.message().into())
+        ResponseResult::Failure(e.code(), e.message().into())
     }
 }
 
 impl From<&InvocationError> for ResponseResult {
     fn from(e: &InvocationError) -> Self {
-        ResponseResult::Failure(e.code().into(), e.message().into())
+        ResponseResult::Failure(e.code(), e.message().into())
     }
 }
 
@@ -382,6 +385,28 @@ impl From<ServiceInvocationSpanContext> for SpanContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Header {
+    pub name: ByteString,
+    pub value: ByteString,
+}
+
+impl Header {
+    pub fn new(name: impl Into<ByteString>, value: impl Into<ByteString>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+}
+
+impl fmt::Display for Header {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.name, self.value)
+    }
+}
+
 /// Span relation cause, used to propagate tracing contexts.
 #[cfg_attr(feature = "serde", cfg_eval::cfg_eval, serde_as)]
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -536,6 +561,7 @@ mod mocks {
                 source: Source::Service(FullInvocationId::mock_random()),
                 response_sink: None,
                 span_context: Default::default(),
+                headers: vec![],
             }
         }
     }

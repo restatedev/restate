@@ -27,14 +27,14 @@ pub(crate) async fn get_current_state(
     let client = MetasClient::new(env)?;
     let service_meta = client.get_component(service).await?.into_body().await?;
     if service_meta.ty != ComponentType::VirtualObject {
-        bail!("Only keyed services support state");
+        bail!("Only virtual objects support state");
     }
     //
     // 1. get the key-value pairs
     //
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     let sql = format!(
-        "select key, value from state where service = '{}' and service_key = '{}' ;",
+        "select key, value from state where component = '{}' and component_key = '{}' ;",
         service, key
     );
     let res = sql_client.run_query(sql).await?;

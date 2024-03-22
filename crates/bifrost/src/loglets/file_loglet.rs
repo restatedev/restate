@@ -12,14 +12,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use restate_types::logs::Payload;
+use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use serde_json::json;
+use std::path::Path;
+use tracing::info;
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
 use crate::{Error, LogRecord, Options};
 
 pub fn default_config() -> serde_json::Value {
-    json!( {"path": "target/logs/"})
+    json!( {"path": Path::new(DEFAULT_STORAGE_DIRECTORY).join("logs")})
 }
 
 #[derive(Debug)]
@@ -38,6 +41,11 @@ impl LogletProvider for FileLogletProvider {
         _config: &LogletParams,
     ) -> Result<std::sync::Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
         todo!()
+    }
+
+    fn start(&self) -> Result<(), Error> {
+        info!("Starting in-memory loglet provider");
+        Ok(())
     }
 }
 

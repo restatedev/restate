@@ -11,16 +11,13 @@
 use super::*;
 
 use crate::partition::storage::PartitionStorage;
-use crate::partition::types::{create_response_message, OutboxMessageExt, ResponseMessage};
+use crate::partition::types::{create_response_message, ResponseMessage};
 use bytes::Bytes;
 use restate_pb::builtin_service::ManualResponseBuiltInService;
 use restate_pb::restate::internal::IdempotentInvokerInvoker;
-use restate_pb::restate::internal::RemoteContextInvoker;
-use restate_schema_impl::Schemas;
-use restate_storage_api::invocation_status_table::NotificationTarget;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -34,7 +31,6 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 mod idempotent_invoker;
-mod remote_context;
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
 pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
@@ -43,29 +39,24 @@ pub(crate) type EffectsReceiver = mpsc::UnboundedReceiver<BuiltinServiceEffects>
 pub(crate) struct ServiceInvoker {
     storage: PartitionStorage<RocksDBStorage>,
     effects_tx: EffectsSender,
-    schemas: Schemas,
 }
 
 impl ServiceInvoker {
     pub(crate) fn is_supported(service_name: &str) -> bool {
         // The reason we just check for the prefix is the following:
         //
-        // * No user can register services starting with dev.restate. This is checked in the schema registry.
+        // * No user can register services starting with restate_internal. This is checked in the schema registry.
         // * We already checked in the previous step of the state machine whether the service is a deterministic built-in service
         // * Hence with this assertion we can 404 sooner in case the user inputs a bad built-in service name, avoiding to get it stuck in the invoker
-        service_name.starts_with("dev.restate")
+        service_name.starts_with("restate_internal")
     }
 
-    pub(crate) fn new(
-        storage: PartitionStorage<RocksDBStorage>,
-        schemas: Schemas,
-    ) -> (Self, EffectsReceiver) {
+    pub(crate) fn new(storage: PartitionStorage<RocksDBStorage>) -> (Self, EffectsReceiver) {
         let (effects_tx, effects_rx) = mpsc::unbounded_channel();
 
         (
             ServiceInvoker {
                 storage,
-                schemas,
                 effects_tx,
             },
             effects_rx,
@@ -81,29 +72,23 @@ impl ServiceInvoker {
         argument: Bytes,
     ) {
         let mut out_effects = vec![];
-        let mut state_and_journal_transitions = StateAndJournalTransitions::default();
+        let mut state_and_journal_transitions = StateTransitions::default();
         let invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
-            span_context: &span_context,
             state_reader: &mut self.storage,
-            schemas: &self.schemas,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
-            state_and_journal_transitions: &mut state_and_journal_transitions,
+            state_transitions: &mut state_and_journal_transitions,
+            span_context: &span_context,
         };
 
         let result = match full_invocation_id.service_id.service_name.deref() {
-            restate_pb::REMOTE_CONTEXT_SERVICE_NAME => {
-                RemoteContextInvoker(invocation_context)
-                    .invoke_builtin(method, argument)
-                    .await
-            }
             restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME => {
                 IdempotentInvokerInvoker(invocation_context)
                     .invoke_builtin(method, argument)
                     .await
             }
-            _ => Err(InvocationError::service_not_found(
+            _ => Err(InvocationError::component_not_found(
                 &full_invocation_id.service_id.service_name,
             )),
         };
@@ -136,13 +121,12 @@ impl ServiceInvoker {
 }
 
 #[derive(Clone, Default)]
-struct StateAndJournalTransitions {
+struct StateTransitions {
     state_entries: HashMap<String, Option<Bytes>>,
-    journal_entries: HashMap<(InvocationId, EntryIndex), EnrichedRawEntry>,
 }
 
-impl StateAndJournalTransitions {
-    fn fill_effects_buffer(mut self, effects: &mut Vec<BuiltinServiceEffect>) {
+impl StateTransitions {
+    fn fill_effects_buffer(self, effects: &mut Vec<BuiltinServiceEffect>) {
         for (key, opt_value) in self.state_entries.into_iter() {
             if let Some(value) = opt_value {
                 effects.push(BuiltinServiceEffect::SetState {
@@ -153,19 +137,6 @@ impl StateAndJournalTransitions {
                 effects.push(BuiltinServiceEffect::ClearState(key.into()));
             }
         }
-
-        // We need to send effects in order for journal entries.
-        let mut order: Vec<_> = self.journal_entries.keys().cloned().collect();
-        order.sort();
-        for key in order {
-            let ((invocation_id, entry_index), journal_entry) =
-                self.journal_entries.remove_entry(&key).unwrap();
-            effects.push(BuiltinServiceEffect::StoreEntry {
-                invocation_id,
-                entry_index,
-                journal_entry,
-            });
-        }
     }
 }
 
@@ -173,91 +144,20 @@ struct InvocationContext<'a, S> {
     // Invocation metadata
     full_invocation_id: &'a FullInvocationId,
     state_reader: &'a mut S,
-    schemas: &'a Schemas,
-    span_context: &'a ServiceInvocationSpanContext,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
+    span_context: &'a ServiceInvocationSpanContext,
 
     effects_buffer: &'a mut Vec<BuiltinServiceEffect>,
-    state_and_journal_transitions: &'a mut StateAndJournalTransitions,
+    state_transitions: &'a mut StateTransitions,
 }
 
 impl<S: StateReader> InvocationContext<'_, S> {
-    async fn load_journal_metadata(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> Result<Option<JournalMetadata>, InvocationError> {
-        self.state_reader
-            .read_virtual_journal_metadata(invocation_id)
-            .await
-            .map_err(InvocationError::internal)
-    }
-
-    fn create_journal(
-        &mut self,
-        invocation_id: InvocationId,
-        span_context: ServiceInvocationSpanContext,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-    ) {
-        self.effects_buffer
-            .push(BuiltinServiceEffect::CreateJournal {
-                invocation_id,
-                span_context,
-                completion_notification_target,
-                kill_notification_target,
-            });
-    }
-
-    async fn read_journal_entry(
-        &mut self,
-        invocation_id: &InvocationId,
-        entry_index: EntryIndex,
-    ) -> Result<Option<EnrichedRawEntry>, InvocationError> {
-        Ok(
-            if let Some(enriched_entry) = self
-                .state_and_journal_transitions
-                .journal_entries
-                .get(&(invocation_id.clone(), entry_index))
-            {
-                Some(enriched_entry.clone())
-            } else {
-                self.state_reader
-                    .read_virtual_journal_entry(invocation_id, entry_index)
-                    .await
-                    .map_err(InvocationError::internal)?
-            },
-        )
-    }
-
-    fn store_journal_entry(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    ) {
-        self.state_and_journal_transitions
-            .journal_entries
-            .insert((invocation_id, entry_index), journal_entry);
-    }
-
-    fn drop_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
-        self.state_and_journal_transitions.journal_entries.clear();
-        self.effects_buffer.push(BuiltinServiceEffect::DropJournal {
-            invocation_id: invocation_id.clone(),
-            journal_length,
-        });
-    }
-
     async fn load_state_raw<Serde>(
         &mut self,
         key: &StateKey<Serde>,
     ) -> Result<Option<Bytes>, InvocationError> {
         Ok(
-            if let Some(opt_val) = self
-                .state_and_journal_transitions
-                .state_entries
-                .get(key.0.as_ref())
-            {
+            if let Some(opt_val) = self.state_transitions.state_entries.get(key.0.as_ref()) {
                 opt_val.clone()
             } else {
                 self.state_reader
@@ -292,26 +192,12 @@ impl<S: StateReader> InvocationContext<'_, S> {
         res
     }
 
-    async fn load_state_or_fail<Serde: StateSerde>(
-        &mut self,
-        key: &StateKey<Serde>,
-    ) -> Result<Serde::MaterializedType, InvocationError> {
-        self.load_state(key).await.and_then(|optional_value| {
-            optional_value.ok_or_else(|| {
-                InvocationError::internal(format!(
-                    "Expected {} state to be present. This is most likely a Restate bug.",
-                    key.0
-                ))
-            })
-        })
-    }
-
     fn set_state<Serde: StateSerde>(
         &mut self,
         key: &StateKey<Serde>,
         value: &Serde::MaterializedType,
     ) -> Result<(), InvocationError> {
-        self.state_and_journal_transitions.state_entries.insert(
+        self.state_transitions.state_entries.insert(
             key.0.to_string(),
             Some(Serde::encode(value).map_err(InvocationError::internal)?),
         );
@@ -319,7 +205,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     }
 
     fn clear_state<Serde>(&mut self, key: &StateKey<Serde>) {
-        self.state_and_journal_transitions
+        self.state_transitions
             .state_entries
             .insert(key.0.to_string(), None);
     }
@@ -394,25 +280,6 @@ mod tests {
                     BuiltinServiceEffect::ClearState(key) => {
                         self.0.remove(&key.to_string());
                     }
-                    BuiltinServiceEffect::CreateJournal { span_context, .. } => {
-                        self.1 = Some((
-                            JournalMetadata::new(0, span_context.clone()),
-                            Vec::default(),
-                        ));
-                    }
-                    BuiltinServiceEffect::StoreEntry {
-                        journal_entry,
-                        entry_index,
-                        ..
-                    } => {
-                        let (meta, v) = self.1.as_mut().unwrap();
-                        meta.length += 1;
-                        v.insert(*entry_index as usize, journal_entry.clone())
-                    }
-                    BuiltinServiceEffect::DropJournal { journal_length, .. } => {
-                        assert_eq!(self.1.as_ref().unwrap().0.length, *journal_length);
-                        self.1 = None
-                    }
                     _ => {}
                 }
             }
@@ -423,29 +290,18 @@ mod tests {
     pub(super) struct TestInvocationContext {
         service_id: ServiceId,
         state_reader: MockStateReader,
-        schemas: Schemas,
         response_sink: Option<ServiceInvocationResponseSink>,
     }
 
     impl TestInvocationContext {
-        pub(super) fn new(service_name: &str) -> Self {
-            Self::from_service_id(ServiceId::new(service_name, Bytes::new()))
-        }
-
         pub(super) fn from_service_id(service_id: ServiceId) -> Self {
             Self {
                 service_id,
                 state_reader: Default::default(),
-                schemas: Default::default(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
                     GenerationalNodeId::new(1, 1),
                 )),
             }
-        }
-
-        pub(super) fn with_schemas(mut self, schemas: Schemas) -> Self {
-            self.schemas = schemas;
-            self
         }
 
         pub(super) fn state(&self) -> &MockStateReader {
@@ -454,10 +310,6 @@ mod tests {
 
         pub(super) fn response_sink(&self) -> Option<&ServiceInvocationResponseSink> {
             self.response_sink.as_ref()
-        }
-
-        pub(super) fn state_mut(&mut self) -> &mut MockStateReader {
-            &mut self.state_reader
         }
 
         pub(super) async fn invoke<'this, F>(
@@ -471,15 +323,14 @@ mod tests {
         {
             let fid = FullInvocationId::generate(self.service_id.clone());
             let mut out_effects = vec![];
-            let mut state_and_journal_transitions = StateAndJournalTransitions::default();
+            let mut state_and_journal_transitions = StateTransitions::default();
             let mut invocation_ctx = InvocationContext {
                 full_invocation_id: &fid,
-                span_context: &ServiceInvocationSpanContext::empty(),
                 state_reader: &mut self.state_reader,
-                schemas: &self.schemas,
                 response_sink: self.response_sink.as_ref(),
+                span_context: &Default::default(),
                 effects_buffer: &mut out_effects,
-                state_and_journal_transitions: &mut state_and_journal_transitions,
+                state_transitions: &mut state_and_journal_transitions,
             };
 
             f(&mut invocation_ctx).await?;

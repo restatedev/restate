@@ -16,13 +16,13 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(invocation_status(
     partition_key: DataType::UInt64,
-    service: DataType::LargeUtf8,
-    method: DataType::LargeUtf8,
-    service_key: DataType::LargeUtf8,
+    component: DataType::LargeUtf8,
+    handler: DataType::LargeUtf8,
+    component_key: DataType::LargeUtf8,
     status: DataType::LargeUtf8,
     id: DataType::LargeUtf8,
     invoked_by: DataType::LargeUtf8,
-    invoked_by_service: DataType::LargeUtf8,
+    invoked_by_component: DataType::LargeUtf8,
     invoked_by_id: DataType::LargeUtf8,
     pinned_deployment_id: DataType::LargeUtf8,
     trace_id: DataType::LargeUtf8,

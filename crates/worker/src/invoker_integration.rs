@@ -12,7 +12,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use restate_schema_api::component::ComponentType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::errors::{InvocationError, UserErrorCode};
+use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
 use restate_types::journal::enriched::{
@@ -67,7 +67,7 @@ where
                 }
             },
             None => {
-                return Err(InvocationError::service_method_not_found(
+                return Err(InvocationError::component_handler_not_found(
                     &request.service_name,
                     &request.method_name,
                 ))
@@ -107,10 +107,8 @@ where
     ) -> Result<EnrichedRawEntry, InvocationError> {
         let (header, serialized_entry) = raw_entry.into_inner();
         let enriched_header = match header {
-            PlainEntryHeader::PollInputStream { is_completed } => {
-                EnrichedEntryHeader::PollInputStream { is_completed }
-            }
-            PlainEntryHeader::OutputStream {} => EnrichedEntryHeader::OutputStream {},
+            PlainEntryHeader::Input {} => EnrichedEntryHeader::Input {},
+            PlainEntryHeader::Output {} => EnrichedEntryHeader::Output {},
             PlainEntryHeader::GetState { is_completed } => {
                 EnrichedEntryHeader::GetState { is_completed }
             }
@@ -172,7 +170,7 @@ where
                 let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&id)
                     .map_err(|e| {
                         InvocationError::new(
-                            UserErrorCode::InvalidArgument,
+                            codes::BAD_REQUEST,
                             format!("Invalid awakeable identifier: {}", e),
                         )
                     })?

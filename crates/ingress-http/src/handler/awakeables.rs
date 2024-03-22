@@ -74,14 +74,14 @@ where
             // Wrap payload in request object for awakeables built in service
             let payload = match awakeable_request_type {
                 AwakeableRequestType::Resolve { awakeable_id } => {
-                    restate_pb::restate::ResolveAwakeableRequest {
+                    restate_pb::restate::internal::ResolveAwakeableRequest {
                         id: awakeable_id,
                         result: collected_request_bytes,
                     }
                     .encode_to_vec()
                 }
                 AwakeableRequestType::Reject { awakeable_id } => {
-                    restate_pb::restate::RejectAwakeableRequest {
+                    restate_pb::restate::internal::RejectAwakeableRequest {
                         id: awakeable_id,
                         reason: String::from_utf8_lossy(&collected_request_bytes).to_string(),
                     }
@@ -96,6 +96,7 @@ where
                 payload,
                 SpanRelation::Linked(ingress_span_context),
                 IdempotencyMode::None,
+                vec![],
             );
             if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
                 warn!(

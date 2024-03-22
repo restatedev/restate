@@ -20,12 +20,12 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{MetaClientInterface, MetasClient};
 use crate::console::c_println;
+use crate::ui::component_methods::icon_for_component_type;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
-use crate::ui::service_methods::icon_for_component_type;
 use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indentln, c_success};
 
@@ -56,17 +56,17 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
 
-    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
-    // To know the latest version of every service.
-    let services = client.get_components().await?.into_body().await?.components;
-    for svc in services {
-        latest_services.insert(svc.name.clone(), svc);
+    let mut latest_components: HashMap<String, ComponentMetadata> = HashMap::new();
+    // To know the latest version of every component.
+    let components = client.get_components().await?.into_body().await?.components;
+    for component in components {
+        latest_components.insert(component.name.clone(), component);
     }
 
     // sum inv_count in active_inv
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
-    let svc_rev_pairs: Vec<_> = deployment
+    let component_rev_pairs: Vec<_> = deployment
         .components
         .iter()
         .map(|s| ComponentNameRevPair {
@@ -77,9 +77,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     let status = calculate_deployment_status(
         &deployment.id,
-        &svc_rev_pairs,
+        &component_rev_pairs,
         total_active_inv,
-        &latest_services,
+        &latest_components,
     );
 
     let mut table = Table::new_styled(&env.ui_config);
@@ -89,32 +89,42 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     table.add_kv_row("Status:", render_deployment_status(status));
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
     c_println!("{}", table);
-    c_println!("{}", Styled(Style::Info, "Services:"));
-    for svc in deployment.components {
-        let Some(latest_svc) = latest_services.get(&svc.name) else {
-            // if we can't find this service in the latest set of service, something is off. A
-            // deployment cannot remove services defined by other deployment, so we should warn that
+    c_println!("{}", Styled(Style::Info, "Components:"));
+    for component in deployment.components {
+        let Some(latest_component) = latest_components.get(&component.name) else {
+            // if we can't find this component in the latest set of component, something is off. A
+            // deployment cannot remove components defined by other deployment, so we should warn that
             // this is happening.
             c_eprintln!(
-                "Service {} is not found in the latest set of services. This is unexpected.",
-                svc.name
+                "Component {} is not found in the latest set of components. This is unexpected.",
+                component.name
             );
             continue;
         };
-        c_indentln!(1, "- {}", Styled(Style::Info, &svc.name));
-        c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
-        let latest_revision_message = if svc.revision == latest_svc.revision {
+        c_indentln!(1, "- {}", Styled(Style::Info, &component.name));
+        c_indentln!(
+            2,
+            "Type: {:?} {}",
+            component.ty,
+            icon_for_component_type(&component.ty),
+        );
+        let latest_revision_message = if component.revision == latest_component.revision {
             // We are latest.
             format!("[{}]", Styled(Style::Success, "Latest"))
         } else {
             // Not latest
             format!(
                 "[Latest {} is in deployment ID {}]",
-                Styled(Style::Success, latest_svc.revision),
-                latest_svc.deployment_id
+                Styled(Style::Success, latest_component.revision),
+                latest_component.deployment_id
             )
         };
-        c_indentln!(2, "Revision: {} {}", svc.revision, latest_revision_message);
+        c_indentln!(
+            2,
+            "Revision: {} {}",
+            component.revision,
+            latest_revision_message
+        );
     }
     c_println!();
 
@@ -126,8 +136,8 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             c_error!(
                 indoc! {
                     "Deployment is still {}. This means that it hosts the latest revision of some of
-                       your services as indicated above. Removing this deployment will cause those
-                       services to be unavailable and current or future invocations on them WILL fail.
+                       your components as indicated above. Removing this deployment will cause those
+                       components to be unavailable and current or future invocations on them WILL fail.
                 "
                 },
                 Styled(Style::Success, "Active"),

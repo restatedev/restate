@@ -23,7 +23,9 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::service_status_table::{ReadOnlyServiceStatusTable, ServiceStatus};
+use restate_storage_api::service_status_table::{
+    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
+};
 use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
@@ -104,7 +106,7 @@ impl<Storage> PartitionStorage<Storage>
 where
     Storage: ReadOnlyFsmTable
         + ReadOnlyInvocationStatusTable
-        + ReadOnlyServiceStatusTable
+        + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyJournalTable
         + ReadOnlyStateTable
         + Send,
@@ -276,9 +278,12 @@ impl<TransactionType> super::state_machine::StateReader for Transaction<Transact
 where
     TransactionType: restate_storage_api::Transaction + Send,
 {
-    async fn get_service_status(&mut self, service_id: &ServiceId) -> StorageResult<ServiceStatus> {
+    async fn get_virtual_object_status(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> StorageResult<VirtualObjectStatus> {
         self.assert_partition_key(service_id);
-        self.inner.get_service_status(service_id).await
+        self.inner.get_virtual_object_status(service_id).await
     }
 
     async fn get_invocation_status(
@@ -358,10 +363,12 @@ where
     async fn store_service_status(
         &mut self,
         service_id: &ServiceId,
-        status: ServiceStatus,
+        status: VirtualObjectStatus,
     ) -> StorageResult<()> {
         self.assert_partition_key(service_id);
-        self.inner.put_service_status(service_id, status).await;
+        self.inner
+            .put_virtual_object_status(service_id, status)
+            .await;
         Ok(())
     }
 

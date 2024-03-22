@@ -11,15 +11,11 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use restate_storage_api::invocation_status_table::NotificationTarget;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId};
+use restate_types::identifiers::{EntryIndex, FullInvocationId};
 use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source as InvocationSource,
-};
-use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::invocation::{ServiceInvocationResponseSink, Source as InvocationSource};
 use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,22 +41,6 @@ impl BuiltinServiceEffects {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinServiceEffect {
-    CreateJournal {
-        invocation_id: InvocationId,
-        span_context: ServiceInvocationSpanContext,
-        completion_notification_target: NotificationTarget,
-        kill_notification_target: NotificationTarget,
-    },
-    StoreEntry {
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-        journal_entry: EnrichedRawEntry,
-    },
-    DropJournal {
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    },
-
     SetState {
         key: Cow<'static, str>,
         value: Bytes,

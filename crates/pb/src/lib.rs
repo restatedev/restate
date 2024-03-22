@@ -11,11 +11,6 @@
 //! This module contains Restate public protobuf definitions
 
 pub mod restate {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-    include!(concat!(env!("OUT_DIR"), "/dev.restate.rs"));
-
     pub mod internal {
         #![allow(warnings)]
         #![allow(clippy::all)]
@@ -45,7 +40,7 @@ pub mod restate {
     }
 }
 
-pub const AWAKEABLES_SERVICE_NAME: &str = "dev.restate.Awakeables";
+pub const AWAKEABLES_SERVICE_NAME: &str = "restate_internal_awakeables";
 pub const AWAKEABLES_RESOLVE_HANDLER_NAME: &str = "Resolve";
 pub const AWAKEABLES_REJECT_HANDLER_NAME: &str = "Reject";
 pub const PROXY_SERVICE_NAME: &str = "restate_internal_pp_proxy";
@@ -53,7 +48,7 @@ pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
 pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "restate_remote_context";
 pub const REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME: &str = "InternalOnCompletion";
 pub const REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME: &str = "InternalOnKill";
-pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "dev.restate.internal.IdempotentInvoker";
+pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "restate_internal_idempotent_invoker";
 pub const IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME: &str = "Invoke";
 pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
 pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
@@ -91,7 +86,7 @@ pub mod builtin_service {
         }
 
         pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
-            ResponseResult::Failure(err.code().into(), err.message().into())
+            ResponseResult::Failure(err.code(), err.message().into())
         }
     }
 
@@ -132,6 +127,3 @@ pub mod builtin_service {
         }
     }
 }
-
-#[cfg(feature = "mocks")]
-pub mod mocks;

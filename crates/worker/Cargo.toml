@@ -32,7 +32,7 @@ restate-invoker-impl = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["builtin-service"] }
-restate-schema-api = { workspace = true, features = [ "key_extraction", "json_conversion", "component"] }
+restate-schema-api = { workspace = true, features = [ "component"] }
 restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["proto"] }
 restate-service-client = { workspace = true }
@@ -61,7 +61,6 @@ metrics =  { workspace = true }
 opentelemetry_api = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
-prost-reflect = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -74,7 +73,6 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
-restate-pb = { workspace = true, features = ["mocks"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-service-protocol = { workspace = true, features = ["mocks"] }
 restate-storage-api = { workspace = true, features = ["mocks"] }

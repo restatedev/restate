@@ -27,20 +27,16 @@ mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
-mod service_status_table_test;
 mod state_table_test;
 mod timer_table_test;
+mod virtual_object_status_table_test;
 
 fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     //
     // create a rocksdb storage from options
     //
     let temp_dir = tempdir().unwrap();
-    let path = temp_dir
-        .path()
-        .to_str()
-        .expect("can not convert a path to string")
-        .to_string();
+    let path = temp_dir.into_path();
 
     let opts = restate_storage_rocksdb::Options {
         path,
@@ -71,7 +67,7 @@ async fn test_read_write() {
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
     invocation_status_table_test::run_tests(rocksdb.clone()).await;
-    service_status_table_test::run_tests(rocksdb.clone()).await;
+    virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
 
     close.await;
@@ -85,6 +81,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         Source::Ingress,
         None,
         SpanRelation::None,
+        vec![],
     )
 }
 
@@ -104,6 +101,7 @@ pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
         Source::Ingress,
         None,
         SpanRelation::None,
+        vec![],
     )
 }
 

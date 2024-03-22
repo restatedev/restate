@@ -16,11 +16,11 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, EventError, IngressDispatcher, IngressRequest,
+    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressRequest,
 };
-use restate_pb::restate::Event;
+use restate_pb::restate::internal::Event;
 use restate_schema_api::subscription::{
-    EventReceiverServiceInstanceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
+    EventReceiverComponentType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
 };
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::SpanRelation;
@@ -43,7 +43,7 @@ pub enum Error {
         partition: i32,
         offset: i64,
         #[source]
-        cause: EventError,
+        cause: anyhow::Error,
     },
     #[error("ingress dispatcher channel is closed")]
     IngressDispatcherClosed,
@@ -68,16 +68,10 @@ impl DeduplicationId for KafkaDeduplicationId {
                     ordering_key_format: KafkaOrderingKeyFormat::ConsumerGroupTopicPartition,
                     ..
                 },
-                Sink::Service {
-                    instance_type: EventReceiverServiceInstanceType::Keyed {
+                Sink::Component {
+                    ty: EventReceiverComponentType::VirtualObject {
                         ordering_key_is_key: true,
                     },
-                    ..
-                },
-            ) | (
-                _,
-                Sink::Service {
-                    instance_type: EventReceiverServiceInstanceType::Singleton,
                     ..
                 },
             )
@@ -141,6 +135,7 @@ impl MessageSender {
             event,
             SpanRelation::Parent(ingress_span_context),
             Some(Self::generate_deduplication_id(consumer_group_id, msg)),
+            vec![],
         )
         .map_err(|cause| Error::Event {
             topic: msg.topic().to_string(),
