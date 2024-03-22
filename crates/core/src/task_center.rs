@@ -29,7 +29,7 @@ use crate::{metric_definitions, Metadata, TaskId, TaskKind};
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 const EXIT_CODE_FAILURE: i32 = 1;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("system is shutting down")]
 pub struct ShutdownError;
 
