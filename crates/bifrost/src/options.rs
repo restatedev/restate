@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::{Path, PathBuf};
+
 use enum_map::EnumMap;
+use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use strum::IntoEnumIterator;
 
 use crate::loglet::{provider_default_config, ProviderKind};
@@ -26,6 +29,7 @@ pub struct Options {
     /// # The default kind of loglet to be used
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub default_provider: ProviderKind,
+    // todo: Swap serde_json with extract-able figment
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub providers_config: EnumMap<ProviderKind, serde_json::Value>,
 }
@@ -38,8 +42,7 @@ impl Default for Options {
         }
 
         Self {
-            // todo: Replace with File once properly implemented
-            default_provider: ProviderKind::Memory,
+            default_provider: ProviderKind::Local,
             providers_config,
         }
     }
@@ -47,7 +50,12 @@ impl Default for Options {
 
 impl Options {
     pub fn build(self, num_partitions: u64) -> BifrostService {
+        // todo: validate that options are parseable by the configured loglet provider.
         BifrostService::new(self, num_partitions)
+    }
+
+    pub fn local_loglet_storage_path(&self) -> PathBuf {
+        Path::new(DEFAULT_STORAGE_DIRECTORY).join("local_loglet")
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]

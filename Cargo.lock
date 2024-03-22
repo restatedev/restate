@@ -4841,6 +4841,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bincode",
  "bytes",
  "bytestring",
  "codederror",
@@ -4853,9 +4854,11 @@ dependencies = [
  "restate-core",
  "restate-test-util",
  "restate-types",
+ "rocksdb",
  "schemars",
  "serde",
  "serde_json",
+ "smallvec",
  "static_assertions",
  "strum 0.26.2",
  "strum_macros 0.26.2",
@@ -6378,6 +6381,9 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "snafu"

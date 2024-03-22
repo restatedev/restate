@@ -131,11 +131,11 @@ mod tests {
     use crate::loglet::ProviderKind;
     #[test]
     fn test_chain_new() {
-        let chain = Chain::new(ProviderKind::File, LogletParams::from("test".to_string()));
+        let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));
         assert_eq!(chain.chain.len(), 1);
         let_assert!(Some((lsn, loglet_config)) = chain.tail());
         assert_eq!(Lsn::OLDEST, *lsn);
-        assert_eq!(ProviderKind::File, loglet_config.kind);
+        assert_eq!(ProviderKind::Local, loglet_config.kind);
         assert_eq!("test".to_string(), loglet_config.params.0);
     }
 }

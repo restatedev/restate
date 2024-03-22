@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod file_loglet;
+#[cfg(any(test, feature = "local_loglet"))]
+pub mod local_loglet;
 #[cfg(any(test, feature = "memory_loglet"))]
 pub mod memory_loglet;
