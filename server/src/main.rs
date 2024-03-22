@@ -61,6 +61,8 @@ enum WipeMode {
     Worker,
     /// Wipe all the meta information, including discovered services and their respective schemas.
     Meta,
+    /// Wipe the local rocksdb-based loglet.
+    LocalLoglet,
     /// Wipe all
     All,
 }
@@ -70,12 +72,14 @@ impl WipeMode {
         mode: Option<&WipeMode>,
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
+        local_loglet_storage_dir: PathBuf,
     ) -> io::Result<()> {
-        let (wipe_meta, wipe_worker) = match mode {
-            Some(WipeMode::Worker) => (false, true),
-            Some(WipeMode::Meta) => (true, false),
-            Some(WipeMode::All) => (true, true),
-            None => (false, false),
+        let (wipe_meta, wipe_worker, wipe_local_loglet) = match mode {
+            Some(WipeMode::Worker) => (false, true, true),
+            Some(WipeMode::Meta) => (true, false, false),
+            Some(WipeMode::LocalLoglet) => (false, false, true),
+            Some(WipeMode::All) => (true, true, true),
+            None => (false, false, false),
         };
 
         if wipe_meta {
@@ -83,6 +87,9 @@ impl WipeMode {
         }
         if wipe_worker {
             restate_fs_util::remove_dir_all_if_exists(worker_storage_dir).await?;
+        }
+        if wipe_local_loglet {
+            restate_fs_util::remove_dir_all_if_exists(local_loglet_storage_dir).await?;
         }
         Ok(())
     }
@@ -143,6 +150,7 @@ fn main() {
                 cli_args.wipe.as_ref(),
                 config.node.meta.storage_path().into(),
                 config.node.worker.storage_path().into(),
+                config.node.bifrost.local_loglet_storage_path(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");

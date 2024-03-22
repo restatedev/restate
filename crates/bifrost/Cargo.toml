@@ -8,8 +8,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["memory_loglet"]
+default = ["memory_loglet", "local_loglet"]
 options_schema = ["dep:schemars"]
+local_loglet = ["dep:rocksdb"]
 memory_loglet = []
 
 [dependencies]
@@ -18,6 +19,7 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true, features = ["serde"] }
 codederror = { workspace = true }
@@ -26,12 +28,14 @@ derive_more = { workspace = true }
 drain = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 once_cell = { workspace = true }
+rocksdb = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+smallvec = { version = "1.13.2", features = ["serde"] }
 static_assertions = { workspace = true }
-strum_macros = { workspace = true }
 strum = { workspace = true }
+strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
