@@ -36,7 +36,7 @@ impl Schemas {
 }
 
 /// This struct contains the actual data held by Schemas.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SchemasInner {
     pub(crate) components: HashMap<String, ComponentSchemas>,
 
@@ -97,28 +97,6 @@ pub(crate) struct ComponentSchemas {
 }
 
 impl ComponentSchemas {
-    fn new_built_in<'a>(ty: ComponentType, handlers: impl IntoIterator<Item = &'a str>) -> Self {
-        Self {
-            revision: 0,
-            handlers: Self::compute_handlers(
-                ty,
-                handlers
-                    .into_iter()
-                    .map(|s| DiscoveredHandlerMetadata {
-                        name: s.to_owned(),
-                        // This seems to be fine for the time being,
-                        // we might need to change it in the future.
-                        ty: HandlerType::Exclusive,
-                        input: InputRules::default(),
-                        output: OutputRules::default(),
-                    })
-                    .collect(),
-            ),
-            location: ComponentLocation::BuiltIn,
-            ty,
-        }
-    }
-
     pub(crate) fn compute_handlers(
         component_ty: ComponentType,
         handlers: Vec<DiscoveredHandlerMetadata>,
@@ -142,41 +120,31 @@ impl ComponentSchemas {
             .collect()
     }
 
-    pub(crate) fn as_component_metadata(&self, name: String) -> Option<ComponentMetadata> {
-        match &self.location {
-            ComponentLocation::BuiltIn { .. } => None,
-            ComponentLocation::Deployment {
-                latest_deployment,
-                public,
-            } => Some(ComponentMetadata {
-                name,
-                handlers: self
-                    .handlers
-                    .iter()
-                    .map(|(h_name, h_schemas)| HandlerMetadata {
-                        name: h_name.clone(),
-                        ty: h_schemas.target_meta.handler_ty,
-                        input_description: h_schemas.target_meta.input_rules.to_string(),
-                        output_description: h_schemas.target_meta.output_rules.to_string(),
-                    })
-                    .collect(),
-                ty: self.ty,
-                deployment_id: *latest_deployment,
-                revision: self.revision,
-                public: *public,
-            }),
+    pub(crate) fn as_component_metadata(&self, name: String) -> ComponentMetadata {
+        ComponentMetadata {
+            name,
+            handlers: self
+                .handlers
+                .iter()
+                .map(|(h_name, h_schemas)| HandlerMetadata {
+                    name: h_name.clone(),
+                    ty: h_schemas.target_meta.handler_ty,
+                    input_description: h_schemas.target_meta.input_rules.to_string(),
+                    output_description: h_schemas.target_meta.output_rules.to_string(),
+                })
+                .collect(),
+            ty: self.ty,
+            deployment_id: self.location.latest_deployment,
+            revision: self.revision,
+            public: self.location.public,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ComponentLocation {
-    BuiltIn,
-    Deployment {
-        // None if this is a built-in service
-        latest_deployment: DeploymentId,
-        public: bool,
-    },
+pub(crate) struct ComponentLocation {
+    pub(crate) latest_deployment: DeploymentId,
+    pub(crate) public: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -186,49 +154,4 @@ pub(crate) struct DeploymentSchemas {
     // We need to store ComponentMetadata here only for queries
     // We could optimize the memory impact of this by reading these info from disk
     pub(crate) components: Vec<ComponentMetadata>,
-}
-
-impl Default for SchemasInner {
-    fn default() -> Self {
-        let mut inner = Self {
-            components: Default::default(),
-            deployments: Default::default(),
-            subscriptions: Default::default(),
-        };
-
-        // Register built-in services
-        let mut register_built_in =
-            |component_name: &'static str, ty: ComponentType, handlers: Vec<&str>| {
-                inner.components.insert(
-                    component_name.to_string(),
-                    ComponentSchemas::new_built_in(ty, handlers),
-                );
-            };
-        register_built_in(
-            restate_pb::PROXY_SERVICE_NAME,
-            ComponentType::Service,
-            vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
-        );
-        register_built_in(
-            restate_pb::REMOTE_CONTEXT_SERVICE_NAME,
-            ComponentType::VirtualObject,
-            vec!["Start", "Send", "Recv", "GetResult", "Cleanup"],
-        );
-        register_built_in(
-            restate_pb::PROXY_SERVICE_NAME,
-            ComponentType::Service,
-            vec![restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME],
-        );
-        register_built_in(
-            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME,
-            ComponentType::Service,
-            vec![
-                restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME,
-                restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME,
-                restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME,
-            ],
-        );
-
-        inner
-    }
 }
