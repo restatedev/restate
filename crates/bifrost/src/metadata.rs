@@ -59,6 +59,12 @@ impl LogletConfig {
 #[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From)]
 pub struct LogletParams(String);
 
+impl LogletParams {
+    pub fn id(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Logs {
     pub fn new(version: Version, logs: HashMap<LogId, Chain>) -> Self {
         Self { version, logs }

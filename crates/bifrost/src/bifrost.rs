@@ -20,6 +20,7 @@ use once_cell::sync::OnceCell;
 
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
+use tracing::{error, instrument};
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper, ProviderKind};
 use crate::metadata::Logs;
@@ -57,6 +58,7 @@ impl Bifrost {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
+    #[instrument(level = "debug", skip(self, payload), err)]
     pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.inner.append(log_id, payload).await
     }
@@ -177,7 +179,7 @@ impl BifrostInner {
     #[inline]
     fn fail_if_shutting_down(&self) -> Result<(), Error> {
         if self.shutting_down.load(Ordering::Relaxed) {
-            Err(Error::Shutdown)
+            Err(Error::Shutdown(restate_core::ShutdownError))
         } else {
             Ok(())
         }
@@ -205,10 +207,16 @@ impl BifrostInner {
         self.providers[kind]
             .get_or_init(|| {
                 let provider = crate::loglet::create_provider(kind, &self.opts);
+                if let Err(e) = provider.start() {
+                    error!("Failed to start loglet provider {}: {}", kind, e);
+                    // todo: Handle provider errors by a graceful system shutdown
+                    // task_center().shutdown_node("Bifrost loglet provider startup error", 1);
+                    panic!("Failed to start loglet provider {}: {}", kind, e);
+                }
                 // tell watchdog about it.
                 let _ = self
                     .watchdog
-                    .send(WatchdogCommand::StartProvider(provider.clone()));
+                    .send(WatchdogCommand::WatchProvider(provider.clone()));
                 provider
             })
             .deref()
@@ -334,7 +342,7 @@ mod tests {
             task_center().shutdown_node("completed", 0).await;
             // appends cannot succeed after shutdown
             let res = bifrost.append(LogId::from(0), Payload::default()).await;
-            assert!(matches!(res, Err(Error::Shutdown)));
+            assert!(matches!(res, Err(Error::Shutdown(_))));
             // Validate the watchdog has called the provider::start() function.
             assert!(logs_contain("Starting in-memory loglet provider"));
             assert!(logs_contain("Shutting down in-memory loglet provider"));
