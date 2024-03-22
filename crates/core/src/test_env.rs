@@ -17,7 +17,8 @@ use restate_node_protocol::codec::{deserialize_message, serialize_message, Targe
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
-use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, NodesConfiguration, Role};
+use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
 

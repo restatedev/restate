@@ -291,7 +291,8 @@ mod tests {
 
     use googletest::prelude::*;
     use restate_test_util::assert_eq;
-    use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, Role};
+    use restate_types::net::AdvertisedAddress;
+    use restate_types::nodes_config::{NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
     use crate::metadata::spawn_metadata_manager;

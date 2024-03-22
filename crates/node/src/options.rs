@@ -10,7 +10,8 @@
 
 use crate::network_server;
 use enumset::EnumSet;
-use restate_types::nodes_config::{AdvertisedAddress, Role};
+use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::Role;
 use restate_types::PlainNodeId;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;

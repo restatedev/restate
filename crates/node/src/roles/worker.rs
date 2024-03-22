@@ -28,7 +28,7 @@ use restate_schema_api::subscription::SubscriptionResolver;
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::nodes_config::AdvertisedAddress;
+use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
 use restate_worker::{SubscriptionControllerHandle, Worker};
 use restate_worker_api::SubscriptionController;

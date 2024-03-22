@@ -14,7 +14,7 @@ use std::str::FromStr;
 use serde_with::serde_as;
 
 use restate_network::ConnectionManager;
-use restate_types::nodes_config::AdvertisedAddress;
+use restate_types::net::AdvertisedAddress;
 
 use crate::network_server::service::{AdminDependencies, NetworkServer, WorkerDependencies};
 

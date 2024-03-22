@@ -11,7 +11,7 @@
 use std::time::Duration;
 
 use http::Uri;
-use restate_types::nodes_config::AdvertisedAddress;
+use restate_types::net::AdvertisedAddress;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;

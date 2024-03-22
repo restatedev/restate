@@ -12,11 +12,10 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use enumset::{EnumSet, EnumSetType};
-use http::Uri;
 
+use crate::net::AdvertisedAddress;
 use crate::{GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
 
@@ -78,33 +77,6 @@ impl NodeConfig {
             current_generation,
             address,
             roles,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
-)]
-pub enum AdvertisedAddress {
-    /// Unix domain socket
-    #[display(fmt = "unix:{}", _0)]
-    Uds(String),
-    /// Hostname or host:port pair, or any unrecognizable string.
-    #[display(fmt = "{}", _0)]
-    Http(Uri),
-}
-
-impl FromStr for AdvertisedAddress {
-    type Err = NodesConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(stripped_address) = s.strip_prefix("unix:") {
-            Ok(AdvertisedAddress::Uds(stripped_address.to_owned()))
-        } else {
-            // try to parse as a URI
-            Ok(AdvertisedAddress::Http(s.parse()?))
         }
     }
 }
@@ -287,26 +259,5 @@ mod tests {
         // find by new name
         let found = config.find_node_by_name("nodeX").expect("known id");
         assert_eq!(&node, found);
-    }
-
-    // test parsing networkaddress
-    #[test]
-    fn test_parse_network_address() -> anyhow::Result<()> {
-        let tcp: AdvertisedAddress = "127.0.0.1:5123".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Http("127.0.0.1:5123".parse()?));
-
-        let tcp: AdvertisedAddress = "unix:/tmp/unix.socket".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Uds("/tmp/unix.socket".to_owned()));
-
-        let tcp: AdvertisedAddress = "localhost:5123".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Http("localhost:5123".parse()?));
-
-        let tcp: AdvertisedAddress = "https://localhost:5123".parse()?;
-        assert_eq!(
-            tcp,
-            AdvertisedAddress::Http(Uri::from_static("https://localhost:5123"))
-        );
-
-        Ok(())
     }
 }

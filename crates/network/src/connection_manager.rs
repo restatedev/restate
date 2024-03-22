@@ -27,7 +27,7 @@ use restate_core::{cancellation_watcher, current_task_id, task_center, TaskId, T
 use restate_node_protocol::node::message::{self, ConnectionControl};
 use restate_node_protocol::node::{Header, Hello, Message, Welcome};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_types::nodes_config::AdvertisedAddress;
+use restate_types::net::AdvertisedAddress;
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 use super::connection::{Connection, ConnectionSender};
