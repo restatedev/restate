@@ -22,7 +22,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
 mod leadership;
@@ -32,7 +32,7 @@ mod state_machine;
 pub mod storage;
 pub mod types;
 
-use restate_bifrost::{Bifrost, LogReadStream, LogRecord, Record};
+use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_storage_api::StorageError;
 use restate_types::dedup::{
@@ -82,7 +82,7 @@ where
         }
     }
 
-    #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id))]
+    #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub(super) async fn run(self, networking: Networking, bifrost: Bifrost) -> anyhow::Result<()> {
         let PartitionProcessor {
             partition_id,
@@ -101,11 +101,18 @@ where
             Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
-        let mut log_reader = LogReader::new(
-            &bifrost,
-            LogId::from(partition_id),
-            last_applied_lsn.unwrap_or(Lsn::INVALID),
-        );
+        let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
+        if tracing::event_enabled!(tracing::Level::DEBUG) {
+            let current_tail = bifrost
+                .find_tail(LogId::from(partition_id), FindTailAttributes::default())
+                .await?;
+            debug!(
+                last_applied_lsn = %last_applied_lsn,
+                current_log_tail = ?current_tail,
+                "PartitionProcessor creating log reader",
+            );
+        }
+        let mut log_reader = LogReader::new(&bifrost, LogId::from(partition_id), last_applied_lsn);
 
         let mut action_collector = ActionCollector::default();
         let mut effects = Effects::default();
@@ -125,6 +132,7 @@ where
                 _ = cancellation_watcher() => break,
                 record = log_reader.read_next() => {
                     let record = record?;
+                    trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
 
                     let mut transaction = partition_storage.create_transaction();
 
@@ -155,9 +163,19 @@ where
                         action_collector.clear();
 
                         if announce_leader.node_id == metadata().my_node_id() {
+                            let was_follower = !state.is_leader();
                             (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage).await?;
+                            if was_follower {
+                                Span::current().record("is_leader", state.is_leader());
+                                debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership acquired");
+                            }
                         } else {
+                            let was_leader = state.is_leader();
                             (state, action_effect_stream) = state.become_follower().await?;
+                            if was_leader {
+                                Span::current().record("is_leader", state.is_leader());
+                                debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership lost to {}", announce_leader.node_id);
+                            }
                         }
                     } else {
                         // Commit our changes and notify actuators about actions if we are the leader
@@ -216,7 +234,7 @@ where
             // deduplicate if deduplication information has been provided
             if let Some(dedup_information) = dedup_information {
                 if is_outdated_or_duplicate(dedup_information, transaction).await? {
-                    trace!(
+                    debug!(
                         "Ignoring outdated or duplicate message: {:?}",
                         envelope.header
                     );
@@ -251,9 +269,13 @@ where
                 {
                     // leadership change detected, let's finish our transaction here
                     return Ok(Some(announce_leader));
-                } else {
-                    trace!("Ignoring outdated leadership announcement.");
                 }
+                debug!(
+                    last_known_esn = %last_known_esn.as_ref().unwrap().leader_epoch,
+                    announce_esn = %announce_leader.leader_epoch,
+                    node_id = %announce_leader.node_id,
+                    "Ignoring outdated leadership announcement."
+                );
             } else {
                 state_machine
                     .apply(
