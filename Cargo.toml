@@ -37,6 +37,7 @@ restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
+restate-grpc-util = { path = "crates/grpc-util" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }

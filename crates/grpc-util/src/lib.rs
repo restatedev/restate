@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -16,7 +16,7 @@ use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 
-pub fn create_grpc_channel_from_network_address(
+pub fn create_grpc_channel_from_advertised_address(
     address: AdvertisedAddress,
 ) -> Result<Channel, http::Error> {
     let channel = match address {

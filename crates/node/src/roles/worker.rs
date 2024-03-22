@@ -20,7 +20,7 @@ use tracing::trace;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::{metadata, task_center};
-use restate_network::utils::create_grpc_channel_from_network_address;
+use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
 use restate_node_services::cluster_ctrl::FetchSchemasRequest;
@@ -140,7 +140,7 @@ impl WorkerRole {
             .address
             .clone();
 
-        let channel = create_grpc_channel_from_network_address(admin_address.clone())
+        let channel = create_grpc_channel_from_advertised_address(admin_address.clone())
             .expect("valid admin address");
         let mut cluster_ctrl_client = ClusterCtrlSvcClient::new(channel);
 
@@ -171,7 +171,7 @@ impl WorkerRole {
     async fn attach_node(admin_address: AdvertisedAddress) -> Result<(), WorkerRoleError> {
         info!("Worker attaching to admin at '{admin_address}'");
 
-        let channel = create_grpc_channel_from_network_address(admin_address.clone())
+        let channel = create_grpc_channel_from_advertised_address(admin_address.clone())
             .map_err(WorkerRoleError::InvalidClusterControllerAddress)?;
 
         let cc_client = ClusterCtrlSvcClient::new(channel);

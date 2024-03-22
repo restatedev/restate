@@ -5004,6 +5004,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-grpc-util"
+version = "0.9.0"
+dependencies = [
+ "http 0.2.12",
+ "restate-types",
+ "tokio",
+ "tonic 0.10.2",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "restate-ingress-dispatcher"
 version = "0.9.0"
 dependencies = [
@@ -5247,6 +5259,7 @@ dependencies = [
  "rand",
  "restate-core",
  "restate-errors",
+ "restate-grpc-util",
  "restate-node-protocol",
  "restate-node-services",
  "restate-test-util",
@@ -5294,6 +5307,7 @@ dependencies = [
  "restate-cluster-controller",
  "restate-core",
  "restate-errors",
+ "restate-grpc-util",
  "restate-meta",
  "restate-network",
  "restate-node-protocol",

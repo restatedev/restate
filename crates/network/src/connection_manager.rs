@@ -24,6 +24,7 @@ use tracing::{debug, info, warn, Instrument, Span};
 
 use restate_core::metadata;
 use restate_core::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
+use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_node_protocol::node::message::{self, ConnectionControl};
 use restate_node_protocol::node::{Header, Hello, Message, Welcome};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
@@ -37,7 +38,6 @@ use crate::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
     ONGOING_DRAIN, OUTGOING_CONNECTION,
 };
-use crate::utils::create_grpc_channel_from_network_address;
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
@@ -263,7 +263,7 @@ impl ConnectionManager {
         let channel = {
             let mut guard = self.inner.lock().unwrap();
             if let hash_map::Entry::Vacant(entry) = guard.channel_cache.entry(address.clone()) {
-                let channel = create_grpc_channel_from_network_address(address)
+                let channel = create_grpc_channel_from_advertised_address(address)
                     .map_err(|e| NetworkError::BadNodeAddress(node_id.into(), e))?;
                 entry.insert(channel.clone());
                 channel

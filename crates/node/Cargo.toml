@@ -22,6 +22,7 @@ restate-bifrost = { workspace = true }
 restate-cluster-controller = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-grpc-util = { workspace = true }
 restate-meta = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
