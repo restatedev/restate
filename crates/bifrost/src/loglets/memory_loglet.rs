@@ -75,7 +75,7 @@ impl LogletProvider for MemoryLogletProvider {
         Ok(loglet as Arc<dyn Loglet>)
     }
 
-    async fn start(&self) -> Result<(), Error> {
+    fn start(&self) -> Result<(), Error> {
         info!("Starting in-memory loglet provider");
         Ok(())
     }

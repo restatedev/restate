@@ -13,6 +13,7 @@
 
 use crate::loglet::LogletOffset;
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
+use serde::{Deserialize, Serialize};
 
 pub(crate) trait LsnExt: SequenceNumber {
     /// Converts a loglet offset into the virtual address (LSN).
@@ -43,7 +44,7 @@ pub(crate) trait LsnExt: SequenceNumber {
 impl LsnExt for Lsn {}
 
 /// Details about why a log was sealed
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum SealReason {
     /// Log was sealed to perform a repartitioning operation (split or unsplit).
     /// The reader/writer need to figure out where to read/write next.

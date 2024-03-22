@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::ShutdownError;
 use thiserror::Error;
 
 use restate_types::logs::{LogId, Lsn};
 
 use crate::types::SealReason;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
@@ -25,5 +26,5 @@ pub enum Error {
     #[error("cannot fetch log metadata")]
     MetadataSync,
     #[error("operation failed due to an ongoing shutdown")]
-    Shutdown,
+    Shutdown(#[from] ShutdownError),
 }
