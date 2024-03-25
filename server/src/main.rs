@@ -18,7 +18,7 @@ use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
 use std::ops::Div;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io;
 use tracing::error;
@@ -63,6 +63,8 @@ enum WipeMode {
     Meta,
     /// Wipe the local rocksdb-based loglet.
     LocalLoglet,
+    /// Wipe the local rocksdb-based metadata-store.
+    LocalMetadataStore,
     /// Wipe all
     All,
 }
@@ -73,13 +75,15 @@ impl WipeMode {
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
         local_loglet_storage_dir: PathBuf,
+        local_metadata_store_storage_dir: &Path,
     ) -> io::Result<()> {
-        let (wipe_meta, wipe_worker, wipe_local_loglet) = match mode {
-            Some(WipeMode::Worker) => (false, true, true),
-            Some(WipeMode::Meta) => (true, false, false),
-            Some(WipeMode::LocalLoglet) => (false, false, true),
-            Some(WipeMode::All) => (true, true, true),
-            None => (false, false, false),
+        let (wipe_meta, wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
+            Some(WipeMode::Worker) => (false, true, true, false),
+            Some(WipeMode::Meta) => (true, false, false, false),
+            Some(WipeMode::LocalLoglet) => (false, false, true, false),
+            Some(WipeMode::LocalMetadataStore) => (false, false, false, true),
+            Some(WipeMode::All) => (true, true, true, true),
+            None => (false, false, false, false),
         };
 
         if wipe_meta {
@@ -90,6 +94,9 @@ impl WipeMode {
         }
         if wipe_local_loglet {
             restate_fs_util::remove_dir_all_if_exists(local_loglet_storage_dir).await?;
+        }
+        if wipe_local_metadata_store {
+            restate_fs_util::remove_dir_all_if_exists(local_metadata_store_storage_dir).await?
         }
         Ok(())
     }
@@ -151,6 +158,7 @@ fn main() {
                 config.node.meta.storage_path().into(),
                 config.node.worker.storage_path().into(),
                 config.node.bifrost.local_loglet_storage_path(),
+                config.node.metadata_store.storage_path(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");

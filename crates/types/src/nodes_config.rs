@@ -38,6 +38,7 @@ pub enum NodesConfigError {
 pub enum Role {
     Worker,
     Admin,
+    MetadataStore,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -167,6 +168,11 @@ impl NodesConfiguration {
             MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
             _ => None,
         })
+    }
+
+    /// Returns the maximum known plain node id.
+    pub fn max_plain_node_id(&self) -> Option<PlainNodeId> {
+        self.nodes.keys().max().cloned()
     }
 }
 

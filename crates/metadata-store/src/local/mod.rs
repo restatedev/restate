@@ -12,5 +12,20 @@ mod grpc;
 mod store;
 
 mod service;
+
+pub use options::Options;
+use restate_types::net::AdvertisedAddress;
+pub use service::LocalMetadataStoreService;
+pub use store::BuildError;
+
+use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::MetadataStoreClient;
+
+/// Creates a [`MetadataStoreClient`] for the [`LocalMetadataStoreService`].
+pub fn create_client(advertised_address: AdvertisedAddress) -> MetadataStoreClient {
+    MetadataStoreClient::new(LocalMetadataStoreClient::new(advertised_address))
+}
+
+mod options;
 #[cfg(test)]
 mod tests;

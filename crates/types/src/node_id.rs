@@ -39,6 +39,7 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
 
 #[derive(
     Debug,
+    Default,
     PartialEq,
     Eq,
     Ord,
@@ -130,6 +131,11 @@ impl PartialEq<PlainNodeId> for NodeId {
 impl PlainNodeId {
     pub fn with_generation(self, generation: u32) -> GenerationalNodeId {
         GenerationalNodeId(self, generation)
+    }
+
+    pub fn next(mut self) -> Self {
+        self.0 += 1;
+        self
     }
 }
 

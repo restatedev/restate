@@ -24,7 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
-use tracing::info;
+use tracing::{debug, info};
 
 pub fn create_grpc_channel_from_advertised_address(
     address: AdvertisedAddress,
@@ -103,6 +103,8 @@ where
             run_tcp_server(socket_addr, service, shutdown_signal, server_name).await?
         }
     }
+
+    debug!("Stopped server '{}'", server_name);
 
     Ok(())
 }

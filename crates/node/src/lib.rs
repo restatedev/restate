@@ -19,18 +19,21 @@ use restate_core::network::MessageRouterBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
+use std::time::Duration;
 
-use std::ops::Deref;
-
-use anyhow::bail;
 use codederror::CodedError;
-use tracing::{error, info};
+use tokio::time::Instant;
+use tracing::{error, info, trace};
 
 use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
+use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
+use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::retries::RetryPolicy;
+use restate_types::Version;
 
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
@@ -56,6 +59,12 @@ pub enum BuildError {
         #[code]
         roles::AdminRoleBuildError,
     ),
+    #[error("building metadata store failed: {0}")]
+    MetadataStore(
+        #[from]
+        #[code]
+        restate_metadata_store::local::BuildError,
+    ),
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
     UnknownClusterController,
@@ -68,6 +77,7 @@ pub struct Node {
     options: Options,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
+    metadata_store_role: Option<LocalMetadataStoreService>,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
     server: NetworkServer,
@@ -84,11 +94,21 @@ impl Node {
                     "Node must include the 'Admin' role when starting in bootstrap mode. Currently it has roles {}", options.roles
                 )));
             }
+
+            if !options.roles.contains(Role::MetadataStore) {
+                return Err(BuildError::Bootstrap(format!("Node must include the 'MetadataStore' role when starting in bootstrap mode. Currently it has roles {}", options.roles)));
+            }
         }
+
+        let metadata_store_role = if options.roles.contains(Role::MetadataStore) {
+            Some(options.metadata_store.clone().build()?)
+        } else {
+            None
+        };
 
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
-        let bifrost = options.clone().bifrost.build(options.worker.partitions);
+        let bifrost = options.bifrost.clone().build(options.worker.partitions);
         let metadata_manager = MetadataManager::build(networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
 
@@ -138,6 +158,7 @@ impl Node {
             options: opts,
             metadata_manager,
             bifrost,
+            metadata_store_role,
             admin_role,
             worker_role,
             server,
@@ -146,6 +167,25 @@ impl Node {
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
         let tc = task_center();
+
+        if let Some(metadata_store) = self.metadata_store_role {
+            tc.spawn(
+                TaskKind::MetadataStore,
+                "local-metadata-store",
+                None,
+                async move {
+                    metadata_store.run().await?;
+                    Ok(())
+                },
+            )?;
+        }
+
+        let metadata_store_client = restate_metadata_store::local::create_client(
+            self.options.metadata_store_client.clone(),
+        );
+
+        let nodes_config = Self::upsert_node_config(metadata_store_client, &self.options).await?;
+
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
         let is_set = tc.try_set_global_metadata(metadata.clone());
@@ -154,41 +194,7 @@ impl Node {
         // Start metadata manager
         spawn_metadata_manager(&tc, self.metadata_manager)?;
 
-        // If starting in bootstrap mode, we initialize the nodes configuration
-        // with a static config.
-        if self.options.bootstrap_cluster {
-            let temp_id: GenerationalNodeId = if let Some(my_id) = self.options.node_id {
-                my_id.with_generation(1)
-            } else {
-                // default to node-id 1 generation 1
-                GenerationalNodeId::new(1, 0)
-            };
-            // Temporary: nodes configuration from current node.
-            let mut nodes_config =
-                NodesConfiguration::new(Version::MIN, self.options.cluster_name.clone());
-            let address = self.options.server.advertise_address.clone();
-
-            let my_node = NodeConfig::new(
-                self.options.node_name.clone(),
-                temp_id,
-                address,
-                self.options.roles,
-            );
-            nodes_config.upsert_node(my_node);
-            info!(
-                "Created a bootstrap nodes-configuration version {} for cluster {}",
-                nodes_config.version(),
-                self.options.cluster_name.clone(),
-            );
-            metadata_writer.update(nodes_config).await?;
-            info!("Initial nodes configuration is loaded");
-        } else {
-            // TODO: Fetch nodes configuration from metadata store.
-            //
-            // Not supported at the moment
-            bail!("Only cluster bootstrap mode is supported at the moment");
-        }
-
+        metadata_writer.update(nodes_config).await?;
         // Update the partition table. Currently, only setting a single version is supported
         metadata_writer
             .update(FixedPartitionTable::new(
@@ -198,24 +204,25 @@ impl Node {
             .await?;
 
         let nodes_config = metadata.nodes_config();
+
         // Find my node in nodes configuration.
-        let Some(current_config) = nodes_config.find_node_by_name(&self.options.node_name) else {
-            // Node is not in configuration. This is currently not supported. We only support
-            // static configuration.
-            bail!("Node is not in configuration. This is currently not supported.");
-        };
+        let my_node_config = nodes_config
+            .find_node_by_name(&self.options.node_name)
+            .expect("node config should have been upserted");
+
+        let my_node_id = my_node_config.current_generation;
 
         // Safety checks, same node (if set)?
         if self
             .options
             .node_id
-            .is_some_and(|n| n != current_config.current_generation.as_plain())
+            .is_some_and(|n| n != my_node_id.as_plain())
         {
             return Err(Error::SafetyCheck(
                 format!(
                     "Node ID mismatch: configured node ID is {}, but the nodes configuration contains {}",
                     self.options.node_id.unwrap(),
-                    current_config.current_generation.as_plain()
+                    my_node_id.as_plain()
                     )))?;
         }
 
@@ -229,31 +236,9 @@ impl Node {
                     )))?;
         }
 
-        // Setup node generation.
-        // Bump the last generation
-        let mut my_node_id = current_config.current_generation;
-        my_node_id.bump_generation();
-
-        // TODO: replace this temporary code with proper CAS write to metadata store
-        // Simulate a node configuration update and commit
-        {
-            let address = self.options.server.advertise_address.clone();
-
-            let my_node = NodeConfig::new(
-                self.options.node_name.clone(),
-                my_node_id,
-                address,
-                self.options.roles,
-            );
-            let mut editable_nodes_config: NodesConfiguration = nodes_config.deref().to_owned();
-            editable_nodes_config.upsert_node(my_node);
-            editable_nodes_config.increment_version();
-            // push new nodes config to local cache. Simulates the write.
-            metadata_writer.update(editable_nodes_config).await?;
-        }
         // My Node ID is set
         metadata_writer.set_my_node_id(my_node_id);
-        info!("My Node ID is {}", my_node_id);
+        info!("My Node ID is {}", my_node_config.current_generation);
 
         let bifrost = self.bifrost.handle();
 
@@ -286,5 +271,104 @@ impl Node {
         )?;
 
         Ok(())
+    }
+
+    async fn upsert_node_config(
+        metadata_store_client: MetadataStoreClient,
+        options: &Options,
+    ) -> Result<NodesConfiguration, ReadModifyWriteError> {
+        // todo: Make upsert timeout configurable
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(10),
+            2.0,
+            15,
+            Some(Duration::from_secs(5)),
+        );
+        let upsert_start = Instant::now();
+
+        retry_policy
+            .retry_if(
+                || {
+                    let mut previous_node_generation = None;
+                    metadata_store_client.read_modify_write(
+                        NODES_CONFIG_KEY.clone(),
+                        move |nodes_config| {
+                            let mut nodes_config = nodes_config.unwrap_or_else(|| {
+                                NodesConfiguration::new(
+                                    Version::INVALID,
+                                    options.cluster_name.clone(),
+                                )
+                            });
+
+                            // check whether we have registered before
+                            let node_config =
+                                nodes_config.find_node_by_name(&options.node_name).cloned();
+
+                            let my_node_config = if let Some(mut node_config) = node_config {
+                                assert_eq!(
+                                    options.node_name, node_config.name,
+                                    "node name must match"
+                                );
+
+                                if let Some(previous_node_generation) = previous_node_generation {
+                                    if node_config.current_generation.is_newer_than(previous_node_generation) {
+                                        // detected a concurrent registration of the same node
+                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", options.node_name));
+                                    }
+                                } else {
+                                    // remember the previous node generation to detect concurrent modifications
+                                    previous_node_generation = Some(node_config.current_generation);
+                                }
+
+                                // update node_config
+                                node_config.roles = options.roles;
+                                node_config.address = options.server.advertise_address.clone();
+                                node_config.current_generation.bump_generation();
+
+                                node_config
+                            } else {
+                                let plain_node_id = options.node_id.unwrap_or_else(|| {
+                                    nodes_config
+                                        .max_plain_node_id()
+                                        .map(|n| n.next())
+                                        .unwrap_or_default()
+                                });
+
+                                assert!(
+                                    nodes_config.find_node_by_id(plain_node_id).is_err(),
+                                    "duplicate plain node id '{}'",
+                                    plain_node_id
+                                );
+
+                                let my_node_id = plain_node_id.with_generation(1);
+
+                                NodeConfig::new(
+                                    options.node_name.clone(),
+                                    my_node_id,
+                                    options.server.advertise_address.clone(),
+                                    options.roles,
+                                )
+                            };
+
+                            nodes_config.upsert_node(my_node_config);
+                            nodes_config.increment_version();
+
+                            Operation::Upsert(nodes_config)
+                        },
+                    )
+                },
+                |err: &ReadModifyWriteError| match err {
+                    ReadModifyWriteError::Network(err) => {
+                        if upsert_start.elapsed() < Duration::from_secs(5) {
+                            trace!("could not connect to metadata store: {err}; retrying");
+                        } else {
+                            info!("could not connect to metadata store: {err}; retrying");
+                        }
+                        true
+                    }
+                    _ => false,
+                },
+            )
+            .await
     }
 }

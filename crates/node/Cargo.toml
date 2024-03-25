@@ -14,7 +14,8 @@ options_schema = [
     "restate-admin/options_schema",
     "restate-meta/options_schema",
     "restate-worker/options_schema",
-    "restate-cluster-controller/options_schema"]
+    "restate-cluster-controller/options_schema",
+    "restate-metadata-store/options_schema"]
 
 [dependencies]
 restate-admin = { workspace = true }
@@ -24,6 +25,7 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-grpc-util = { workspace = true }
 restate-meta = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-node-services = { workspace = true, features = ["servers"] }

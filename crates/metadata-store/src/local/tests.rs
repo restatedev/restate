@@ -18,9 +18,11 @@ use futures::StreamExt;
 use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::retries::RetryPolicy;
 use restate_types::{Version, Versioned};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 use test_log::test;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
@@ -298,16 +300,18 @@ async fn create_test_environment_with_path(
     let health_client = HealthClient::new(create_grpc_channel_from_advertised_address(
         advertised_address,
     )?);
-    let retry_strategy = tokio_retry::strategy::ExponentialBackoff::from_millis(10).factor(2);
-    tokio_retry::Retry::spawn(retry_strategy, || async {
-        health_client
-            .clone()
-            .check(HealthCheckRequest {
-                service: grpc_service_name.clone(),
-            })
-            .await
-    })
-    .await?;
+    let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, usize::MAX, None);
+
+    retry_policy
+        .retry(|| async {
+            health_client
+                .clone()
+                .check(HealthCheckRequest {
+                    service: grpc_service_name.clone(),
+                })
+                .await
+        })
+        .await?;
 
     Ok((client, env))
 }

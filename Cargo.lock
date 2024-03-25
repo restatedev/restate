@@ -5253,8 +5253,11 @@ dependencies = [
  "bincode",
  "bytes",
  "bytestring",
+ "codederror",
+ "derive_builder",
  "futures",
  "googletest",
+ "humantime",
  "hyper 0.14.28",
  "prost 0.12.3",
  "prost-types",
@@ -5263,13 +5266,13 @@ dependencies = [
  "restate-node-protocol",
  "restate-types",
  "rocksdb",
+ "schemars",
  "serde",
  "static_assertions",
  "tempfile",
  "test-log",
  "thiserror",
  "tokio",
- "tokio-retry",
  "tonic 0.10.2",
  "tonic-build",
  "tonic-health",
@@ -5350,6 +5353,7 @@ dependencies = [
  "restate-errors",
  "restate-grpc-util",
  "restate-meta",
+ "restate-metadata-store",
  "restate-network",
  "restate-node-protocol",
  "restate-node-services",
@@ -6923,17 +6927,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.55",
-]
-
-[[package]]
-name = "tokio-retry"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
-dependencies = [
- "pin-project",
- "rand",
- "tokio",
 ]
 
 [[package]]

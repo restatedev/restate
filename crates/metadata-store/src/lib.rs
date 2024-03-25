@@ -11,16 +11,19 @@
 #![allow(dead_code)]
 
 mod grpc_svc;
-mod local;
+pub mod local;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
+use restate_types::retries::RetryPolicy;
 use restate_types::{Version, Versioned};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::Arc;
+use std::time::Duration;
+use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -28,8 +31,8 @@ pub enum ReadError {
     Network(GenericError),
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("deserialization failed: {0}")]
-    Deserialization(GenericError),
+    #[error("codec error: {0}")]
+    Codec(GenericError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -40,8 +43,8 @@ pub enum WriteError {
     Network(GenericError),
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("serialization failed: {0}")]
-    Serialization(GenericError),
+    #[error("codec error: {0}")]
+    Codec(GenericError),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -95,7 +98,7 @@ pub trait MetadataStore {
 
 /// Metadata store client which allows storing [`Versioned`] values into a [`MetadataStore`].
 #[derive(Clone)]
-struct MetadataStoreClient {
+pub struct MetadataStoreClient {
     // premature optimization? Maybe introduce trait object once we have multiple implementations?
     inner: Arc<dyn MetadataStore + Send + Sync>,
 }
@@ -110,7 +113,7 @@ impl MetadataStoreClient {
         }
     }
 
-    async fn get<T: Versioned + DeserializeOwned>(
+    pub async fn get<T: Versioned + DeserializeOwned>(
         &self,
         key: ByteString,
     ) -> Result<Option<T>, ReadError> {
@@ -122,7 +125,7 @@ impl MetadataStoreClient {
                 versioned_value.value.as_ref(),
                 bincode::config::standard(),
             )
-            .map_err(|err| ReadError::Deserialization(err.into()))?;
+            .map_err(|err| ReadError::Codec(err.into()))?;
 
             assert_eq!(
                 versioned_value.version,
@@ -136,11 +139,11 @@ impl MetadataStoreClient {
         }
     }
 
-    async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
+    pub async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         self.inner.get_version(key).await
     }
 
-    async fn put<T>(
+    pub async fn put<T>(
         &self,
         key: ByteString,
         value: T,
@@ -153,7 +156,7 @@ impl MetadataStoreClient {
 
         // todo add proper format version
         let value = bincode::serde::encode_to_vec(value, bincode::config::standard())
-            .map_err(|err| WriteError::Serialization(err.into()))?;
+            .map_err(|err| WriteError::Codec(err.into()))?;
 
         self.inner
             .put(
@@ -164,8 +167,105 @@ impl MetadataStoreClient {
             .await
     }
 
-    async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
+    pub async fn delete(
+        &self,
+        key: ByteString,
+        precondition: Precondition,
+    ) -> Result<(), WriteError> {
         self.inner.delete(key, precondition).await
+    }
+
+    pub async fn read_modify_write<T, F>(
+        &self,
+        key: ByteString,
+        mut modify: F,
+    ) -> Result<T, ReadModifyWriteError>
+    where
+        T: Versioned + Serialize + DeserializeOwned + Clone,
+        F: FnMut(Option<T>) -> Operation<T>,
+    {
+        let max_backoff = Duration::from_millis(100);
+        let mut backoff_policy = RetryPolicy::exponential(
+            Duration::from_millis(10),
+            2.0,
+            usize::MAX,
+            Some(max_backoff),
+        )
+        .into_iter();
+
+        loop {
+            let value = self.get::<T>(key.clone()).await?;
+
+            let precondition = value
+                .as_ref()
+                .map(|c| Precondition::MatchesVersion(c.version()))
+                .unwrap_or(Precondition::DoesNotExist);
+
+            let result = modify(value);
+
+            match result {
+                Operation::Upsert(value) => {
+                    match self.put(key.clone(), value.clone(), precondition).await {
+                        Ok(()) => return Ok(value),
+                        Err(WriteError::FailedPrecondition(msg)) => {
+                            let backoff = backoff_policy.next().unwrap_or(max_backoff);
+                            debug!(
+                                "concurrent value update: {msg}; retrying in '{}'",
+                                humantime::format_duration(backoff)
+                            );
+                            tokio::time::sleep(backoff).await;
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+                Operation::Return(value) => return Ok(value),
+                Operation::Fail(msg) => return Err(ReadModifyWriteError::FailedOperation(msg)),
+            }
+        }
+    }
+}
+
+pub enum Operation<T> {
+    /// Upsert the provided value and return if successful.
+    Upsert(T),
+    /// Return the provided value w/o upserting it.
+    Return(T),
+    /// Fail the read modify write call.
+    Fail(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadModifyWriteError {
+    #[error("network error: {0}")]
+    Network(GenericError),
+    #[error("internal error: {0}")]
+    Internal(String),
+    #[error("codec error: {0}")]
+    Codec(GenericError),
+    #[error("failed read-modify-write operation: {0}")]
+    FailedOperation(String),
+}
+
+impl From<ReadError> for ReadModifyWriteError {
+    fn from(value: ReadError) -> Self {
+        match value {
+            ReadError::Network(err) => ReadModifyWriteError::Network(err),
+            ReadError::Internal(msg) => ReadModifyWriteError::Internal(msg),
+            ReadError::Codec(err) => ReadModifyWriteError::Codec(err),
+        }
+    }
+}
+
+impl From<WriteError> for ReadModifyWriteError {
+    fn from(value: WriteError) -> Self {
+        match value {
+            WriteError::FailedPrecondition(_) => {
+                unreachable!("failed preconditions should be treated separately")
+            }
+            WriteError::Network(err) => ReadModifyWriteError::Network(err),
+            WriteError::Internal(msg) => ReadModifyWriteError::Internal(msg),
+            WriteError::Codec(err) => ReadModifyWriteError::Codec(err),
+        }
     }
 }
 

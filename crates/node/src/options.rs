@@ -38,6 +38,10 @@ pub struct Options {
     pub bifrost: restate_bifrost::Options,
     pub cluster_controller: restate_cluster_controller::Options,
 
+    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
+    pub metadata_store_client: AdvertisedAddress,
+    pub metadata_store: restate_metadata_store::local::Options,
+
     /// Defines the roles which this Restate node should run
     #[cfg_attr(feature = "options_schema", schemars(with = "Vec<String>"))]
     pub roles: EnumSet<Role>,
@@ -69,8 +73,12 @@ impl Default for Options {
             admin: Default::default(),
             bifrost: Default::default(),
             cluster_controller: Default::default(),
-            roles: Role::Worker | Role::Admin,
+            roles: Role::Worker | Role::Admin | Role::MetadataStore,
             admin_address: None,
+            metadata_store: Default::default(),
+            metadata_store_client: "http://127.0.0.1:5123"
+                .parse()
+                .expect("valid metadata store address"),
         }
     }
 }

@@ -11,6 +11,7 @@
 use crate::{Precondition, VersionedValue};
 use bytes::Bytes;
 use bytestring::ByteString;
+use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_types::errors::GenericError;
 use restate_types::Version;
@@ -76,9 +77,10 @@ impl Error {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
     #[error("failed opening rocksdb: {0}")]
+    #[code(unknown)]
     RocksDB(#[from] rocksdb::Error),
 }
 
@@ -98,9 +100,9 @@ pub struct LocalMetadataStore {
 impl LocalMetadataStore {
     pub fn new(
         path: impl AsRef<Path>,
-        channel_size: usize,
+        request_queue_length: usize,
     ) -> std::result::Result<Self, BuildError> {
-        let (request_tx, request_rx) = mpsc::channel(channel_size);
+        let (request_tx, request_rx) = mpsc::channel(request_queue_length);
 
         let cfs = vec![rocksdb::ColumnFamilyDescriptor::new(
             KV_PAIRS,
