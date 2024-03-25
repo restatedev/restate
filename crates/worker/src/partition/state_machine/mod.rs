@@ -542,6 +542,7 @@ mod tests {
                 response_sink: None,
                 span_context: Default::default(),
                 headers: vec![],
+                execution_time: None,
             }))
             .await;
 

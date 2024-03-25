@@ -151,26 +151,7 @@ where
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         match command {
             Command::Invoke(service_invocation) => {
-                let service_status = state
-                    .get_virtual_object_status(&service_invocation.fid.service_id)
-                    .await?;
-
-                let fid = service_invocation.fid.clone();
-                let span_relation = service_invocation.span_context.as_parent();
-
-                if deterministic::ServiceInvoker::is_supported(fid.service_id.service_name.deref())
-                {
-                    self.handle_deterministic_built_in_service_invocation(
-                        service_invocation,
-                        effects,
-                    )
-                    .await;
-                } else if let VirtualObjectStatus::Unlocked = service_status {
-                    effects.invoke_service(service_invocation);
-                } else {
-                    self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
-                }
-                Ok((Some(fid), span_relation))
+                self.handle_invoke(effects, state, service_invocation).await
             }
             Command::InvocationResponse(InvocationResponse {
                 id,
@@ -211,6 +192,46 @@ where
                 Ok((None, SpanRelation::None))
             }
         }
+    }
+
+    async fn handle_invoke<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        service_invocation: ServiceInvocation,
+    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        if let Some(execution_time) = service_invocation.execution_time {
+            let span_context = service_invocation.span_context.clone();
+            effects.register_timer(
+                TimerValue::new_invoke(
+                    service_invocation.fid.clone(),
+                    execution_time,
+                    // This entry_index here makes little sense
+                    0,
+                    service_invocation,
+                ),
+                span_context,
+            );
+            // The span will be created later on invocation
+            return Ok((None, SpanRelation::None));
+        }
+
+        let service_status = state
+            .get_virtual_object_status(&service_invocation.fid.service_id)
+            .await?;
+
+        let fid = service_invocation.fid.clone();
+        let span_relation = service_invocation.span_context.as_parent();
+
+        if deterministic::ServiceInvoker::is_supported(fid.service_id.service_name.deref()) {
+            self.handle_deterministic_built_in_service_invocation(service_invocation, effects)
+                .await;
+        } else if let VirtualObjectStatus::Unlocked = service_status {
+            effects.invoke_service(service_invocation);
+        } else {
+            self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
+        }
+        Ok((Some(fid), span_relation))
     }
 
     fn enqueue_into_inbox(&mut self, effects: &mut Effects, inbox_entry: InboxEntry) {
@@ -300,33 +321,6 @@ where
                     full_invocation_id.clone().into(),
                     invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
-                );
-            }
-            BuiltinServiceEffect::DelayedInvoke {
-                target_fid,
-                target_method,
-                argument,
-                response_sink,
-                time,
-                timer_index,
-                source: caller,
-            } => {
-                effects.register_timer(
-                    TimerValue::new_invoke(
-                        full_invocation_id.clone(),
-                        time,
-                        timer_index,
-                        ServiceInvocation::new(
-                            target_fid,
-                            target_method,
-                            argument,
-                            caller,
-                            response_sink,
-                            SpanRelation::default(),
-                            vec![],
-                        ),
-                    ),
-                    ServiceInvocationSpanContext::empty(),
                 );
             }
             BuiltinServiceEffect::OutboxMessage(msg) => {
@@ -734,7 +728,11 @@ where
                 )
                 .await
             }
-            Timer::Invoke(service_id, service_invocation) => {
+            Timer::Invoke(service_id, mut service_invocation) => {
+                // Remove the execution time from the service invocation request
+                service_invocation.execution_time = None;
+
+                // TODO(optimization) we could skip the outbox here and re-propose this to self.
                 self.outbox_message(
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
@@ -1072,6 +1070,7 @@ where
                         Source::Service(full_invocation_id.clone()),
                         Some((full_invocation_id.clone(), entry_index)),
                         span_context.clone(),
+                        None,
                     );
                     self.outbox_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
@@ -1100,6 +1099,13 @@ where
 
                 let service_method = request.method_name.clone();
 
+                // 0 is equal to not set, meaning execute now
+                let delay = if invoke_time == 0 {
+                    None
+                } else {
+                    Some(MillisSinceEpoch::new(invoke_time))
+                };
+
                 let service_invocation = Self::create_service_invocation(
                     *invocation_id,
                     service_key.clone(),
@@ -1107,6 +1113,7 @@ where
                     Source::Service(full_invocation_id.clone()),
                     None,
                     span_context.clone(),
+                    delay,
                 );
 
                 let pointer_span_id = match span_context.span_cause() {
@@ -1121,23 +1128,10 @@ where
                     pointer_span_id,
                 );
 
-                // 0 is equal to not set, meaning execute now
-                if invoke_time == 0 {
-                    self.outbox_message(
-                        OutboxMessage::ServiceInvocation(service_invocation),
-                        effects,
-                    );
-                } else {
-                    effects.register_timer(
-                        TimerValue::new_invoke(
-                            full_invocation_id.clone(),
-                            MillisSinceEpoch::new(invoke_time),
-                            entry_index,
-                            service_invocation,
-                        ),
-                        invocation_metadata.journal_metadata.span_context.clone(),
-                    );
-                }
+                self.outbox_message(
+                    OutboxMessage::ServiceInvocation(service_invocation),
+                    effects,
+                );
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
@@ -1362,6 +1356,7 @@ where
         source: Source,
         response_target: Option<(FullInvocationId, EntryIndex)>,
         span_context: ServiceInvocationSpanContext,
+        execution_time: Option<MillisSinceEpoch>,
     ) -> ServiceInvocation {
         let InvokeRequest {
             service_name,
@@ -1387,6 +1382,7 @@ where
             response_sink,
             span_context,
             headers: vec![],
+            execution_time,
         }
     }
 }

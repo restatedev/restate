@@ -13,10 +13,8 @@ use std::borrow::Cow;
 use bytes::Bytes;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, FullInvocationId};
+use restate_types::identifiers::FullInvocationId;
 use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{ServiceInvocationResponseSink, Source as InvocationSource};
-use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -48,16 +46,6 @@ pub enum BuiltinServiceEffect {
     ClearState(Cow<'static, str>),
 
     OutboxMessage(OutboxMessage),
-    DelayedInvoke {
-        target_fid: FullInvocationId,
-        target_method: String,
-        argument: Bytes,
-        source: InvocationSource,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        time: MillisSinceEpoch,
-        timer_index: EntryIndex,
-    },
-
     End(
         // NBIS can optionally fail, depending on the context the error might or might not be used.
         Option<InvocationError>,

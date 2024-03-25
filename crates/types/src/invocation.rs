@@ -14,6 +14,7 @@ use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionKey, WithPartitionKey,
 };
+use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -41,6 +42,8 @@ pub struct ServiceInvocation {
     pub response_sink: Option<ServiceInvocationResponseSink>,
     pub span_context: ServiceInvocationSpanContext,
     pub headers: Vec<Header>,
+    /// Time when the request should be executed
+    pub execution_time: Option<MillisSinceEpoch>,
 }
 
 impl ServiceInvocation {
@@ -50,6 +53,7 @@ impl ServiceInvocation {
     /// It is not required to keep this [`Span`] around for the whole lifecycle of the invocation.
     /// On the contrary, it is encouraged to drop it as soon as possible,
     /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         fid: FullInvocationId,
         method_name: impl Into<ByteString>,
@@ -58,6 +62,7 @@ impl ServiceInvocation {
         response_sink: Option<ServiceInvocationResponseSink>,
         related_span: SpanRelation,
         headers: Vec<Header>,
+        execution_time: Option<MillisSinceEpoch>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
@@ -68,6 +73,7 @@ impl ServiceInvocation {
             response_sink,
             span_context,
             headers,
+            execution_time,
         }
     }
 }
@@ -562,6 +568,7 @@ mod mocks {
                 response_sink: None,
                 span_context: Default::default(),
                 headers: vec![],
+                execution_time: None,
             }
         }
     }

@@ -82,6 +82,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         None,
         SpanRelation::None,
         vec![],
+        None,
     )
 }
 
@@ -102,6 +103,7 @@ pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
         None,
         SpanRelation::None,
         vec![],
+        None,
     )
 }
 

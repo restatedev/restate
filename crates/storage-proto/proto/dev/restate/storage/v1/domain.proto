@@ -170,6 +170,7 @@ message ServiceInvocation {
     SpanContext span_context = 5;
     Source source = 6;
     repeated Header headers = 7;
+    uint64 execution_time = 8;
 }
 
 message StateMutation {

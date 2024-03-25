@@ -35,6 +35,7 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
             None,
             self.span_context.as_parent(),
             vec![],
+            None,
         )));
 
         Ok(())

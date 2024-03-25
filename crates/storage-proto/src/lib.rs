@@ -520,6 +520,7 @@ pub mod storage {
                         argument,
                         source,
                         headers,
+                        execution_time,
                     } = value;
 
                     let id = restate_types::identifiers::FullInvocationId::try_from(
@@ -549,6 +550,12 @@ pub mod storage {
                         .map(|h| restate_types::invocation::Header::try_from(h))
                         .collect::<Result<Vec<_>, ConversionError>>()?;
 
+                    let execution_time = if execution_time == 0 {
+                        None
+                    } else {
+                        Some(MillisSinceEpoch::new(execution_time))
+                    };
+
                     Ok(restate_types::invocation::ServiceInvocation {
                         fid: id,
                         method_name,
@@ -557,6 +564,7 @@ pub mod storage {
                         response_sink,
                         span_context,
                         headers,
+                        execution_time,
                     })
                 }
             }
@@ -578,6 +586,10 @@ pub mod storage {
                         argument: value.argument,
                         source: Some(source),
                         headers,
+                        execution_time: value
+                            .execution_time
+                            .map(|m| m.as_u64())
+                            .unwrap_or_default(),
                     }
                 }
             }
