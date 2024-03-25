@@ -408,7 +408,7 @@ impl Effect {
                         "Effect: Register Sleep timer"
                     )
                 }
-                Timer::Invoke(_, service_invocation) => {
+                Timer::Invoke(service_invocation) => {
                     // no span necessary; there will already be a background_invoke span
                     debug_if_leader!(
                         is_leader,

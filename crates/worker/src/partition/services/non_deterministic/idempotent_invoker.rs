@@ -137,14 +137,14 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             .load_state(&REQUEST_META)
             .await?
             .ok_or_else(|| InvocationError::internal("request meta should be non empty"))?;
-        let expiry_time =
+        let idempotency_expiration_time =
             SystemTime::now() + Duration::from_secs(request_meta.retention_period_sec as u64);
 
         trace!("Got response for {:?}: {:?}", request_meta, result);
 
         // Generate response
         let response = IdempotentInvokeResponse {
-            expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
+            expiry_time: humantime::format_rfc3339(idempotency_expiration_time).to_string(),
             response: Some(
                 result
                     .response
@@ -176,7 +176,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             None,
             SpanRelation::None,
             vec![],
-            Some(expiry_time.into()),
+            Some(idempotency_expiration_time.into()),
         )));
 
         // Send response to registered sinks

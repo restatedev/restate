@@ -54,7 +54,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 2,
             timestamp: 1,
         },
-        Timer::Invoke(ServiceId::new("svc-1", "key-1"), service_invocation),
+        Timer::Invoke(service_invocation),
     )
     .await;
 

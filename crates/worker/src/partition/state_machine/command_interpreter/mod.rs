@@ -728,22 +728,13 @@ where
                 )
                 .await
             }
-            Timer::Invoke(service_id, mut service_invocation) => {
+            Timer::Invoke(mut service_invocation) => {
                 // Remove the execution time from the service invocation request
                 service_invocation.execution_time = None;
 
-                // TODO(optimization) we could skip the outbox here and re-propose this to self.
-                self.outbox_message(
-                    OutboxMessage::ServiceInvocation(service_invocation),
-                    effects,
-                );
-                Ok((
-                    Some(FullInvocationId {
-                        service_id,
-                        invocation_uuid,
-                    }),
-                    SpanRelation::None,
-                ))
+                // ServiceInvocations scheduled with a timer are always owned by the same partition processor
+                // where the invocation should be executed
+                self.handle_invoke(effects, state, service_invocation).await
             }
         }
     }

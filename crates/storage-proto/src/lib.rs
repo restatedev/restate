@@ -1569,21 +1569,19 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: Timer) -> Result<Self, Self::Error> {
-                    let service_name = ByteString::try_from(value.service_name)
-                        .map_err(ConversionError::invalid_data)?;
-                    let service_id =
-                        restate_types::identifiers::ServiceId::new(service_name, value.service_key);
-
                     Ok(
                         match value.value.ok_or(ConversionError::missing_field("value"))? {
-                            timer::Value::CompleteSleepEntry(_) => {
+                            timer::Value::CompleteSleepEntry(cse) => {
                                 restate_storage_api::timer_table::Timer::CompleteSleepEntry(
-                                    service_id,
+                                    restate_types::identifiers::ServiceId::new(
+                                        ByteString::try_from(cse.service_name)
+                                            .map_err(ConversionError::invalid_data)?,
+                                        cse.service_key,
+                                    ),
                                 )
                             }
                             timer::Value::Invoke(si) => {
                                 restate_storage_api::timer_table::Timer::Invoke(
-                                    service_id,
                                     restate_types::invocation::ServiceInvocation::try_from(si)?,
                                 )
                             }
@@ -1597,14 +1595,15 @@ pub mod storage {
                     match value {
                         restate_storage_api::timer_table::Timer::CompleteSleepEntry(service_id) => {
                             Timer {
-                                service_name: service_id.service_name.into_bytes(),
-                                service_key: service_id.key,
-                                value: Some(timer::Value::CompleteSleepEntry(Default::default())),
+                                value: Some(timer::Value::CompleteSleepEntry(
+                                    timer::CompleteSleepEntry {
+                                        service_name: service_id.service_name.into_bytes(),
+                                        service_key: service_id.key,
+                                    },
+                                )),
                             }
                         }
-                        restate_storage_api::timer_table::Timer::Invoke(service_id, si) => Timer {
-                            service_name: service_id.service_name.into_bytes(),
-                            service_key: service_id.key,
+                        restate_storage_api::timer_table::Timer::Invoke(si) => Timer {
                             value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
                     }
