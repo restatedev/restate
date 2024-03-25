@@ -79,6 +79,7 @@ pub enum TaskKind {
     BifrostBackgroundHighPriority,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
+    LogletProvider,
 }
 
 impl TaskKind {
