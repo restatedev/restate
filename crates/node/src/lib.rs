@@ -19,6 +19,7 @@ use restate_core::network::MessageRouterBuilder;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
+use std::future::Future;
 use std::time::Duration;
 
 use codederror::CodedError;
@@ -29,7 +30,7 @@ use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::retries::RetryPolicy;
@@ -184,7 +185,7 @@ impl Node {
             self.options.metadata_store_client.clone(),
         );
 
-        let nodes_config = Self::upsert_node_config(metadata_store_client, &self.options).await?;
+        let nodes_config = Self::upsert_node_config(&metadata_store_client, &self.options).await?;
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
@@ -195,13 +196,11 @@ impl Node {
         spawn_metadata_manager(&tc, self.metadata_manager)?;
 
         metadata_writer.update(nodes_config).await?;
-        // Update the partition table. Currently, only setting a single version is supported
-        metadata_writer
-            .update(FixedPartitionTable::new(
-                Version::MIN,
-                self.options.worker.partitions,
-            ))
-            .await?;
+
+        let partition_table: FixedPartitionTable =
+            Self::fetch_or_insert_partition_table(metadata_store_client, &self.options).await?;
+
+        metadata_writer.update(partition_table).await?;
 
         let nodes_config = metadata.nodes_config();
 
@@ -273,22 +272,33 @@ impl Node {
         Ok(())
     }
 
-    async fn upsert_node_config(
+    async fn fetch_or_insert_partition_table(
         metadata_store_client: MetadataStoreClient,
         options: &Options,
-    ) -> Result<NodesConfiguration, ReadModifyWriteError> {
-        // todo: Make upsert timeout configurable
-        let retry_policy = RetryPolicy::exponential(
-            Duration::from_millis(10),
-            2.0,
-            15,
-            Some(Duration::from_secs(5)),
-        );
-        let upsert_start = Instant::now();
+    ) -> Result<FixedPartitionTable, ReadModifyWriteError> {
+        Self::retry_on_network_error(|| {
+            metadata_store_client.read_modify_write(
+                PARTITION_TABLE_KEY.clone(),
+                |partition_table| {
+                    if let Some(partition_table) = partition_table {
+                        Operation::Return(partition_table)
+                    } else {
+                        Operation::Upsert(FixedPartitionTable::new(
+                            Version::MIN,
+                            options.worker.partitions,
+                        ))
+                    }
+                },
+            )
+        })
+        .await
+    }
 
-        retry_policy
-            .retry_if(
-                || {
+    async fn upsert_node_config(
+        metadata_store_client: &MetadataStoreClient,
+        options: &Options,
+    ) -> Result<NodesConfiguration, ReadModifyWriteError> {
+        Self::retry_on_network_error(|| {
                     let mut previous_node_generation = None;
                     metadata_store_client.read_modify_write(
                         NODES_CONFIG_KEY.clone(),
@@ -356,19 +366,35 @@ impl Node {
                             Operation::Upsert(nodes_config)
                         },
                     )
-                },
-                |err: &ReadModifyWriteError| match err {
-                    ReadModifyWriteError::Network(err) => {
-                        if upsert_start.elapsed() < Duration::from_secs(5) {
-                            trace!("could not connect to metadata store: {err}; retrying");
-                        } else {
-                            info!("could not connect to metadata store: {err}; retrying");
-                        }
-                        true
+                }).await
+    }
+
+    async fn retry_on_network_error<Fn, Fut, T>(action: Fn) -> Result<T, ReadModifyWriteError>
+    where
+        Fn: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, ReadModifyWriteError>>,
+    {
+        // todo: Make upsert timeout configurable
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(10),
+            2.0,
+            15,
+            Some(Duration::from_secs(5)),
+        );
+        let upsert_start = Instant::now();
+
+        retry_policy
+            .retry_if(action, |err: &ReadModifyWriteError| match err {
+                ReadModifyWriteError::Network(err) => {
+                    if upsert_start.elapsed() < Duration::from_secs(5) {
+                        trace!("could not connect to metadata store: {err}; retrying");
+                    } else {
+                        info!("could not connect to metadata store: {err}; retrying");
                     }
-                    _ => false,
-                },
-            )
+                    true
+                }
+                _ => false,
+            })
             .await
     }
 }
