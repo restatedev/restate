@@ -73,8 +73,6 @@ pub use restate_storage_query_postgres::{
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
 use restate_types::logs::{LogId, Payload};
-use restate_types::partition_table::FixedPartitionTable;
-use restate_types::Version;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -181,7 +179,7 @@ impl Error {
 }
 
 pub struct Worker {
-    processors: Vec<PartitionProcessor>,
+    options: Options,
     networking: Networking,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
@@ -207,11 +205,11 @@ impl Worker {
         router_builder: &mut MessageRouterBuilder,
         schemas: Schemas,
     ) -> Result<Self, BuildError> {
+        let options = opts.clone();
+
         let Options {
-            channel_size,
             ingress,
             kafka,
-            timers,
             storage_query_datafusion,
             storage_query_postgres,
             storage_rocksdb,
@@ -233,9 +231,6 @@ impl Worker {
                 ingress_kafka.create_command_sender(),
             );
 
-        // todo: Fix once we support dynamic partition tables
-        let partitioner = FixedPartitionTable::new(Version::MIN, opts.partitions).partitioner();
-
         let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
@@ -253,23 +248,8 @@ impl Worker {
         )?;
         let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
 
-        let processors = partitioner
-            .map(|(idx, partition_range)| {
-                let invoker_sender = invoker.handle();
-
-                Self::create_partition_processor(
-                    idx,
-                    partition_range,
-                    timers.clone(),
-                    channel_size,
-                    invoker_sender,
-                    rocksdb_storage.clone(),
-                )
-            })
-            .collect();
-
         Ok(Self {
-            processors,
+            options,
             networking,
             storage_query_context,
             storage_query_postgres,
@@ -335,9 +315,6 @@ impl Worker {
             self.external_client_ingress.run(),
         )?;
 
-        // Invoker service
-        tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
-
         // Postgres external server
         tc.spawn_child(
             TaskKind::RpcServer,
@@ -363,8 +340,15 @@ impl Worker {
             leader_epoch,
         };
 
-        // Create partition processors
-        for processor in self.processors {
+        for (partition_id, partition_range) in metadata().partition_table().partitioner() {
+            let processor = Self::create_partition_processor(
+                partition_id,
+                partition_range,
+                self.options.timers.clone(),
+                self.options.channel_size,
+                self.invoker.handle(),
+                self.rocksdb_storage.clone(),
+            );
             let networking = self.networking.clone();
             let announce_leader = announce_leader.clone();
             let mut bifrost = bifrost.clone();
@@ -395,6 +379,9 @@ impl Worker {
                 },
             )?;
         }
+
+        // Invoker service
+        tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
 
         tokio::select! {
             _ = shutdown => {
