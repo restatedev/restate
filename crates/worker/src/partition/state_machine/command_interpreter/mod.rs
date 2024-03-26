@@ -1346,7 +1346,7 @@ where
         //             // We can process this now!
         //             let command = message.to_command();
         //             return self.on_apply(
-        //                 message.to_command(),
+        //                 command,
         //                 effects,
         //                 state
         //             ).await
