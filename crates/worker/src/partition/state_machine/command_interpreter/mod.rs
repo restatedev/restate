@@ -200,6 +200,7 @@ where
         state: &mut State,
         service_invocation: ServiceInvocation,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        // If an execution_time is set, we schedule the invocation to be processed later
         if let Some(execution_time) = service_invocation.execution_time {
             let span_context = service_invocation.span_context.clone();
             effects.register_timer(
