@@ -32,9 +32,10 @@ pub enum NodesConfigError {
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
-#[derive(Debug, Hash, EnumSetType, derive_more::Display)]
+#[derive(Debug, Hash, EnumSetType, strum_macros::Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Role {
     Worker,
     Admin,
