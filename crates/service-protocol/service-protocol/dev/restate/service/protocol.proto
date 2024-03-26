@@ -11,8 +11,6 @@ syntax = "proto3";
 
 package dev.restate.service.protocol;
 
-import "google/protobuf/empty.proto";
-
 option java_package = "dev.restate.generated.service.protocol";
 option go_package = "restate.dev/sdk-go/pb/service/protocol";
 
@@ -49,7 +47,7 @@ message CompletionMessage {
   uint32 entry_index = 1;
 
   oneof result {
-    google.protobuf.Empty empty = 13;
+    Empty empty = 13;
     bytes value = 14;
     Failure failure = 15;
   };
@@ -68,12 +66,10 @@ message SuspensionMessage {
 
 // Type: 0x0000 + 3
 message ErrorMessage {
-  // The code can be:
-  // * Any of the error codes defined by OutputStreamEntry.failure (see Failure message)
-  // * JOURNAL_MISMATCH = 32, that is when the SDK cannot replay a journal due to the mismatch between the journal and the actual code.
-  // * PROTOCOL_VIOLATION = 33, that is when the SDK receives an unexpected message or an expected message variant, given its state.
-  //
-  // If 16 < code < 32, or code > 33, the runtime will interpret it as code 2 (UNKNOWN).
+  // The code can be any HTTP status code, as described https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml.
+  // In addition, we define the following error codes that MAY be used by the SDK for better error reporting:
+  // * JOURNAL_MISMATCH = 570, that is when the SDK cannot replay a journal due to the mismatch between the journal and the actual code.
+  // * PROTOCOL_VIOLATION = 571, that is when the SDK receives an unexpected message or an expected message variant, given its state.
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
@@ -132,7 +128,7 @@ message GetStateEntryMessage {
   bytes key = 1;
 
   oneof result {
-    google.protobuf.Empty empty = 13;
+    Empty empty = 13;
     bytes value = 14;
     Failure failure = 15;
   };
@@ -184,7 +180,7 @@ message SleepEntryMessage {
   uint64 wake_up_time = 1;
 
   oneof result {
-    google.protobuf.Empty empty = 13;
+    Empty empty = 13;
     Failure failure = 15;
   }
 }
@@ -259,10 +255,7 @@ message CompleteAwakeableEntryMessage {
 // This failure object carries user visible errors,
 // e.g. invocation failure return value or failure result of an InvokeEntryMessage.
 message Failure {
-  // The code should be any of the gRPC error codes,
-  // as defined here: https://github.com/grpc/grpc/blob/master/doc/statuscodes.md#status-codes-and-their-use-in-grpc
-  //
-  // If code > 16, the runtime will interpret it as code 2 (UNKNOWN).
+  // The code can be any HTTP status code, as described https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml.
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
@@ -271,4 +264,7 @@ message Failure {
 message Header {
   string key = 1;
   string value = 2;
+}
+
+message Empty {
 }

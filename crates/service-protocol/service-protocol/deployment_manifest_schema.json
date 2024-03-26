@@ -41,19 +41,95 @@
                   "type": "string",
                   "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9_]*$"
                 },
-                "inputSchema": {},
-                "outputSchema": {}
+                "handlerType": {
+                  "title": "HandlerType",
+                  "enum": ["EXCLUSIVE", "SHARED"],
+                  "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object. This should be unset for Services."
+                },
+                "input": {
+                  "type": "object",
+                  "title": "InputPayload",
+                  "description": "Description of an input payload. This will be used by Restate to validate incoming requests.",
+                  "properties": {
+                    "required": {
+                      "type": "boolean",
+                      "description": "If true, a body MUST be sent with a content-type, even if the body length is zero."
+                    },
+                    "contentType": {
+                      "type": "string",
+                      "description": "Content type of the input. It can accept wildcards, in the same format as the 'Accept' header. When this field is unset, it implies emptiness, meaning no content-type/body is expected."
+                    },
+                    "jsonSchema": {}
+                  },
+                  "additionalProperties": false,
+                  "default": {
+                    "contentType": "*/*",
+                    "required": false
+                  },
+                  "examples": {
+                    "empty input": {},
+                    "non empty json input": {
+                      "required": true,
+                      "contentType": "application/json",
+                      "jsonSchema": true
+                    },
+                    "either empty or non empty json input": {
+                      "required": false,
+                      "contentType": "application/json",
+                      "jsonSchema": true
+                    },
+                    "bytes input": {
+                      "required": true,
+                      "contentType": "application/octet-stream"
+                    }
+                  }
+                },
+                "output": {
+                  "type": "object",
+                  "title": "OutputPayload",
+                  "description": "Description of an output payload.",
+                  "properties": {
+                    "contentType": {
+                      "type": "string",
+                      "description": "Content type set on output. This will be used by Restate to set the output content type at the ingress."
+                    },
+                    "setContentTypeIfEmpty": {
+                      "type": "boolean",
+                      "description": "If true, the specified content-type is set even if the output is empty."
+                    },
+                    "jsonSchema": {}
+                  },
+                  "additionalProperties": false,
+                  "default": {
+                    "contentType": "application/json",
+                    "setContentTypeIfEmpty": false
+                  },
+                  "examples": {
+                    "empty output": {
+                      "setContentTypeIfEmpty": false
+                    },
+                    "non-empty json output": {
+                      "contentType": "application/json",
+                      "setContentTypeIfEmpty": false,
+                      "jsonSchema": true
+                    },
+                    "protobuf output": {
+                      "contentType": "application/proto",
+                      "setContentTypeIfEmpty": true
+                    }
+                  }
+                }
               },
-              "required": [ "name" ],
+              "required": ["name"],
               "additionalProperties": false
             }
           }
         },
-        "required": [ "fullyQualifiedComponentName","componentType", "handlers" ],
+        "required": ["fullyQualifiedComponentName", "componentType", "handlers"],
         "additionalProperties": false
       }
     }
   },
-  "required": [ "minProtocolVersion", "maxProtocolVersion", "components" ],
+  "required": ["minProtocolVersion", "maxProtocolVersion", "components"],
   "additionalProperties": false
 }
