@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use figment::providers::{Env, Format, Serialized, Yaml};
+use figment::providers::{Env, Format, Serialized, Toml, Yaml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -128,8 +128,8 @@ pub struct Error(#[from] figment::Error);
 
 impl Configuration {
     /// Load [`Configuration`] from yaml with overwrites from environment variables.
-    pub fn load<P: AsRef<Path>>(config_file: P) -> Result<Self, Error> {
-        Self::load_with_default(Configuration::default(), Some(config_file.as_ref()))
+    pub fn load(config_file: Option<&Path>) -> Result<Self, Error> {
+        Self::load_with_default(Configuration::default(), config_file)
     }
 
     /// Load [`Configuration`] from an optional yaml with overwrites from environment
@@ -147,7 +147,16 @@ impl Configuration {
         let figment = memory.apply_defaults(figment);
 
         let figment = if let Some(config_file) = config_file {
-            figment.merge(Yaml::file(config_file))
+            match config_file.extension() {
+                Some(ext) if ext == "yaml" || ext == "yml" => {
+                    figment.merge(Yaml::file_exact(config_file))
+                }
+                Some(ext) if ext == "toml" || ext == "tml" => {
+                    figment.merge(Toml::file_exact(config_file))
+                }
+                // No extension or something else? assume yaml!
+                _ => figment.merge(Yaml::file_exact(config_file)),
+            }
         } else {
             figment
         };
