@@ -103,7 +103,7 @@ mod tests {
             let read_after = Lsn::from(5);
 
             let bifrost_opts = Options {
-                default_provider: ProviderKind::Memory,
+                default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
             let bifrost_svc = bifrost_opts.build(num_partitions);

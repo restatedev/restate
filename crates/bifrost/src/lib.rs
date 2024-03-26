@@ -22,7 +22,7 @@ mod watchdog;
 use std::collections::HashMap;
 
 pub use bifrost::Bifrost;
-pub use error::Error;
+pub use error::{Error, ProviderError};
 pub use options::Options;
 pub use read_stream::LogReadStream;
 use restate_types::logs::LogId;

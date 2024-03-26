@@ -18,6 +18,7 @@ use restate_server::Configuration;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
 use std::ops::Div;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
@@ -71,7 +72,7 @@ impl WipeMode {
         mode: Option<&WipeMode>,
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
-        local_loglet_storage_dir: PathBuf,
+        local_loglet_storage_dir: &Path,
     ) -> io::Result<()> {
         let (wipe_meta, wipe_worker, wipe_local_loglet) = match mode {
             Some(WipeMode::Worker) => (false, true, true),
@@ -153,7 +154,7 @@ fn main() {
                 cli_args.wipe.as_ref(),
                 config.node.meta.storage_path().into(),
                 config.node.worker.storage_path().into(),
-                config.node.bifrost.local_loglet_storage_path(),
+                config.node.bifrost.local.path.as_path(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");
