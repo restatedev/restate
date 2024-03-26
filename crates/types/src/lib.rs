@@ -18,6 +18,7 @@ mod version;
 
 pub mod dedup;
 pub mod deployment;
+mod epoch;
 pub mod errors;
 pub mod identifiers;
 pub mod ingress;

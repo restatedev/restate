@@ -46,6 +46,16 @@ use crate::time::MillisSinceEpoch;
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
     pub const INITIAL: Self = Self(1);
+
+    pub fn next(self) -> Self {
+        LeaderEpoch(self.0 + 1)
+    }
+}
+
+impl Default for LeaderEpoch {
+    fn default() -> Self {
+        Self::INITIAL
+    }
 }
 
 /// Identifying the partition
