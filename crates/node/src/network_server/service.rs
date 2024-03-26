@@ -16,6 +16,7 @@ use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{cancellation_watcher, task_center};
 use restate_grpc_util::run_hyper_server;
 use restate_meta::FileMetaReader;
+use restate_metadata_store::MetadataStoreClient;
 use restate_network::ConnectionManager;
 use restate_node_protocol::{common, node};
 use restate_node_services::cluster_ctrl;
@@ -156,16 +157,19 @@ impl WorkerDependencies {
 pub struct AdminDependencies {
     pub _cluster_controller_handle: ClusterControllerHandle,
     pub schema_reader: FileMetaReader,
+    pub metadata_store_client: MetadataStoreClient,
 }
 
 impl AdminDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
         schema_reader: FileMetaReader,
+        metadata_store_client: MetadataStoreClient,
     ) -> Self {
         AdminDependencies {
             _cluster_controller_handle: cluster_controller_handle,
             schema_reader,
+            metadata_store_client,
         }
     }
 }

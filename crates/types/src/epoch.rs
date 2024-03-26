@@ -63,9 +63,9 @@ impl Epoch {
 
 #[cfg(test)]
 mod tests {
+    use crate::epoch::Epoch;
     use crate::identifiers::LeaderEpoch;
     use crate::GenerationalNodeId;
-    use crate::epoch::Epoch;
 
     #[test]
     fn basic_operations() {

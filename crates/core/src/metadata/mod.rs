@@ -70,7 +70,7 @@ impl Metadata {
             .expect("partition table is loaded")
     }
 
-    /// Returns Version::INVALID if nodes configuration has not been loaded yet.
+    /// Returns Version::INVALID if partition table has not been loaded yet.
     pub fn partition_table_version(&self) -> Version {
         let c = self.inner.partition_table.load();
         match c.as_deref() {

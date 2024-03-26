@@ -29,7 +29,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 use std::path::Path;
 use tracing::debug;
@@ -51,6 +51,7 @@ pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
+use restate_metadata_store::{MetadataStoreClient, Operation};
 
 pub use restate_storage_rocksdb::{
     Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
@@ -72,7 +73,9 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_types::epoch::Epoch;
 use restate_types::logs::{LogId, Payload};
+use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -168,6 +171,7 @@ impl Error {
 pub struct Worker {
     options: Options,
     networking: Networking,
+    metadata_store_client: MetadataStoreClient,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
@@ -192,6 +196,7 @@ impl Worker {
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
         schemas: Schemas,
+        metadata_store_client: MetadataStoreClient,
     ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
         Worker::new(
@@ -201,6 +206,7 @@ impl Worker {
             bifrost,
             router_builder,
             schemas,
+            metadata_store_client,
         )
     }
 
@@ -211,6 +217,7 @@ impl Worker {
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
         schemas: Schemas,
+        metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         let options = opts.clone();
 
@@ -266,6 +273,7 @@ impl Worker {
             subscription_controller_handle,
             rocksdb_writer,
             rocksdb_storage,
+            metadata_store_client,
         })
     }
 
@@ -339,13 +347,6 @@ impl Worker {
         )?;
 
         let node_id = metadata().my_node_id();
-        // This only temporary measure until we can acquire leadership plan from
-        // cluster controller.
-        let leader_epoch = LeaderEpoch::from(restate_types::time::MillisSinceEpoch::now().as_u64());
-        let announce_leader = AnnounceLeader {
-            node_id,
-            leader_epoch,
-        };
 
         for (partition_id, partition_range) in metadata().partition_table().partitioner() {
             let processor = Self::create_partition_processor(
@@ -357,14 +358,29 @@ impl Worker {
                 self.rocksdb_storage.clone(),
             );
             let networking = self.networking.clone();
-            let announce_leader = announce_leader.clone();
             let mut bifrost = bifrost.clone();
+            let metadata_store_client = self.metadata_store_client.clone();
 
             tc.spawn_child(
                 TaskKind::PartitionProcessor,
                 "partition-processor",
                 Some(processor.partition_id),
                 async move {
+                    let epoch: Epoch = metadata_store_client
+                        .read_modify_write(
+                            partition_processor_epoch_key(processor.partition_id),
+                            |epoch| {
+                                let next_epoch = epoch
+                                    .map(|epoch: Epoch| {
+                                        epoch.claim_leadership(node_id, partition_id)
+                                    })
+                                    .unwrap_or_else(|| Epoch::new(node_id, partition_id));
+
+                                Operation::Upsert(next_epoch)
+                            },
+                        )
+                        .await?;
+
                     let header = Header {
                         dest: Destination::Processor {
                             partition_key: *processor.partition_key_range.start(),
@@ -373,15 +389,20 @@ impl Worker {
                         source: Source::ControlPlane {},
                     };
 
-                    let envelope =
-                        Envelope::new(header, Command::AnnounceLeader(announce_leader.clone()));
+                    let envelope = Envelope::new(
+                        header,
+                        Command::AnnounceLeader(AnnounceLeader {
+                            node_id,
+                            leader_epoch: epoch.epoch(),
+                        }),
+                    );
                     let payload = Payload::from(envelope.encode_with_bincode()?);
 
-                    // todo: Remove once we have proper leader election
                     bifrost
                         .append(LogId::from(processor.partition_id), payload)
                         .await
                         .context("failed to write AnnounceLeader record to bifrost")?;
+
                     processor.run(networking, bifrost).await
                 },
             )?;

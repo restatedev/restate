@@ -12,6 +12,8 @@ mod network_server;
 mod options;
 mod roles;
 
+use axum::body::Bytes;
+use bincode::error::{DecodeError, EncodeError};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
@@ -20,6 +22,8 @@ use restate_core::options::CommonOptions;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::future::Future;
 use std::time::Duration;
 
@@ -132,6 +136,9 @@ impl Node {
                 &mut router_builder,
                 networking.clone(),
                 bifrost.handle(),
+                restate_metadata_store::local::create_client(
+                    common_opts.metadata_store_address().clone(),
+                ),
             )?)
         } else {
             None
@@ -152,6 +159,9 @@ impl Node {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
                     cluster_controller.schema_reader(),
+                    restate_metadata_store::local::create_client(
+                        common_opts.metadata_store_address().clone(),
+                    ),
                 )
             }),
         );
@@ -209,7 +219,6 @@ impl Node {
 
         let partition_table: FixedPartitionTable =
             Self::fetch_or_insert_partition_table(metadata_store_client, &self.options).await?;
-
         metadata_writer.update(partition_table).await?;
 
         let nodes_config = metadata.nodes_config();
@@ -291,12 +300,14 @@ impl Node {
                 PARTITION_TABLE_KEY.clone(),
                 |partition_table| {
                     if let Some(partition_table) = partition_table {
+                        info!("Retrieved partition table: {partition_table:?}");
                         Operation::Return(partition_table)
                     } else {
-                        Operation::Upsert(FixedPartitionTable::new(
-                            Version::MIN,
-                            options.worker.partitions,
-                        ))
+                        let partition_table =
+                            FixedPartitionTable::new(Version::MIN, options.worker.partitions);
+
+                        info!("Initializing a new partition table: {partition_table:?}",);
+                        Operation::Upsert(partition_table)
                     }
                 },
             )
@@ -407,4 +418,17 @@ impl Node {
             })
             .await
     }
+}
+
+/// Helper function for default encoding of values.
+pub fn encode_default<T: Serialize>(value: T) -> Result<Bytes, EncodeError> {
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+pub fn decode_default<T: DeserializeOwned>(bytes: Bytes) -> Result<T, DecodeError> {
+    bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
+        .map(|(value, _)| value)
+        .map_err(Into::into)
 }
