@@ -74,7 +74,7 @@ type StorageFormatVersion = u32;
 /// Version of the used storage format. Whenever you introduce a breaking change, this version needs
 /// to be incremented in order to distinguish the new from the old versions. Ideally, you also add
 /// a migration path from the old to the new format.
-const STORAGE_FORMAT_VERSION: StorageFormatVersion = 1;
+const STORAGE_FORMAT_VERSION: StorageFormatVersion = 2;
 
 /// Key under which the storage format version is stored in the default column family of RocksDB.
 const STORAGE_FORMAT_VERSION_KEY: &[u8] = b"internal_storage_format_version";
