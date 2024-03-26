@@ -115,7 +115,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
-        .retry_operation(|| async {
+        .retry(|| async {
             reqwest::Client::builder()
                 .build()?
                 .get(openapi_address.clone())

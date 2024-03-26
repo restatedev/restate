@@ -35,7 +35,7 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
-            .retry_operation(|| {
+            .retry(|| {
                 hyper::Client::new()
                     .request(
                         hyper::Request::post("http://localhost:9070/deployments")

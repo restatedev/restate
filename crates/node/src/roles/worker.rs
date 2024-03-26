@@ -177,7 +177,7 @@ impl WorkerRole {
         let cc_client = ClusterCtrlSvcClient::new(channel);
 
         let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
-            .retry_operation(|| async {
+            .retry(|| async {
                 cc_client
                     .clone()
                     .attach_node(AttachmentRequest {
@@ -249,7 +249,7 @@ impl WorkerRole {
         cluster_ctrl_client: &ClusterCtrlSvcClient<Channel>,
     ) -> Result<Vec<SchemasUpdateCommand>, SchemaError> {
         let response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
-            .retry_operation(|| {
+            .retry(|| {
                 let mut cluster_ctrl_client = cluster_ctrl_client.clone();
                 async move {
                     cluster_ctrl_client
