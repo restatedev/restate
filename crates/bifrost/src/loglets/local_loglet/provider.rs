@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
-use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+use anyhow::Context;
 use async_trait::async_trait;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
@@ -21,6 +21,7 @@ use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{LocalLoglet, Options};
 use crate::loglet::{Loglet, LogletOffset, LogletProvider};
 use crate::loglets::local_loglet::log_store_writer::WriterOptions;
+use crate::ProviderError;
 use crate::{Error, LogletParams};
 
 #[derive(Debug)]
@@ -32,18 +33,15 @@ pub struct LocalLogletProvider {
 }
 
 impl LocalLogletProvider {
-    pub fn new(storage_path: &Path, raw_options: &serde_json::Value) -> Arc<Self> {
-        let opts =
-            serde_json::from_value(raw_options.clone()).expect("to be able to deserialize options");
-        // todo: implement loglet loading error handling
-        let log_store = RocksDbLogStore::new(storage_path, &opts).expect("bifrost local loglet");
+    pub fn new(opts: Options) -> Result<Arc<Self>, ProviderError> {
+        let log_store = RocksDbLogStore::new(&opts).context("RockDb LogStore")?;
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             log_store,
             active_loglets: Default::default(),
             log_writer: OnceLock::new(),
             opts,
-        })
+        }))
     }
 }
 
@@ -86,10 +84,10 @@ impl LogletProvider for LocalLogletProvider {
         Ok(loglet as Arc<dyn Loglet>)
     }
 
-    fn start(&self) -> Result<(), Error> {
+    fn start(&self) -> Result<(), ProviderError> {
         let writer_options = WriterOptions {
             channel_size: self.opts.writer_queue_len,
-            commit_time_interval: self.opts.writer_commit_time_interval,
+            commit_time_interval: self.opts.writer_commit_time_interval.into(),
             batch_size_threshold: self.opts.writer_queue_len,
             flush_wal_on_commit: self.opts.flush_wal_on_commit,
             disable_wal: self.opts.rocksdb_disable_wal,
@@ -103,7 +101,7 @@ impl LogletProvider for LocalLogletProvider {
         Ok(())
     }
 
-    async fn shutdown(&self) -> Result<(), Error> {
+    async fn shutdown(&self) -> Result<(), ProviderError> {
         debug!("Shutting down local loglet provider");
         self.log_store.shutdown();
         Ok(())
