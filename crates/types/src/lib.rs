@@ -20,6 +20,7 @@ pub mod arc_util;
 pub mod config;
 pub mod dedup;
 pub mod deployment;
+mod epoch;
 pub mod errors;
 pub mod identifiers;
 pub mod ingress;

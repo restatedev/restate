@@ -53,6 +53,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+googletest = { workspace = true }
 rand = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
