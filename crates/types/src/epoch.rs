@@ -13,15 +13,13 @@
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::{GenerationalNodeId, Version, Versioned};
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EpochMetadata {
     version: Version,
     leader_metadata: LeaderMetadata,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LeaderMetadata {
     partition_id: PartitionId,
     node_id: GenerationalNodeId,

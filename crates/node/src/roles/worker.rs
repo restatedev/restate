@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bincode::error::DecodeError;
 use std::time::Duration;
 
 use codederror::CodedError;
@@ -18,9 +19,10 @@ use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
 use restate_bifrost::Bifrost;
-use restate_core::TaskKind;
 use restate_core::{metadata, task_center};
+use restate_core::{ShutdownError, TaskKind};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
+use restate_metadata_store::MetadataStoreClient;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
 use restate_node_services::cluster_ctrl::FetchSchemasRequest;
@@ -30,11 +32,10 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
+use restate_worker::Options as WorkerOptions;
 use restate_worker::SubscriptionController;
 use restate_worker::{KafkaIngressOptions, SubscriptionControllerHandle, Worker};
 use tracing::info;
-
-use restate_worker::Options as WorkerOptions;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -56,6 +57,12 @@ pub enum WorkerRoleError {
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
     Attachment(AdvertisedAddress, tonic::Status),
+    #[error("codec error: {0}")]
+    #[code(unknown)]
+    Codec(#[from] DecodeError),
+    #[error(transparent)]
+    #[code(unknown)]
+    Shutdown(#[from] ShutdownError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -105,6 +112,7 @@ impl WorkerRole {
         router_builder: &mut MessageRouterBuilder,
         networking: Networking,
         bifrost: Bifrost,
+        metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, WorkerRoleBuildError> {
         let schemas = Schemas::default();
         let worker = Worker::from_options(
@@ -114,6 +122,7 @@ impl WorkerRole {
             bifrost,
             router_builder,
             schemas.clone(),
+            metadata_store_client,
         )?;
 
         Ok(WorkerRole { schemas, worker })
@@ -192,7 +201,9 @@ impl WorkerRole {
                     .await
             })
             .await
-            .map_err(|err| WorkerRoleError::Attachment(admin_address, err))?;
+            .map_err(|err| WorkerRoleError::Attachment(admin_address, err))?
+            .into_inner();
+
         Ok(())
     }
 

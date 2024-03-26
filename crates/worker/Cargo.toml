@@ -29,6 +29,7 @@ restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
+restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["builtin-service"] }
