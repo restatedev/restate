@@ -32,7 +32,8 @@ use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, ServiceId,
+    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, PartitionKey, ServiceId,
+    WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -55,7 +56,7 @@ use restate_wal_protocol::Command;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, RangeInclusive};
 use std::pin::pin;
 use tracing::{debug, instrument, trace};
 
@@ -109,6 +110,7 @@ pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
+    partition_key_range: RangeInclusive<PartitionKey>,
 
     _codec: PhantomData<Codec>,
 }
@@ -123,10 +125,15 @@ impl<Codec> Debug for CommandInterpreter<Codec> {
 }
 
 impl<Codec> CommandInterpreter<Codec> {
-    pub(crate) fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
+    pub(crate) fn new(
+        inbox_seq_number: MessageIndex,
+        outbox_seq_number: MessageIndex,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> Self {
         Self {
             inbox_seq_number,
             outbox_seq_number,
+            partition_key_range,
             _codec: PhantomData,
         }
     }
@@ -200,6 +207,12 @@ where
         state: &mut State,
         service_invocation: ServiceInvocation,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+        debug_assert!(
+            self.partition_key_range.contains(&service_invocation.fid.partition_key()),
+                "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
+                service_invocation.fid.partition_key(),
+                self.partition_key_range);
+
         // If an execution_time is set, we schedule the invocation to be processed later
         if let Some(execution_time) = service_invocation.execution_time {
             let span_context = service_invocation.span_context.clone();
@@ -325,7 +338,7 @@ where
                 );
             }
             BuiltinServiceEffect::OutboxMessage(msg) => {
-                self.outbox_message(msg, effects);
+                self.handle_outgoing_message(msg, effects);
             }
             BuiltinServiceEffect::End(None) => {
                 self.end_invocation(
@@ -571,7 +584,7 @@ where
                             enrichment_result.service_key,
                             enrichment_result.invocation_uuid,
                         );
-                        self.outbox_message(
+                        self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::kill(
                                 target_fid,
                             )),
@@ -620,7 +633,7 @@ where
                             enrichment_result.invocation_uuid,
                         );
 
-                        self.outbox_message(
+                        self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::cancel(
                                 target_fid,
                             )),
@@ -1064,7 +1077,7 @@ where
                         span_context.clone(),
                         None,
                     );
-                    self.outbox_message(
+                    self.handle_outgoing_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
                         effects,
                     );
@@ -1120,7 +1133,7 @@ where
                     pointer_span_id,
                 );
 
-                self.outbox_message(
+                self.handle_outgoing_message(
                     OutboxMessage::ServiceInvocation(service_invocation),
                     effects,
                 );
@@ -1155,7 +1168,7 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
-                self.outbox_message(
+                self.handle_outgoing_message(
                     OutboxMessage::from_awakeable_completion(
                         invocation_id.clone(),
                         *entry_index,
@@ -1287,7 +1300,7 @@ where
         {
             match effect {
                 deterministic::Effect::OutboxMessage(outbox_message) => {
-                    self.outbox_message(outbox_message, effects)
+                    self.handle_outgoing_message(outbox_message, effects)
                 }
                 deterministic::Effect::IngressResponse(ingress_response) => {
                     self.ingress_response(ingress_response, effects);
@@ -1325,16 +1338,28 @@ where
         Ok(())
     }
 
-    fn send_response(&mut self, response: ResponseMessage, effects: &mut Effects) {
-        match response {
-            ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
-            ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
-        }
-    }
-
-    fn outbox_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
+    fn handle_outgoing_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
+        // TODO Here we could add an optimization to immediately execute outbox message command
+        //  for partition_key within the range of this PP, but this is problematic due to how we tie
+        //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
+        //  if self.partition_key_range.contains(&message.partition_key()) {
+        //             // We can process this now!
+        //             let command = message.to_command();
+        //             return self.on_apply(
+        //                 message.to_command(),
+        //                 effects,
+        //                 state
+        //             ).await
+        //         }
         effects.enqueue_into_outbox(self.outbox_seq_number, message);
         self.outbox_seq_number += 1;
+    }
+
+    fn send_response(&mut self, response: ResponseMessage, effects: &mut Effects) {
+        match response {
+            ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
+            ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
+        }
     }
 
     fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {

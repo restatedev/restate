@@ -97,8 +97,11 @@ where
         let mut partition_storage =
             PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
 
-        let mut state_machine =
-            Self::create_state_machine::<RawEntryCodec>(&mut partition_storage).await?;
+        let mut state_machine = Self::create_state_machine::<RawEntryCodec>(
+            &mut partition_storage,
+            partition_key_range.clone(),
+        )
+        .await?;
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
@@ -203,6 +206,7 @@ where
 
     async fn create_state_machine<Codec>(
         partition_storage: &mut PartitionStorage<RocksDBStorage>,
+        partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
     where
         Codec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
@@ -210,7 +214,8 @@ where
         let inbox_seq_number = partition_storage.load_inbox_seq_number().await?;
         let outbox_seq_number = partition_storage.load_outbox_seq_number().await?;
 
-        let state_machine = StateMachine::new(inbox_seq_number, outbox_seq_number);
+        let state_machine =
+            StateMachine::new(inbox_seq_number, outbox_seq_number, partition_key_range);
 
         Ok(state_machine)
     }

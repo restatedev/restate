@@ -17,6 +17,7 @@ use restate_types::invocation::{
     InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
 };
+use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
@@ -28,6 +29,8 @@ pub(crate) trait OutboxMessageExt {
         entry_index: EntryIndex,
         result: ResponseResult,
     ) -> OutboxMessage;
+
+    fn to_command(self) -> Command;
 }
 
 impl OutboxMessageExt for OutboxMessage {
@@ -41,6 +44,14 @@ impl OutboxMessageExt for OutboxMessage {
             result,
             id: MaybeFullInvocationId::Partial(invocation_id),
         })
+    }
+
+    fn to_command(self) -> Command {
+        match self {
+            OutboxMessage::ServiceInvocation(si) => Command::Invoke(si),
+            OutboxMessage::ServiceResponse(sr) => Command::InvocationResponse(sr),
+            OutboxMessage::InvocationTermination(it) => Command::TerminateInvocation(it),
+        }
     }
 }
 
