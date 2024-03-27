@@ -36,8 +36,12 @@ pub enum NodesConfigError {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "snake_case"))]
 pub enum Role {
+    /// A worker runs partition processor (journal, state, and drives invocations)
     Worker,
+    /// Admin runs cluster controller and user-facing admin APIs
     Admin,
     MetadataStore,
 }

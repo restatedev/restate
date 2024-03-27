@@ -12,7 +12,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_tracing_context::TracingContextLayer;
 use metrics_util::{layers::Layer, MetricKindMask};
 
-use crate::network_server::Options;
+use restate_core::options::CommonOptions;
 
 /// The set of labels that are allowed to be extracted from tracing context to be used in metrics.
 /// Be mindful when adding new labels, the number of time series(es) is directly propotional
@@ -20,12 +20,12 @@ use crate::network_server::Options;
 /// as much as possible (e.g. `restate.invocation.id`)
 static ALLOWED_LABELS: &[&str] = &["rpc.method", "rpc.service", "command", "service"];
 
-pub(crate) fn install_global_prometheus_recorder(opts: &Options) -> PrometheusHandle {
+pub(crate) fn install_global_prometheus_recorder(opts: &CommonOptions) -> PrometheusHandle {
     let builder = PrometheusBuilder::default()
         // Remove a metric from registry if it was not updated for that duration
         .idle_timeout(
             MetricKindMask::HISTOGRAM,
-            opts.histogram_inactivity_timeout.map(Into::into),
+            opts.histogram_inactivity_timeout().map(Into::into),
         );
     let recorder = builder.build_recorder();
     let prometheus_handle = recorder.handle();
