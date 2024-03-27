@@ -448,7 +448,7 @@ where
                     .await;
             }
             Action::IngressResponse(ingress_response) => {
-                let invocation_id: InvocationId = ingress_response.full_invocation_id.into();
+                let invocation_id: InvocationId = ingress_response.invocation_id;
                 // NOTE: We dispatch the response in a non-blocking task-center task to avoid
                 // blocking partition processor. This comes with the risk of overwhelming the
                 // runtime. This should be a temporary solution until we have a better way to

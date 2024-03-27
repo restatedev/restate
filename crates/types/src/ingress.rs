@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::FullInvocationId;
+use crate::identifiers::InvocationId;
 use crate::invocation::ResponseResult;
 use crate::GenerationalNodeId;
 
@@ -16,6 +16,6 @@ use crate::GenerationalNodeId;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IngressResponse {
     pub target_node: GenerationalNodeId,
-    pub full_invocation_id: FullInvocationId,
+    pub invocation_id: InvocationId,
     pub response: ResponseResult,
 }
