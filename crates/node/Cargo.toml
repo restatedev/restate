@@ -35,7 +35,6 @@ restate-storage-query-datafusion = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
-restate-worker-api = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
