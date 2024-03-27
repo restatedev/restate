@@ -8,18 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use derive_getters::Getters;
 use figment::providers::{Env, Format, Serialized, Toml, Yaml};
 use figment::Figment;
+use restate_core::options::{CommonOptionCliOverride, CommonOptions};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::ops::Div;
 use std::path::Path;
-use std::time::Duration;
 
-pub use crate::rt::{
-    Options as TokioOptions, OptionsBuilder as TokioOptionsBuilder,
-    OptionsBuilderError as TokioOptionsBuilderError,
-};
 pub use restate_admin::Options as AdminOptions;
 pub use restate_bifrost::Options as BifrostOptions;
 pub use restate_meta::{
@@ -27,12 +24,6 @@ pub use restate_meta::{
     OptionsBuilderError as MetaOptionsBuilderError,
 };
 use restate_storage_rocksdb::TableKind;
-pub use restate_tracing_instrumentation::{
-    LogOptions, LogOptionsBuilder, LogOptionsBuilderError, Options as ObservabilityOptions,
-    OptionsBuilder as ObservabilityOptionsBuilder,
-    OptionsBuilderError as ObservabilityOptionsBuilderError, TracingOptions, TracingOptionsBuilder,
-    TracingOptionsBuilderError,
-};
 
 /// # Restate configuration file
 ///
@@ -43,37 +34,18 @@ pub use restate_tracing_instrumentation::{
 ///
 /// Each configuration entry can be overridden using environment variables,
 /// prefixing them with `RESTATE_` and separating nested structs with `__` (double underscore).
-/// For example, to configure `meta.rest_address`, the corresponding environment variable is `RESTATE_META__REST_ADDRESS`.
+///
+/// For example, to configure `admin.bind_address`, the corresponding environment variable is `RESTATE_ADMIN__BIND_ADDRESS`.
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Default, Getters, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(default))]
 #[builder(default)]
 pub struct Configuration {
-    /// # Shutdown grace timeout
-    ///
-    /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
-    ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub shutdown_grace_period: humantime::Duration,
-    pub observability: restate_tracing_instrumentation::Options,
-    pub tokio_runtime: crate::rt::Options,
-
+    #[serde(flatten)]
+    pub common: CommonOptions,
     #[serde(flatten)]
     pub node: restate_node::Options,
-}
-
-impl Default for Configuration {
-    fn default() -> Self {
-        Self {
-            shutdown_grace_period: Duration::from_secs(60).into(),
-            observability: Default::default(),
-            tokio_runtime: Default::default(),
-            node: Default::default(),
-        }
-    }
 }
 
 /// Global memory options. These may only be set by environment variable
@@ -127,18 +99,24 @@ impl MemoryOptions {
 pub struct Error(#[from] figment::Error);
 
 impl Configuration {
-    /// Load [`Configuration`] from yaml with overwrites from environment variables.
-    pub fn load(config_file: Option<&Path>) -> Result<Self, Error> {
-        Self::load_with_default(Configuration::default(), config_file)
+    /// Load [`Configuration`] from file with overrides from from environment variables and command
+    /// line arguments.
+    pub fn load(
+        config_file: Option<&Path>,
+        cli_overrides: CommonOptionCliOverride,
+    ) -> Result<Self, Error> {
+        Self::load_with_default(Configuration::default(), config_file, cli_overrides)
     }
 
-    /// Load [`Configuration`] from an optional yaml with overwrites from environment
+    /// Load [`Configuration`] from an optional file with overrides from environment
     /// variables based on a default configuration.
     pub fn load_with_default(
         default_configuration: Configuration,
         config_file: Option<&Path>,
+        cli_overrides: CommonOptionCliOverride,
     ) -> Result<Self, Error> {
         let figment = Figment::from(Serialized::defaults(default_configuration));
+        let cli_overrides = Figment::from(Serialized::defaults(cli_overrides));
 
         // get memory options separately, and use them to set certain defaults
         let memory: MemoryOptions = Figment::from(Serialized::defaults(MemoryOptions::default()))
@@ -167,7 +145,7 @@ impl Configuration {
             .merge(
                 Env::raw()
                     .only(&["RUST_LOG"])
-                    .map(|_| "observability.log.filter".into()),
+                    .map(|_| "log_filter".into()),
             )
             .merge(
                 Env::raw()
@@ -189,6 +167,8 @@ impl Configuration {
                     .only(&["AWS_EXTERNAL_ID"])
                     .map(|_| "worker.invoker.service_client.lambda.assume_role_external_id".into()),
             )
+            // CLI takes precedence over everything
+            .merge(cli_overrides)
             .extract()?;
 
         Ok(figment)
