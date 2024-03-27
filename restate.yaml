@@ -1,0 +1,102 @@
+shutdown_grace_period: 1m
+observability:
+  tracing: null
+  log:
+    filter: info
+    format: Pretty
+    disable_ansi_codes: false
+tokio_runtime:
+  worker_threads: null
+  max_blocking_threads: null
+node_name: MBP14.local
+node_id: null
+cluster_name: Local-Cluster
+bootstrap_cluster: true
+meta:
+  storage_path: ./restate-data/meta
+  service_client:
+    http:
+      keep_alive_options:
+        interval: 40s
+        timeout: 20s
+      proxy_uri: null
+    lambda:
+      aws_profile: null
+      assume_role_external_id: null
+worker:
+  channel_size: 64
+  timers:
+    num_timers_in_memory_limit: 1024
+  storage_query_datafusion:
+    memory_limit: null
+    temp_folder: null
+    query_parallelism: null
+  storage_query_postgres:
+    bind_address: 0.0.0.0:9071
+  storage_rocksdb:
+    path: ./restate-data/db
+    threads: 10
+    write_buffer_size: 59652323
+    max_total_wal_size: 2147483648
+    cache_size: 1073741824
+    disable_statistics: false
+  ingress:
+    bind_address: 0.0.0.0:8080
+    concurrency_limit: 10000000
+  kafka:
+    clusters: {}
+  invoker:
+    retry_policy:
+      type: Exponential
+      initial_interval: 50ms
+      factor: 2.0
+      max_attempts: 18446744073709551615
+      max_interval: 10s
+    inactivity_timeout: 1m
+    abort_timeout: 1m
+    message_size_warning: 10485760
+    message_size_limit: null
+    tmp_dir: /var/folders/9_/5xtjs16s0xd1yfysv6b9h8b80000gn/T/invoker-018e769ce5897988a417a35611d2f983
+    concurrency_limit: null
+    service_client:
+      http:
+        keep_alive_options:
+          interval: 40s
+          timeout: 20s
+        proxy_uri: null
+      lambda:
+        aws_profile: null
+        assume_role_external_id: null
+    disable_eager_state: false
+  partitions: 64
+server:
+  bind_address: 0.0.0.0:5122
+  advertise_address: http://127.0.0.1:5122/
+  histogram_inactivity_timeout: null
+  disable_prometheus: false
+admin:
+  bind_address: 0.0.0.0:9070
+  concurrency_limit: 1000
+bifrost:
+  default_provider: Local
+  providers_config:
+    Local:
+      flush_wal_on_commit: true
+      rocksdb_cache_size: 0
+      rocksdb_disable_statistics: true
+      rocksdb_disable_wal: false
+      rocksdb_max_total_wal_size: 2147483648
+      rocksdb_threads: 10
+      rocksdb_write_buffer_size: 0
+      writer_commit_batch_size_threshold: 200
+      writer_commit_time_interval:
+        nanos: 13000000
+        secs: 0
+      writer_queue_len: 200
+    Memory: null
+cluster_controller: {}
+roles:
+- Worker
+- Admin
+admin_address: ''
+

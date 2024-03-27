@@ -16,6 +16,8 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
+use restate_core::options::CommonOptionCliOverride;
+use restate_server::rt::build_tokio;
 use tokio::runtime::Runtime;
 
 use restate_core::{TaskCenter, TaskCenterFactory};
@@ -62,15 +64,12 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
 }
 
 pub fn spawn_restate(config: Configuration) -> (TaskCenter, Runtime) {
-    let rt = config
-        .tokio_runtime
-        .build()
-        .expect("Tokio runtime must build");
+    let rt = build_tokio(config.common()).expect("Tokio runtime must build");
 
     let tc = TaskCenterFactory::create(rt.handle().clone());
     let cloned_tc = tc.clone();
     rt.block_on(async move {
-        let node = Node::new(config.node).expect("Restate node must build");
+        let node = Node::new(config.common, config.node).expect("Restate node must build");
         cloned_tc
             .run_in_scope("startup", None, node.start())
             .await
@@ -118,7 +117,8 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building the configuration should work");
 
-    Configuration::load_with_default(config, None).expect("configuration loading should not fail")
+    Configuration::load_with_default(config, None, CommonOptionCliOverride::default())
+        .expect("configuration loading should not fail")
 }
 
 pub struct BenchmarkSettings {
