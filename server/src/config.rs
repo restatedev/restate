@@ -142,11 +142,7 @@ impl Configuration {
         let figment = figment
             .merge(Env::prefixed("RESTATE_").split("__"))
             // Override tracing.log with RUST_LOG, if present
-            .merge(
-                Env::raw()
-                    .only(&["RUST_LOG"])
-                    .map(|_| "log_filter".into()),
-            )
+            .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log_filter".into()))
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
