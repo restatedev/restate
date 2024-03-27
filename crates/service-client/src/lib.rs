@@ -46,6 +46,14 @@ impl ServiceClient {
     pub(crate) fn new(http: HttpClient, lambda: LambdaClient) -> Self {
         Self { http, lambda }
     }
+
+    pub fn from_options(options: Options, assume_role_cache_mode: AssumeRoleCacheMode) -> Self {
+        let (http, lambda) = options.dissolve();
+        Self::new(
+            HttpClient::from_options(http),
+            LambdaClient::from_options(lambda, assume_role_cache_mode),
+        )
+    }
 }
 
 impl ServiceClient {

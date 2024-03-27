@@ -23,7 +23,8 @@ use tokio::runtime::Runtime;
 use restate_core::{TaskCenter, TaskCenterFactory};
 use restate_node::Node;
 use restate_node::{
-    MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
+    AdminOptionsBuilder, MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder,
+    WorkerOptionsBuilder,
 };
 use restate_server::config::ConfigurationBuilder;
 use restate_server::Configuration;
@@ -91,7 +92,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 
 pub fn restate_configuration() -> Configuration {
     let meta_options = MetaOptionsBuilder::default()
-        .storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
+        .schema_storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
         .expect("building meta options should work");
 
@@ -106,9 +107,14 @@ pub fn restate_configuration() -> Configuration {
         .build()
         .expect("building worker options should work");
 
+    let admin_options = AdminOptionsBuilder::default()
+        .meta(meta_options)
+        .build()
+        .expect("building admin options should work");
+
     let node_options = NodeOptionsBuilder::default()
         .worker(worker_options)
-        .meta(meta_options)
+        .admin(admin_options)
         .build()
         .expect("building the configuration should work");
 
