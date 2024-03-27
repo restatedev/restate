@@ -60,6 +60,7 @@ where
     ) {
         match metadata_kind {
             MetadataKind::NodesConfiguration => self.send_nodes_config(peer, min_version),
+            MetadataKind::PartitionTable => self.send_partition_table(peer, min_version),
             _ => {
                 todo!("Can't send metadata '{}' to peer", metadata_kind)
             }
@@ -68,20 +69,42 @@ where
 
     fn send_nodes_config(&self, to: GenerationalNodeId, version: Option<Version>) {
         let config = metadata().nodes_config();
-        if version.is_some_and(|min_version| min_version > config.version()) {
+        self.send_metadata_internal(to, version, config.deref(), "nodes_config");
+    }
+
+    fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
+        let partition_table = metadata().partition_table();
+        self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
+    }
+
+    fn send_metadata_internal<T>(
+        &self,
+        to: GenerationalNodeId,
+        version: Option<Version>,
+        metadata: &T,
+        metadata_name: &str,
+    ) where
+        T: Versioned + Clone + Send + Sync + 'static,
+        MetadataContainer: From<T>,
+    {
+        if version.is_some_and(|min_version| min_version > metadata.version()) {
             // We don't have the version that the peer is asking for. Just ignore.
             info!(
-                "Peer requested nodes config version {} but we have {}, ignoring their request",
+                "Peer requested '{}' version {} but we have {}, ignoring their request",
+                metadata_name,
                 version.unwrap(),
-                config.version()
+                metadata.version()
             );
             return;
         }
         info!(
-            "Sending nodes config {} to peer, requested version? {:?}",
-            config.version(),
+            "Sending '{}' {} to peer, requested version? {:?}",
+            metadata_name,
+            metadata.version(),
             version,
         );
+        let metadata = metadata.clone();
+
         let _ = task_center().spawn_child(
             crate::TaskKind::Disposable,
             "send-metadata-to-peer",
@@ -93,9 +116,7 @@ where
                         .send(
                             to.into(),
                             &MetadataMessage::MetadataUpdate(MetadataUpdate {
-                                container: MetadataContainer::NodesConfiguration(
-                                    config.deref().clone(),
-                                ),
+                                container: MetadataContainer::from(metadata),
                             }),
                         )
                         .await?;
