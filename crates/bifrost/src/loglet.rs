@@ -34,6 +34,7 @@ use crate::{Error, LogRecord, LsnExt, Options};
     strum_macros::EnumIter,
     strum_macros::Display,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     #[cfg(any(test, feature = "local_loglet"))]
     /// A local rocksdb-backed loglet.
