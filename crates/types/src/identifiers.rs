@@ -512,6 +512,57 @@ impl From<FullInvocationId> for EncodedInvocationId {
     }
 }
 
+#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct IdempotencyId {
+    /// Identifies the invoked component
+    pub component_name: ByteString,
+    /// Component key, if any
+    pub component_key: Option<Bytes>,
+    /// Identifies the invoked component handler
+    pub component_handler: ByteString,
+    /// The user supplied idempotency_key
+    pub idempotency_key: ByteString,
+
+    partition_key: PartitionKey,
+}
+
+impl IdempotencyId {
+    pub fn new(
+        component_name: ByteString,
+        component_key: Option<Bytes>,
+        component_handler: ByteString,
+        idempotency_key: ByteString,
+    ) -> Self {
+        // The ownership model for idempotent invocations is the following:
+        //
+        // * For components without key, the PP partition key is the hash(idempotency key).
+        //   This makes sure that for a given idempotency key and its scope, we always land in the same PP.
+        // * For components with key, the PP partition key is the hash(component key).
+        //   This to avoid additional hops between PPs, because hash(idempotency key) might be different from hash(component key).
+        let partition_key = component_key
+            .as_ref()
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            .unwrap_or_else(|| {
+                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
+            });
+
+        Self {
+            component_name,
+            component_key,
+            component_handler,
+            idempotency_key,
+            partition_key,
+        }
+    }
+}
+
+impl WithPartitionKey for IdempotencyId {
+    fn partition_key(&self) -> PartitionKey {
+        self.partition_key
+    }
+}
+
 /// Incremental id defining the service revision.
 pub type ComponentRevision = u32;
 
@@ -724,6 +775,23 @@ mod mocks {
     impl FullInvocationId {
         pub fn mock_random() -> Self {
             Self::generate(ServiceId::mock_random())
+        }
+    }
+
+    impl IdempotencyId {
+        pub const fn unkeyed(
+            partition_key: PartitionKey,
+            component_name: &'static str,
+            component_handler: &'static str,
+            idempotency_key: &'static str,
+        ) -> Self {
+            Self {
+                component_name: ByteString::from_static(component_name),
+                component_key: None,
+                component_handler: ByteString::from_static(component_handler),
+                idempotency_key: ByteString::from_static(idempotency_key),
+                partition_key,
+            }
         }
     }
 }
