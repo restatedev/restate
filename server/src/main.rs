@@ -43,10 +43,9 @@ struct RestateArguments {
         short,
         long = "config-file",
         env = "RESTATE_CONFIG",
-        default_value = "restate.yaml",
         value_name = "FILE"
     )]
-    config_file: PathBuf,
+    config_file: Option<PathBuf>,
 
     /// Wipes the configured data before starting Restate.
     ///
@@ -107,7 +106,7 @@ const EXIT_CODE_FAILURE: i32 = 1;
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config = match Configuration::load(&cli_args.config_file) {
+    let config = match Configuration::load(cli_args.config_file.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
@@ -144,10 +143,14 @@ fn main() {
             }));
 
             info!("Starting Restate Server {}", build_info::build_info());
-            info!(
-                "Loading configuration file from {}",
-                cli_args.config_file.display()
-            );
+            if cli_args.config_file.is_some() {
+                info!(
+                    "Loading configuration file from {}",
+                    cli_args.config_file.as_ref().unwrap().display()
+                );
+            } else {
+                info!("Loading default built-in configuration");
+            }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
                 serde_yaml::to_string(&config).unwrap()

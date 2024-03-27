@@ -40,7 +40,7 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 enumset = { workspace = true }
-figment = { version = "0.10.8", features = ["env", "yaml"] }
+figment = { version = "0.10.8", features = ["env", "yaml", "toml"] }
 futures-util = { workspace = true }
 humantime = { workspace = true }
 pin-project = { workspace = true }
