@@ -10,9 +10,11 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
+use restate_meta::MetaService;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::SubscriptionId;
@@ -86,15 +88,18 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_options = restate_admin::Options::default();
     let meta_options = restate_meta::Options::default();
-    let mut meta = meta_options
-        .build(Mock)
-        .expect("expect to build meta service");
+    let mut meta =
+        MetaService::from_options(meta_options, Mock).expect("expect to build meta service");
     let openapi_address = format!(
         "http://localhost:{}/openapi",
         admin_options.bind_address.port()
     );
-    let admin_service =
-        admin_options.build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+    let admin_service = AdminService::from_options(
+        admin_options,
+        meta.schemas(),
+        meta.meta_handle(),
+        meta.schema_reader(),
+    );
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
