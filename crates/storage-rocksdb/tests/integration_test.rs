@@ -39,12 +39,11 @@ fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     let path = temp_dir.into_path();
 
     let opts = restate_storage_rocksdb::Options {
-        path,
+        rocksdb_path: path,
         ..Default::default()
     };
-    let (rocksdb, writer) = opts
-        .build()
-        .expect("RocksDB storage creation should succeed");
+    let (rocksdb, writer) =
+        RocksDBStorage::from_options(opts).expect("RocksDB storage creation should succeed");
 
     let (signal, watch) = drain::channel();
     let writer_join_handle = writer.run(watch);

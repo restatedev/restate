@@ -60,7 +60,7 @@ pub use restate_invoker_impl::{
 pub use subscription_controller::SubscriptionController;
 
 pub use restate_storage_rocksdb::{
-    Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
+    Options as RocksDbOptions, OptionsBuilder as RocksdbOptionsBuilder,
     OptionsBuilderError as RocksdbOptionsBuilderError,
 };
 pub use restate_timer::{
@@ -97,11 +97,15 @@ type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
 #[builder(default)]
 pub struct Options {
     /// # Bounded channel size
+    // todo: split + rename
     channel_size: usize,
+    #[serde(flatten)]
     timers: TimerOptions,
     storage_query_datafusion: StorageQueryDatafusionOptions,
     storage_query_postgres: StorageQueryPostgresOptions,
-    storage_rocksdb: RocksdbOptions,
+    #[serde(flatten)]
+    storage_rocksdb: RocksDbOptions,
+    // todo: move to ingress role
     ingress: IngressOptions,
     invoker: InvokerOptions,
 
@@ -149,7 +153,7 @@ pub enum BuildError {
 
 impl Options {
     pub fn storage_path(&self) -> &Path {
-        self.storage_rocksdb.path.as_path()
+        self.storage_rocksdb.rocksdb_path.as_path()
     }
 }
 
@@ -237,14 +241,15 @@ impl Worker {
 
         // ingress_kafka
         let kafka_config_clone = kafka_options.clone();
-        let ingress_kafka = kafka_options.build(ingress_dispatcher.clone());
+        let ingress_kafka =
+            IngressKafkaService::from_options(kafka_options, ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
                 kafka_config_clone,
                 ingress_kafka.create_command_sender(),
             );
 
-        let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
+        let (rocksdb_storage, rocksdb_writer) = RocksDBStorage::from_options(storage_rocksdb)?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = InvokerService::from_options(
