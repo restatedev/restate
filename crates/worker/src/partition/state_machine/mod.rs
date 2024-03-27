@@ -145,12 +145,13 @@ mod tests {
         pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
             let temp_dir = tempdir().unwrap();
             info!("Using RocksDB temp directory {}", temp_dir.path().display());
-            let (rocksdb_storage, writer) = restate_storage_rocksdb::OptionsBuilder::default()
-                .path(temp_dir.into_path())
-                .build()
-                .unwrap()
-                .build()
-                .unwrap();
+            let (rocksdb_storage, writer) = RocksDBStorage::from_options(
+                restate_storage_rocksdb::OptionsBuilder::default()
+                    .rocksdb_path(temp_dir.into_path())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
 
             let (signal, watch) = drain::channel();
             let writer_join_handle = writer.run(watch);

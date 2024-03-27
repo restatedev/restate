@@ -116,6 +116,7 @@ impl Configuration {
         cli_overrides: CommonOptionCliOverride,
     ) -> Result<Self, Error> {
         let figment = Figment::from(Serialized::defaults(default_configuration));
+        println!("figment: {:#?}", figment);
         let cli_overrides = Figment::from(Serialized::defaults(cli_overrides));
 
         // get memory options separately, and use them to set certain defaults

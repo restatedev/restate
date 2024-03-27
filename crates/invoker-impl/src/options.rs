@@ -8,16 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use derive_getters::Getters;
-use restate_types::retries::RetryPolicy;
-use serde_with::serde_as;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use derive_getters::Getters;
+use serde_with::serde_as;
 
 pub use restate_service_client::{
     Options as ServiceClientOptions, OptionsBuilder as ServiceClientOptionsBuilder,
     OptionsBuilderError as ServiceClientOptionsBuilderError,
 };
+use restate_types::retries::RetryPolicy;
+
+serde_with::with_prefix!(prefix_with_invoker "invoker_");
 
 /// # Invoker options
 #[serde_as]
@@ -79,11 +82,12 @@ pub struct Options {
     /// If empty, the system temporary directory will be used instead.
     tmp_dir: PathBuf,
 
-    /// # Concurrency limit
+    /// # Limit number of concurrent invocations from this node
     ///
     /// Number of concurrent invocations that can be processed by the invoker.
-    concurrency_limit: Option<usize>,
+    concurrent_invocations_limit: Option<usize>,
 
+    #[serde(flatten)]
     service_client: ServiceClientOptions,
 
     // -- Private config options (not exposed in the schema)
@@ -105,7 +109,7 @@ impl Default for Options {
             message_size_warning: 1024 * 1024 * 10, // 10mb
             message_size_limit: None,
             tmp_dir: restate_fs_util::generate_temp_dir_name("invoker"),
-            concurrency_limit: None,
+            concurrent_invocations_limit: None,
             service_client: Default::default(),
             disable_eager_state: false,
         }
