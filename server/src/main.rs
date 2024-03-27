@@ -155,7 +155,7 @@ fn main() {
             }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                serde_yaml::to_string(&config).unwrap()
+                toml::to_string(&config).unwrap()
             );
 
             WipeMode::wipe(

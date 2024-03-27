@@ -133,7 +133,7 @@ To generate the HTML documentation:
 $ generate-schema-doc --minify restate_config_schema.json restate_config_doc.html 
 ```
 
-The schema can be associated to `restate.yaml` in Jetbrains IDEs to enable autocompletion: https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas
+The schema can be associated to `restate.toml` in Jetbrains IDEs to enable autocompletion: https://www.jetbrains.com/help/idea/json.html#ws_json_using_schemas
 
 ### Build the REST API documentation
 
