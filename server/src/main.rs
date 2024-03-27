@@ -155,12 +155,12 @@ fn main() {
             }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                serde_yaml::to_string(&config).unwrap()
+                toml::to_string(&config).unwrap()
             );
 
             WipeMode::wipe(
                 cli_args.wipe.as_ref(),
-                config.node.meta.storage_path().into(),
+                config.node.admin.meta.storage_path().into(),
                 config.node.worker.storage_path().into(),
                 config.node.bifrost.local.path.as_path(),
                 config.node.metadata_store.storage_path(),

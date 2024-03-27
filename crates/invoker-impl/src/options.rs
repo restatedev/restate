@@ -8,15 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions;
-
-use super::Service;
-
-use futures::Stream;
-use restate_invoker_api::{EntryEnricher, JournalReader};
-use restate_schema_api::deployment::DeploymentResolver;
-use restate_service_client::AssumeRoleCacheMode;
-use restate_types::journal::raw::PlainRawEntry;
+use derive_getters::Getters;
 use restate_types::retries::RetryPolicy;
 use serde_with::serde_as;
 use std::path::PathBuf;
@@ -29,7 +21,7 @@ pub use restate_service_client::{
 
 /// # Invoker options
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
+#[derive(Debug, Getters, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "options_schema",
@@ -105,7 +97,9 @@ impl Default for Options {
             retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(50),
                 2.0,
-                usize::MAX,
+                // TOML does not support u64 (and u64 is generally problematic in configs)
+                // i64::MAX as default is still considered infinite.
+                i64::MAX as usize,
                 Some(Duration::from_secs(10)),
             ),
             inactivity_timeout: Duration::from_secs(60).into(),
@@ -117,40 +111,5 @@ impl Default for Options {
             service_client: Default::default(),
             disable_eager_state: false,
         }
-    }
-}
-
-impl Options {
-    pub fn build<JR, JS, SR, EE, DMR>(
-        self,
-        journal_reader: JR,
-        state_reader: SR,
-        entry_enricher: EE,
-        deployment_registry: DMR,
-    ) -> Service<JR, SR, EE, DMR>
-    where
-        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
-        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
-        EE: EntryEnricher,
-        DMR: DeploymentResolver,
-    {
-        metric_definitions::describe_metrics();
-        let client = self.service_client.build(AssumeRoleCacheMode::Unbounded);
-
-        Service::new(
-            deployment_registry,
-            self.retry_policy,
-            *self.inactivity_timeout,
-            *self.abort_timeout,
-            self.disable_eager_state,
-            self.message_size_warning,
-            self.message_size_limit,
-            client,
-            self.tmp_dir,
-            self.concurrency_limit,
-            journal_reader,
-            state_reader,
-            entry_enricher,
-        )
     }
 }

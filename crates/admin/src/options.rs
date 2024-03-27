@@ -8,13 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_meta::{FileMetaReader, MetaHandle};
-use restate_schema_impl::Schemas;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;
-
-use crate::service::AdminService;
 
 /// # Admin server options
 #[serde_as]
@@ -23,6 +19,8 @@ use crate::service::AdminService;
 #[cfg_attr(feature = "options_schema", schemars(rename = "AdminOptions", default))]
 #[builder(default)]
 pub struct Options {
+    #[serde(flatten)]
+    pub meta: restate_meta::Options,
     /// # Endpoint address
     ///
     /// Address to bind for the Admin APIs.
@@ -31,25 +29,15 @@ pub struct Options {
     /// # Concurrency limit
     ///
     /// Concurrency limit for the Admin APIs.
-    pub concurrency_limit: usize,
+    pub concurrent_api_requests_limit: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
+            meta: Default::default(),
             bind_address: "0.0.0.0:9070".parse().unwrap(),
-            concurrency_limit: 1000,
+            concurrent_api_requests_limit: 1000,
         }
-    }
-}
-
-impl Options {
-    pub fn build(
-        self,
-        schemas: Schemas,
-        meta_handle: MetaHandle,
-        schema_reader: FileMetaReader,
-    ) -> AdminService {
-        AdminService::new(self, schemas, meta_handle, schema_reader)
     }
 }
