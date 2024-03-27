@@ -18,6 +18,7 @@ mod state_machine_manager;
 mod status_store;
 
 use codederror::CodedError;
+use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -36,6 +37,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
 use status_store::InvocationStatusStore;
@@ -57,7 +59,7 @@ pub use options::{
     Options, OptionsBuilder, OptionsBuilderError, ServiceClientOptionsBuilder,
     ServiceClientOptionsBuilderError,
 };
-use restate_service_client::ServiceClient;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 
 use crate::metric_definitions::{
@@ -209,6 +211,42 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
                 invocation_state_machine_manager: Default::default(),
             },
         }
+    }
+
+    pub fn from_options<JS>(
+        options: Options,
+        journal_reader: JR,
+        state_reader: SR,
+        entry_enricher: EE,
+        deployment_registry: DMR,
+    ) -> Service<JR, SR, EE, DMR>
+    where
+        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        EE: EntryEnricher,
+        DMR: DeploymentResolver,
+    {
+        metric_definitions::describe_metrics();
+        let client = ServiceClient::from_options(
+            options.service_client().clone(),
+            AssumeRoleCacheMode::Unbounded,
+        );
+
+        Service::new(
+            deployment_registry,
+            options.retry_policy().clone(),
+            **options.inactivity_timeout(),
+            (*options.abort_timeout()).into(),
+            *options.disable_eager_state(),
+            *options.message_size_warning(),
+            *options.message_size_limit(),
+            client,
+            options.tmp_dir().clone(),
+            *options.concurrency_limit(),
+            journal_reader,
+            state_reader,
+            entry_enricher,
+        )
     }
 }
 
@@ -1039,8 +1077,10 @@ mod tests {
             false,
             1024,
             None,
-            ServiceClientOptions::default()
-                .build(restate_service_client::AssumeRoleCacheMode::None),
+            ServiceClient::from_options(
+                ServiceClientOptions::default(),
+                restate_service_client::AssumeRoleCacheMode::None,
+            ),
             tempdir.into_path(),
             None,
             journal_reader::mocks::EmptyJournalReader,
