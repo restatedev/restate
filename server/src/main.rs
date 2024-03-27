@@ -73,7 +73,7 @@ impl WipeMode {
         mode: Option<&WipeMode>,
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
-        local_loglet_storage_dir: PathBuf,
+        local_loglet_storage_dir: &Path,
         local_metadata_store_storage_dir: &Path,
     ) -> io::Result<()> {
         let (wipe_meta, wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
@@ -160,7 +160,7 @@ fn main() {
                 cli_args.wipe.as_ref(),
                 config.node.meta.storage_path().into(),
                 config.node.worker.storage_path().into(),
-                config.node.bifrost.local_loglet_storage_path(),
+                config.node.bifrost.local.path.as_path(),
                 config.node.metadata_store.storage_path(),
             )
             .await

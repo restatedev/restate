@@ -8,13 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::{Path, PathBuf};
-
-use enum_map::EnumMap;
-use restate_types::DEFAULT_STORAGE_DIRECTORY;
-use strum::IntoEnumIterator;
-
-use crate::loglet::{provider_default_config, ProviderKind};
+use crate::loglet::ProviderKind;
+use crate::loglets::local_loglet;
 use crate::service::BifrostService;
 
 /// # Bifrost options
@@ -29,44 +24,32 @@ pub struct Options {
     /// # The default kind of loglet to be used
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub default_provider: ProviderKind,
-    // todo: Swap serde_json with extract-able figment
+    #[cfg(any(test, feature = "local_loglet"))]
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub providers_config: EnumMap<ProviderKind, serde_json::Value>,
+    /// Configuration of local loglet provider
+    pub local: local_loglet::Options,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        let mut providers_config = EnumMap::default();
-        for kind in ProviderKind::iter() {
-            providers_config[kind] = provider_default_config(kind);
-        }
-
         Self {
             default_provider: ProviderKind::Local,
-            providers_config,
+            #[cfg(any(test, feature = "local_loglet"))]
+            local: local_loglet::Options::default(),
         }
     }
 }
 
 impl Options {
     pub fn build(self, num_partitions: u64) -> BifrostService {
-        // todo: validate that options are parseable by the configured loglet provider.
         BifrostService::new(self, num_partitions)
-    }
-
-    pub fn local_loglet_storage_path(&self) -> PathBuf {
-        Path::new(DEFAULT_STORAGE_DIRECTORY).join("local_loglet")
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]
     pub fn memory() -> Self {
-        let mut providers_config = EnumMap::default();
-        let kind = ProviderKind::Memory;
-        providers_config[kind] = provider_default_config(kind);
-
         Self {
-            default_provider: ProviderKind::Memory,
-            providers_config,
+            default_provider: ProviderKind::InMemory,
+            ..Default::default()
         }
     }
 }
