@@ -12,7 +12,6 @@ extern crate core;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use anyhow::Context;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -29,8 +28,6 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
 use std::path::Path;
 use tracing::debug;
 
@@ -39,6 +36,7 @@ mod handle;
 mod invoker_integration;
 mod metric_definitions;
 mod partition;
+mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
@@ -57,7 +55,7 @@ pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
-use restate_metadata_store::{MetadataStoreClient, Operation};
+use restate_metadata_store::MetadataStoreClient;
 pub use subscription_controller::SubscriptionController;
 
 pub use restate_storage_rocksdb::{
@@ -75,16 +73,14 @@ pub use restate_storage_query_datafusion::{
     OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
 };
 
+use crate::partition_processor_manager::{
+    Action, PartitionProcessorManager, PartitionProcessorPlan, Role,
+};
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
-use restate_types::epoch::EpochMetadata;
-use restate_types::logs::{LogId, Payload};
-use restate_types::metadata_store::keys::partition_processor_epoch_key;
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
@@ -284,25 +280,6 @@ impl Worker {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn create_partition_processor(
-        partition_id: PartitionId,
-        partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: restate_timer::Options,
-        channel_size: usize,
-        invoker_sender: InvokerChannelServiceHandle,
-        rocksdb_storage: RocksDBStorage,
-    ) -> PartitionProcessor {
-        PartitionProcessor::new(
-            partition_id,
-            partition_key_range,
-            timer_service_options,
-            channel_size,
-            invoker_sender,
-            rocksdb_storage,
-        )
-    }
-
     pub fn subscription_controller_handle(&self) -> SubscriptionControllerHandle {
         self.subscription_controller_handle.clone()
     }
@@ -317,7 +294,6 @@ impl Worker {
 
     pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
         let tc = task_center();
-        let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         // RocksDB Writer
@@ -353,70 +329,32 @@ impl Worker {
             self.ingress_kafka.run(),
         )?;
 
-        let node_id = metadata().my_node_id();
-
-        for (partition_id, partition_range) in metadata().partition_table().partitioner() {
-            let processor = Self::create_partition_processor(
-                partition_id,
-                partition_range,
-                self.options.timers.clone(),
-                self.options.channel_size,
-                self.invoker.handle(),
-                self.rocksdb_storage.clone(),
-            );
-            let networking = self.networking.clone();
-            let mut bifrost = bifrost.clone();
-            let metadata_store_client = self.metadata_store_client.clone();
-
-            tc.spawn_child(
-                TaskKind::PartitionProcessor,
-                "partition-processor",
-                Some(processor.partition_id),
-                async move {
-                    let epoch: EpochMetadata = metadata_store_client
-                        .read_modify_write(
-                            partition_processor_epoch_key(processor.partition_id),
-                            |epoch| {
-                                let next_epoch = epoch
-                                    .map(|epoch: EpochMetadata| {
-                                        epoch.claim_leadership(node_id, partition_id)
-                                    })
-                                    .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
-
-                                Operation::Upsert(next_epoch)
-                            },
-                        )
-                        .await?;
-
-                    let header = Header {
-                        dest: Destination::Processor {
-                            partition_key: *processor.partition_key_range.start(),
-                            dedup: None,
-                        },
-                        source: Source::ControlPlane {},
-                    };
-
-                    let envelope = Envelope::new(
-                        header,
-                        Command::AnnounceLeader(AnnounceLeader {
-                            node_id,
-                            leader_epoch: epoch.epoch(),
-                        }),
-                    );
-                    let payload = Payload::from(envelope.encode_with_bincode()?);
-
-                    bifrost
-                        .append(LogId::from(processor.partition_id), payload)
-                        .await
-                        .context("failed to write AnnounceLeader record to bifrost")?;
-
-                    processor.run(networking, bifrost).await
-                },
-            )?;
-        }
+        let invoker_handle = self.invoker.handle();
 
         // Invoker service
         tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
+
+        let shutdown = cancellation_watcher();
+
+        let mut partition_processor_manager = PartitionProcessorManager::new(
+            metadata().my_node_id(),
+            self.options,
+            self.metadata_store_client,
+            self.rocksdb_storage,
+            self.networking,
+            bifrost,
+            invoker_handle,
+        );
+
+        let partition_table = metadata().partition_table();
+        let plan = PartitionProcessorPlan::new(
+            partition_table.version(),
+            partition_table
+                .partitioner()
+                .map(|(partition_id, _)| (partition_id, Action::Start(Role::Leader)))
+                .collect(),
+        );
+        partition_processor_manager.apply_plan(plan).await?;
 
         tokio::select! {
             _ = shutdown => {
@@ -425,7 +363,7 @@ impl Worker {
                 // This will only shutdown rocksdb writer thread. Everything else will respond to
                 // the cancellation signal independently.
                 shutdown_signal.drain().await;
-            }
+            },
         }
 
         Ok(())

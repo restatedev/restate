@@ -44,6 +44,20 @@ impl FixedPartitionTable {
         self.num_partitions
     }
 
+    pub fn partition_range(
+        &self,
+        partition_id: PartitionId,
+    ) -> Option<RangeInclusive<PartitionKey>> {
+        if partition_id >= self.num_partitions {
+            None
+        } else {
+            Some(Self::partition_id_to_partition_range(
+                self.num_partitions,
+                partition_id,
+            ))
+        }
+    }
+
     pub fn version(&self) -> Version {
         self.version
     }
