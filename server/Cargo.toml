@@ -18,8 +18,10 @@ console = [
 ]
 options_schema = [
     "dep:schemars",
-    "restate-tracing-instrumentation/options_schema",
+    "restate-core/clap",
+    "restate-core/options_schema",
     "restate-node/options_schema",
+    "restate-tracing-instrumentation/options_schema",
 ]
 
 [dependencies]
@@ -35,8 +37,10 @@ restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true }
 restate-worker = { workspace = true }
 
-clap = { version = "4.1", features = ["derive", "env"] }
+toml = { version = "0.8.12" }
+clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }
+derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }
 enumset = { workspace = true }

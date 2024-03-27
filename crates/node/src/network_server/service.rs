@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use axum::routing::get;
+use restate_core::options::CommonOptions;
 use tower_http::trace::TraceLayer;
 
 use restate_cluster_controller::ClusterControllerHandle;
@@ -30,11 +31,10 @@ use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
 use crate::network_server::handler::node::NodeSvcHandler;
 use crate::network_server::metrics::install_global_prometheus_recorder;
 use crate::network_server::multiplex::MultiplexService;
-use crate::network_server::options::Options;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 pub struct NetworkServer {
-    opts: Options,
+    common_opts: CommonOptions,
     connection_manager: ConnectionManager,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
@@ -42,13 +42,13 @@ pub struct NetworkServer {
 
 impl NetworkServer {
     pub fn new(
-        opts: Options,
+        common_opts: CommonOptions,
         connection_manager: ConnectionManager,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {
         Self {
-            opts,
+            common_opts,
             connection_manager,
             worker_deps,
             admin_deps,
@@ -63,8 +63,9 @@ impl NetworkServer {
             state_builder.rocksdb_storage(Some(rocksdb.clone()));
         }
 
-        if !self.opts.disable_prometheus {
-            state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&self.opts)));
+        if !*self.common_opts.disable_prometheus() {
+            state_builder
+                .prometheus_handle(Some(install_global_prometheus_recorder(&self.common_opts)));
         }
 
         let shared_state = state_builder.build().expect("should be infallible");
@@ -110,7 +111,7 @@ impl NetworkServer {
         let service = MultiplexService::new(router, server_builder.into_service());
 
         run_hyper_server(
-            self.opts.bind_address,
+            self.common_opts.bind_address(),
             service,
             cancellation_watcher(),
             "node-grpc",

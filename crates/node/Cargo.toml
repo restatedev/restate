@@ -50,7 +50,6 @@ drain = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
-hostname = { version = "0.3.1" }
 http = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true, features = ["full"] }

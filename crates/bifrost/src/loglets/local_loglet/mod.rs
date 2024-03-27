@@ -36,10 +36,6 @@ use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::utils::OffsetWatch;
 
-pub fn default_config() -> serde_json::Value {
-    serde_json::to_value(Options::default()).expect("default config to be serializable")
-}
-
 #[derive(Debug)]
 pub struct LocalLoglet {
     log_id: u64,

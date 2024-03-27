@@ -206,7 +206,8 @@ impl BifrostInner {
     fn provider_for(&self, kind: ProviderKind) -> &dyn LogletProvider {
         self.providers[kind]
             .get_or_init(|| {
-                let provider = crate::loglet::create_provider(kind, &self.opts);
+                let provider = crate::loglet::create_provider(kind, &self.opts)
+                    .expect("provider is able to get created");
                 if let Err(e) = provider.start() {
                     error!("Failed to start loglet provider {}: {}", kind, e);
                     // todo: Handle provider errors by a graceful system shutdown
@@ -364,7 +365,7 @@ mod tests {
             let memory_provider = MemoryLogletProvider::with_init_delay(delay);
 
             let bifrost_opts = Options {
-                default_provider: ProviderKind::Memory,
+                default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
             let bifrost_svc = bifrost_opts.build(num_partitions);
@@ -373,7 +374,7 @@ mod tests {
             // Inject out preconfigured memory provider
             bifrost
                 .inner()
-                .inject_provider(ProviderKind::Memory, memory_provider);
+                .inject_provider(ProviderKind::InMemory, memory_provider);
 
             // start bifrost service in the background
             bifrost_svc.start().await.unwrap();

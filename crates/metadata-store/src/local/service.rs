@@ -73,7 +73,7 @@ impl LocalMetadataStoreService {
             None,
             async move {
                 restate_grpc_util::run_hyper_server(
-                    self.bind_address,
+                    &self.bind_address,
                     service,
                     cancellation_watcher(),
                     "metadata-store-grpc",

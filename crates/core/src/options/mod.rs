@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod handler;
-mod metrics;
-mod multiplex;
-mod prometheus_helpers;
-mod service;
-mod state;
+#[cfg(feature = "clap")]
+mod cli_option_overrides;
+mod common_options;
 
-pub use service::{AdminDependencies, NetworkServer, WorkerDependencies};
+#[cfg(feature = "clap")]
+pub use cli_option_overrides::*;
+pub use common_options::*;

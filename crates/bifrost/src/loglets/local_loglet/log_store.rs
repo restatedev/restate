@@ -8,11 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Context;
 use rocksdb::{BlockBasedOptions, Cache, DBCompactionStyle, DBCompressionType, DB};
 use tracing::{debug, warn};
 
@@ -42,7 +40,7 @@ pub struct RocksDbLogStore {
 }
 
 impl RocksDbLogStore {
-    pub fn new(storage_path: &Path, options: &Options) -> anyhow::Result<Self> {
+    pub fn new(options: &Options) -> Result<Self, LogStoreError> {
         let cache = if options.rocksdb_cache_size > 0 {
             Some(Cache::new_lru_cache(options.rocksdb_cache_size))
         } else {
@@ -68,8 +66,7 @@ impl RocksDbLogStore {
         ];
         let db_options = db_options(options);
 
-        let db = DB::open_cf_descriptors(&db_options, storage_path, cfs)
-            .context("failed to open rocksdb for local loglet store")?;
+        let db = DB::open_cf_descriptors(&db_options, &options.path, cfs)?;
 
         Ok(Self { db: Arc::new(db) })
     }

@@ -69,7 +69,7 @@ pub enum Error {
 }
 
 pub async fn run_hyper_server<S, B, F>(
-    bind_address: BindAddress,
+    bind_address: &BindAddress,
     service: S,
     shutdown_signal: F,
     server_name: &str,
@@ -88,7 +88,7 @@ where
 {
     match bind_address {
         BindAddress::Uds(uds_path) => {
-            let unix_listener = UnixListener::bind(&uds_path).map_err(|err| Error::UdsBinding {
+            let unix_listener = UnixListener::bind(uds_path).map_err(|err| Error::UdsBinding {
                 uds_path: uds_path.clone(),
                 source: err,
             })?;
@@ -110,7 +110,7 @@ where
 }
 
 async fn run_tcp_server<S, B, F>(
-    socket_addr: SocketAddr,
+    socket_addr: &SocketAddr,
     service: S,
     shutdown_signal: F,
     server_name: &str,
@@ -127,8 +127,8 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     F: Future<Output = ()>,
 {
-    let acceptor = AddrIncoming::bind(&socket_addr).map_err(|err| Error::TcpBinding {
-        address: socket_addr,
+    let acceptor = AddrIncoming::bind(socket_addr).map_err(|err| Error::TcpBinding {
+        address: *socket_addr,
         source: err,
     })?;
 

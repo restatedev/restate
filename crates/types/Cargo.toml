@@ -22,6 +22,8 @@ arc-swap = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+clap = { workspace = true, optional = true }
+derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
@@ -42,7 +44,6 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-derive_more = { workspace = true }
 
 base62 = { version = "2.0.2" }
 # See this https://github.com/jonasbb/serde_with/issues/355#issuecomment-909512315

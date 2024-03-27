@@ -48,6 +48,7 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
     Copy,
     Hash,
     derive_more::From,
+    derive_more::FromStr,
     derive_more::Into,
     derive_more::Display,
 )]

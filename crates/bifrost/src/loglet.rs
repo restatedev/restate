@@ -16,7 +16,7 @@ use enum_map::Enum;
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
 use crate::metadata::LogletParams;
-use crate::{Error, LogRecord, LsnExt, Options};
+use crate::{Error, LogRecord, LsnExt, Options, ProviderError};
 
 /// An enum with the list of supported loglet providers.
 /// For each variant we must have a corresponding implementation of the
@@ -34,35 +34,30 @@ use crate::{Error, LogRecord, LsnExt, Options};
     strum_macros::EnumIter,
     strum_macros::Display,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     #[cfg(any(test, feature = "local_loglet"))]
     /// A local rocksdb-backed loglet.
     Local,
     #[cfg(any(test, feature = "memory_loglet"))]
-    Memory,
-}
-
-pub fn provider_default_config(kind: ProviderKind) -> serde_json::Value {
-    match kind {
-        #[cfg(any(test, feature = "local_loglet"))]
-        ProviderKind::Local => crate::loglets::local_loglet::default_config(),
-        #[cfg(any(test, feature = "memory_loglet"))]
-        ProviderKind::Memory => crate::loglets::memory_loglet::default_config(),
-    }
+    /// An in-memory loglet, primarily for testing.
+    InMemory,
 }
 
 // why? because if all loglet features are disabled, clippy will complain about options being
 // unused.
 #[allow(unused_variables)]
-pub fn create_provider(kind: ProviderKind, options: &Options) -> Arc<dyn LogletProvider> {
+pub fn create_provider(
+    kind: ProviderKind,
+    options: &Options,
+) -> Result<Arc<dyn LogletProvider>, ProviderError> {
     match kind {
         #[cfg(any(test, feature = "local_loglet"))]
-        ProviderKind::Local => crate::loglets::local_loglet::LocalLogletProvider::new(
-            &options.local_loglet_storage_path(),
-            &options.providers_config[kind],
-        ),
+        ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
+            options.local.clone(),
+        )?),
         #[cfg(any(test, feature = "memory_loglet"))]
-        ProviderKind::Memory => crate::loglets::memory_loglet::MemoryLogletProvider::new(),
+        ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),
     }
 }
 
@@ -105,10 +100,10 @@ pub trait LogletProvider: Send + Sync {
     async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>, Error>;
 
     // Hook for handling lazy initialization
-    fn start(&self) -> Result<(), Error>;
+    fn start(&self) -> Result<(), ProviderError>;
 
     // Hook for handling graceful shutdown
-    async fn shutdown(&self) -> Result<(), Error> {
+    async fn shutdown(&self) -> Result<(), ProviderError> {
         Ok(())
     }
 }

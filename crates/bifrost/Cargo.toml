@@ -27,11 +27,13 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 drain = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
+humantime = { workspace = true }
 once_cell = { workspace = true }
 rocksdb = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
 smallvec = { version = "1.13.2", features = ["serde"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }

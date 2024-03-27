@@ -105,7 +105,9 @@ impl Default for Options {
             retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(50),
                 2.0,
-                usize::MAX,
+                // TOML does not support u64 (and u64 is generally problematic in configs)
+                // i64::MAX as default is still considered infinite.
+                i64::MAX as usize,
                 Some(Duration::from_secs(10)),
             ),
             inactivity_timeout: Duration::from_secs(60).into(),

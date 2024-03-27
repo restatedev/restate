@@ -22,12 +22,8 @@ use tracing::{debug, info};
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
 use crate::metadata::LogletParams;
-use crate::Error;
 use crate::LogRecord;
-
-pub fn default_config() -> serde_json::Value {
-    serde_json::Value::Null
-}
+use crate::{Error, ProviderError};
 
 #[derive(Default)]
 pub struct MemoryLogletProvider {
@@ -37,8 +33,8 @@ pub struct MemoryLogletProvider {
 
 #[allow(dead_code)]
 impl MemoryLogletProvider {
-    pub fn new() -> Arc<Self> {
-        Arc::default()
+    pub fn new() -> Result<Arc<Self>, ProviderError> {
+        Ok(Arc::default())
     }
 
     pub fn with_init_delay(init_delay: Duration) -> Arc<Self> {
@@ -75,12 +71,12 @@ impl LogletProvider for MemoryLogletProvider {
         Ok(loglet as Arc<dyn Loglet>)
     }
 
-    fn start(&self) -> Result<(), Error> {
+    fn start(&self) -> Result<(), ProviderError> {
         info!("Starting in-memory loglet provider");
         Ok(())
     }
 
-    async fn shutdown(&self) -> Result<(), Error> {
+    async fn shutdown(&self) -> Result<(), ProviderError> {
         info!("Shutting down in-memory loglet provider");
         Ok(())
     }

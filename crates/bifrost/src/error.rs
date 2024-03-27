@@ -33,3 +33,10 @@ pub enum Error {
     #[error(transparent)]
     LogStoreError(#[from] LogStoreError),
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ProviderError {
+    Shutdown(#[from] ShutdownError),
+    Other(#[from] anyhow::Error),
+}
