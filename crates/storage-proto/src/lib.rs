@@ -41,11 +41,12 @@ pub mod storage {
                 enriched_entry_header, inbox_entry, invocation_resolution_result,
                 invocation_status, maybe_full_invocation_id, outbox_message, response_result,
                 service_status, source, span_relation, timer, BackgroundCallResolutionResult,
-                DedupSequenceNumber, EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId,
-                Header, InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
-                JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage, ResponseResult,
-                ServiceId, ServiceInvocation, ServiceInvocationResponseSink, ServiceStatus, Source,
-                SpanContext, SpanRelation, StateMutation, Timer,
+                DedupSequenceNumber, Duration, EnrichedEntryHeader, EpochSequenceNumber,
+                FullInvocationId, Header, IdempotencyMetadata, InboxEntry,
+                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta, KvPair,
+                MaybeFullInvocationId, OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
+                ServiceInvocationResponseSink, ServiceStatus, Source, SpanContext, SpanRelation,
+                StateMutation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
@@ -149,6 +150,11 @@ pub mod storage {
                                 waiting_for_completed_entries,
                             }
                         }
+                        invocation_status::Status::Completed(completed) => {
+                            restate_storage_api::invocation_status_table::InvocationStatus::Completed(
+                                completed.result.ok_or(ConversionError::missing_field("result"))?.try_into()?
+                            )
+                        }
                         invocation_status::Status::Free(_) => {
                             restate_storage_api::invocation_status_table::InvocationStatus::Free
                         }
@@ -173,6 +179,13 @@ pub mod storage {
                             metadata,
                             waiting_for_completed_entries,
                         ))),
+                        restate_storage_api::invocation_status_table::InvocationStatus::Completed(
+                        result
+                        ) => invocation_status::Status::Completed(
+                            invocation_status::Completed {
+                                result: Some(ResponseResult::from(result)),
+                            }
+                            ),
                         restate_storage_api::invocation_status_table::InvocationStatus::Free => {
                             invocation_status::Status::Free(Free {})
                         }
@@ -213,13 +226,17 @@ pub mod storage {
                                 .journal_meta
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
-                    let response_sink = Option::<
-                        restate_types::invocation::ServiceInvocationResponseSink,
-                    >::try_from(
-                        value
-                            .response_sink
-                            .ok_or(ConversionError::missing_field("response_sink"))?,
-                    )?;
+                    let response_sinks = value
+                        .response_sinks
+                        .into_iter()
+                        .map(|s| {
+                            Ok::<_, ConversionError>(Option::<
+                                         restate_types::invocation::ServiceInvocationResponseSink,
+                                     >::try_from(s)
+                                         .transpose()
+                                         .ok_or(ConversionError::missing_field("response_sink"))??)
+                        })
+                        .collect::<Result<HashSet<_>, _>>()?;
 
                     let source = restate_types::invocation::Source::try_from(
                         value
@@ -227,18 +244,34 @@ pub mod storage {
                             .ok_or(ConversionError::missing_field("source"))?,
                     )?;
 
+                    let completion_retention_time = std::time::Duration::try_from(
+                        value.completion_retention_time.unwrap_or_default(),
+                    )?;
+
+                    let idempotency_key = match value
+                        .idempotency_key
+                        .ok_or(ConversionError::missing_field("idempotency_key"))?
+                    {
+                        invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(key) => {
+                            Some(ByteString::from(key))
+                        }
+                        invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(_) => None,
+                    };
+
                     Ok(
                         restate_storage_api::invocation_status_table::InvocationMetadata::new(
                             service_id,
                             journal_metadata,
                             deployment_id,
                             method_name,
-                            response_sink,
+                            response_sinks,
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
                                 MillisSinceEpoch::new(value.modification_time),
                             ),
                             source,
+                            completion_retention_time,
+                            idempotency_key,
                         ),
                     )
                 }
@@ -252,15 +285,20 @@ pub mod storage {
                         service_id,
                         deployment_id,
                         method,
-                        response_sink,
+                        response_sinks,
                         journal_metadata,
                         timestamps,
                         source,
+                        completion_retention_time,
+                        idempotency_key,
                     } = value;
 
                     Invoked {
                         service_id: Some(service_id.into()),
-                        response_sink: Some(ServiceInvocationResponseSink::from(response_sink)),
+                        response_sinks: response_sinks
+                            .into_iter()
+                            .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                            .collect(),
                         method_name: method.into_bytes(),
                         deployment_id: Some(match deployment_id {
                             None => invocation_status::invoked::DeploymentId::None(()),
@@ -272,6 +310,15 @@ pub mod storage {
                         creation_time: timestamps.creation_time().as_u64(),
                         modification_time: timestamps.modification_time().as_u64(),
                         source: Some(Source::from(source)),
+                        completion_retention_time: Some(Duration::from(completion_retention_time)),
+                        idempotency_key: Some(match idempotency_key {
+                            Some(key) => {
+                                invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(
+                                    key.to_string(),
+                                )
+                            }
+                            _ => invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(()),
+                        }),
                     }
                 }
             }
@@ -308,13 +355,17 @@ pub mod storage {
                                 .journal_meta
                                 .ok_or(ConversionError::missing_field("journal_meta"))?,
                         )?;
-                    let response_sink = Option::<
-                        restate_types::invocation::ServiceInvocationResponseSink,
-                    >::try_from(
-                        value
-                            .response_sink
-                            .ok_or(ConversionError::missing_field("response_sink"))?,
-                    )?;
+                    let response_sinks = value
+                        .response_sinks
+                        .into_iter()
+                        .map(|s| {
+                            Ok::<_, ConversionError>(Option::<
+                                    restate_types::invocation::ServiceInvocationResponseSink,
+                                >::try_from(s)
+                                    .transpose()
+                                    .ok_or(ConversionError::missing_field("response_sink"))??)
+                        })
+                        .collect::<Result<HashSet<_>, _>>()?;
 
                     let waiting_for_completed_entries =
                         value.waiting_for_completed_entries.into_iter().collect();
@@ -325,18 +376,34 @@ pub mod storage {
                             .ok_or(ConversionError::missing_field("source"))?,
                     )?;
 
+                    let completion_retention_time = std::time::Duration::try_from(
+                        value.completion_retention_time.unwrap_or_default(),
+                    )?;
+
+                    let idempotency_key = match value
+                        .idempotency_key
+                        .ok_or(ConversionError::missing_field("idempotency_key"))?
+                    {
+                        invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(key) => {
+                            Some(ByteString::from(key))
+                        }
+                        invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(_) => None,
+                    };
+
                     Ok((
                         restate_storage_api::invocation_status_table::InvocationMetadata::new(
                             service_id,
                             journal_metadata,
                             deployment_id.map(|d| d.parse().expect("valid deployment id")),
                             method_name,
-                            response_sink,
+                            response_sinks,
                             restate_storage_api::invocation_status_table::StatusTimestamps::new(
                                 MillisSinceEpoch::new(value.creation_time),
                                 MillisSinceEpoch::new(value.modification_time),
                             ),
                             caller,
+                            completion_retention_time,
+                            idempotency_key,
                         ),
                         waiting_for_completed_entries,
                     ))
@@ -355,14 +422,17 @@ pub mod storage {
                         HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
-                    let response_sink = ServiceInvocationResponseSink::from(metadata.response_sink);
                     let journal_meta = JournalMeta::from(metadata.journal_metadata);
                     let waiting_for_completed_entries =
                         waiting_for_completed_entries.into_iter().collect();
 
                     Suspended {
                         service_id: Some(metadata.service_id.into()),
-                        response_sink: Some(response_sink),
+                        response_sinks: metadata
+                            .response_sinks
+                            .into_iter()
+                            .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                            .collect(),
                         journal_meta: Some(journal_meta),
                         method_name: metadata.method.into_bytes(),
                         deployment_id: Some(match metadata.deployment_id {
@@ -377,6 +447,19 @@ pub mod storage {
                         modification_time: metadata.timestamps.modification_time().as_u64(),
                         waiting_for_completed_entries,
                         source: Some(Source::from(metadata.source)),
+                        completion_retention_time: Some(Duration::from(
+                            metadata.completion_retention_time,
+                        )),
+                        idempotency_key: Some(match metadata.idempotency_key {
+                            Some(key) => {
+                                invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(
+                                    key.to_string(),
+                                )
+                            }
+                            _ => {
+                                invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(())
+                            }
+                        }),
                     }
                 }
             }
@@ -1666,6 +1749,48 @@ pub mod storage {
                         leader_epoch: value.leader_epoch.into(),
                         sequence_number: value.sequence_number,
                     })
+                }
+            }
+
+            impl From<std::time::Duration> for Duration {
+                fn from(value: std::time::Duration) -> Self {
+                    Duration {
+                        secs: value.as_secs(),
+                        nanos: value.subsec_nanos(),
+                    }
+                }
+            }
+
+            impl TryFrom<Duration> for std::time::Duration {
+                type Error = ConversionError;
+
+                fn try_from(value: Duration) -> Result<Self, Self::Error> {
+                    Ok(std::time::Duration::new(value.secs, value.nanos))
+                }
+            }
+
+            impl From<restate_storage_api::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
+                fn from(
+                    value: restate_storage_api::idempotency_table::IdempotencyMetadata,
+                ) -> Self {
+                    IdempotencyMetadata {
+                        invocation_id: Bytes::copy_from_slice(&value.invocation_id.to_bytes()),
+                    }
+                }
+            }
+
+            impl TryFrom<IdempotencyMetadata> for restate_storage_api::idempotency_table::IdempotencyMetadata {
+                type Error = ConversionError;
+
+                fn try_from(value: IdempotencyMetadata) -> Result<Self, Self::Error> {
+                    Ok(
+                        restate_storage_api::idempotency_table::IdempotencyMetadata {
+                            invocation_id: restate_types::identifiers::InvocationId::from_slice(
+                                &value.invocation_id,
+                            )
+                            .map_err(|e| ConversionError::invalid_data(e))?,
+                        },
+                    )
                 }
             }
         }

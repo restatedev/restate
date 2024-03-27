@@ -266,6 +266,7 @@ mod mocks {
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress,
                 completion_retention_time: Duration::ZERO,
+                idempotency_key: None,
             }
         }
     }

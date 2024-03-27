@@ -20,6 +20,7 @@ use restate_types::identifiers::{
 use restate_types::invocation::{ServiceInvocationSpanContext, Source};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
+use std::time::Duration;
 
 static SERVICE_ID_1: Lazy<ServiceId> = Lazy::new(|| ServiceId::new("abc", "1"));
 static INVOCATION_ID_1: Lazy<InvocationId> = Lazy::new(|| {
@@ -51,9 +52,11 @@ fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
         JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
         None,
         "service".into(),
-        None,
+        HashSet::new(),
         StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
         Source::Ingress,
+        Duration::ZERO,
+        None,
     ))
 }
 
@@ -64,9 +67,11 @@ fn suspended_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
             JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
             None,
             "service".into(),
-            None,
+            HashSet::new(),
             StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
             Source::Ingress,
+            Duration::ZERO,
+            None,
         ),
         waiting_for_completed_entries: HashSet::default(),
     }
