@@ -49,6 +49,15 @@ impl AdminService {
         }
     }
 
+    pub fn from_options(
+        options: Options,
+        schemas: Schemas,
+        meta_handle: MetaHandle,
+        schema_reader: FileMetaReader,
+    ) -> Self {
+        Self::new(options, schemas, meta_handle, schema_reader)
+    }
+
     pub async fn run(
         self,
         node_svc_client: NodeSvcClient<Channel>,
@@ -76,7 +85,7 @@ impl AdminService {
                     }))
                     .layer(tower::load_shed::LoadShedLayer::new())
                     .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                        self.opts.concurrency_limit,
+                        self.opts.concurrent_api_requests_limit,
                     )),
             );
 

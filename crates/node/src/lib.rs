@@ -116,14 +116,19 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
 
         let admin_role = if common_opts.roles().contains(Role::Admin) {
-            Some(AdminRole::new(options.clone(), networking.clone())?)
+            Some(AdminRole::new(
+                options.admin.clone(),
+                options.kafka.clone(),
+                networking.clone(),
+            )?)
         } else {
             None
         };
 
         let worker_role = if common_opts.roles().contains(Role::Worker) {
             Some(WorkerRole::new(
-                options.clone(),
+                options.worker.clone(),
+                options.kafka.clone(),
                 &mut router_builder,
                 networking.clone(),
                 bifrost.handle(),
