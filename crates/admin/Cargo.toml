@@ -27,7 +27,6 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["serde", "serde_schema"] }
 restate-wal-protocol = { workspace = true }
-restate-worker-api = { workspace = true }
 
 anyhow = { workspace = true }
 arrow-flight = { workspace = true }

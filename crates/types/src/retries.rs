@@ -54,7 +54,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
 #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "serde_schema",

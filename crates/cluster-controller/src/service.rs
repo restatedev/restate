@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::options::Options;
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
 
@@ -19,20 +18,13 @@ pub enum Error {
     Error,
 }
 
-#[derive(Debug)]
-pub struct Service {
-    #[allow(dead_code)]
-    options: Options,
-}
+#[derive(Debug, Default)]
+pub struct Service {}
 
 // todo: Replace with proper handle
 pub struct ClusterControllerHandle;
 
 impl Service {
-    pub fn new(options: Options) -> Self {
-        Service { options }
-    }
-
     pub fn handle(&self) -> ClusterControllerHandle {
         ClusterControllerHandle
     }

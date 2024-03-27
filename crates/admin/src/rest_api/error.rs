@@ -43,8 +43,6 @@ pub enum MetaApiError {
     SubscriptionNotFound(SubscriptionId),
     #[error(transparent)]
     Meta(#[from] MetaError),
-    #[error(transparent)]
-    Worker(#[from] restate_worker_api::Error),
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -69,7 +67,6 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
             MetaApiError::Meta(MetaError::SchemaRegistry(schema_registry_error)) => {
                 match schema_registry_error.kind() {
                     ErrorKind::NotFound => StatusCode::NOT_FOUND,

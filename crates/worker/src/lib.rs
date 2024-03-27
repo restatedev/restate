@@ -34,10 +34,16 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 use tracing::debug;
 
+mod error;
+mod handle;
 mod invoker_integration;
 mod metric_definitions;
 mod partition;
+mod subscription_controller;
 mod subscription_integration;
+
+pub use error::*;
+pub use handle::*;
 
 pub use restate_ingress_http::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
@@ -51,9 +57,10 @@ pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
+pub use subscription_controller::SubscriptionController;
 
 pub use restate_storage_rocksdb::{
-    Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
+    Options as RocksDbOptions, OptionsBuilder as RocksdbOptionsBuilder,
     OptionsBuilderError as RocksdbOptionsBuilderError,
 };
 pub use restate_timer::{
@@ -90,13 +97,16 @@ type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
 #[builder(default)]
 pub struct Options {
     /// # Bounded channel size
+    // todo: split + rename
     channel_size: usize,
+    #[serde(flatten)]
     timers: TimerOptions,
     storage_query_datafusion: StorageQueryDatafusionOptions,
     storage_query_postgres: StorageQueryPostgresOptions,
-    storage_rocksdb: RocksdbOptions,
+    #[serde(flatten)]
+    storage_rocksdb: RocksDbOptions,
+    // todo: move to ingress role
     ingress: IngressOptions,
-    pub kafka: KafkaIngressOptions,
     invoker: InvokerOptions,
 
     /// # Partitions
@@ -119,7 +129,6 @@ impl Default for Options {
             storage_query_postgres: Default::default(),
             storage_rocksdb: Default::default(),
             ingress: Default::default(),
-            kafka: Default::default(),
             invoker: Default::default(),
             partitions: 64,
         }
@@ -144,18 +153,7 @@ pub enum BuildError {
 
 impl Options {
     pub fn storage_path(&self) -> &Path {
-        self.storage_rocksdb.path.as_path()
-    }
-
-    pub fn build(
-        self,
-        networking: Networking,
-        bifrost: Bifrost,
-        router_builder: &mut MessageRouterBuilder,
-        schemas: Schemas,
-    ) -> Result<Worker, BuildError> {
-        metric_definitions::describe_metrics();
-        Worker::new(self, networking, bifrost, router_builder, schemas)
+        self.storage_rocksdb.rocksdb_path.as_path()
     }
 }
 
@@ -198,8 +196,28 @@ pub struct Worker {
 }
 
 impl Worker {
+    pub fn from_options(
+        options: Options,
+        kafka_options: KafkaIngressOptions,
+        networking: Networking,
+        bifrost: Bifrost,
+        router_builder: &mut MessageRouterBuilder,
+        schemas: Schemas,
+    ) -> Result<Worker, BuildError> {
+        metric_definitions::describe_metrics();
+        Worker::new(
+            options,
+            kafka_options,
+            networking,
+            bifrost,
+            router_builder,
+            schemas,
+        )
+    }
+
     pub fn new(
         opts: Options,
+        kafka_options: KafkaIngressOptions,
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -209,7 +227,6 @@ impl Worker {
 
         let Options {
             ingress,
-            kafka,
             storage_query_datafusion,
             storage_query_postgres,
             storage_rocksdb,
@@ -223,18 +240,20 @@ impl Worker {
         let ingress_http = ingress.build(ingress_dispatcher.clone(), schemas.clone());
 
         // ingress_kafka
-        let kafka_config_clone = kafka.clone();
-        let ingress_kafka = kafka.build(ingress_dispatcher.clone());
+        let kafka_config_clone = kafka_options.clone();
+        let ingress_kafka =
+            IngressKafkaService::from_options(kafka_options, ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
                 kafka_config_clone,
                 ingress_kafka.create_command_sender(),
             );
 
-        let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
+        let (rocksdb_storage, rocksdb_writer) = RocksDBStorage::from_options(storage_rocksdb)?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
-        let invoker = opts.invoker.build(
+        let invoker = InvokerService::from_options(
+            opts.invoker,
             invoker_storage_reader.clone(),
             invoker_storage_reader,
             EntryEnricher::new(schemas.clone()),

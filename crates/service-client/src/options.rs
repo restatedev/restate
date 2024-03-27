@@ -8,13 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::lambda::AssumeRoleCacheMode;
 pub use super::lambda::{
     Options as LambdaClientOptions, OptionsBuilder as LambdaClientOptionsBuilder,
     OptionsBuilderError as LambdaClientOptionsBuilderError,
 };
-use super::ServiceClient;
 
+use derive_getters::{Dissolve, Getters};
 use serde_with::serde_as;
 
 pub use super::http::{
@@ -24,7 +23,9 @@ pub use super::http::{
 
 /// # Client options
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
+#[derive(
+    Debug, Getters, Dissolve, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder,
+)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "options_schema",
@@ -33,12 +34,8 @@ pub use super::http::{
 #[builder(default)]
 #[derive(Default)]
 pub struct Options {
+    #[serde(flatten)]
     http: HttpClientOptions,
+    #[serde(flatten)]
     lambda: LambdaClientOptions,
-}
-
-impl Options {
-    pub fn build(self, assume_role_cache_mode: AssumeRoleCacheMode) -> ServiceClient {
-        ServiceClient::new(self.http.build(), self.lambda.build(assume_role_cache_mode))
-    }
 }

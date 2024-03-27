@@ -10,6 +10,7 @@
 
 use anyhow::Context;
 use codederror::CodedError;
+use restate_admin::Options as AdminOptions;
 use restate_network::Networking;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
@@ -21,8 +22,6 @@ use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_worker::KafkaIngressOptions;
-
-use crate::Options;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -42,14 +41,21 @@ pub struct AdminRole {
 }
 
 impl AdminRole {
-    pub fn new(options: Options, _networking: Networking) -> Result<Self, AdminRoleBuildError> {
-        let meta = options.meta.build(options.worker.kafka.clone())?;
-        let admin = options
-            .admin
-            .build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+    pub fn new(
+        admin_options: AdminOptions,
+        kafka_options: KafkaIngressOptions,
+        _networking: Networking,
+    ) -> Result<Self, AdminRoleBuildError> {
+        let meta = MetaService::from_options(admin_options.meta.clone(), kafka_options)?;
+        let admin = AdminService::from_options(
+            admin_options,
+            meta.schemas(),
+            meta.meta_handle(),
+            meta.schema_reader(),
+        );
 
         Ok(AdminRole {
-            controller: restate_cluster_controller::Service::new(options.cluster_controller),
+            controller: restate_cluster_controller::Service::default(),
             admin,
             meta,
         })

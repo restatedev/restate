@@ -11,6 +11,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use restate_storage_api::deduplication_table::DeduplicationTable;
 use restate_storage_api::Transaction;
+use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use std::path;
 use tempfile::tempdir;
@@ -21,12 +22,11 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
     // setup
     //
     let opts = restate_storage_rocksdb::Options {
-        path: base_path.to_str().unwrap().into(),
+        rocksdb_path: base_path.to_str().unwrap().into(),
         ..Default::default()
     };
-    let (mut rocksdb, writer) = opts
-        .build()
-        .expect("RocksDB storage creation should succeed");
+    let (mut rocksdb, writer) =
+        RocksDBStorage::from_options(opts).expect("RocksDB storage creation should succeed");
 
     let (signal, watch) = drain::channel();
     let writer_join_handler = writer.run(watch);

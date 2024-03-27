@@ -10,16 +10,20 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
+use restate_meta::MetaService;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_worker_api::Error;
+use restate_worker::SubscriptionController;
+use restate_worker::WorkerHandle;
+use restate_worker::WorkerHandleError;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
@@ -45,38 +49,38 @@ fn generate_default_config() -> anyhow::Result<()> {
 #[derive(Clone)]
 struct Mock;
 
-impl restate_worker_api::Handle for Mock {
+impl WorkerHandle for Mock {
     async fn terminate_invocation(
         &self,
         _: InvocationTermination,
-    ) -> Result<(), restate_worker_api::Error> {
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn external_state_mutation(&self, _mutation: ExternalStateMutation) -> Result<(), Error> {
+    async fn external_state_mutation(
+        &self,
+        _mutation: ExternalStateMutation,
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
-impl restate_worker_api::SubscriptionController for Mock {
-    async fn start_subscription(&self, _: Subscription) -> Result<(), restate_worker_api::Error> {
+impl SubscriptionController for Mock {
+    async fn start_subscription(&self, _: Subscription) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), restate_worker_api::Error> {
+    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn update_subscriptions(
-        &self,
-        _: Vec<Subscription>,
-    ) -> Result<(), restate_worker_api::Error> {
+    async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
 impl restate_schema_api::subscription::SubscriptionValidator for Mock {
-    type Error = restate_worker_api::Error;
+    type Error = WorkerHandleError;
 
     fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
         unimplemented!()
@@ -86,15 +90,18 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_options = restate_admin::Options::default();
     let meta_options = restate_meta::Options::default();
-    let mut meta = meta_options
-        .build(Mock)
-        .expect("expect to build meta service");
+    let mut meta =
+        MetaService::from_options(meta_options, Mock).expect("expect to build meta service");
     let openapi_address = format!(
         "http://localhost:{}/openapi",
         admin_options.bind_address.port()
     );
-    let admin_service =
-        admin_options.build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+    let admin_service = AdminService::from_options(
+        admin_options,
+        meta.schemas(),
+        meta.meta_handle(),
+        meta.schema_reader(),
+    );
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated

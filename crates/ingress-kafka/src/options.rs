@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::subscription_controller::Service;
-use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::subscription::{Source, Subscription, SubscriptionValidator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,21 +21,19 @@ use tracing::warn;
 pub struct KafkaClusterOptions {
     /// # Servers
     ///
-    /// Initial list of brokers as a CSV list of broker host or host:port.
-    #[serde(rename = "metadata.broker.list")]
-    #[serde(alias = "bootstrap.servers")]
-    pub(crate) servers: String,
+    /// Initial list of brokers (host or host:port).
+    pub(crate) brokers: Vec<String>,
 
     /// # Additional options
     ///
     /// Free floating list of kafka options in the same form of rdkafka. For more details on all the available options:
     /// https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-    #[serde(flatten)]
+    #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) additional_options: HashMap<String, String>,
 }
 
 /// # Subscription options
-#[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "options_schema", schemars(rename = "SubscriptionOptions"))]
 #[builder(default)]
@@ -45,6 +41,7 @@ pub struct Options {
     /// # Kafka clusters
     ///
     /// Configuration parameters for the known kafka clusters
+    #[serde(flatten)]
     pub(crate) clusters: HashMap<String, KafkaClusterOptions>,
 }
 
@@ -100,11 +97,5 @@ impl SubscriptionValidator for Options {
         }
 
         Ok(subscription)
-    }
-}
-
-impl Options {
-    pub fn build(self, dispatcher: IngressDispatcher) -> Service {
-        Service::new(self, dispatcher)
     }
 }

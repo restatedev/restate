@@ -4811,7 +4811,6 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",
- "restate-worker-api",
  "schemars",
  "serde",
  "serde_json",
@@ -5177,6 +5176,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "codederror",
+ "derive-getters",
  "derive_builder",
  "drain",
  "futures",
@@ -5386,7 +5386,6 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-worker",
- "restate-worker-api",
  "rocksdb",
  "schemars",
  "serde",
@@ -5577,6 +5576,7 @@ dependencies = [
  "aws-smithy-runtime",
  "base64 0.21.7",
  "bytestring",
+ "derive-getters",
  "derive_builder",
  "futures",
  "http-serde",
@@ -5944,7 +5944,6 @@ dependencies = [
  "restate-timer",
  "restate-types",
  "restate-wal-protocol",
- "restate-worker-api",
  "schemars",
  "serde",
  "serde_json",
@@ -5958,15 +5957,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "restate-worker-api"
-version = "0.9.0"
-dependencies = [
- "restate-schema-api",
- "restate-types",
- "thiserror",
 ]
 
 [[package]]
@@ -7920,7 +7910,7 @@ dependencies = [
  "restate-schema-api",
  "restate-server",
  "restate-types",
- "restate-worker-api",
+ "restate-worker",
  "schemars",
  "serde_json",
  "serde_yaml",

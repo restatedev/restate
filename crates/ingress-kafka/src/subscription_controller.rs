@@ -47,7 +47,7 @@ pub struct Service {
 }
 
 impl Service {
-    pub(crate) fn new(options: Options, dispatcher: IngressDispatcher) -> Service {
+    pub fn from_options(options: Options, dispatcher: IngressDispatcher) -> Service {
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
@@ -110,7 +110,10 @@ impl Service {
             .get(cluster)
             .unwrap_or_else(|| panic!("KafkaOptions should contain the cluster '{}'", cluster));
 
-        client_config.set("metadata.broker.list", cluster_options.servers.clone());
+        client_config.set(
+            "metadata.broker.list",
+            cluster_options.brokers.clone().join(","),
+        );
         for (k, v) in cluster_options.additional_options.clone() {
             client_config.set(k, v);
         }

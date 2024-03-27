@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod service;
-
-pub use service::{ClusterControllerHandle, Error, Service};
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerHandleError {
+    #[error("worker is unreachable")]
+    Unreachable,
+}

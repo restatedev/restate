@@ -8,11 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{BuildError, FileMetaStorage, Options};
+
 use super::error::Error;
 use super::storage::MetaStorage;
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::time::Duration;
 
 use http::Uri;
 use tokio::sync::mpsc;
@@ -28,7 +31,7 @@ use restate_schema_impl::{Schemas, SchemasUpdateCommand};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::retries::RetryPolicy;
 
-use restate_service_client::{Endpoint, ServiceClient};
+use restate_service_client::{AssumeRoleCacheMode, Endpoint, ServiceClient};
 use restate_service_protocol::discovery;
 use restate_service_protocol::discovery::ComponentDiscovery;
 
@@ -210,6 +213,32 @@ pub struct MetaService<Storage, SV> {
     api_cmd_rx: UnboundedCommandReceiver<MetaHandleRequest, MetaHandleResponse>,
 
     reloaded: bool,
+}
+
+impl<SV> MetaService<FileMetaStorage, SV>
+where
+    SV: SubscriptionValidator,
+{
+    pub fn from_options(
+        options: Options,
+        subscription_validator: SV,
+    ) -> Result<MetaService<FileMetaStorage, SV>, BuildError> {
+        let schemas = Schemas::default();
+        let client = ServiceClient::from_options(options.discovery, AssumeRoleCacheMode::None);
+        Ok(MetaService::new(
+            schemas.clone(),
+            FileMetaStorage::new(options.schema_storage_path)?,
+            subscription_validator,
+            // Total duration roughly 66 seconds
+            RetryPolicy::exponential(
+                Duration::from_millis(100),
+                2.0,
+                10,
+                Some(Duration::from_secs(20)),
+            ),
+            client,
+        ))
+    }
 }
 
 impl<Storage, SV> MetaService<Storage, SV>

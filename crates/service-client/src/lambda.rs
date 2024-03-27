@@ -65,17 +65,7 @@ pub struct Options {
     /// An external ID to apply to any AssumeRole operations taken by this client.
     /// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
     /// Can be overridden by the `AWS_EXTERNAL_ID` environment variable.
-    assume_role_external_id: Option<String>,
-}
-
-impl Options {
-    pub fn build(self, assume_role_cache_mode: AssumeRoleCacheMode) -> LambdaClient {
-        LambdaClient::new(
-            self.aws_profile,
-            self.assume_role_external_id,
-            assume_role_cache_mode,
-        )
-    }
+    aws_assume_role_external_id: Option<String>,
 }
 
 /// # AssumeRole Cache Mode
@@ -191,6 +181,17 @@ impl LambdaClient {
         .shared();
 
         Self { inner }
+    }
+
+    pub fn from_options(
+        options: Options,
+        assume_role_cache_mode: AssumeRoleCacheMode,
+    ) -> LambdaClient {
+        LambdaClient::new(
+            options.aws_profile,
+            options.aws_assume_role_external_id,
+            assume_role_cache_mode,
+        )
     }
 
     pub fn invoke(

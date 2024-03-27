@@ -149,51 +149,45 @@ pub struct Options {
     /// # Storage path
     ///
     /// The root path to use for the Rocksdb storage.
-    pub path: PathBuf,
+    pub rocksdb_path: PathBuf,
 
     /// # Threads
     ///
     /// The number of threads to reserve to Rocksdb background tasks.
-    pub threads: usize,
+    pub rocksdb_threads: usize,
 
     /// # Write Buffer size
     ///
     /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
     /// The default is set such that 3 column families per table will use a total of 50% of the global memory limit
     /// (`MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 64MiB with 8 tables.
-    pub write_buffer_size: usize,
+    pub rocksdb_write_buffer_size: usize,
 
     /// # Maximum total WAL size
     ///
     /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
-    pub max_total_wal_size: u64,
+    pub rocksdb_max_total_wal_size: u64,
 
     /// # Maximum cache size
     ///
     /// The memory size used for rocksdb caches.
     /// The default is roughly 33% of the global memory limit (set with `MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 1GiB.
-    pub cache_size: usize,
+    pub rocksdb_cache_size: usize,
 
     /// Disable rocksdb statistics collection
-    pub disable_statistics: bool,
+    pub disable_rocksdb_statistics: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("db"),
-            threads: 10,
-            write_buffer_size: 0,
-            max_total_wal_size: 2 * (1 << 30), // 2 GiB
-            cache_size: 0,
-            disable_statistics: false,
+            rocksdb_path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("db"),
+            rocksdb_threads: 10,
+            rocksdb_write_buffer_size: 0,
+            rocksdb_max_total_wal_size: 2 * (1 << 30), // 2 GiB
+            rocksdb_cache_size: 0,
+            disable_rocksdb_statistics: false,
         }
-    }
-}
-
-impl Options {
-    pub fn build(self) -> std::result::Result<(RocksDBStorage, Writer), BuildError> {
-        RocksDBStorage::new(self)
     }
 }
 
@@ -272,12 +266,12 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     db_options.create_if_missing(true);
     db_options.create_missing_column_families(true);
-    if opts.threads > 0 {
-        db_options.increase_parallelism(opts.threads as i32);
-        db_options.set_max_background_jobs(opts.threads as i32);
+    if opts.rocksdb_threads > 0 {
+        db_options.increase_parallelism(opts.rocksdb_threads as i32);
+        db_options.set_max_background_jobs(opts.rocksdb_threads as i32);
     }
 
-    if !opts.disable_statistics {
+    if !opts.disable_rocksdb_statistics {
         db_options.enable_statistics();
         // Reasonable default, but we might expose this as a config in the future.
         db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
@@ -299,7 +293,7 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
     // We set this value to 10GB by default, to make sure that we don't flush
     // memtables prematurely.
-    db_options.set_max_total_wal_size(opts.max_total_wal_size);
+    db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size);
     //
     // write buffer
     //
@@ -336,8 +330,8 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
     //
     // write buffer
     //
-    if opts.write_buffer_size > 0 {
-        cf_options.set_write_buffer_size(opts.write_buffer_size)
+    if opts.rocksdb_write_buffer_size > 0 {
+        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size)
     }
     //
     // Most of the changes are highly temporal, we try to delay flushing
@@ -392,9 +386,9 @@ impl RocksDBStorage {
         self.cache.clone()
     }
 
-    fn new(opts: Options) -> std::result::Result<(Self, Writer), BuildError> {
-        let cache = if opts.cache_size > 0 {
-            Some(Cache::new_lru_cache(opts.cache_size))
+    pub fn from_options(opts: Options) -> std::result::Result<(Self, Writer), BuildError> {
+        let cache = if opts.rocksdb_cache_size > 0 {
+            Some(Cache::new_lru_cache(opts.rocksdb_cache_size))
         } else {
             None
         };
@@ -436,9 +430,9 @@ impl RocksDBStorage {
 
         let db_options = db_options(&opts);
 
-        let is_empty_db = Self::is_empty_db(&opts.path);
+        let is_empty_db = Self::is_empty_db(&opts.rocksdb_path);
 
-        let rdb = DB::open_cf_descriptors(&db_options, opts.path, tables)
+        let rdb = DB::open_cf_descriptors(&db_options, opts.rocksdb_path, tables)
             .map_err(BuildError::from_rocksdb_error)?;
 
         if is_empty_db {
@@ -889,15 +883,13 @@ mod tests {
         // create a rocksdb storage from options
         //
         let temp_dir = tempdir().unwrap();
-        let path = temp_dir.into_path();
+        let rocksdb_path = temp_dir.into_path();
 
         let opts = crate::Options {
-            path,
+            rocksdb_path,
             ..Default::default()
         };
-        let (rocksdb, _) = opts
-            .clone()
-            .build()
+        let (rocksdb, _) = RocksDBStorage::from_options(opts.clone())
             .expect("RocksDB storage creation should succeed");
 
         // fake a different storage format version
@@ -907,7 +899,7 @@ mod tests {
         drop(rocksdb);
 
         assert_that!(
-            opts.build().err().unwrap(),
+            RocksDBStorage::from_options(opts).err().unwrap(),
             pat!(BuildError::IncompatibleStorageFormat(eq(
                 incompatible_version
             )))

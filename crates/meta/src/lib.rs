@@ -12,9 +12,6 @@ mod error;
 mod service;
 mod storage;
 
-use restate_schema_impl::Schemas;
-use restate_service_client::AssumeRoleCacheMode;
-use restate_types::retries::RetryPolicy;
 use std::path::{Path, PathBuf};
 
 pub use error::Error;
@@ -25,10 +22,7 @@ pub use restate_service_client::{
 pub use service::{ApplyMode, Force, MetaHandle, MetaService};
 pub use storage::{FileMetaReader, FileMetaStorage, MetaReader, MetaStorage};
 
-use std::time::Duration;
-
 use codederror::CodedError;
-use restate_schema_api::subscription::SubscriptionValidator;
 use restate_types::DEFAULT_STORAGE_DIRECTORY;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -48,46 +42,26 @@ pub struct BuildError(
 #[cfg_attr(feature = "options_schema", schemars(rename = "MetaOptions", default))]
 #[builder(default)]
 pub struct Options {
-    /// # Storage path
+    // todo: remove after moving schema to metadata store
+    /// # [DEPRECATED] Storage path
     ///
-    /// Root path for Meta storage.
-    storage_path: PathBuf,
+    /// Root path for Schema storage.
+    schema_storage_path: PathBuf,
 
-    service_client: ServiceClientOptions,
+    discovery: ServiceClientOptions,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            storage_path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("meta"),
-            service_client: Default::default(),
+            schema_storage_path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("meta"),
+            discovery: Default::default(),
         }
     }
 }
 
 impl Options {
     pub fn storage_path(&self) -> &Path {
-        self.storage_path.as_path()
-    }
-
-    pub fn build<SV: SubscriptionValidator>(
-        self,
-        subscription_validator: SV,
-    ) -> Result<MetaService<FileMetaStorage, SV>, BuildError> {
-        let schemas = Schemas::default();
-        let client = self.service_client.build(AssumeRoleCacheMode::None);
-        Ok(MetaService::new(
-            schemas.clone(),
-            FileMetaStorage::new(self.storage_path)?,
-            subscription_validator,
-            // Total duration roughly 66 seconds
-            RetryPolicy::exponential(
-                Duration::from_millis(100),
-                2.0,
-                10,
-                Some(Duration::from_secs(20)),
-            ),
-            client,
-        ))
+        self.schema_storage_path.as_path()
     }
 }

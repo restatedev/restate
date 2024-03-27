@@ -18,6 +18,7 @@ mod state_machine_manager;
 mod status_store;
 
 use codederror::CodedError;
+use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -36,6 +37,7 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
 use status_store::InvocationStatusStore;
@@ -44,7 +46,7 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -57,7 +59,7 @@ pub use options::{
     Options, OptionsBuilder, OptionsBuilderError, ServiceClientOptionsBuilder,
     ServiceClientOptionsBuilderError,
 };
-use restate_service_client::ServiceClient;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 
 use crate::metric_definitions::{
@@ -94,12 +96,8 @@ trait InvocationTaskRunner {
 
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
+    options: Options,
     client: ServiceClient,
-    inactivity_timeout: Duration,
-    abort_timeout: Duration,
-    disable_eager_state: bool,
-    message_size_warning: usize,
-    message_size_limit: Option<usize>,
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
@@ -130,11 +128,11 @@ where
                 partition,
                 fid,
                 RESTATE_SERVICE_PROTOCOL_VERSION,
-                self.inactivity_timeout,
-                self.abort_timeout,
-                self.disable_eager_state,
-                self.message_size_warning,
-                self.message_size_limit,
+                (*self.options.inactivity_timeout()).into(),
+                (*self.options.abort_timeout()).into(),
+                *self.options.disable_eager_state(),
+                *self.options.message_size_warning(),
+                *self.options.message_size_limit(),
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
@@ -165,16 +163,9 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry
 impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        options: Options,
         deployment_metadata_resolver: DMR,
-        retry_policy: RetryPolicy,
-        inactivity_timeout: Duration,
-        abort_timeout: Duration,
-        disable_eager_state: bool,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
         client: ServiceClient,
-        tmp_dir: PathBuf,
-        concurrency_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
@@ -184,31 +175,56 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
 
         Self {
             input_tx,
-            tmp_dir,
+            tmp_dir: options.tmp_dir().clone(),
             inner: ServiceInner {
+                options: options.clone(),
                 input_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
+                    options: options.clone(),
                     client,
-                    inactivity_timeout,
-                    abort_timeout,
-                    disable_eager_state,
-                    message_size_warning,
-                    message_size_limit,
                     journal_reader,
                     state_reader,
                     entry_enricher,
                     deployment_metadata_resolver,
                 },
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
+                quota: quota::InvokerConcurrencyQuota::new(*options.concurrent_invocations_limit()),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
         }
+    }
+
+    pub fn from_options<JS>(
+        options: Options,
+        journal_reader: JR,
+        state_reader: SR,
+        entry_enricher: EE,
+        deployment_registry: DMR,
+    ) -> Service<JR, SR, EE, DMR>
+    where
+        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        EE: EntryEnricher,
+        DMR: DeploymentResolver,
+    {
+        metric_definitions::describe_metrics();
+        let client = ServiceClient::from_options(
+            options.service_client().clone(),
+            AssumeRoleCacheMode::Unbounded,
+        );
+
+        Service::new(
+            options,
+            deployment_registry,
+            client,
+            journal_reader,
+            state_reader,
+            entry_enricher,
+        )
     }
 }
 
@@ -263,6 +279,7 @@ where
 
 #[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner> {
+    options: Options,
     input_rx: mpsc::UnboundedReceiver<InputCommand>,
 
     // Channel to communicate with invocation tasks
@@ -271,9 +288,6 @@ struct ServiceInner<InvocationTaskRunner> {
 
     // Invocation task factory
     invocation_task_runner: InvocationTaskRunner,
-
-    // Invoker service arguments
-    retry_policy: RetryPolicy,
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
@@ -446,7 +460,7 @@ where
             partition,
             full_invocation_id,
             journal,
-            InvocationStateMachine::create(self.retry_policy.clone()),
+            InvocationStateMachine::create(self.options.retry_policy().clone()),
         )
         .await
     }
@@ -962,15 +976,20 @@ mod tests {
             retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
         ) -> (mpsc::UnboundedSender<InputCommand>, Self) {
+            let options = OptionsBuilder::default()
+                .concurrent_invocations_limit(concurrency_limit)
+                .retry_policy(retry_policy)
+                .build()
+                .unwrap();
             let (input_tx, input_rx) = mpsc::unbounded_channel();
             let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
             let service_inner = Self {
+                options,
                 input_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
@@ -1029,20 +1048,25 @@ mod tests {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
         let tempdir = tempfile::tempdir().unwrap();
+        let options = OptionsBuilder::default()
+            .tmp_dir(tempdir.path().into())
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .concurrent_invocations_limit(None)
+            .build()
+            .unwrap();
         let service = Service::new(
+            options,
             // all invocations are unknown leading to immediate retries
             MockDeploymentMetadataRegistry::default(),
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            RetryPolicy::fixed_delay(Duration::ZERO, 1),
-            Duration::ZERO,
-            Duration::ZERO,
-            false,
-            1024,
-            None,
-            ServiceClientOptions::default()
-                .build(restate_service_client::AssumeRoleCacheMode::None),
-            tempdir.into_path(),
-            None,
+            ServiceClient::from_options(
+                ServiceClientOptions::default(),
+                restate_service_client::AssumeRoleCacheMode::None,
+            ),
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
             entry_enricher::mocks::MockEntryEnricher,
