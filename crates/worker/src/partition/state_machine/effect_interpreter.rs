@@ -33,6 +33,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::future::Future;
 use std::marker::PhantomData;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 pub type ActionCollector = Vec<Action>;
@@ -473,9 +474,11 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     journal_metadata.clone(),
                     None,
                     service_invocation.method_name.clone(),
-                    service_invocation.response_sink.clone(),
+                    service_invocation.response_sink.iter().cloned().collect(),
                     StatusTimestamps::now(),
                     service_invocation.source,
+                    Duration::ZERO,
+                    None,
                 )),
             )
             .await?;
