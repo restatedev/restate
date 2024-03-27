@@ -115,7 +115,7 @@ impl Node {
 
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
-        let bifrost = options.bifrost.clone().build(options.worker.partitions);
+        let bifrost = options.bifrost.clone().build();
         let metadata_manager = MetadataManager::build(networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
 
