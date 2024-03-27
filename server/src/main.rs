@@ -10,11 +10,14 @@
 
 use clap::Parser;
 use codederror::CodedError;
+use restate_core::options::CommonOptionCliOverride;
 use restate_core::TaskCenterFactory;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_server::build_info;
+use restate_server::rt::build_tokio;
 use restate_server::Configuration;
+use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
 use std::ops::Div;
@@ -52,6 +55,9 @@ struct RestateArguments {
     /// **WARNING** all the wiped data will be lost permanently!
     #[arg(value_enum, long = "wipe")]
     wipe: Option<WipeMode>,
+
+    #[clap(flatten)]
+    opts_overrides: CommonOptionCliOverride,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -106,7 +112,8 @@ const EXIT_CODE_FAILURE: i32 = 1;
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config = match Configuration::load(cli_args.config_file.as_deref()) {
+    let config = match Configuration::load(cli_args.config_file.as_deref(), cli_args.opts_overrides)
+    {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
@@ -116,11 +123,7 @@ fn main() {
         }
     };
 
-    let runtime = config
-        .tokio_runtime
-        .clone()
-        .build()
-        .expect("failed to build Tokio runtime!");
+    let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
 
     let tc = TaskCenterFactory::create(runtime.handle().clone());
 
@@ -129,10 +132,9 @@ fn main() {
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
-            let tracing_guard = config
-                .observability
-                .init("Restate binary", std::process::id())
-                .expect("failed to instrument logging and tracing!");
+            let tracing_guard =
+                init_tracing_and_logging(config.common(), "Restate binary", std::process::id())
+                    .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible
             let prev_hook = std::panic::take_hook();
@@ -167,7 +169,7 @@ fn main() {
             .expect("Error when trying to wipe the configured storage path");
 
             let task_center_watch = tc.watch_shutdown();
-            let node = Node::new(config.node);
+            let node = Node::new(config.common.clone(), config.node.clone());
             if let Err(err) = node {
                 handle_error(err);
             }
@@ -182,7 +184,7 @@ fn main() {
                     let signal_reason = format!("received signal {}", signal_name);
 
                     let shutdown_with_timeout = tokio::time::timeout(
-                        config.shutdown_grace_period.into(),
+                        config.common().shutdown_grace_period(),
                         tc.shutdown_node(&signal_reason, 0)
                     );
 
@@ -200,7 +202,11 @@ fn main() {
                 },
             };
 
-            shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
+            shutdown_tracing(
+                config.common().shutdown_grace_period().div(2),
+                tracing_guard,
+            )
+            .await;
         }
     });
     let exit_code = tc.exit_code();
