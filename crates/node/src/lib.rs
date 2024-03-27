@@ -16,6 +16,7 @@ pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::options::CommonOptions;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
@@ -75,6 +76,7 @@ pub enum BuildError {
 }
 
 pub struct Node {
+    common_opts: CommonOptions,
     options: Options,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
@@ -85,23 +87,23 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(options: Options) -> Result<Self, BuildError> {
+    pub fn new(common_opts: CommonOptions, options: Options) -> Result<Self, BuildError> {
         let opts = options.clone();
         // ensure we have cluster admin role if bootstrapping.
-        if options.bootstrap_cluster {
+        if *common_opts.allow_bootstrap() {
             info!("Bootstrapping cluster");
-            if !options.roles.contains(Role::Admin) {
+            if !common_opts.roles().contains(Role::Admin) {
                 return Err(BuildError::Bootstrap(format!(
-                    "Node must include the 'Admin' role when starting in bootstrap mode. Currently it has roles {}", options.roles
+                    "Node must include the 'admin' role when starting in bootstrap mode. Currently it has roles {}", common_opts.roles()
                 )));
             }
 
-            if !options.roles.contains(Role::MetadataStore) {
-                return Err(BuildError::Bootstrap(format!("Node must include the 'MetadataStore' role when starting in bootstrap mode. Currently it has roles {}", options.roles)));
+            if !common_opts.roles().contains(Role::MetadataStore) {
+                return Err(BuildError::Bootstrap(format!("Node must include the 'metadata_store' role when starting in bootstrap mode. Currently it has roles {}", common_opts.roles())));
             }
         }
 
-        let metadata_store_role = if options.roles.contains(Role::MetadataStore) {
+        let metadata_store_role = if common_opts.roles().contains(Role::MetadataStore) {
             Some(options.metadata_store.clone().build()?)
         } else {
             None
@@ -113,13 +115,13 @@ impl Node {
         let metadata_manager = MetadataManager::build(networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
 
-        let admin_role = if options.roles.contains(Role::Admin) {
+        let admin_role = if common_opts.roles().contains(Role::Admin) {
             Some(AdminRole::new(options.clone(), networking.clone())?)
         } else {
             None
         };
 
-        let worker_role = if options.roles.contains(Role::Worker) {
+        let worker_role = if common_opts.roles().contains(Role::Worker) {
             Some(WorkerRole::new(
                 options.clone(),
                 &mut router_builder,
@@ -130,7 +132,8 @@ impl Node {
             None
         };
 
-        let server = options.server.build(
+        let server = NetworkServer::new(
+            common_opts.clone(),
             networking.connection_manager(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
@@ -156,6 +159,7 @@ impl Node {
             .set_message_router(message_router);
 
         Ok(Node {
+            common_opts,
             options: opts,
             metadata_manager,
             bifrost,
@@ -182,10 +186,11 @@ impl Node {
         }
 
         let metadata_store_client = restate_metadata_store::local::create_client(
-            self.options.metadata_store_client.clone(),
+            self.common_opts.metadata_store_address().clone(),
         );
 
-        let nodes_config = Self::upsert_node_config(&metadata_store_client, &self.options).await?;
+        let nodes_config =
+            Self::upsert_node_config(&metadata_store_client, &self.common_opts).await?;
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
@@ -206,31 +211,31 @@ impl Node {
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config
-            .find_node_by_name(&self.options.node_name)
+            .find_node_by_name(self.common_opts.node_name())
             .expect("node config should have been upserted");
 
         let my_node_id = my_node_config.current_generation;
 
         // Safety checks, same node (if set)?
         if self
-            .options
-            .node_id
+            .common_opts
+            .force_node_id()
             .is_some_and(|n| n != my_node_id.as_plain())
         {
             return Err(Error::SafetyCheck(
                 format!(
                     "Node ID mismatch: configured node ID is {}, but the nodes configuration contains {}",
-                    self.options.node_id.unwrap(),
+                    self.common_opts.force_node_id().unwrap(),
                     my_node_id.as_plain()
                     )))?;
         }
 
         // Same cluster?
-        if self.options.cluster_name != nodes_config.cluster_name() {
+        if self.common_opts.cluster_name() != nodes_config.cluster_name() {
             return Err(Error::SafetyCheck(
                 format!(
                     "Cluster name mismatch: configured cluster name is '{}', but the nodes configuration contains '{}'",
-                    self.options.cluster_name,
+                    self.common_opts.cluster_name(),
                     nodes_config.cluster_name()
                     )))?;
         }
@@ -249,7 +254,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                admin_role.start(self.options.bootstrap_cluster, bifrost.clone()),
+                admin_role.start(*self.common_opts.allow_bootstrap(), bifrost.clone()),
             )?;
         }
 
@@ -296,7 +301,7 @@ impl Node {
 
     async fn upsert_node_config(
         metadata_store_client: &MetadataStoreClient,
-        options: &Options,
+        common_opts: &CommonOptions,
     ) -> Result<NodesConfiguration, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
                     let mut previous_node_generation = None;
@@ -306,24 +311,24 @@ impl Node {
                             let mut nodes_config = nodes_config.unwrap_or_else(|| {
                                 NodesConfiguration::new(
                                     Version::INVALID,
-                                    options.cluster_name.clone(),
+                                    common_opts.cluster_name().clone(),
                                 )
                             });
 
                             // check whether we have registered before
                             let node_config =
-                                nodes_config.find_node_by_name(&options.node_name).cloned();
+                                nodes_config.find_node_by_name(common_opts.node_name()).cloned();
 
                             let my_node_config = if let Some(mut node_config) = node_config {
                                 assert_eq!(
-                                    options.node_name, node_config.name,
+                                    common_opts.node_name(), &node_config.name,
                                     "node name must match"
                                 );
 
                                 if let Some(previous_node_generation) = previous_node_generation {
                                     if node_config.current_generation.is_newer_than(previous_node_generation) {
                                         // detected a concurrent registration of the same node
-                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", options.node_name));
+                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
                                     }
                                 } else {
                                     // remember the previous node generation to detect concurrent modifications
@@ -331,13 +336,13 @@ impl Node {
                                 }
 
                                 // update node_config
-                                node_config.roles = options.roles;
-                                node_config.address = options.server.advertise_address.clone();
+                                node_config.roles = *common_opts.roles();
+                                node_config.address = common_opts.advertise_address().clone();
                                 node_config.current_generation.bump_generation();
 
                                 node_config
                             } else {
-                                let plain_node_id = options.node_id.unwrap_or_else(|| {
+                                let plain_node_id = common_opts.force_node_id().unwrap_or_else(|| {
                                     nodes_config
                                         .max_plain_node_id()
                                         .map(|n| n.next())
@@ -353,10 +358,10 @@ impl Node {
                                 let my_node_id = plain_node_id.with_generation(1);
 
                                 NodeConfig::new(
-                                    options.node_name.clone(),
+                                    common_opts.node_name().clone(),
                                     my_node_id,
-                                    options.server.advertise_address.clone(),
-                                    options.roles,
+                                    common_opts.advertise_address().clone(),
+                                    *common_opts.roles(),
                                 )
                             };
 
