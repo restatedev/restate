@@ -44,14 +44,14 @@ impl Ord for TimerKey {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Timer {
     CompleteSleepEntry(ServiceId),
-    Invoke(ServiceId, ServiceInvocation),
+    Invoke(ServiceInvocation),
 }
 
 impl Timer {
     pub fn service_id(&self) -> &ServiceId {
         match self {
             CompleteSleepEntry(service_id) => service_id,
-            Timer::Invoke(service_id, _) => service_id,
+            Timer::Invoke(service_invocation) => &service_invocation.fid.service_id,
         }
     }
 }

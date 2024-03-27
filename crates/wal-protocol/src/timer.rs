@@ -62,7 +62,7 @@ impl TimerValue {
 
         Self {
             timer_key,
-            value: Timer::Invoke(full_invocation_id.service_id, service_invocation),
+            value: Timer::Invoke(service_invocation),
         }
     }
 

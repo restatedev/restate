@@ -520,6 +520,7 @@ pub mod storage {
                         argument,
                         source,
                         headers,
+                        execution_time,
                     } = value;
 
                     let id = restate_types::identifiers::FullInvocationId::try_from(
@@ -549,6 +550,12 @@ pub mod storage {
                         .map(|h| restate_types::invocation::Header::try_from(h))
                         .collect::<Result<Vec<_>, ConversionError>>()?;
 
+                    let execution_time = if execution_time == 0 {
+                        None
+                    } else {
+                        Some(MillisSinceEpoch::new(execution_time))
+                    };
+
                     Ok(restate_types::invocation::ServiceInvocation {
                         fid: id,
                         method_name,
@@ -557,6 +564,7 @@ pub mod storage {
                         response_sink,
                         span_context,
                         headers,
+                        execution_time,
                     })
                 }
             }
@@ -578,6 +586,10 @@ pub mod storage {
                         argument: value.argument,
                         source: Some(source),
                         headers,
+                        execution_time: value
+                            .execution_time
+                            .map(|m| m.as_u64())
+                            .unwrap_or_default(),
                     }
                 }
             }
@@ -1557,21 +1569,19 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: Timer) -> Result<Self, Self::Error> {
-                    let service_name = ByteString::try_from(value.service_name)
-                        .map_err(ConversionError::invalid_data)?;
-                    let service_id =
-                        restate_types::identifiers::ServiceId::new(service_name, value.service_key);
-
                     Ok(
                         match value.value.ok_or(ConversionError::missing_field("value"))? {
-                            timer::Value::CompleteSleepEntry(_) => {
+                            timer::Value::CompleteSleepEntry(cse) => {
                                 restate_storage_api::timer_table::Timer::CompleteSleepEntry(
-                                    service_id,
+                                    restate_types::identifiers::ServiceId::new(
+                                        ByteString::try_from(cse.service_name)
+                                            .map_err(ConversionError::invalid_data)?,
+                                        cse.service_key,
+                                    ),
                                 )
                             }
                             timer::Value::Invoke(si) => {
                                 restate_storage_api::timer_table::Timer::Invoke(
-                                    service_id,
                                     restate_types::invocation::ServiceInvocation::try_from(si)?,
                                 )
                             }
@@ -1585,14 +1595,15 @@ pub mod storage {
                     match value {
                         restate_storage_api::timer_table::Timer::CompleteSleepEntry(service_id) => {
                             Timer {
-                                service_name: service_id.service_name.into_bytes(),
-                                service_key: service_id.key,
-                                value: Some(timer::Value::CompleteSleepEntry(Default::default())),
+                                value: Some(timer::Value::CompleteSleepEntry(
+                                    timer::CompleteSleepEntry {
+                                        service_name: service_id.service_name.into_bytes(),
+                                        service_key: service_id.key,
+                                    },
+                                )),
                             }
                         }
-                        restate_storage_api::timer_table::Timer::Invoke(service_id, si) => Timer {
-                            service_name: service_id.service_name.into_bytes(),
-                            service_key: service_id.key,
+                        restate_storage_api::timer_table::Timer::Invoke(si) => Timer {
                             value: Some(timer::Value::Invoke(ServiceInvocation::from(si))),
                         },
                     }

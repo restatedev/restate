@@ -18,12 +18,11 @@ use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, FullInvocationId};
+use restate_types::identifiers::FullInvocationId;
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -208,30 +207,6 @@ impl<S: StateReader> InvocationContext<'_, S> {
         self.state_transitions
             .state_entries
             .insert(key.0.to_string(), None);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn delay_invoke(
-        &mut self,
-        target_fid: FullInvocationId,
-        target_method: String,
-        argument: Bytes,
-        source: Source,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        time: MillisSinceEpoch,
-        timer_index: EntryIndex,
-    ) {
-        // Perhaps we can internally keep track of the timer index here?
-        self.effects_buffer
-            .push(BuiltinServiceEffect::DelayedInvoke {
-                target_fid,
-                target_method,
-                argument,
-                source,
-                response_sink,
-                time,
-                timer_index,
-            });
     }
 
     fn send_response(&mut self, msg: ResponseMessage) {

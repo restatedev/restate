@@ -14,7 +14,7 @@ http = { workspace = true }
 hyper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }

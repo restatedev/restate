@@ -244,7 +244,7 @@ impl StateReader for StateReaderMock {
 #[test(tokio::test)]
 async fn awakeable_with_success() {
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0);
+        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -299,7 +299,7 @@ async fn awakeable_with_success() {
 #[test(tokio::test)]
 async fn awakeable_with_failure() {
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0);
+        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -355,7 +355,7 @@ async fn awakeable_with_failure() {
 #[test(tokio::test)]
 async fn send_response_using_invocation_id() {
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0);
+        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -390,7 +390,11 @@ async fn send_response_using_invocation_id() {
 
 #[test(tokio::test)]
 async fn kill_inboxed_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        0,
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
 
     let mut effects = Effects::default();
     let mut state_mock = StateReaderMock::default();
@@ -453,7 +457,11 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn kill_call_tree() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        0,
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
@@ -558,7 +566,11 @@ fn uncompleted_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
 
 #[test(tokio::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        0,
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
@@ -607,7 +619,11 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0);
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        0,
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 

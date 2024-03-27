@@ -136,6 +136,7 @@ impl DispatchIngressRequest for IngressDispatcher {
                         response_sink,
                         span_context,
                         headers,
+                        execution_time: None,
                     },
                     MapResponseAction::IdempotentInvokerResponse,
                 )
@@ -149,6 +150,7 @@ impl DispatchIngressRequest for IngressDispatcher {
                         response_sink,
                         span_context,
                         headers,
+                        execution_time: None,
                     },
                     MapResponseAction::None,
                 )

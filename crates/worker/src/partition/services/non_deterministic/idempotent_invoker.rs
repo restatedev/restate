@@ -15,7 +15,7 @@ use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::ServiceInvocation;
+use restate_types::invocation::{ServiceInvocation, SpanRelation};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use tracing::{instrument, trace};
@@ -115,6 +115,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             }),
             self.span_context.as_parent(),
             vec![], // TODO we need to fix the data structure passed as input of this invoke method to be as close as possible to the original ServiceInvocation.
+            None,
         )));
 
         Ok(())
@@ -136,14 +137,14 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             .load_state(&REQUEST_META)
             .await?
             .ok_or_else(|| InvocationError::internal("request meta should be non empty"))?;
-        let expiry_time =
+        let idempotency_expiration_time =
             SystemTime::now() + Duration::from_secs(request_meta.retention_period_sec as u64);
 
         trace!("Got response for {:?}: {:?}", request_meta, result);
 
         // Generate response
         let response = IdempotentInvokeResponse {
-            expiry_time: humantime::format_rfc3339(expiry_time).to_string(),
+            expiry_time: humantime::format_rfc3339(idempotency_expiration_time).to_string(),
             response: Some(
                 result
                     .response
@@ -167,15 +168,16 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
         self.set_state(&RESPONSE, &response)?;
 
         // Set response timer
-        self.delay_invoke(
+        self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
             FullInvocationId::generate(self.full_invocation_id.service_id.clone()),
             restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME.to_string(),
             Bytes::new(),
             Source::Service(self.full_invocation_id.clone()),
             None,
-            expiry_time.into(),
-            0,
-        );
+            SpanRelation::None,
+            vec![],
+            Some(idempotency_expiration_time.into()),
+        )));
 
         // Send response to registered sinks
         let encoded_response = Bytes::from(response.encode_to_vec());
@@ -220,6 +222,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
 mod tests {
     use super::*;
 
+    use bytestring::ByteString;
     use futures::FutureExt;
     use googletest::{all, pat};
     use googletest::{assert_that, elements_are};
@@ -344,12 +347,17 @@ mod tests {
                         ))))
                     }
                 )))),
-                contains(pat!(BuiltinServiceEffect::DelayedInvoke {
-                    target_fid: pat!(FullInvocationId {
-                        service_id: eq(expected_fid.service_id.clone())
-                    }),
-                    target_method: eq(restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME)
-                }))
+                contains(pat!(BuiltinServiceEffect::OutboxMessage(pat!(
+                    OutboxMessage::ServiceInvocation(pat!(ServiceInvocation {
+                        fid: pat!(FullInvocationId {
+                            service_id: eq(expected_fid.service_id.clone())
+                        }),
+                        method_name: eq(ByteString::from(
+                            restate_pb::IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME
+                        )),
+                        execution_time: some(anything())
+                    }))
+                ))))
             )
         );
 

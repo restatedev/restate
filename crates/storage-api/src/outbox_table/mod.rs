@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Result;
-use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
 use std::ops::Range;
@@ -26,6 +26,16 @@ pub enum OutboxMessage {
 
     /// Terminate invocation to send to another partition processor
     InvocationTermination(InvocationTermination),
+}
+
+impl WithPartitionKey for OutboxMessage {
+    fn partition_key(&self) -> PartitionKey {
+        match self {
+            OutboxMessage::ServiceInvocation(si) => si.fid.partition_key(),
+            OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
+            OutboxMessage::InvocationTermination(it) => it.maybe_fid.partition_key(),
+        }
+    }
 }
 
 pub trait OutboxTable {

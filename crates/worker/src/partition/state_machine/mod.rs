@@ -13,6 +13,7 @@ use crate::partition::storage::Transaction;
 use command_interpreter::CommandInterpreter;
 use metrics::counter;
 use restate_types::message::MessageIndex;
+use std::ops::RangeInclusive;
 
 mod actions;
 mod command_interpreter;
@@ -24,6 +25,7 @@ pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 pub use effects::Effects;
+use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
 
@@ -39,8 +41,16 @@ pub enum Error {
 }
 
 impl<Codec> StateMachine<Codec> {
-    pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
-        Self(CommandInterpreter::new(inbox_seq_number, outbox_seq_number))
+    pub fn new(
+        inbox_seq_number: MessageIndex,
+        outbox_seq_number: MessageIndex,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> Self {
+        Self(CommandInterpreter::new(
+            inbox_seq_number,
+            outbox_seq_number,
+            partition_key_range,
+        ))
     }
 }
 
@@ -146,7 +156,11 @@ mod tests {
             let writer_join_handle = writer.run(watch);
 
             Self {
-                state_machine: StateMachine::new(inbox_seq_number, outbox_seq_number),
+                state_machine: StateMachine::new(
+                    inbox_seq_number,
+                    outbox_seq_number,
+                    PartitionKey::MIN..=PartitionKey::MAX,
+                ),
                 rocksdb_storage,
                 effects_buffer: Default::default(),
                 signal,
@@ -542,6 +556,7 @@ mod tests {
                 response_sink: None,
                 span_context: Default::default(),
                 headers: vec![],
+                execution_time: None,
             }))
             .await;
 
