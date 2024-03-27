@@ -63,6 +63,10 @@ pub(crate) fn append_invocation_status_row(
             row.status("free");
             None
         }
+        InvocationStatus::Completed(_) => {
+            row.status("completed");
+            None
+        }
     };
     if let Some(metadata) = metadata {
         fill_invocation_metadata(&mut row, output, metadata);
