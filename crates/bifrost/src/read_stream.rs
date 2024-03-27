@@ -98,15 +98,13 @@ mod tests {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            // start a simple bifrost service with 5 logs.
-            let num_partitions = 5;
             let read_after = Lsn::from(5);
 
             let bifrost_opts = Options {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build(num_partitions);
+            let bifrost_svc = bifrost_opts.build();
             let mut bifrost = bifrost_svc.handle();
 
             // start bifrost service in the background

@@ -294,108 +294,112 @@ mod tests {
 
     #[test(tokio::test)]
     async fn idempotent_invoke() -> anyhow::Result<()> {
-        let mut env_builder = TestCoreEnvBuilder::new_with_mock_network().add_mock_nodes_config();
-        let tc = env_builder.tc.clone();
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
-        let num_partitions = 1;
-        tc.run_in_scope("test", None, async {
-            let bifrost = Bifrost::new_in_memory(num_partitions).await;
-            let dispatcher = IngressDispatcher::new(bifrost.clone());
-            env_builder = env_builder.add_message_handler(dispatcher.clone());
-            let node_env = env_builder.build().await;
+        let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
+            .add_mock_nodes_config()
+            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1));
 
-            node_env
-                .metadata_writer
-                .update(FixedPartitionTable::new(Version::MIN, num_partitions))
-                .await?;
+        let bifrost_svc = restate_bifrost::Options::memory().build();
+        let bifrost = bifrost_svc.handle();
+        let dispatcher = IngressDispatcher::new(bifrost.clone());
 
-            // Ask for a response, then drop the receiver
-            let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
-            let argument = Bytes::from_static(b"nbfjksdfs");
-            let idempotency_key = Bytes::copy_from_slice(b"123");
-            let (invocation, res) = IngressRequest::invocation(
-                fid.clone(),
-                "pippo",
-                argument.clone(),
-                SpanRelation::None,
-                IdempotencyMode::key(idempotency_key.clone(), None),
-                vec![],
-            );
-            dispatcher.dispatch_ingress_request(invocation).await?;
+        env_builder = env_builder.add_message_handler(dispatcher.clone());
+        let node_env = env_builder.build().await;
 
-            // Let's check we correct have generated a bifrost write
-            let partition_id = node_env
-                .metadata
-                .partition_table()
-                .find_partition_id(fid.partition_key())?;
-            let log_id = LogId::from(partition_id);
-            let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                bifrost_svc.start().await?;
 
-            let output_message =
-                Envelope::decode_with_bincode(log_record.record.payload().unwrap().as_ref())?;
+                // Ask for a response, then drop the receiver
+                let fid = FullInvocationId::generate(ServiceId::new("MySvc", "MyKey"));
+                let argument = Bytes::from_static(b"nbfjksdfs");
+                let idempotency_key = Bytes::copy_from_slice(b"123");
+                let (invocation, res) = IngressRequest::invocation(
+                    fid.clone(),
+                    "pippo",
+                    argument.clone(),
+                    SpanRelation::None,
+                    IdempotencyMode::key(idempotency_key.clone(), None),
+                    vec![],
+                );
+                dispatcher.dispatch_ingress_request(invocation).await?;
 
-            let_assert!(
-                Envelope {
-                    command: Command::Invoke(service_invocation),
-                    ..
-                } = output_message
-            );
-            assert_that!(
-                service_invocation,
-                pat!(ServiceInvocation {
-                    fid: pat!(FullInvocationId {
-                        service_id: pat!(ServiceId {
-                            service_name: displays_as(eq(
-                                restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME
-                            )),
-                            key: eq(Bytes::copy_from_slice(b"MySvc123")),
-                        }),
-                    }),
-                    method_name: displays_as(eq(restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME)),
-                    argument: protobuf_decoded(pat!(IdempotentInvokeRequest {
-                        idempotency_id: eq(idempotency_key),
-                        service_name: eq("MySvc"),
-                        service_key: eq("MyKey"),
-                        method: eq("pippo"),
-                        argument: eq(argument),
-                        retention_period_sec: eq(0)
-                    }))
-                })
-            );
+                // Let's check we correct have generated a bifrost write
+                let partition_id = node_env
+                    .metadata
+                    .partition_table()
+                    .find_partition_id(fid.partition_key())?;
+                let log_id = LogId::from(partition_id);
+                let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
 
-            // Now check we get the response is routed back to the handler correctly
-            let response = Bytes::from_static(b"vmoaifnuei");
-            let expiry_time = "2023-09-25T07:47:58.661309Z".to_string();
-            node_env
-                .network_sender
-                .send(
-                    metadata().my_node_id().into(),
-                    &IngressMessage::InvocationResponse(InvocationResponse {
-                        id: service_invocation.fid.into(),
-                        response: ResponseResult::Success(
-                            IdempotentInvokeResponse {
-                                expiry_time: expiry_time.clone(),
-                                response: Some(idempotent_invoke_response::Response::Success(
-                                    response.clone(),
+                let output_message =
+                    Envelope::decode_with_bincode(log_record.record.payload().unwrap().as_ref())?;
+
+                let_assert!(
+                    Envelope {
+                        command: Command::Invoke(service_invocation),
+                        ..
+                    } = output_message
+                );
+                assert_that!(
+                    service_invocation,
+                    pat!(ServiceInvocation {
+                        fid: pat!(FullInvocationId {
+                            service_id: pat!(ServiceId {
+                                service_name: displays_as(eq(
+                                    restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME
                                 )),
-                            }
-                            .encode_to_vec()
-                            .into(),
-                        ),
-                    }),
-                )
-                .await?;
+                                key: eq(Bytes::copy_from_slice(b"MySvc123")),
+                            }),
+                        }),
+                        method_name: displays_as(eq(
+                            restate_pb::IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME
+                        )),
+                        argument: protobuf_decoded(pat!(IdempotentInvokeRequest {
+                            idempotency_id: eq(idempotency_key),
+                            service_name: eq("MySvc"),
+                            service_key: eq("MyKey"),
+                            method: eq("pippo"),
+                            argument: eq(argument),
+                            retention_period_sec: eq(0)
+                        }))
+                    })
+                );
 
-            assert_that!(
-                res.await?,
-                pat!(ExpiringIngressResponse {
-                    idempotency_expiry_time: some(eq(expiry_time)),
-                    result: ok(eq(response))
-                })
-            );
+                // Now check we get the response is routed back to the handler correctly
+                let response = Bytes::from_static(b"vmoaifnuei");
+                let expiry_time = "2023-09-25T07:47:58.661309Z".to_string();
+                node_env
+                    .network_sender
+                    .send(
+                        metadata().my_node_id().into(),
+                        &IngressMessage::InvocationResponse(InvocationResponse {
+                            id: service_invocation.fid.into(),
+                            response: ResponseResult::Success(
+                                IdempotentInvokeResponse {
+                                    expiry_time: expiry_time.clone(),
+                                    response: Some(idempotent_invoke_response::Response::Success(
+                                        response.clone(),
+                                    )),
+                                }
+                                .encode_to_vec()
+                                .into(),
+                            ),
+                        }),
+                    )
+                    .await?;
 
-            Ok(())
-        })
-        .await
+                assert_that!(
+                    res.await?,
+                    pat!(ExpiringIngressResponse {
+                        idempotency_expiry_time: some(eq(expiry_time)),
+                        result: ok(eq(response))
+                    })
+                );
+
+                Ok(())
+            })
+            .await
     }
 }

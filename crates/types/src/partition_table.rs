@@ -40,6 +40,10 @@ impl FixedPartitionTable {
         }
     }
 
+    pub fn num_partitions(&self) -> u64 {
+        self.num_partitions
+    }
+
     pub fn version(&self) -> Version {
         self.version
     }

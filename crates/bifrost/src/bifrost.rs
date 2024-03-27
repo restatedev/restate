@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
+use restate_core::metadata;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
 use tracing::{error, instrument};
@@ -44,8 +45,8 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]
-    pub async fn new_in_memory(num_logs: u64) -> Self {
-        let bifrost_svc = Options::memory().build(num_logs);
+    pub async fn new_in_memory() -> Self {
+        let bifrost_svc = Options::memory().build();
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -114,7 +115,6 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // held across an async boundary.
 pub struct BifrostInner {
     opts: Options,
-    num_partitions: u64,
     watchdog: WatchdogSender,
     log_metadata: Mutex<Logs>,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
@@ -122,10 +122,9 @@ pub struct BifrostInner {
 }
 
 impl BifrostInner {
-    pub fn new(opts: Options, watchdog: WatchdogSender, num_partitions: u64) -> Self {
+    pub fn new(opts: Options, watchdog: WatchdogSender) -> Self {
         Self {
             opts,
-            num_partitions,
             watchdog,
             log_metadata: Mutex::new(Logs::empty()),
             providers: Default::default(),
@@ -191,7 +190,9 @@ impl BifrostInner {
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
-        let logs = create_static_metadata(&self.opts, self.num_partitions);
+        let num_partitions = metadata().partition_table().num_partitions();
+        // todo replace with retrieving metadata from metadata()
+        let logs = create_static_metadata(&self.opts, num_partitions);
         let mut guard = self.log_metadata.lock().unwrap();
         if logs.version > guard.version {
             *guard = logs;
@@ -274,21 +275,24 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
-    use restate_core::task_center;
     use restate_core::TestCoreEnv;
+    use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_types::logs::SequenceNumber;
+    use restate_types::partition_table::FixedPartitionTable;
     use tracing::info;
     use tracing_test::traced_test;
 
     #[tokio::test]
     #[traced_test]
     async fn test_append_smoke() -> Result<()> {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let num_partitions = 5;
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .with_partition_table(FixedPartitionTable::new(Version::MIN, num_partitions))
+            .build()
+            .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            // start a simple bifrost service with 5 logs.
-            let num_partitions = 5;
-            let mut bifrost = Bifrost::new_in_memory(num_partitions).await;
+            let mut bifrost = Bifrost::new_in_memory().await;
 
             let mut clean_bifrost_clone = bifrost.clone();
 
@@ -359,7 +363,6 @@ mod tests {
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             let delay = Duration::from_secs(5);
-            let num_partitions = 5;
             // This memory provider adds a delay to its loglet initialization, we want
             // to ensure that appends do not fail while waiting for the loglet;
             let memory_provider = MemoryLogletProvider::with_init_delay(delay);
@@ -368,7 +371,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build(num_partitions);
+            let bifrost_svc = bifrost_opts.build();
             let mut bifrost = bifrost_svc.handle();
 
             // Inject out preconfigured memory provider
