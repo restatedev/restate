@@ -11,10 +11,15 @@
 pub mod keys {
     //! Keys of values stored in the metadata store
 
+    use crate::identifiers::PartitionId;
     use bytestring::ByteString;
 
     pub static NODES_CONFIG_KEY: ByteString = ByteString::from_static("nodes_config");
     pub static BIFROST_CONFIG_KEY: ByteString = ByteString::from_static("bifrost_config");
     pub static PARTITION_TABLE_KEY: ByteString = ByteString::from_static("partition_table");
-    pub static EPOCH_TABLE_KEY: ByteString = ByteString::from_static("epoch_table");
+    pub static PARTITION_PROCESSOR_EPOCH_PREFIX: &str = "pp_epoch";
+
+    pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {
+        ByteString::from(format!("{PARTITION_PROCESSOR_EPOCH_PREFIX}_{partition_id}"))
+    }
 }

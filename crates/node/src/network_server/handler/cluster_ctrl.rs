@@ -15,6 +15,7 @@ use restate_meta::MetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_node_services::cluster_ctrl::{AttachmentRequest, AttachmentResponse};
 use restate_node_services::cluster_ctrl::{FetchSchemasRequest, FetchSchemasResponse};
+use restate_types::NodeId;
 
 use crate::network_server::AdminDependencies;
 
@@ -34,7 +35,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         request: Request<AttachmentRequest>,
     ) -> Result<Response<AttachmentResponse>, Status> {
-        let node_id = request.into_inner().node_id.expect("node id must be set");
+        let node_id = NodeId::from(request.into_inner().node_id.expect("node id must be set"))
+            .as_generational()
+            .expect("generational id");
         debug!("Attaching node '{:?}'", node_id);
         Ok(Response::new(AttachmentResponse {}))
     }

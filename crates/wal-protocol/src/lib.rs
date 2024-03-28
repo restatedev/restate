@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use restate_bifrost::Bifrost;
-use restate_core::metadata;
+use restate_core::{metadata, ShutdownError};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
@@ -158,6 +158,8 @@ pub enum Error {
     Encode(#[from] bincode::error::EncodeError),
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
 }
 
 /// Appends the given envelope to the provided Bifrost instance. The log instance is chosen
@@ -169,9 +171,9 @@ pub async fn append_envelope_to_bifrost(
     bifrost: &mut Bifrost,
     envelope: Envelope,
 ) -> Result<(LogId, Lsn), Error> {
-    let partition_id = metadata()
-        .partition_table()
-        .find_partition_id(envelope.partition_key())?;
+    let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
+
+    let partition_id = partition_table.find_partition_id(envelope.partition_key())?;
 
     let log_id = LogId::from(partition_id);
     let payload = Payload::from(envelope.encode_with_bincode()?);

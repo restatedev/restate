@@ -25,9 +25,9 @@ pub struct BifrostService {
 }
 
 impl BifrostService {
-    pub fn new(opts: Options, num_partitions: u64) -> Self {
+    pub fn new(opts: Options) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(opts, watchdog_sender, num_partitions));
+        let inner = Arc::new(BifrostInner::new(opts, watchdog_sender));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_receiver);
         Self {

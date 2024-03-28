@@ -41,8 +41,8 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self, num_partitions: u64) -> BifrostService {
-        BifrostService::new(self, num_partitions)
+    pub fn build(self) -> BifrostService {
+        BifrostService::new(self)
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]

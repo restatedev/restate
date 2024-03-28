@@ -70,10 +70,11 @@ pub enum MetadataKind {
     NodesConfiguration,
     Schema,
     PartitionTable,
+    EpochTable,
     Logs,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
@@ -96,17 +97,5 @@ impl MetadataContainer {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
         }
-    }
-}
-
-impl From<NodesConfiguration> for MetadataContainer {
-    fn from(value: NodesConfiguration) -> Self {
-        MetadataContainer::NodesConfiguration(value)
-    }
-}
-
-impl From<FixedPartitionTable> for MetadataContainer {
-    fn from(value: FixedPartitionTable) -> Self {
-        MetadataContainer::PartitionTable(value)
     }
 }

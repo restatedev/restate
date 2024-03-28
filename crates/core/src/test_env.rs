@@ -19,6 +19,7 @@ use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
 
@@ -126,32 +127,15 @@ pub struct TestCoreEnvBuilder<N> {
     pub nodes_config: NodesConfiguration,
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
+    pub partition_table: FixedPartitionTable,
 }
 
 impl TestCoreEnvBuilder<MockNetworkSender> {
     pub fn new_with_mock_network() -> TestCoreEnvBuilder<MockNetworkSender> {
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-
         let (tx, rx) = mpsc::unbounded_channel();
         let network_sender = MockNetworkSender::from_sender(tx);
-        let my_node_id = GenerationalNodeId::new(1, 1);
-        let metadata_manager = MetadataManager::build(network_sender.clone());
-        let metadata = metadata_manager.metadata();
-        let metadata_writer = metadata_manager.writer();
-        let router_builder = MessageRouterBuilder::default();
-        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        tc.try_set_global_metadata(metadata.clone());
-        TestCoreEnvBuilder {
-            tc,
-            my_node_id,
-            network_rx: Some(rx),
-            metadata_manager,
-            metadata_writer,
-            metadata,
-            network_sender,
-            nodes_config,
-            router_builder,
-        }
+
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, Some(rx))
     }
 }
 
@@ -160,6 +144,13 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(network_sender: N) -> Self {
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None)
+    }
+
+    fn new_with_network_tx_rx(
+        network_sender: N,
+        network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
+    ) -> Self {
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
 
         let my_node_id = GenerationalNodeId::new(1, 1);
@@ -168,22 +159,29 @@ where
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let partition_table = FixedPartitionTable::new(Version::MIN, 10);
         tc.try_set_global_metadata(metadata.clone());
         TestCoreEnvBuilder {
             tc,
             my_node_id,
-            network_rx: None,
+            network_rx,
             metadata_manager,
             metadata_writer,
             metadata,
             network_sender,
             nodes_config,
             router_builder,
+            partition_table,
         }
     }
 
     pub fn with_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
         self.nodes_config = nodes_config;
+        self
+    }
+
+    pub fn with_partition_table(mut self, partition_table: FixedPartitionTable) -> Self {
+        self.partition_table = partition_table;
         self
     }
 
@@ -234,6 +232,7 @@ where
         };
 
         self.metadata_writer.submit(self.nodes_config.clone());
+        self.metadata_writer.submit(self.partition_table);
 
         self.tc
             .run_in_scope("test-env", None, async {
