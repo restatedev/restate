@@ -21,7 +21,6 @@ impl ComponentMetadataResolver for Schemas {
         self.use_component_schema(name, |component_schemas| {
             component_schemas.as_component_metadata(name.to_owned())
         })
-        .flatten()
     }
 
     fn resolve_latest_component_type(
@@ -38,7 +37,7 @@ impl ComponentMetadataResolver for Schemas {
         schemas
             .components
             .iter()
-            .filter_map(|(component_name, component_schemas)| {
+            .map(|(component_name, component_schemas)| {
                 component_schemas.as_component_metadata(component_name.clone())
             })
             .collect()

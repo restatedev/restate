@@ -150,18 +150,13 @@ impl SchemasInner {
                 component_schemas.ty = ty;
                 component_schemas.handlers =
                     ComponentSchemas::compute_handlers(ty, handlers.clone());
-                if let ComponentLocation::Deployment {
-                    latest_deployment, ..
-                } = &mut component_schemas.location
-                {
-                    *latest_deployment = deployment_id;
-                }
+                component_schemas.location.latest_deployment = deployment_id;
             })
             .or_insert_with(|| ComponentSchemas {
                 revision,
                 handlers: ComponentSchemas::compute_handlers(ty, handlers),
                 ty,
-                location: ComponentLocation::Deployment {
+                location: ComponentLocation {
                     latest_deployment: deployment_id,
                     public: true,
                 },
@@ -172,23 +167,13 @@ impl SchemasInner {
             .get_mut(&deployment_id)
             .expect("Deployment must be present at this point")
             .components
-            .push(
-                component_schemas
-                    .as_component_metadata(name)
-                    .expect("Should not be a built-in service"),
-            );
+            .push(component_schemas.as_component_metadata(name));
     }
 
     pub(crate) fn apply_modify_component(&mut self, name: String, new_public_value: bool) {
         if let Some(schemas) = self.components.get_mut(&name) {
             // Update the public field
-            if let ComponentLocation::Deployment {
-                public: old_public_value,
-                ..
-            } = &mut schemas.location
-            {
-                *old_public_value = new_public_value;
-            }
+            schemas.location.public = new_public_value;
             for h in schemas.handlers.values_mut() {
                 h.target_meta.public = new_public_value;
             }

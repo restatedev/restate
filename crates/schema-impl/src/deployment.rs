@@ -9,8 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use super::Schemas;
-
-use crate::schemas_impl::ComponentLocation;
 use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
@@ -22,18 +20,13 @@ impl DeploymentResolver for Schemas {
     ) -> Option<Deployment> {
         let schemas = self.0.load();
         let component = schemas.components.get(component_name.as_ref())?;
-        match &component.location {
-            ComponentLocation::BuiltIn { .. } => None,
-            ComponentLocation::Deployment {
-                latest_deployment, ..
-            } => schemas
-                .deployments
-                .get(latest_deployment)
-                .map(|schemas| Deployment {
-                    id: *latest_deployment,
-                    metadata: schemas.metadata.clone(),
-                }),
-        }
+        schemas
+            .deployments
+            .get(&component.location.latest_deployment)
+            .map(|schemas| Deployment {
+                id: component.location.latest_deployment,
+                metadata: schemas.metadata.clone(),
+            })
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
