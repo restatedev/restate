@@ -280,19 +280,19 @@ impl Effect {
             ),
             Effect::IngressResponse(IngressResponse {
                 response: ResponseResult::Success(_),
-                full_invocation_id,
+                invocation_id,
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %full_invocation_id,
+                restate.invocation.id = %invocation_id,
                 "Effect: Send response to ingress: Success"),
             Effect::IngressResponse(IngressResponse {
                 response: ResponseResult::Failure(error_code, error_msg),
-                full_invocation_id,
+                invocation_id,
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %full_invocation_id,
+                restate.invocation.id = %invocation_id,
                 "Effect: Send response to ingress: Failure(code: {}, msg: {})",
                 error_code,
                 error_msg,

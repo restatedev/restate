@@ -920,7 +920,7 @@ where
             // TODO: We probably only need to send the response if we haven't send a response before
             self.send_response(
                 create_response_message(
-                    full_invocation_id,
+                    &InvocationId::from(full_invocation_id),
                     response_sink,
                     ResponseResult::from(error),
                 ),
@@ -955,7 +955,7 @@ where
 
                     self.send_response(
                         create_response_message(
-                            &full_invocation_id,
+                            &InvocationId::from(&full_invocation_id),
                             response_sink.clone(),
                             result.into(),
                         ),
