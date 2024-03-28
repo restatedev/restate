@@ -15,7 +15,6 @@ use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::ChannelServiceHandle;
 use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
 use restate_network::Networking;
-use restate_node_protocol::metadata::MetadataKind;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
@@ -64,13 +63,9 @@ impl PartitionProcessorManager {
 
     #[allow(clippy::map_entry)]
     pub async fn apply_plan(&mut self, plan: PartitionProcessorPlan) -> anyhow::Result<()> {
-        metadata()
-            .wait_for_version(
-                MetadataKind::PartitionTable,
-                plan.min_required_partition_table_version,
-            )
+        let partition_table = metadata()
+            .wait_for_partition_table(plan.min_required_partition_table_version)
             .await?;
-        let partition_table = metadata().partition_table();
 
         for (partition_id, action) in plan.actions {
             match action {

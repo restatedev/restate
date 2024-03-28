@@ -329,6 +329,7 @@ mod tests {
                 let partition_id = node_env
                     .metadata
                     .partition_table()
+                    .unwrap()
                     .find_partition_id(fid.partition_key())?;
                 let log_id = LogId::from(partition_id);
                 let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;

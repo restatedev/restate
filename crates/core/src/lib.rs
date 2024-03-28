@@ -15,7 +15,9 @@ pub mod options;
 mod task_center;
 mod task_center_types;
 
-pub use metadata::{spawn_metadata_manager, Metadata, MetadataManager, MetadataWriter};
+pub use metadata::{
+    spawn_metadata_manager, Metadata, MetadataKind, MetadataManager, MetadataWriter,
+};
 pub use task_center::*;
 pub use task_center_types::*;
 

@@ -73,8 +73,9 @@ where
     }
 
     fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
-        let partition_table = metadata().partition_table();
-        self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
+        if let Some(partition_table) = metadata().partition_table() {
+            self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
+        }
     }
 
     fn send_metadata_internal<T>(
