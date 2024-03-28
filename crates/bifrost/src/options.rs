@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::loglet::ProviderKind;
 use crate::loglets::local_loglet;
+use crate::metadata::ProviderKind;
 use crate::service::BifrostService;
 
 /// # Bifrost options

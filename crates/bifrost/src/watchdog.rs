@@ -17,7 +17,8 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::bifrost::BifrostInner;
-use crate::loglet::{LogletProvider, ProviderKind};
+use crate::loglet::LogletProvider;
+use crate::metadata::ProviderKind;
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;

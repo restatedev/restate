@@ -15,7 +15,7 @@ memory_loglet = []
 
 [dependencies]
 restate-core = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["serde"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -31,7 +31,7 @@ humantime = { workspace = true }
 once_cell = { workspace = true }
 rocksdb = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 smallvec = { version = "1.13.2", features = ["serde"] }

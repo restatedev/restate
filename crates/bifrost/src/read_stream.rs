@@ -89,7 +89,7 @@ mod tests {
 
     use restate_types::logs::Payload;
 
-    use crate::loglet::ProviderKind;
+    use crate::metadata::ProviderKind;
     use crate::Options;
 
     #[tokio::test]

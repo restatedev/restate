@@ -11,24 +11,24 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
+use enum_map::Enum;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::Version;
-
-use crate::loglet::ProviderKind;
+use restate_types::{Version, Versioned};
 
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logs {
     pub(crate) version: Version,
     pub(crate) logs: HashMap<LogId, Chain>,
 }
 
 /// the chain is a list of segments in (from Lsn) order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
     pub(crate) chain: BTreeMap<Lsn, Arc<LogletConfig>>,
 }
@@ -40,10 +40,43 @@ pub struct Segment {
 }
 
 /// A segment in the chain of loglet instances.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogletConfig {
     pub(crate) kind: ProviderKind,
     pub(crate) params: LogletParams,
+}
+
+/// The configuration of a single loglet segment. This holds information needed
+/// for a loglet kind to construct a configured loglet instance modulo the log-id
+/// and start-lsn. It's provided by bifrost on loglet creation. This allows the
+/// parameters to be shared between segments and logs if needed.
+#[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From, Serialize, Deserialize)]
+pub struct LogletParams(String);
+
+/// An enum with the list of supported loglet providers.
+/// For each variant we must have a corresponding implementation of the
+/// [`crate::loglet::Loglet`] trait
+#[derive(
+    Debug,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    Copy,
+    serde::Serialize,
+    serde::Deserialize,
+    Enum,
+    strum_macros::EnumIter,
+    strum_macros::Display,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    #[cfg(any(test, feature = "local_loglet"))]
+    /// A local rocksdb-backed loglet.
+    Local,
+    #[cfg(any(test, feature = "memory_loglet"))]
+    /// An in-memory loglet, primarily for testing.
+    InMemory,
 }
 
 impl LogletConfig {
@@ -51,13 +84,6 @@ impl LogletConfig {
         Self { kind, params }
     }
 }
-
-/// The configuration of a single loglet segment. This holds information needed
-/// for a loglet kind to construct a configured loglet instance modulo the log-id
-/// and start-lsn. It's provided by bifrost on loglet creation. This allows the
-/// parameters to be shared between segments and logs if needed.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From)]
-pub struct LogletParams(String);
 
 impl LogletParams {
     pub fn id(&self) -> &str {
@@ -109,6 +135,12 @@ impl Logs {
     }
 }
 
+impl Versioned for Logs {
+    fn version(&self) -> Version {
+        self.version
+    }
+}
+
 impl Chain {
     /// Creates a new chain starting from Lsn(1) with a given loglet config.
     pub fn new(kind: ProviderKind, config: LogletParams) -> Self {
@@ -128,7 +160,6 @@ mod tests {
     use restate_test_util::let_assert;
 
     use super::*;
-    use crate::loglet::ProviderKind;
     #[test]
     fn test_chain_new() {
         let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));
