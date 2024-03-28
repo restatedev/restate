@@ -23,8 +23,8 @@ use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
 use tracing::{error, instrument};
 
-use crate::loglet::{LogletBase, LogletProvider, LogletWrapper, ProviderKind};
-use crate::metadata::Logs;
+use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
+use crate::metadata::{Logs, ProviderKind};
 use crate::options::Options;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{create_static_metadata, Error, FindTailAttributes, LogReadStream, LogRecord};
@@ -274,7 +274,6 @@ mod tests {
 
     use super::*;
 
-    use crate::loglet::ProviderKind;
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 

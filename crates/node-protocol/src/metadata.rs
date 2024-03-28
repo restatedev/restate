@@ -70,7 +70,6 @@ pub enum MetadataKind {
     NodesConfiguration,
     Schema,
     PartitionTable,
-    EpochTable,
     Logs,
 }
 
