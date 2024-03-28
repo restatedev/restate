@@ -274,6 +274,8 @@ where
     }
 }
 
+// Avoid adding methods here, but rather use directly the storage_api traits!!!
+// See https://github.com/restatedev/restate/issues/276
 impl<TransactionType> super::state_machine::StateReader for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
@@ -356,6 +358,8 @@ where
     }
 }
 
+// Avoid adding methods here, but rather use directly the storage_api traits!!!
+// See https://github.com/restatedev/restate/issues/276
 impl<TransactionType> super::state_machine::StateStorage for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
@@ -581,6 +585,28 @@ where
     async fn delete_timer(&mut self, timer_key: &TimerKey) -> StorageResult<()> {
         self.inner.delete_timer(self.partition_id, timer_key).await;
         Ok(())
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> ReadOnlyJournalTable for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+    ) -> impl Future<Output = StorageResult<Option<JournalEntry>>> + Send {
+        self.inner.get_journal_entry(invocation_id, journal_index)
+    }
+
+    fn get_journal(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
+        self.inner.get_journal(invocation_id, journal_length)
     }
 }
 

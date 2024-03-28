@@ -212,6 +212,27 @@ impl StateReader for StateReaderMock {
         invocation_id: &InvocationId,
         length: EntryIndex,
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry), StorageError>> + Send {
+        ReadOnlyJournalTable::get_journal(self, invocation_id, length)
+    }
+}
+
+impl ReadOnlyJournalTable for StateReaderMock {
+    fn get_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+    ) -> impl Future<Output = StorageResult<Option<JournalEntry>>> + Send {
+        futures::future::ready(Ok(self
+            .journals
+            .get(invocation_id)
+            .and_then(|journal| journal.get(journal_index as usize).cloned())))
+    }
+
+    fn get_journal(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
         let journal = self.journals.get(invocation_id);
 
         let cloned_journal: Vec<JournalEntry> = journal
@@ -219,7 +240,7 @@ impl StateReader for StateReaderMock {
                 journal
                     .iter()
                     .take(
-                        usize::try_from(length)
+                        usize::try_from(journal_length)
                             .expect("Converting from u32 to usize should be possible"),
                     )
                     .cloned()
