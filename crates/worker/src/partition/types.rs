@@ -10,7 +10,6 @@
 
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::FullInvocationId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -56,7 +55,7 @@ impl OutboxMessageExt for OutboxMessage {
 }
 
 pub fn create_response_message(
-    callee: &FullInvocationId,
+    callee: &InvocationId,
     response_sink: ServiceInvocationResponseSink,
     result: ResponseResult,
 ) -> ResponseMessage {
@@ -72,7 +71,7 @@ pub fn create_response_message(
         ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
             ResponseMessage::Ingress(IngressResponse {
                 target_node: ingress_dispatcher_id,
-                full_invocation_id: callee.clone(),
+                invocation_id: callee.clone(),
                 response: result,
             })
         }
@@ -90,7 +89,7 @@ pub fn create_response_message(
                     caller_context,
                 }
                 .encode_to_vec(),
-                Source::Service(callee.clone()),
+                Source::Internal,
                 None,
                 SpanRelation::None,
                 vec![],

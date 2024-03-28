@@ -18,7 +18,7 @@ use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{FullInvocationId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -229,7 +229,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
     fn reply_to_caller(&mut self, res: ResponseResult) {
         if let Some(response_sink) = self.response_sink {
             self.send_response(create_response_message(
-                self.full_invocation_id,
+                &InvocationId::from(self.full_invocation_id),
                 response_sink.clone(),
                 res,
             ));

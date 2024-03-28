@@ -198,7 +198,6 @@ pub enum ServiceInvocationResponseSink {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Source {
     Ingress,
-    // TODO This can be changed to simply InvocationId
     Service(FullInvocationId),
     /// Internal calls for the non-deterministic built-in services
     Internal,

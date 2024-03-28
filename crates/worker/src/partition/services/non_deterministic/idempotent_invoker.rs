@@ -14,7 +14,7 @@ use crate::partition::types::create_response_message;
 use prost::Message;
 use restate_pb::builtin_service::ResponseSerializer;
 use restate_pb::restate::internal::*;
-use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{ServiceInvocation, SpanRelation};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
@@ -188,7 +188,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             .into_iter()
         {
             self.send_response(create_response_message(
-                &callee_fid,
+                &InvocationId::from(&callee_fid),
                 sink,
                 ResponseResult::Success(encoded_response.clone()),
             ))
@@ -335,7 +335,7 @@ mod tests {
             all!(
                 contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
                     IngressResponse {
-                        full_invocation_id: eq(expected_fid.clone()),
+                        invocation_id: eq(InvocationId::from(&expected_fid)),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
                                 response: some(pat!(
@@ -384,7 +384,7 @@ mod tests {
             all!(
                 contains(pat!(BuiltinServiceEffect::IngressResponse(pat!(
                     IngressResponse {
-                        full_invocation_id: eq(expected_fid),
+                        invocation_id: eq(InvocationId::from(expected_fid)),
                         response: pat!(ResponseResult::Success(protobuf_decoded(pat!(
                             IdempotentInvokeResponse {
                                 response: some(pat!(

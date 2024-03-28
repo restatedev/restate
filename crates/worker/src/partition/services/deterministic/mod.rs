@@ -15,7 +15,7 @@ use restate_pb::restate::internal::AwakeablesInvoker;
 use restate_pb::restate::internal::ProxyInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::{FullInvocationId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
 use std::ops::Deref;
@@ -59,7 +59,11 @@ impl<'a> ServiceInvoker<'a> {
         let res = this._invoke(method, argument).await;
 
         if let Some(response_sink) = response_sink {
-            match create_response_message(fid, response_sink.clone(), res.into()) {
+            match create_response_message(
+                &InvocationId::from(fid),
+                response_sink.clone(),
+                res.into(),
+            ) {
                 ResponseMessage::Outbox(outbox) => this.outbox_message(outbox),
                 ResponseMessage::Ingress(ingress) => this.ingress_response(ingress),
             }
