@@ -74,6 +74,7 @@ pub use restate_storage_query_postgres::{
     Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
     OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
+use restate_types::Version;
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
@@ -339,7 +340,7 @@ impl Worker {
             invoker_handle,
         );
 
-        let partition_table = metadata().partition_table();
+        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
         let plan = PartitionProcessorPlan::new(
             partition_table.version(),
             partition_table

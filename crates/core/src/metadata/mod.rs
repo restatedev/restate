@@ -20,7 +20,8 @@ use arc_swap::ArcSwapOption;
 use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
-use restate_node_protocol::metadata::{MetadataContainer, MetadataKind};
+use restate_node_protocol::metadata::MetadataContainer;
+pub use restate_node_protocol::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version};
@@ -61,13 +62,8 @@ impl Metadata {
         }
     }
 
-    /// Panics if partition table is not loaded yet.
-    #[track_caller]
-    pub fn partition_table(&self) -> Arc<FixedPartitionTable> {
-        self.inner
-            .partition_table
-            .load_full()
-            .expect("partition table is loaded")
+    pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
+        self.inner.partition_table.load_full()
     }
 
     /// Returns Version::INVALID if partition table has not been loaded yet.
@@ -77,6 +73,22 @@ impl Metadata {
             Some(c) => c.version(),
             None => Version::INVALID,
         }
+    }
+
+    /// Waits until the partition table of at least min_version is available and returns it.
+    pub async fn wait_for_partition_table(
+        &self,
+        min_version: Version,
+    ) -> Result<Arc<FixedPartitionTable>, ShutdownError> {
+        if let Some(partition_table) = self.partition_table() {
+            if partition_table.version() >= min_version {
+                return Ok(partition_table);
+            }
+        }
+
+        self.wait_for_version(MetadataKind::PartitionTable, min_version)
+            .await?;
+        Ok(self.partition_table().unwrap())
     }
 
     // Returns when the metadata kind is at the provided version (or newer)

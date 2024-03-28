@@ -190,8 +190,11 @@ impl BifrostInner {
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
-        let num_partitions = metadata().partition_table().num_partitions();
-        // todo replace with retrieving metadata from metadata()
+        // todo: replace with fetching metadata from store
+        let num_partitions = metadata()
+            .wait_for_partition_table(Version::MIN)
+            .await?
+            .num_partitions();
         let logs = create_static_metadata(&self.opts, num_partitions);
         let mut guard = self.log_metadata.lock().unwrap();
         if logs.version > guard.version {
