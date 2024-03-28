@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{SubscriptionController, WorkerHandleError};
 use restate_ingress_kafka::SubscriptionCommandSender;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_types::identifiers::SubscriptionId;
-use restate_worker_api::{Error, SubscriptionController};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -39,28 +39,34 @@ impl SubscriptionValidator for SubscriptionControllerHandle {
 }
 
 impl SubscriptionController for SubscriptionControllerHandle {
-    async fn start_subscription(&self, subscription: Subscription) -> Result<(), Error> {
+    async fn start_subscription(
+        &self,
+        subscription: Subscription,
+    ) -> Result<(), WorkerHandleError> {
         self.1
             .send(restate_ingress_kafka::Command::StartSubscription(
                 subscription,
             ))
             .await
-            .map_err(|_| Error::Unreachable)
+            .map_err(|_| WorkerHandleError::Unreachable)
     }
 
-    async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), Error> {
+    async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), WorkerHandleError> {
         self.1
             .send(restate_ingress_kafka::Command::StopSubscription(id))
             .await
-            .map_err(|_| Error::Unreachable)
+            .map_err(|_| WorkerHandleError::Unreachable)
     }
 
-    async fn update_subscriptions(&self, subscriptions: Vec<Subscription>) -> Result<(), Error> {
+    async fn update_subscriptions(
+        &self,
+        subscriptions: Vec<Subscription>,
+    ) -> Result<(), WorkerHandleError> {
         self.1
             .send(restate_ingress_kafka::Command::UpdateSubscriptions(
                 subscriptions,
             ))
             .await
-            .map_err(|_| Error::Unreachable)
+            .map_err(|_| WorkerHandleError::Unreachable)
     }
 }
