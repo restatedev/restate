@@ -37,46 +37,22 @@ pub struct Options {
     ///
     /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
     /// If unset, HTTP/2 keep-alive are disabled.
-    keep_alive_options: Option<Http2KeepAliveOptions>,
+    http_keep_alive_options: Option<Http2KeepAliveOptions>,
     /// # Proxy URI
     ///
     /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the deployment URI.
     /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    proxy_uri: Option<Proxy>,
+    http_proxy: Option<Proxy>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
-            keep_alive_options: Some(Default::default()),
-            proxy_uri: None,
+            http_keep_alive_options: Some(Default::default()),
+            http_proxy: None,
         }
-    }
-}
-
-impl Options {
-    pub fn build(self) -> HttpClient {
-        let mut builder = hyper::Client::builder();
-        builder.http2_only(true);
-
-        if let Some(keep_alive_options) = self.keep_alive_options {
-            builder
-                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
-                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
-        }
-
-        HttpClient::new(
-            builder.build::<_, hyper::Body>(ProxyConnector::new(
-                self.proxy_uri,
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .build(),
-            )),
-        )
     }
 }
 
@@ -143,6 +119,28 @@ pub struct HttpClient {
 impl HttpClient {
     pub fn new(client: hyper::Client<Connector, Body>) -> Self {
         Self { client }
+    }
+
+    pub fn from_options(options: Options) -> HttpClient {
+        let mut builder = hyper::Client::builder();
+        builder.http2_only(true);
+
+        if let Some(keep_alive_options) = options.http_keep_alive_options {
+            builder
+                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
+                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
+        }
+
+        HttpClient::new(
+            builder.build::<_, hyper::Body>(ProxyConnector::new(
+                options.http_proxy,
+                hyper_rustls::HttpsConnectorBuilder::new()
+                    .with_native_roots()
+                    .https_or_http()
+                    .enable_http2()
+                    .build(),
+            )),
+        )
     }
 
     fn build_request(
