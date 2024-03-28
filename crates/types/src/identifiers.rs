@@ -536,10 +536,9 @@ impl IdempotencyId {
     ) -> Self {
         // The ownership model for idempotent invocations is the following:
         //
-        // * For components without key, the PP partition key is the hash(idempotency key).
-        //   This makes sure that for a given idempotency key and its scope, we always land in the same PP.
-        // * For components with key, the PP partition key is the hash(component key).
-        //   This to avoid additional hops between PPs, because hash(idempotency key) might be different from hash(component key).
+        // * For components without key, the partition key is the hash(idempotency key).
+        //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
+        // * For components with key, the partition key is the hash(component key), this due to the virtual object locking requirement.
         let partition_key = component_key
             .as_ref()
             .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))

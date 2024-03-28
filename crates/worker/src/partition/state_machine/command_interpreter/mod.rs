@@ -521,7 +521,7 @@ where
         self.send_response_to_sinks(
             effects,
             &InvocationId::from(&fid),
-            service_invocation.response_sink.clone(),
+            service_invocation.response_sink,
             &error,
         );
 

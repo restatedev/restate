@@ -63,9 +63,9 @@ async fn test_idempotency_key() {
     txn.commit().await.unwrap();
 
     // Query
-    let mut txn = rocksdb.transaction();
     assert_eq!(
-        txn.get_idempotency_metadata(&IDEMPOTENCY_ID_1)
+        rocksdb
+            .get_idempotency_metadata(&IDEMPOTENCY_ID_1)
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
@@ -73,7 +73,8 @@ async fn test_idempotency_key() {
         })
     );
     assert_eq!(
-        txn.get_idempotency_metadata(&IDEMPOTENCY_ID_2)
+        rocksdb
+            .get_idempotency_metadata(&IDEMPOTENCY_ID_2)
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
@@ -81,7 +82,8 @@ async fn test_idempotency_key() {
         })
     );
     assert_eq!(
-        txn.get_idempotency_metadata(&IDEMPOTENCY_ID_3)
+        rocksdb
+            .get_idempotency_metadata(&IDEMPOTENCY_ID_3)
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
@@ -89,30 +91,29 @@ async fn test_idempotency_key() {
         })
     );
     assert_eq!(
-        txn.get_idempotency_metadata(&IdempotencyId::unkeyed(
-            10,
-            "my-component",
-            "my-handler-3",
-            "my-key",
-        ))
-        .await
-        .unwrap(),
+        rocksdb
+            .get_idempotency_metadata(&IdempotencyId::unkeyed(
+                10,
+                "my-component",
+                "my-handler-3",
+                "my-key",
+            ))
+            .await
+            .unwrap(),
         None
     );
-    txn.commit().await.unwrap();
 
     // Delete and query afterwards
     let mut txn = rocksdb.transaction();
     txn.delete_idempotency_metadata(&IDEMPOTENCY_ID_1).await;
     txn.commit().await.unwrap();
-    let mut txn = rocksdb.transaction();
     assert_eq!(
-        txn.get_idempotency_metadata(&IDEMPOTENCY_ID_1)
+        rocksdb
+            .get_idempotency_metadata(&IDEMPOTENCY_ID_1)
             .await
             .unwrap(),
         None
     );
-    txn.commit().await.unwrap();
 
     close.await;
 }

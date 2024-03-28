@@ -273,7 +273,10 @@ where
 
             let method = metadata.method;
             // Built-in services support only one response_sink
-            debug_assert!(metadata.response_sinks.len() <= 1);
+            debug_assert!(
+                metadata.response_sinks.len() <= 1,
+                "Built-in services support only one response_sink"
+            );
             let response_sink = metadata.response_sinks.into_iter().next();
             let argument = input_entry.serialized_entry().clone();
             built_in_service_invoker

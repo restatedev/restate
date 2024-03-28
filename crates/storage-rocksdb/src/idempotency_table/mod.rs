@@ -33,7 +33,7 @@ define_table_key!(
     )
 );
 
-fn write_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
+fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
     IdempotencyKey::default()
         .partition_key(idempotency_id.partition_key())
         .component_name(idempotency_id.component_name.clone())
@@ -52,7 +52,7 @@ fn get_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
 ) -> Result<Option<IdempotencyMetadata>> {
-    storage.get_blocking(write_key(idempotency_id), move |_, v| {
+    storage.get_blocking(create_key(idempotency_id), move |_, v| {
         if v.is_none() {
             return Ok(None);
         }
@@ -71,13 +71,13 @@ fn put_idempotency_metadata<S: StorageAccess>(
     metadata: IdempotencyMetadata,
 ) {
     storage.put_kv(
-        write_key(idempotency_id),
+        create_key(idempotency_id),
         ProtoValue(storage::v1::IdempotencyMetadata::from(metadata)),
     );
 }
 
 fn delete_idempotency_metadata<S: StorageAccess>(storage: &mut S, idempotency_id: &IdempotencyId) {
-    let key = write_key(idempotency_id);
+    let key = create_key(idempotency_id);
     storage.delete_key(&key);
 }
 
