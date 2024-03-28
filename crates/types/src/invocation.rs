@@ -174,7 +174,7 @@ impl From<&InvocationError> for ResponseResult {
 }
 
 /// Definition of the sink where to send the result of a service invocation.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ServiceInvocationResponseSink {
     /// The invocation has been created by a partition processor and is expecting a response.

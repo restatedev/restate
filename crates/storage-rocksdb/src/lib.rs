@@ -11,6 +11,7 @@
 pub mod codec;
 pub mod deduplication_table;
 pub mod fsm_table;
+pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_table;
@@ -28,8 +29,8 @@ use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::writer::{Writer, WriterHandle};
 use crate::TableKind::{
-    Deduplication, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine, ServiceStatus,
-    State, Timers,
+    Deduplication, Idempotency, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine,
+    ServiceStatus, State, Timers,
 };
 use bytes::BytesMut;
 use codederror::CodedError;
@@ -62,6 +63,7 @@ type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
 const STATE_TABLE_NAME: &str = "state";
 const INVOCATION_STATUS_TABLE_NAME: &str = "invocation_status";
 const SERVICE_STATUS_TABLE_NAME: &str = "service_status";
+const IDEMPOTENCY_TABLE_NAME: &str = "idempotency";
 const INBOX_TABLE_NAME: &str = "inbox";
 const OUTBOX_TABLE_NAME: &str = "outbox";
 const DEDUP_TABLE_NAME: &str = "dedup";
@@ -100,6 +102,7 @@ const fn cf_name(kind: TableKind) -> &'static str {
         PartitionStateMachine => FSM_TABLE_NAME,
         Timers => TIMERS_TABLE_NAME,
         Journal => JOURNAL_TABLE_NAME,
+        Idempotency => IDEMPOTENCY_TABLE_NAME,
     }
 }
 
@@ -108,6 +111,7 @@ pub enum TableKind {
     State,
     InvocationStatus,
     ServiceStatus,
+    Idempotency,
     Inbox,
     Outbox,
     Deduplication,
@@ -126,6 +130,7 @@ impl TableKind {
             State,
             InvocationStatus,
             ServiceStatus,
+            Idempotency,
             Inbox,
             Outbox,
             Deduplication,
@@ -415,6 +420,10 @@ impl RocksDBStorage {
             ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(Journal),
+                cf_options(&opts, cache.clone()),
+            ),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Idempotency),
                 cf_options(&opts, cache.clone()),
             ),
             //

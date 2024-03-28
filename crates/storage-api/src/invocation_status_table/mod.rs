@@ -15,12 +15,13 @@ use restate_types::identifiers::{
     DeploymentId, EntryIndex, FullInvocationId, InvocationId, PartitionKey, ServiceId,
 };
 use restate_types::invocation::{
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::future::Future;
 use std::ops::RangeInclusive;
+use std::time::Duration;
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +72,7 @@ pub enum InvocationStatus {
         metadata: InvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
+    Completed(ResponseResult),
     /// Service instance is currently not invoked
     #[default]
     Free,
@@ -91,7 +93,7 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.journal_metadata),
-            InvocationStatus::Free => None,
+            _ => None,
         }
     }
 
@@ -100,7 +102,7 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(&metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.journal_metadata),
-            InvocationStatus::Free => None,
+            _ => None,
         }
     }
 
@@ -109,7 +111,34 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.journal_metadata),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.journal_metadata),
-            InvocationStatus::Free => None,
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_invocation_metadata(self) -> Option<InvocationMetadata> {
+        match self {
+            InvocationStatus::Invoked(metadata) => Some(metadata),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn get_invocation_metadata(&self) -> Option<&InvocationMetadata> {
+        match self {
+            InvocationStatus::Invoked(metadata) => Some(metadata),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn get_invocation_metadata_mut(&mut self) -> Option<&mut InvocationMetadata> {
+        match self {
+            InvocationStatus::Invoked(metadata) => Some(metadata),
+            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            _ => None,
         }
     }
 
@@ -118,7 +147,7 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
-            InvocationStatus::Free => None,
+            _ => None,
         }
     }
 
@@ -126,7 +155,7 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Invoked(metadata) => metadata.timestamps.update(),
             InvocationStatus::Suspended { metadata, .. } => metadata.timestamps.update(),
-            InvocationStatus::Free => {}
+            _ => {}
         }
     }
 }
@@ -157,31 +186,43 @@ pub struct InvocationMetadata {
     pub journal_metadata: JournalMetadata,
     pub deployment_id: Option<DeploymentId>,
     pub method: ByteString,
-    pub response_sink: Option<ServiceInvocationResponseSink>,
+    pub response_sinks: HashSet<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
     pub source: Source,
+    /// If zero, the invocation completion will not be retained.
+    pub completion_retention_time: Duration,
+    pub idempotency_key: Option<ByteString>,
 }
 
 impl InvocationMetadata {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::mutable_key_type)]
     pub fn new(
         service_id: ServiceId,
         journal_metadata: JournalMetadata,
         deployment_id: Option<DeploymentId>,
         method: ByteString,
-        response_sink: Option<ServiceInvocationResponseSink>,
+        response_sinks: HashSet<ServiceInvocationResponseSink>,
         timestamps: StatusTimestamps,
         source: Source,
+        completion_retention_time: Duration,
+        idempotency_key: Option<ByteString>,
     ) -> Self {
         Self {
             service_id,
             journal_metadata,
             deployment_id,
             method,
-            response_sink,
+            response_sinks,
             timestamps,
             source,
+            completion_retention_time,
+            idempotency_key,
         }
+    }
+
+    pub fn append_response_sink(&mut self, new_sink: ServiceInvocationResponseSink) {
+        self.response_sinks.insert(new_sink);
     }
 }
 
@@ -221,9 +262,11 @@ mod mocks {
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 deployment_id: None,
                 method: ByteString::from("mock"),
-                response_sink: None,
+                response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress,
+                completion_retention_time: Duration::ZERO,
+                idempotency_key: None,
             }
         }
     }
