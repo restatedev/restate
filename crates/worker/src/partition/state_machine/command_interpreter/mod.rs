@@ -30,7 +30,6 @@ use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    UNKNOWN_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, InvocationUuid, PartitionKey, ServiceId,
@@ -901,12 +900,7 @@ where
             } else {
                 // We don't panic on this, although it indicates a bug at the moment.
                 warn!("Invocation completed without an output entry. This is not supported yet.");
-                self.send_response_to_sinks(
-                    effects,
-                    &InvocationId::from(&full_invocation_id),
-                    invocation_metadata.response_sinks.clone(),
-                    UNKNOWN_INVOCATION_ERROR,
-                );
+                return Ok(());
             }
         }
 
