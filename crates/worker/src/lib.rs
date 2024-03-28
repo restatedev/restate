@@ -34,10 +34,16 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 use tracing::debug;
 
+mod error;
+mod handle;
 mod invoker_integration;
 mod metric_definitions;
 mod partition;
+mod subscription_controller;
 mod subscription_integration;
+
+pub use error::*;
+pub use handle::*;
 
 pub use restate_ingress_http::{
     Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
@@ -51,6 +57,7 @@ pub use restate_invoker_impl::{
     Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
     OptionsBuilderError as InvokerOptionsBuilderError,
 };
+pub use subscription_controller::SubscriptionController;
 
 pub use restate_storage_rocksdb::{
     Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,

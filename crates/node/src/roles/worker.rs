@@ -30,8 +30,8 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
+use restate_worker::SubscriptionController;
 use restate_worker::{KafkaIngressOptions, SubscriptionControllerHandle, Worker};
-use restate_worker_api::SubscriptionController;
 use tracing::info;
 
 use restate_worker::Options as WorkerOptions;
@@ -74,7 +74,7 @@ pub enum SchemaError {
     ),
     #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
-    Subscription(#[from] restate_worker_api::Error),
+    Subscription(#[from] restate_worker::WorkerHandleError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]

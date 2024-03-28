@@ -70,7 +70,6 @@ restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
 restate-types = { path = "crates/types" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
-restate-worker-api = { path = "crates/worker-api" }
 
 # External crates
 ahash = "0.8.5"
