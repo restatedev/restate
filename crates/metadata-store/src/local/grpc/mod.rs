@@ -12,8 +12,9 @@ pub mod client;
 pub mod handler;
 
 pub mod pb_conversions {
+    use crate::grpc_svc;
     use crate::grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind};
-    use crate::{grpc_svc, Precondition, VersionedValue};
+    use restate_core::metadata_store::{Precondition, VersionedValue};
     use restate_types::Version;
 
     #[derive(Debug, thiserror::Error)]

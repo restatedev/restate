@@ -20,6 +20,9 @@ restate-node-protocol = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
 clap = { workspace = true, optional = true }
 derive-getters = { workspace = true }
 derive_builder = { workspace = true }

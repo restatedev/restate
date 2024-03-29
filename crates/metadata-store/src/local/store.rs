@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{Precondition, VersionedValue};
 use bytes::Bytes;
 use bytestring::ByteString;
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
+use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_types::errors::GenericError;
 use restate_types::Version;
 use rocksdb::{ColumnFamily, Options, WriteOptions, DB};

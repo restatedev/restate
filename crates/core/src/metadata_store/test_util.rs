@@ -8,17 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{
-    MetadataStore, MetadataStoreClient, Precondition, ReadError, VersionedValue, WriteError,
-};
+use crate::metadata_store::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
 use bytestring::ByteString;
 use restate_types::Version;
 use std::collections::HashMap;
 use std::sync::Mutex;
-
-pub fn create_in_memory_metadata_store() -> MetadataStoreClient {
-    MetadataStoreClient::new(InMemoryMetadataStore::default())
-}
 
 #[derive(Debug, Default)]
 pub struct InMemoryMetadataStore {
