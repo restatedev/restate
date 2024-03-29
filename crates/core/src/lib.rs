@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod metadata;
+pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
 pub mod options;

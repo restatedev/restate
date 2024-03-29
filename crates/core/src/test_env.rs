@@ -17,12 +17,14 @@ use restate_node_protocol::codec::{deserialize_message, serialize_message, Targe
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
+use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
 
+use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
     Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkSendError, NetworkSender,
 };
@@ -128,6 +130,7 @@ pub struct TestCoreEnvBuilder<N> {
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
     pub partition_table: FixedPartitionTable,
+    pub metadata_store_client: MetadataStoreClient,
 }
 
 impl TestCoreEnvBuilder<MockNetworkSender> {
@@ -156,6 +159,7 @@ where
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_manager = MetadataManager::build(network_sender.clone());
         let metadata = metadata_manager.metadata();
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
@@ -172,6 +176,7 @@ where
             nodes_config,
             router_builder,
             partition_table,
+            metadata_store_client,
         }
     }
 
@@ -231,7 +236,24 @@ where
             None => None,
         };
 
+        self.metadata_store_client
+            .put(
+                NODES_CONFIG_KEY.clone(),
+                self.nodes_config.clone(),
+                Precondition::None,
+            )
+            .await
+            .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
+
+        self.metadata_store_client
+            .put(
+                PARTITION_TABLE_KEY.clone(),
+                self.partition_table.clone(),
+                Precondition::None,
+            )
+            .await
+            .expect("to store partition table in metadata store");
         self.metadata_writer.submit(self.partition_table);
 
         self.tc

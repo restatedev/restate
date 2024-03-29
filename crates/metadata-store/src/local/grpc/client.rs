@@ -11,9 +11,11 @@
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
 use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
 use crate::local::grpc::pb_conversions::ConversionError;
-use crate::{MetadataStore, Precondition, ReadError, VersionedValue, WriteError};
 use async_trait::async_trait;
 use bytestring::ByteString;
+use restate_core::metadata_store::{
+    MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
+};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
@@ -43,7 +45,8 @@ impl MetadataStore for LocalMetadataStoreClient {
             .svc_client
             .clone()
             .get(GetRequest { key: key.into() })
-            .await?;
+            .await
+            .map_err(map_status_to_read_error)?;
 
         response
             .into_inner()
@@ -56,7 +59,8 @@ impl MetadataStore for LocalMetadataStoreClient {
             .svc_client
             .clone()
             .get_version(GetRequest { key: key.into() })
-            .await?;
+            .await
+            .map_err(map_status_to_read_error)?;
 
         Ok(response.into_inner().into())
     }
@@ -74,7 +78,8 @@ impl MetadataStore for LocalMetadataStoreClient {
                 value: Some(value.into()),
                 precondition: Some(precondition.into()),
             })
-            .await?;
+            .await
+            .map_err(map_status_to_write_error)?;
 
         Ok(())
     }
@@ -86,29 +91,24 @@ impl MetadataStore for LocalMetadataStoreClient {
                 key: key.into(),
                 precondition: Some(precondition.into()),
             })
-            .await?;
+            .await
+            .map_err(map_status_to_write_error)?;
 
         Ok(())
     }
 }
 
-impl From<Status> for ReadError {
-    fn from(status: Status) -> Self {
-        match &status.code() {
-            Code::Unavailable => ReadError::Network(status.into()),
-            _ => ReadError::Internal(status.to_string()),
-        }
+fn map_status_to_read_error(status: Status) -> ReadError {
+    match &status.code() {
+        Code::Unavailable => ReadError::Network(status.into()),
+        _ => ReadError::Internal(status.to_string()),
     }
 }
 
-impl From<Status> for WriteError {
-    fn from(status: Status) -> Self {
-        match &status.code() {
-            Code::Unavailable => WriteError::Network(status.into()),
-            Code::FailedPrecondition => {
-                WriteError::FailedPrecondition(status.message().to_string())
-            }
-            _ => WriteError::Internal(status.to_string()),
-        }
+fn map_status_to_write_error(status: Status) -> WriteError {
+    match &status.code() {
+        Code::Unavailable => WriteError::Network(status.into()),
+        Code::FailedPrecondition => WriteError::FailedPrecondition(status.message().to_string()),
+        _ => WriteError::Internal(status.to_string()),
     }
 }
