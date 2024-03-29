@@ -12,6 +12,8 @@
 
 mod grpc_svc;
 pub mod local;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 use async_trait::async_trait;
 use bytes::Bytes;

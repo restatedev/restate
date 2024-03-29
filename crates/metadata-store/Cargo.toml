@@ -9,6 +9,7 @@ publish = false
 
 [features]
 options_schema = ["dep:schemars"]
+test-util = []
 
 [dependencies]
 codederror = { workspace = true }
