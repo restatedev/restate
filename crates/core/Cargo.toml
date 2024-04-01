@@ -14,8 +14,8 @@ options_schema = ["dep:schemars"]
 clap = ["dep:clap", "restate-types/clap"]
 
 [dependencies]
-restate-types = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }

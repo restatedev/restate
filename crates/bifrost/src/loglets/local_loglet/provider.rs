@@ -13,6 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use restate_types::logs::metadata::LogletParams;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
@@ -21,8 +22,8 @@ use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{LocalLoglet, Options};
 use crate::loglet::{Loglet, LogletOffset, LogletProvider};
 use crate::loglets::local_loglet::log_store_writer::WriterOptions;
+use crate::Error;
 use crate::ProviderError;
-use crate::{Error, LogletParams};
 
 #[derive(Debug)]
 pub struct LocalLogletProvider {

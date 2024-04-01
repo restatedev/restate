@@ -13,12 +13,12 @@ use std::time::Duration;
 
 use enum_map::Enum;
 use restate_core::cancellation_watcher;
+use restate_types::logs::metadata::ProviderKind;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::LogletProvider;
-use crate::metadata::ProviderKind;
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;

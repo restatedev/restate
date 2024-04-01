@@ -35,7 +35,10 @@ use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
-use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::logs::metadata::{create_static_metadata, Logs};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::retries::RetryPolicy;
@@ -113,9 +116,13 @@ impl Node {
             None
         };
 
+        let metadata_store_client = restate_metadata_store::local::create_client(
+            common_opts.metadata_store_address().clone(),
+        );
+
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
-        let bifrost = options.bifrost.clone().build();
+        let bifrost = options.bifrost.clone().build(metadata_store_client.clone());
         let metadata_manager = MetadataManager::build(networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
 
@@ -136,9 +143,7 @@ impl Node {
                 &mut router_builder,
                 networking.clone(),
                 bifrost.handle(),
-                restate_metadata_store::local::create_client(
-                    common_opts.metadata_store_address().clone(),
-                ),
+                metadata_store_client,
             )?)
         } else {
             None
@@ -217,8 +222,17 @@ impl Node {
 
         metadata_writer.update(nodes_config).await?;
 
-        let partition_table: FixedPartitionTable =
-            Self::fetch_or_insert_partition_table(metadata_store_client, &self.options).await?;
+        let (partition_table, logs) =
+            Self::fetch_or_insert_static_configuration(&metadata_store_client, &self.options)
+                .await?;
+
+        // sanity check
+        if partition_table.num_partitions()
+            != u64::try_from(logs.logs.len()).expect("usize fits into u64")
+        {
+            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.logs.len())))?;
+        }
+
         metadata_writer.update(partition_table).await?;
 
         let nodes_config = metadata.nodes_config();
@@ -291,8 +305,24 @@ impl Node {
         Ok(())
     }
 
+    async fn fetch_or_insert_static_configuration(
+        metadata_store_client: &MetadataStoreClient,
+        options: &Options,
+    ) -> Result<(FixedPartitionTable, Logs), ReadModifyWriteError> {
+        let partition_table =
+            Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
+        let logs = Self::fetch_or_insert_logs_configuration(
+            metadata_store_client,
+            options,
+            partition_table.num_partitions(),
+        )
+        .await?;
+
+        Ok((partition_table, logs))
+    }
+
     async fn fetch_or_insert_partition_table(
-        metadata_store_client: MetadataStoreClient,
+        metadata_store_client: &MetadataStoreClient,
         options: &Options,
     ) -> Result<FixedPartitionTable, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
@@ -311,6 +341,28 @@ impl Node {
                     }
                 },
             )
+        })
+        .await
+    }
+
+    async fn fetch_or_insert_logs_configuration(
+        metadata_store_client: &MetadataStoreClient,
+        options: &Options,
+        num_partitions: u64,
+    ) -> Result<Logs, ReadModifyWriteError> {
+        Self::retry_on_network_error(|| {
+            metadata_store_client.read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs| {
+                if let Some(logs) = logs {
+                    info!("Retrieved logs configuration: {logs:?}");
+                    Operation::Return(logs)
+                } else {
+                    let logs =
+                        create_static_metadata(options.bifrost.default_provider, num_partitions);
+
+                    info!("Initializing a new logs configuration: {logs:?}",);
+                    Operation::Upsert(logs)
+                }
+            })
         })
         .await
     }

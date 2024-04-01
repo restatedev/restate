@@ -18,16 +18,17 @@ use std::sync::{Arc, Mutex};
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
-use restate_core::metadata;
+use restate_metadata_store::MetadataStoreClient;
+use restate_types::logs::metadata::{Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 use tracing::{error, instrument};
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
-use crate::metadata::{Logs, ProviderKind};
 use crate::options::Options;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
-use crate::{create_static_metadata, Error, FindTailAttributes, LogReadStream, LogRecord};
+use crate::{Error, FindTailAttributes, LogReadStream, LogRecord};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -45,8 +46,8 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]
-    pub async fn new_in_memory() -> Self {
-        let bifrost_svc = Options::memory().build();
+    pub async fn new_in_memory(metadata_store_client: MetadataStoreClient) -> Self {
+        let bifrost_svc = Options::memory().build(metadata_store_client);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -119,16 +120,22 @@ pub struct BifrostInner {
     log_metadata: Mutex<Logs>,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
     shutting_down: AtomicBool,
+    metadata_store_client: MetadataStoreClient,
 }
 
 impl BifrostInner {
-    pub fn new(opts: Options, watchdog: WatchdogSender) -> Self {
+    pub fn new(
+        opts: Options,
+        watchdog: WatchdogSender,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Self {
         Self {
             opts,
             watchdog,
             log_metadata: Mutex::new(Logs::empty()),
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
+            metadata_store_client,
         }
     }
 
@@ -190,16 +197,18 @@ impl BifrostInner {
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
-        // todo: replace with fetching metadata from store
-        let num_partitions = metadata()
-            .wait_for_partition_table(Version::MIN)
-            .await?
-            .num_partitions();
-        let logs = create_static_metadata(&self.opts, num_partitions);
-        let mut guard = self.log_metadata.lock().unwrap();
-        if logs.version > guard.version {
-            *guard = logs;
+        if let Some(logs) = self
+            .metadata_store_client
+            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+            .await
+            .map_err(Arc::new)?
+        {
+            let mut guard = self.log_metadata.lock().unwrap();
+            if logs.version > guard.version {
+                *guard = logs;
+            }
         }
+
         Ok(())
     }
 
@@ -294,7 +303,7 @@ mod tests {
             .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            let mut bifrost = Bifrost::new_in_memory().await;
+            let mut bifrost = Bifrost::new_in_memory(node_env.metadata_store_client.clone()).await;
 
             let mut clean_bifrost_clone = bifrost.clone();
 
@@ -373,7 +382,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build();
+            let bifrost_svc = bifrost_opts.build(node_env.metadata_store_client.clone());
             let mut bifrost = bifrost_svc.handle();
 
             // Inject out preconfigured memory provider

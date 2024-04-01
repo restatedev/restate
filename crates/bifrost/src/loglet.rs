@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
-use crate::metadata::{LogletParams, ProviderKind};
 use crate::{Error, LogRecord, LsnExt, Options, ProviderError};
 
 // why? because if all loglet features are disabled, clippy will complain about options being

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::ShutdownError;
+use std::sync::Arc;
 use thiserror::Error;
 
 use restate_types::logs::{LogId, Lsn};
@@ -32,6 +33,9 @@ pub enum Error {
     #[cfg(any(test, feature = "local_loglet"))]
     #[error(transparent)]
     LogStoreError(#[from] LogStoreError),
+    #[error("failed reading logs config from metadata store: {0}")]
+    // unfortunately, we have to use Arc here, because the ReadError is not Clone.
+    MetadataStore(#[from] Arc<restate_metadata_store::ReadError>),
 }
 
 #[derive(Debug, thiserror::Error)]

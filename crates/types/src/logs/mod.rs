@@ -10,6 +10,8 @@
 
 use bytes::Bytes;
 
+pub mod metadata;
+
 #[derive(
     Debug,
     Clone,

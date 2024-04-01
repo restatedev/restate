@@ -15,6 +15,7 @@ use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
 use restate_meta::MetaService;
+use restate_metadata_store::MetadataStoreClient;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::SubscriptionId;
@@ -106,7 +107,11 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let bifrost = node_env
         .tc
-        .run_in_scope("bifrost init", None, Bifrost::new_in_memory())
+        .run_in_scope(
+            "bifrost init",
+            None,
+            Bifrost::new_in_memory(MetadataStoreClient::new_in_memory()),
+        )
         .await;
 
     node_env.tc.spawn(

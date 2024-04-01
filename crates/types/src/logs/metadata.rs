@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024-2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -11,39 +11,38 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
+use crate::logs::{LogId, Lsn, SequenceNumber};
+use crate::{Version, Versioned};
 use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::{Version, Versioned};
-
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logs {
-    pub(crate) version: Version,
-    pub(crate) logs: HashMap<LogId, Chain>,
+    pub version: Version,
+    pub logs: HashMap<LogId, Chain>,
 }
 
 /// the chain is a list of segments in (from Lsn) order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
-    pub(crate) chain: BTreeMap<Lsn, Arc<LogletConfig>>,
+    pub chain: BTreeMap<Lsn, Arc<LogletConfig>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Segment {
-    pub(crate) base_lsn: Lsn,
-    pub(crate) config: Arc<LogletConfig>,
+    pub base_lsn: Lsn,
+    pub config: Arc<LogletConfig>,
 }
 
 /// A segment in the chain of loglet instances.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogletConfig {
-    pub(crate) kind: ProviderKind,
-    pub(crate) params: LogletParams,
+    pub kind: ProviderKind,
+    pub params: LogletParams,
 }
 
 /// The configuration of a single loglet segment. This holds information needed
@@ -54,8 +53,6 @@ pub struct LogletConfig {
 pub struct LogletParams(String);
 
 /// An enum with the list of supported loglet providers.
-/// For each variant we must have a corresponding implementation of the
-/// [`crate::loglet::Loglet`] trait
 #[derive(
     Debug,
     Clone,
@@ -71,10 +68,10 @@ pub struct LogletParams(String);
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
-    #[cfg(any(test, feature = "local_loglet"))]
+    #[cfg(any(feature = "test-util", feature = "local_loglet"))]
     /// A local rocksdb-backed loglet.
     Local,
-    #[cfg(any(test, feature = "memory_loglet"))]
+    #[cfg(any(feature = "test-util", feature = "memory_loglet"))]
     /// An in-memory loglet, primarily for testing.
     InMemory,
 }
@@ -153,6 +150,22 @@ impl Chain {
     pub fn tail(&self) -> Option<(&Lsn, &Arc<LogletConfig>)> {
         self.chain.last_key_value()
     }
+}
+
+/// Initializes the bifrost metadata with static log metadata, it creates a log for every partition
+/// with a chain of the default loglet provider kind.
+pub fn create_static_metadata(default_provider: ProviderKind, num_partitions: u64) -> Logs {
+    // Get metadata from somewhere
+    let mut log_chain: HashMap<LogId, Chain> = HashMap::with_capacity(num_partitions as usize);
+
+    // pre-fill with all possible logs up to `num_partitions`
+    (0..num_partitions).for_each(|i| {
+        // fixed config that uses the log-id as loglet identifier/config
+        let config = LogletParams::from(i.to_string());
+        log_chain.insert(LogId::from(i), Chain::new(default_provider, config));
+    });
+
+    Logs::new(Version::MIN, log_chain)
 }
 
 #[cfg(test)]
