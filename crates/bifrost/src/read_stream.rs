@@ -82,8 +82,7 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_core::TestCoreEnv;
-    use tokio::task::JoinHandle;
+    use restate_core::{TaskKind, TestCoreEnv};
     use tracing::info;
     use tracing_test::traced_test;
 
@@ -104,7 +103,10 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build(node_env.metadata_store_client.clone());
+            let bifrost_svc = bifrost_opts.build(
+                node_env.metadata_store_client.clone(),
+                node_env.metadata_writer.clone(),
+            );
             let mut bifrost = bifrost_svc.handle();
 
             // start bifrost service in the background
@@ -119,7 +121,7 @@ mod tests {
             assert_eq!(read_after, reader.current_read_pointer());
 
             // spawn a reader that reads 5 records and exits.
-            let reader_bg_handle: JoinHandle<Result<()>> = tokio::spawn(async move {
+            let id = tc.spawn(TaskKind::Disposable, "read-records", None, async move {
                 for i in 1..=5 {
                     let record = reader.read_next().await?;
                     let expected_lsn = Lsn::from(i) + read_after;
@@ -132,7 +134,9 @@ mod tests {
                     assert_eq!(expected_lsn, reader.current_read_pointer());
                 }
                 Ok(())
-            });
+            })?;
+
+            let reader_bg_handle = tc.take_task(id).expect("read-records task to exist");
 
             tokio::task::yield_now().await;
             // Not finished, we still didn't append records
@@ -160,7 +164,7 @@ mod tests {
             }
 
             // reader has finished
-            assert!(reader_bg_handle.await.unwrap().is_ok());
+            reader_bg_handle.await?;
             assert!(logs_contain("read record"));
 
             Ok(())

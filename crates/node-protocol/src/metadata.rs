@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
+use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,7 @@ pub enum MetadataKind {
 pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
+    Logs(Logs),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +97,7 @@ impl MetadataContainer {
         match self {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
+            MetadataContainer::Logs(_) => MetadataKind::Logs,
         }
     }
 }

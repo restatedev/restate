@@ -22,9 +22,10 @@ use tokio::sync::{oneshot, watch};
 
 use restate_node_protocol::metadata::MetadataContainer;
 pub use restate_node_protocol::metadata::MetadataKind;
+use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, Version, Versioned};
 
 use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
@@ -91,6 +92,19 @@ impl Metadata {
         Ok(self.partition_table().unwrap())
     }
 
+    pub fn logs(&self) -> Option<Arc<Logs>> {
+        self.inner.logs.load_full()
+    }
+
+    /// Returns Version::INVALID if logs has not been loaded yet.
+    pub fn logs_version(&self) -> Version {
+        let c = self.inner.logs.load();
+        match c.as_deref() {
+            Some(c) => c.version(),
+            None => Version::INVALID,
+        }
+    }
+
     // Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
@@ -116,6 +130,7 @@ struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: ArcSwapOption<NodesConfiguration>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
+    logs: ArcSwapOption<Logs>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 

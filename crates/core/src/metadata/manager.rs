@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate};
 use restate_node_protocol::MessageEnvelope;
+use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::GenerationalNodeId;
@@ -61,6 +62,7 @@ where
         match metadata_kind {
             MetadataKind::NodesConfiguration => self.send_nodes_config(peer, min_version),
             MetadataKind::PartitionTable => self.send_partition_table(peer, min_version),
+            MetadataKind::Logs => self.send_logs(peer, min_version),
             _ => {
                 todo!("Can't send metadata '{}' to peer", metadata_kind)
             }
@@ -75,6 +77,12 @@ where
     fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
         if let Some(partition_table) = metadata().partition_table() {
             self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
+        }
+    }
+
+    fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
+        if let Some(logs) = metadata().logs() {
+            self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
 
@@ -248,6 +256,9 @@ where
             MetadataContainer::PartitionTable(partition_table) => {
                 self.update_partition_table(partition_table);
             }
+            MetadataContainer::Logs(logs) => {
+                self.update_logs(logs);
+            }
         }
 
         if let Some(callback) = callback {
@@ -265,6 +276,12 @@ where
         let maybe_new_version = Self::update_internal(&self.inner.partition_table, partition_table);
 
         self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
+    }
+
+    fn update_logs(&mut self, logs: Logs) {
+        let maybe_new_version = Self::update_internal(&self.inner.logs, logs);
+
+        self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
     fn update_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {

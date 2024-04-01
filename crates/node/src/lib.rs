@@ -124,9 +124,13 @@ impl Node {
 
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
-        let bifrost = options.bifrost.clone().build(metadata_store_client.clone());
         let metadata_manager = MetadataManager::build(networking.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
+
+        let bifrost = options
+            .bifrost
+            .clone()
+            .build(metadata_store_client.clone(), metadata_manager.writer());
 
         let admin_role = if common_opts.roles().contains(Role::Admin) {
             Some(AdminRole::new(
@@ -236,6 +240,7 @@ impl Node {
         }
 
         metadata_writer.update(partition_table).await?;
+        metadata_writer.update(logs).await?;
 
         let nodes_config = metadata.nodes_config();
 
