@@ -10,6 +10,7 @@
 
 use crate::loglets::local_loglet;
 use crate::service::BifrostService;
+use restate_core::MetadataWriter;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::ProviderKind;
 
@@ -42,8 +43,12 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self, metadata_store_client: MetadataStoreClient) -> BifrostService {
-        BifrostService::new(self, metadata_store_client)
+    pub fn build(
+        self,
+        metadata_store_client: MetadataStoreClient,
+        metadata_writer: MetadataWriter,
+    ) -> BifrostService {
+        BifrostService::new(self, metadata_store_client, metadata_writer)
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]

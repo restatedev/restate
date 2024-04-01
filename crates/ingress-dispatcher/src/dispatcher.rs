@@ -299,8 +299,10 @@ mod tests {
             .add_mock_nodes_config()
             .with_partition_table(FixedPartitionTable::new(Version::MIN, 1));
 
-        let bifrost_svc =
-            restate_bifrost::Options::memory().build(env_builder.metadata_store_client.clone());
+        let bifrost_svc = restate_bifrost::Options::memory().build(
+            env_builder.metadata_store_client.clone(),
+            env_builder.metadata_writer.clone(),
+        );
         let bifrost = bifrost_svc.handle();
         let dispatcher = IngressDispatcher::new(bifrost.clone());
 
