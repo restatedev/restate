@@ -17,7 +17,10 @@ use restate_node_protocol::codec::{deserialize_message, serialize_message, Targe
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
-use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, PARTITION_TABLE_KEY};
+use restate_types::logs::metadata::{create_static_metadata, ProviderKind};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+};
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
@@ -246,6 +249,16 @@ where
             .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
 
+        // todo: Allow client to update logs configuration and remove this bit here.
+        let logs = create_static_metadata(
+            ProviderKind::InMemory,
+            self.partition_table.num_partitions(),
+        );
+        self.metadata_store_client
+            .put(BIFROST_CONFIG_KEY.clone(), logs, Precondition::None)
+            .await
+            .expect("to store bifrost config in metadata store");
+
         self.metadata_store_client
             .put(
                 PARTITION_TABLE_KEY.clone(),
@@ -278,6 +291,7 @@ where
             metadata_writer: self.metadata_writer,
             network_sender: self.network_sender,
             router,
+            metadata_store_client: self.metadata_store_client,
         }
     }
 }
@@ -291,6 +305,7 @@ pub struct TestCoreEnv<N> {
     pub network_task: Option<TaskId>,
     pub metadata_manager_task: TaskId,
     pub router: Arc<RwLock<MessageRouter>>,
+    pub metadata_store_client: MetadataStoreClient,
 }
 
 impl TestCoreEnv<MockNetworkSender> {

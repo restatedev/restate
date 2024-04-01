@@ -87,9 +87,9 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
+    use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::Payload;
 
-    use crate::metadata::ProviderKind;
     use crate::Options;
 
     #[tokio::test]
@@ -104,7 +104,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build();
+            let bifrost_svc = bifrost_opts.build(node_env.metadata_store_client.clone());
             let mut bifrost = bifrost_svc.handle();
 
             // start bifrost service in the background

@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use restate_types::logs::metadata::LogletParams;
 use restate_types::logs::{Payload, SequenceNumber};
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
-use crate::metadata::LogletParams;
 use crate::LogRecord;
 use crate::{Error, ProviderError};
 

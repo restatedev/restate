@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::loglets::local_loglet;
-use crate::metadata::ProviderKind;
 use crate::service::BifrostService;
+use restate_metadata_store::MetadataStoreClient;
+use restate_types::logs::metadata::ProviderKind;
 
 /// # Bifrost options
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
@@ -41,8 +42,8 @@ impl Default for Options {
 }
 
 impl Options {
-    pub fn build(self) -> BifrostService {
-        BifrostService::new(self)
+    pub fn build(self, metadata_store_client: MetadataStoreClient) -> BifrostService {
+        BifrostService::new(self, metadata_store_client)
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]

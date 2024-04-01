@@ -12,6 +12,8 @@ default = []
 
 test-util = []
 schemars = ["dep:schemars"]
+local_loglet = []
+memory_loglet = []
 
 [dependencies]
 restate-base64-util = { workspace = true }
@@ -31,7 +33,7 @@ once_cell = { workspace = true }
 opentelemetry_api = { workspace = true }
 rand = { workspace = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
