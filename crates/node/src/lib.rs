@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod config;
 mod network_server;
 mod options;
 mod roles;
 
+pub use config::{set_current_config, Configuration, ConfigurationBuilder};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;

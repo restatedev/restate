@@ -12,6 +12,7 @@ restate-admin = { workspace = true, features = ["options_schema"] }
 restate-bifrost = { workspace = true, features = ["options_schema"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-meta = { workspace = true, features = ["options_schema"] }
+restate-node = { workspace = true }
 restate-node-services = { workspace = true, features = ["clients"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-server = { workspace = true, features = ["options_schema"] }
