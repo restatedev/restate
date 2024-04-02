@@ -16,7 +16,7 @@ restate-node = { workspace = true }
 restate-node-services = { workspace = true, features = ["clients"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-server = { workspace = true, features = ["options_schema"] }
-restate-types = { workspace = true, features = ["serde_schema"] }
+restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }
 
 anyhow = { workspace = true }
