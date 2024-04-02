@@ -54,9 +54,9 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
-#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
-    feature = "serde_schema",
+    feature = "schemars",
     schemars(title = "Retry policy", description = "Definition of a retry policy")
 )]
 pub enum RetryPolicy {
@@ -74,7 +74,7 @@ pub enum RetryPolicy {
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         interval: humantime::Duration,
         /// # Max attempts
         ///
@@ -91,7 +91,7 @@ pub enum RetryPolicy {
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         initial_interval: humantime::Duration,
 
         /// # Factor
@@ -108,7 +108,7 @@ pub enum RetryPolicy {
         ///
         /// Maximum interval between retries.
         #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
         max_interval: Option<humantime::Duration>,
     },
 }

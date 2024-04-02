@@ -66,7 +66,7 @@ impl From<u128> for SubscriptionId {
 }
 
 // Passthrough json schema to the string
-#[cfg(feature = "serde_schema")]
+#[cfg(feature = "schemars")]
 impl schemars::JsonSchema for SubscriptionId {
     fn schema_name() -> String {
         <String as schemars::JsonSchema>::schema_name()

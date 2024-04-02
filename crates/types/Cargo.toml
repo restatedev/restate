@@ -11,7 +11,7 @@ publish = false
 default = []
 
 test-util = []
-serde_schema = ["dep:schemars"]
+schemars = ["dep:schemars"]
 
 [dependencies]
 restate-base64-util = { workspace = true }

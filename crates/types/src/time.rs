@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(transparent)]
-#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MillisSinceEpoch(u64);
 
 impl MillisSinceEpoch {

@@ -25,7 +25,7 @@ restate-schema-api = { workspace = true, features = ["deployment", "serde", "ser
 restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-types = { workspace = true, features = ["serde_schema"] }
+restate-types = { workspace = true, features = ["schemars"] }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
