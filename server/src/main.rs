@@ -200,6 +200,7 @@ fn main() {
                         info!("Restate has been gracefully shut down.");
                     }
                 },
+                _ = signal::sigusr_dump_config() => {},
                 _ = task_center_watch => {
                     // Shutdown was requested by task center and it has completed.
                 },
