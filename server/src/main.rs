@@ -123,6 +123,9 @@ fn main() {
         }
     };
 
+    restate_server::config::set_config(config);
+
+    let config = Configuration::pinned();
     let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
 
     let tc = TaskCenterFactory::create(runtime.handle().clone());

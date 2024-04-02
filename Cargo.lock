@@ -5529,6 +5529,7 @@ dependencies = [
 name = "restate-server"
 version = "0.9.0"
 dependencies = [
+ "arc-swap",
  "clap",
  "codederror",
  "derive-getters",
@@ -5538,6 +5539,7 @@ dependencies = [
  "figment",
  "futures-util",
  "humantime",
+ "once_cell",
  "pin-project",
  "restate-admin",
  "restate-bifrost",
