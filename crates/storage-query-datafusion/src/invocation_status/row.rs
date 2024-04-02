@@ -67,7 +67,7 @@ pub(crate) fn append_invocation_status_row(
             row.status("free");
             None
         }
-        InvocationStatus::Completed(_) => {
+        InvocationStatus::Completed { .. } => {
             row.status("completed");
             None
         }

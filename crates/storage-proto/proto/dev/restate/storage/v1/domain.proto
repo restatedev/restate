@@ -101,6 +101,12 @@ message InvocationStatus {
 
     message Completed {
         ResponseResult result = 1;
+        ServiceId service_id = 2;
+        bytes handler_name = 3;
+        oneof idempotency_key {
+            google.protobuf.Empty idempotency_key_none = 12;
+            string idempotency_key_value = 13;
+        }
     }
 
     message Free {
@@ -120,6 +126,7 @@ message InvocationStatus {
         SpanContext span_context = 9;
         repeated Header headers = 10;
         uint64 execution_time = 11;
+        IdempotentRequestMetadata idempotency = 12;
     }
 
     oneof status {
@@ -208,6 +215,7 @@ message ServiceInvocation {
     Source source = 6;
     repeated Header headers = 7;
     uint64 execution_time = 8;
+    IdempotentRequestMetadata idempotency = 9;
 }
 
 message StateMutation {
@@ -414,9 +422,14 @@ message Timer {
         bytes service_key = 2;
     }
 
+    message CleanInvocationStatus {
+        bytes invocation_id = 1;
+    }
+
     oneof value {
         CompleteSleepEntry complete_sleep_entry = 100;
         ServiceInvocation invoke = 101;
+        CleanInvocationStatus clean_invocation_status = 102;
     }
 }
 
@@ -452,4 +465,9 @@ message DedupSequenceNumber {
 
 message IdempotencyMetadata {
     bytes invocation_id = 1;
+}
+
+message IdempotentRequestMetadata {
+    string key = 1;
+    Duration retention = 2;
 }

@@ -94,6 +94,7 @@ pub fn create_response_message(
                 SpanRelation::None,
                 vec![],
                 None,
+                None,
             )))
         }
     }
