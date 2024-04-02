@@ -21,7 +21,9 @@ use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_worker_api::Error;
+use restate_worker::SubscriptionController;
+use restate_worker::WorkerHandle;
+use restate_worker::WorkerHandleError;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
@@ -47,38 +49,38 @@ fn generate_default_config() -> anyhow::Result<()> {
 #[derive(Clone)]
 struct Mock;
 
-impl restate_worker_api::Handle for Mock {
+impl WorkerHandle for Mock {
     async fn terminate_invocation(
         &self,
         _: InvocationTermination,
-    ) -> Result<(), restate_worker_api::Error> {
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn external_state_mutation(&self, _mutation: ExternalStateMutation) -> Result<(), Error> {
+    async fn external_state_mutation(
+        &self,
+        _mutation: ExternalStateMutation,
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
-impl restate_worker_api::SubscriptionController for Mock {
-    async fn start_subscription(&self, _: Subscription) -> Result<(), restate_worker_api::Error> {
+impl SubscriptionController for Mock {
+    async fn start_subscription(&self, _: Subscription) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), restate_worker_api::Error> {
+    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn update_subscriptions(
-        &self,
-        _: Vec<Subscription>,
-    ) -> Result<(), restate_worker_api::Error> {
+    async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
 impl restate_schema_api::subscription::SubscriptionValidator for Mock {
-    type Error = restate_worker_api::Error;
+    type Error = WorkerHandleError;
 
     fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
         unimplemented!()
