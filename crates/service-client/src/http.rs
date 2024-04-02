@@ -21,7 +21,6 @@ use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
 use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
 use hyper_rustls::HttpsConnector;
-use ring::rand::SecureRandom;
 use serde_with::serde_as;
 use std::fmt::Debug;
 use std::future;
@@ -133,7 +132,6 @@ type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    random: ring::rand::SystemRandom,
     client: hyper::Client<Connector, Body>,
     // this can be changed to re-read periodically if necessary
     request_signing_keys: Arc<ArcSwap<Vec<request_signing::v1::SigningKey>>>,
@@ -154,15 +152,7 @@ impl HttpClient {
             Arc::new(ArcSwap::new(Arc::new(Vec::new())))
         };
 
-        let random = ring::rand::SystemRandom::new();
-
-        // initialisation can be slow and happens on first load
-        random
-            .fill(&mut [0; 1])
-            .map_err(|_| HttpClientError::RandomFailure)?;
-
         Ok(Self {
-            random,
             client,
             request_signing_keys,
         })
@@ -248,7 +238,6 @@ impl HttpClient {
 
         let signer = if !request_signing_keys.is_empty() {
             match request_signing::v1::Signer::new(
-                &self.random,
                 method.as_str(),
                 path.path(),
                 request_signing_keys.as_slice(),
@@ -283,8 +272,6 @@ pub enum BuildError {
 pub enum HttpClientError {
     #[error("Failed to read request signing private key: {0}")]
     SigningPrivateKeyReadError(#[from] SigningPrivateKeyReadError),
-    #[error("Failed to initialise random byte source for request signing")]
-    RandomFailure,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,8 +290,6 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
-    #[error("Failed to generate random bytes for request signing")]
-    RandomFailure,
 }
 
 impl HttpError {
@@ -314,7 +299,6 @@ impl HttpError {
         match self {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
-            HttpError::RandomFailure => true,
         }
     }
 }
