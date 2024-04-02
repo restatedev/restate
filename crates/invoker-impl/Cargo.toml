@@ -22,7 +22,7 @@ restate-schema-api = { workspace = true, features = ["deployment"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message"] }
 restate-timer-queue = { workspace = true }
-restate-types = { workspace = true, features = ["serde"] }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }

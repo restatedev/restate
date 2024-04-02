@@ -40,8 +40,9 @@ use crate::time::MillisSinceEpoch;
     derive_more::From,
     derive_more::Into,
     derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[display(fmt = "e{}", _0)]
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
@@ -58,10 +59,17 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 pub type EntryIndex = u32;
 
 /// Unique Id of a deployment.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct DeploymentId(pub(crate) Ulid);
 
@@ -82,10 +90,17 @@ impl Default for DeploymentId {
 }
 
 /// Unique Id of a subscription.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct SubscriptionId(pub(crate) Ulid);
 
@@ -145,10 +160,17 @@ pub trait ResourceId {
 }
 
 /// Discriminator for invocation instances
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Ord,
+    PartialOrd,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct InvocationUuid(Ulid);
 
@@ -241,8 +263,9 @@ impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
 ///
 /// Services are isolated by key. This means that there cannot be two concurrent
 /// invocations for the same service instance (service name, key).
-#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,
@@ -290,10 +313,16 @@ impl WithPartitionKey for ServiceId {
 /// InvocationId is a unique identifier of the invocation,
 /// including enough routing information for the network component
 /// to route requests to the correct partition processors.
-#[derive(Eq, Hash, PartialEq, Clone, Debug, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Debug,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct InvocationId {
     /// Partition key of the called service
@@ -427,8 +456,7 @@ impl FromStr for InvocationId {
 ///
 /// A service invocation id is composed of a [`ServiceId`] and an [`InvocationUuid`]
 /// that makes the id unique.
-#[derive(Eq, Hash, PartialEq, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FullInvocationId {
     /// Identifies the invoked service
     pub service_id: ServiceId,
@@ -512,8 +540,7 @@ impl From<FullInvocationId> for EncodedInvocationId {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyId {
     /// Identifies the invoked component
     pub component_name: ByteString,
@@ -592,11 +619,7 @@ fn encode_invocation_id(
     buf
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
-)]
+#[derive(Debug, Clone, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
 pub struct LambdaARN {
     partition: ByteString,
     region: ByteString,

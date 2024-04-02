@@ -15,7 +15,7 @@ codederror = { workspace = true }
 restate-core = { workspace = true }
 restate-grpc-util = { workspace = true }
 restate-node-protocol = { workspace = true }
-restate-types = { workspace = true, features = ["serde"] }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

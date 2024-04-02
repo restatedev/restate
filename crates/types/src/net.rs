@@ -13,10 +13,15 @@ use std::net::{AddrParseError, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Hash,
+    derive_more::Display,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub enum AdvertisedAddress {
     /// Unix domain socket
@@ -42,10 +47,15 @@ impl FromStr for AdvertisedAddress {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    Clone,
+    Eq,
+    PartialEq,
+    Hash,
+    derive_more::Display,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub enum BindAddress {
     /// Unix domain socket

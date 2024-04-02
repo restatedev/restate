@@ -12,8 +12,7 @@ use crate::identifiers::InvocationId;
 use crate::invocation::ResponseResult;
 use crate::GenerationalNodeId;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IngressResponse {
     pub target_node: GenerationalNodeId,
     pub invocation_id: InvocationId,

@@ -14,10 +14,11 @@ use std::ops::Add;
 use std::time::{Duration, SystemTime};
 
 /// Milliseconds since the unix epoch
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct MillisSinceEpoch(u64);
 
 impl MillisSinceEpoch {

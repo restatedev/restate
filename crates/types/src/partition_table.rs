@@ -24,8 +24,7 @@ pub trait FindPartition {
     ) -> Result<PartitionId, PartitionTableError>;
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FixedPartitionTable {
     version: Version,
     num_partitions: u64,
