@@ -597,7 +597,16 @@ mod tests {
                 },
             }))
             .await;
+        // No ingress response is expected at this point because the invocation did not end yet
+        assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
 
+        // Send the End Effect
+        let actions = state_machine
+            .apply(Command::InvokerEffect(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::End,
+            }))
+            .await;
         // At this point we expect the completion to be forwarded to the invoker
         assert_that!(
             actions,
