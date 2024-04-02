@@ -11,6 +11,8 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,10 +20,12 @@ use std::sync::Arc;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
+use restate_core::metadata_store::Operation;
 use restate_core::{metadata, MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::logs::metadata::ProviderKind;
+use restate_types::logs::metadata::{create_chain_from_log_id, Logs, ProviderKind};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 use tracing::{error, instrument};
 
@@ -61,8 +65,7 @@ impl Bifrost {
         bifrost
     }
 
-    /// Appends a single record to a log. The log id must exist, otherwise the
-    /// operation fails with [`Error::UnknownLogId`]
+    /// Appends a single record to a log.
     #[instrument(level = "debug", skip(self, payload), err)]
     pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.inner.append(log_id, payload).await
@@ -150,8 +153,7 @@ impl BifrostInner {
         self.shutting_down.store(true, Ordering::Relaxed);
     }
 
-    /// Appends a single record to a log. The log id must exist, otherwise the
-    /// operation fails with [`Error::UnknownLogId`]
+    /// Appends a single record to a log.
     pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
         let loglet = self.writeable_loglet(log_id).await?;
@@ -239,10 +241,13 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper, Error> {
-        let tail_segment = metadata()
-            .logs()
-            .and_then(|logs| logs.tail_segment(log_id))
-            .ok_or(Error::UnknownLogId(log_id))?;
+        let tail_segment = self
+            .insert_chain_if_missing(log_id)
+            .await?
+            .chain(log_id)
+            .expect("chain being present")
+            .tail();
+
         let provider = self.provider_for(tail_segment.config.kind);
         let loglet = provider.get_loglet(&tail_segment.config.params).await?;
 
@@ -250,14 +255,54 @@ impl BifrostInner {
     }
 
     async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper, Error> {
-        let segment = metadata()
-            .logs()
-            .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
-            .ok_or(Error::UnknownLogId(log_id))?;
+        let segment = self
+            .insert_chain_if_missing(log_id)
+            .await?
+            .chain(log_id)
+            .expect("chain being present")
+            .find_segment_for_lsn(lsn)
+            .expect("infinite segment being present");
         let provider = self.provider_for(segment.config.kind);
         let loglet = provider.get_loglet(&segment.config.params).await?;
 
         Ok(LogletWrapper::new(segment.base_lsn, loglet))
+    }
+
+    /// Inserts a [`Chain`] for the given log id if it is missing in the [`Logs`] metadata. The
+    /// [`ProviderKind`] is chosen from Bifrost's configuration options.
+    async fn insert_chain_if_missing(&self, log_id: LogId) -> Result<Arc<Logs>, Error> {
+        if let Some(logs) = metadata().logs() {
+            if logs.logs.contains_key(&log_id) {
+                return Ok(logs);
+            }
+        }
+
+        let logs: Logs = self
+            .metadata_store_client
+            .read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs| {
+                logs.map(|mut logs: Logs| {
+                    if let Entry::Vacant(e) = logs.logs.entry(log_id) {
+                        e.insert(create_chain_from_log_id(log_id, self.opts.default_provider));
+                        logs.increment_version();
+                        Operation::Upsert(logs)
+                    } else {
+                        Operation::Return(logs)
+                    }
+                })
+                .unwrap_or_else(|| {
+                    let mut logs = HashMap::default();
+                    logs.insert(
+                        log_id,
+                        create_chain_from_log_id(log_id, self.opts.default_provider),
+                    );
+                    Operation::Upsert(Logs::new(Version::MIN, logs))
+                })
+            })
+            .await
+            .map_err(Arc::new)?;
+
+        self.metadata_writer.update(logs.clone()).await?;
+        Ok(metadata().logs().expect("logs config being present"))
     }
 }
 
@@ -303,12 +348,6 @@ mod tests {
                 assert_eq!(Lsn::from(i), lsn);
                 max_lsn = lsn;
             }
-
-            // Append to a log that doesn't exist.
-            let invalid_log = LogId::from(num_partitions + 1);
-            let resp = bifrost.append(invalid_log, Payload::default()).await;
-
-            assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 
             // use a cloned bifrost.
             let mut cloned_bifrost = bifrost.clone();

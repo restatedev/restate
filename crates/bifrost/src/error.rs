@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::{ShutdownError, SyncError};
 use std::sync::Arc;
 use thiserror::Error;
@@ -22,8 +23,6 @@ use crate::types::SealReason;
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
-    #[error("unknown log '{0}")]
-    UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}")]
     InvalidLsn(Lsn),
     #[error("operation failed due to an ongoing shutdown")]
@@ -34,6 +33,9 @@ pub enum Error {
     #[error("failed syncing logs metadata: {0}")]
     // unfortunately, we have to use Arc here, because the SyncError is not Clone.
     MetadataSync(#[from] Arc<SyncError>),
+    #[error("failed updating metadata: {0}")]
+    // unfortunately, we have to use Arc here, because the ReadModifyWriteError is not Clone.
+    MetadataUpdate(#[from] Arc<ReadModifyWriteError>),
 }
 
 #[derive(Debug, thiserror::Error)]

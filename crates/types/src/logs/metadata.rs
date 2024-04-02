@@ -101,34 +101,12 @@ impl Logs {
         }
     }
 
-    pub fn tail_segment(&self, log_id: LogId) -> Option<Segment> {
-        self.logs
-            .get(&log_id)
-            .and_then(|chain| chain.tail())
-            .map(|(base_lsn, config)| Segment {
-                base_lsn: *base_lsn,
-                config: Arc::clone(config),
-            })
+    pub fn increment_version(&mut self) {
+        self.version = self.version.next();
     }
 
-    pub fn find_segment_for_lsn(&self, log_id: LogId, _lsn: Lsn) -> Option<Segment> {
-        // [Temporary implementation] At the moment, we have the hard assumption
-        // that the chain contains a single segment so we always return this segment.
-        //
-        // NOTE: Hopefully at some point we will use the nightly Cursor API for
-        // effecient cursor seeks in the chain (or use nightly channel)
-        // Reference: https://github.com/rust-lang/rust/issues/107540
-        //
-        self.logs.get(&log_id).map(|chain| {
-            let config = chain
-                .chain
-                .get(&Lsn::OLDEST)
-                .expect("Chain should always have one segment");
-            Segment {
-                base_lsn: Lsn::OLDEST,
-                config: Arc::clone(config),
-            }
-        })
+    pub fn chain(&self, log_id: LogId) -> Option<&Chain> {
+        self.logs.get(&log_id)
     }
 }
 
@@ -147,8 +125,32 @@ impl Chain {
         Self { chain }
     }
 
-    pub fn tail(&self) -> Option<(&Lsn, &Arc<LogletConfig>)> {
-        self.chain.last_key_value()
+    pub fn tail(&self) -> Segment {
+        self.chain
+            .last_key_value()
+            .map(|(lsn, config)| Segment {
+                base_lsn: *lsn,
+                config: Arc::clone(config),
+            })
+            .expect("chain contains at least one segment")
+    }
+
+    pub fn find_segment_for_lsn(&self, _lsn: Lsn) -> Option<Segment> {
+        // [Temporary implementation] At the moment, we have the hard assumption
+        // that the chain contains a single segment so we always return this segment.
+
+        // NOTE: Hopefully at some point we will use the nightly Cursor API for
+        // efficient cursor seeks in the chain (or use nightly channel)
+        // Reference: https://github.com/rust-lang/rust/issues/107540
+        let config = self
+            .chain
+            .get(&Lsn::OLDEST)
+            .expect("Chain should always have one segment");
+
+        Some(Segment {
+            base_lsn: Lsn::OLDEST,
+            config: Arc::clone(config),
+        })
     }
 }
 
@@ -160,12 +162,17 @@ pub fn create_static_metadata(default_provider: ProviderKind, num_partitions: u6
 
     // pre-fill with all possible logs up to `num_partitions`
     (0..num_partitions).for_each(|i| {
-        // fixed config that uses the log-id as loglet identifier/config
-        let config = LogletParams::from(i.to_string());
-        log_chain.insert(LogId::from(i), Chain::new(default_provider, config));
+        let log_id = LogId::from(i);
+        log_chain.insert(log_id, create_chain_from_log_id(log_id, default_provider));
     });
 
     Logs::new(Version::MIN, log_chain)
+}
+
+pub fn create_chain_from_log_id(log_id: LogId, provider: ProviderKind) -> Chain {
+    // fixed config that uses the log-id as loglet identifier/config
+    let config = LogletParams::from(log_id.0.to_string());
+    Chain::new(provider, config)
 }
 
 #[cfg(test)]
@@ -177,9 +184,9 @@ mod tests {
     fn test_chain_new() {
         let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));
         assert_eq!(chain.chain.len(), 1);
-        let_assert!(Some((lsn, loglet_config)) = chain.tail());
-        assert_eq!(Lsn::OLDEST, *lsn);
-        assert_eq!(ProviderKind::Local, loglet_config.kind);
-        assert_eq!("test".to_string(), loglet_config.params.0);
+        let_assert!(Segment { base_lsn, config } = chain.tail());
+        assert_eq!(Lsn::OLDEST, base_lsn);
+        assert_eq!(ProviderKind::Local, config.kind);
+        assert_eq!("test".to_string(), config.params.0);
     }
 }
