@@ -15,19 +15,13 @@ use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
-use std::future;
-use std::future::Future;
-
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
-use restate_storage_api::inbox_table::{
-    InboxEntry, InboxTable, SequenceNumberInboxEntry, SequenceNumberInvocation,
-};
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::invocation::MaybeFullInvocationId;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -129,56 +123,6 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
                 TableScanIterationDecision::Emit(inbox_entry)
             },
         ))
-    }
-
-    fn get_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInvocation>>> + Send {
-        let (inbox_key, invocation_uuid) = match maybe_fid.into() {
-            MaybeFullInvocationId::Partial(invocation_id) => (
-                InboxKey::default().partition_key(invocation_id.partition_key()),
-                invocation_id.invocation_uuid(),
-            ),
-            MaybeFullInvocationId::Full(fid) => (
-                InboxKey::default()
-                    .partition_key(fid.partition_key())
-                    .service_name(fid.service_id.service_name)
-                    .service_key(fid.service_id.key),
-                fid.invocation_uuid,
-            ),
-        };
-
-        let mut inbox_entries =
-            self.for_each_key_value_in_place(TableScan::KeyPrefix(inbox_key), move |key, value| {
-                let inbox_entry = decode_inbox_key_value(key, value);
-
-                match inbox_entry {
-                    Ok(inbox_entry) => {
-                        if let InboxEntry::Invocation(invocation) = inbox_entry.inbox_entry {
-                            if invocation.fid.invocation_uuid == invocation_uuid {
-                                return TableScanIterationDecision::BreakWith(Ok(
-                                    SequenceNumberInvocation {
-                                        inbox_sequence_number: inbox_entry.inbox_sequence_number,
-                                        invocation,
-                                    },
-                                ));
-                            }
-                        }
-
-                        TableScanIterationDecision::Continue
-                    }
-                    Err(err) => TableScanIterationDecision::BreakWith(Err(err)),
-                }
-            });
-
-        let result = if inbox_entries.is_empty() {
-            Ok(None)
-        } else {
-            inbox_entries.swap_remove(0).map(Some)
-        };
-
-        future::ready(result)
     }
 }
 

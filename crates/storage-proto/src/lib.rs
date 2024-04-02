@@ -25,7 +25,7 @@ pub mod storage {
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
                 GetState, GetStateKeys, Input, Invoke, Output, SetState, Sleep,
             };
-            use crate::storage::v1::invocation_status::{Free, Invoked, Suspended};
+            use crate::storage::v1::invocation_status::{Free, Inboxed, Invoked, Suspended};
             use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
             use crate::storage::v1::journal_entry::{
                 completion_result, CompletionResult, Entry, Kind,
@@ -134,9 +134,18 @@ pub mod storage {
                         .status
                         .ok_or(ConversionError::missing_field("status"))?
                     {
+                        invocation_status::Status::Inboxed(inboxed) => {
+                            let invocation_metadata =
+                                restate_storage_api::invocation_status_table::InboxedInvocation::try_from(
+                                    inboxed,
+                                )?;
+                            restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
+                                invocation_metadata,
+                            )
+                        }
                         invocation_status::Status::Invoked(invoked) => {
                             let invocation_metadata =
-                                restate_storage_api::invocation_status_table::InvocationMetadata::try_from(
+                                restate_storage_api::invocation_status_table::InFlightInvocationMetadata::try_from(
                                     invoked,
                                 )?;
                             restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
@@ -169,6 +178,9 @@ pub mod storage {
                     value: restate_storage_api::invocation_status_table::InvocationStatus,
                 ) -> Self {
                     let status = match value {
+                        restate_storage_api::invocation_status_table::InvocationStatus::Inboxed(
+                            inboxed_status,
+                        ) => invocation_status::Status::Inboxed(Inboxed::from(inboxed_status)),
                         restate_storage_api::invocation_status_table::InvocationStatus::Invoked(
                             invoked_status,
                         ) => invocation_status::Status::Invoked(Invoked::from(invoked_status)),
@@ -197,7 +209,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<Invoked> for restate_storage_api::invocation_status_table::InvocationMetadata {
+            impl TryFrom<Invoked> for restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
                 type Error = ConversionError;
 
                 fn try_from(value: Invoked) -> Result<Self, Self::Error> {
@@ -259,29 +271,30 @@ pub mod storage {
                     };
 
                     Ok(
-                        restate_storage_api::invocation_status_table::InvocationMetadata::new(
+                        restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
                             service_id,
                             journal_metadata,
                             deployment_id,
-                            method_name,
+                            method: method_name,
                             response_sinks,
-                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                                MillisSinceEpoch::new(value.creation_time),
-                                MillisSinceEpoch::new(value.modification_time),
-                            ),
+                            timestamps:
+                                restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                                    MillisSinceEpoch::new(value.creation_time),
+                                    MillisSinceEpoch::new(value.modification_time),
+                                ),
                             source,
                             completion_retention_time,
                             idempotency_key,
-                        ),
+                        },
                     )
                 }
             }
 
-            impl From<restate_storage_api::invocation_status_table::InvocationMetadata> for Invoked {
+            impl From<restate_storage_api::invocation_status_table::InFlightInvocationMetadata> for Invoked {
                 fn from(
-                    value: restate_storage_api::invocation_status_table::InvocationMetadata,
+                    value: restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
                 ) -> Self {
-                    let restate_storage_api::invocation_status_table::InvocationMetadata {
+                    let restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
                         service_id,
                         deployment_id,
                         method,
@@ -325,7 +338,7 @@ pub mod storage {
 
             impl TryFrom<Suspended>
                 for (
-                    restate_storage_api::invocation_status_table::InvocationMetadata,
+                    restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
                     HashSet<restate_types::identifiers::EntryIndex>,
                 )
             {
@@ -391,20 +404,22 @@ pub mod storage {
                     };
 
                     Ok((
-                        restate_storage_api::invocation_status_table::InvocationMetadata::new(
+                        restate_storage_api::invocation_status_table::InFlightInvocationMetadata {
                             service_id,
                             journal_metadata,
-                            deployment_id.map(|d| d.parse().expect("valid deployment id")),
-                            method_name,
+                            deployment_id: deployment_id
+                                .map(|d| d.parse().expect("valid deployment id")),
+                            method: method_name,
                             response_sinks,
-                            restate_storage_api::invocation_status_table::StatusTimestamps::new(
-                                MillisSinceEpoch::new(value.creation_time),
-                                MillisSinceEpoch::new(value.modification_time),
-                            ),
-                            caller,
+                            timestamps:
+                                restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                                    MillisSinceEpoch::new(value.creation_time),
+                                    MillisSinceEpoch::new(value.modification_time),
+                                ),
+                            source: caller,
                             completion_retention_time,
                             idempotency_key,
-                        ),
+                        },
                         waiting_for_completed_entries,
                     ))
                 }
@@ -412,13 +427,13 @@ pub mod storage {
 
             impl
                 From<(
-                    restate_storage_api::invocation_status_table::InvocationMetadata,
+                    restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
                     HashSet<restate_types::identifiers::EntryIndex>,
                 )> for Suspended
             {
                 fn from(
                     (metadata, waiting_for_completed_entries): (
-                        restate_storage_api::invocation_status_table::InvocationMetadata,
+                        restate_storage_api::invocation_status_table::InFlightInvocationMetadata,
                         HashSet<restate_types::identifiers::EntryIndex>,
                     ),
                 ) -> Self {
@@ -460,6 +475,115 @@ pub mod storage {
                                 invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(())
                             }
                         }),
+                    }
+                }
+            }
+
+            impl TryFrom<Inboxed> for restate_storage_api::invocation_status_table::InboxedInvocation {
+                type Error = ConversionError;
+
+                fn try_from(value: Inboxed) -> Result<Self, Self::Error> {
+                    let service_id = value
+                        .service_id
+                        .ok_or(ConversionError::missing_field("service_id"))?
+                        .try_into()?;
+
+                    let handler_name = value.handler.try_into().map_err(|e| {
+                        ConversionError::InvalidData(anyhow!(
+                            "Cannot decode method_name string {e}"
+                        ))
+                    })?;
+                    let response_sinks = value
+                        .response_sinks
+                        .into_iter()
+                        .map(|s| {
+                            Ok::<_, ConversionError>(Option::<
+                                restate_types::invocation::ServiceInvocationResponseSink,
+                            >::try_from(s)
+                                .transpose()
+                                .ok_or(ConversionError::missing_field("response_sink"))??)
+                        })
+                        .collect::<Result<HashSet<_>, _>>()?;
+
+                    let source = restate_types::invocation::Source::try_from(
+                        value
+                            .source
+                            .ok_or(ConversionError::missing_field("source"))?,
+                    )?;
+
+                    let span_context =
+                        restate_types::invocation::ServiceInvocationSpanContext::try_from(
+                            value
+                                .span_context
+                                .ok_or(ConversionError::missing_field("span_context"))?,
+                        )?;
+                    let headers = value
+                        .headers
+                        .into_iter()
+                        .map(|h| restate_types::invocation::Header::try_from(h))
+                        .collect::<Result<Vec<_>, ConversionError>>()?;
+
+                    let execution_time = if value.execution_time == 0 {
+                        None
+                    } else {
+                        Some(MillisSinceEpoch::new(value.execution_time))
+                    };
+
+                    Ok(
+                        restate_storage_api::invocation_status_table::InboxedInvocation {
+                            inbox_sequence_number: value.inbox_sequence_number,
+                            response_sinks,
+                            timestamps:
+                                restate_storage_api::invocation_status_table::StatusTimestamps::new(
+                                    MillisSinceEpoch::new(value.creation_time),
+                                    MillisSinceEpoch::new(value.modification_time),
+                                ),
+                            service_id,
+                            handler_name,
+                            source,
+                            span_context,
+                            headers,
+                            argument: value.argument,
+                            execution_time,
+                        },
+                    )
+                }
+            }
+
+            impl From<restate_storage_api::invocation_status_table::InboxedInvocation> for Inboxed {
+                fn from(
+                    value: restate_storage_api::invocation_status_table::InboxedInvocation,
+                ) -> Self {
+                    let restate_storage_api::invocation_status_table::InboxedInvocation {
+                        inbox_sequence_number,
+                        service_id,
+                        response_sinks,
+                        timestamps,
+                        handler_name,
+                        argument,
+                        source,
+                        span_context,
+                        headers,
+                        execution_time,
+                    } = value;
+
+                    let headers = headers.into_iter().map(Into::into).collect();
+
+                    Inboxed {
+                        inbox_sequence_number,
+                        service_id: Some(service_id.into()),
+                        handler: handler_name.into_bytes(),
+                        response_sinks: response_sinks
+                            .into_iter()
+                            .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                            .collect(),
+                        creation_time: timestamps.creation_time().as_u64(),
+                        modification_time: timestamps.modification_time().as_u64(),
+                        source: Some(Source::from(source)),
+                        span_context: Some(SpanContext::from(span_context)),
+                        headers,
+                        argument,
+                        execution_time: execution_time.map(|m| m.as_u64()).unwrap_or_default(),
                     }
                 }
             }
@@ -539,21 +663,11 @@ pub mod storage {
                 type Error = ConversionError;
 
                 fn try_from(value: InboxEntry) -> Result<Self, Self::Error> {
-                    // Backwards compatibility to support Restate <= 0.7
-                    let inbox_entry = if let Some(service_invocation) = value.service_invocation {
-                        restate_storage_api::inbox_table::InboxEntry::Invocation(
-                            restate_types::invocation::ServiceInvocation::try_from(
-                                service_invocation,
-                            )?,
-                        )
-                    } else {
-                        // All InboxEntries starting with Restate >= 0.7.1 should have the entry field set
+                    Ok(
                         match value.entry.ok_or(ConversionError::missing_field("entry"))? {
-                            inbox_entry::Entry::Invocation(service_invocation) => {
+                            inbox_entry::Entry::Invocation(fid) => {
                                 restate_storage_api::inbox_table::InboxEntry::Invocation(
-                                    restate_types::invocation::ServiceInvocation::try_from(
-                                        service_invocation,
-                                    )?,
+                                    restate_types::identifiers::FullInvocationId::try_from(fid)?,
                                 )
                             }
                             inbox_entry::Entry::StateMutation(state_mutation) => {
@@ -563,29 +677,23 @@ pub mod storage {
                                     )?,
                                 )
                             }
-                        }
-                    };
-
-                    Ok(inbox_entry)
+                        },
+                    )
                 }
             }
 
             impl From<restate_storage_api::inbox_table::InboxEntry> for InboxEntry {
                 fn from(inbox_entry: restate_storage_api::inbox_table::InboxEntry) -> Self {
                     let inbox_entry = match inbox_entry {
-                        restate_storage_api::inbox_table::InboxEntry::Invocation(
-                            service_invocation,
-                        ) => inbox_entry::Entry::Invocation(ServiceInvocation::from(
-                            service_invocation,
-                        )),
+                        restate_storage_api::inbox_table::InboxEntry::Invocation(fid) => {
+                            inbox_entry::Entry::Invocation(FullInvocationId::from(fid))
+                        }
                         restate_storage_api::inbox_table::InboxEntry::StateMutation(
                             state_mutation,
                         ) => inbox_entry::Entry::StateMutation(StateMutation::from(state_mutation)),
                     };
 
                     InboxEntry {
-                        // Backwards compatibility to support Restate <= 0.7
-                        service_invocation: None,
                         entry: Some(inbox_entry),
                     }
                 }

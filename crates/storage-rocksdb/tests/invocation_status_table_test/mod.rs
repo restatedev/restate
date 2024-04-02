@@ -11,7 +11,8 @@
 use crate::assert_stream_eq;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
-    InvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
+    StatusTimestamps,
 };
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{
@@ -47,32 +48,32 @@ static INVOCATION_ID_3: Lazy<InvocationId> = Lazy::new(|| {
 });
 
 fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
-    InvocationStatus::Invoked(InvocationMetadata::new(
-        service_id.into(),
-        JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
-        None,
-        "service".into(),
-        HashSet::new(),
-        StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
-        Source::Ingress,
-        Duration::ZERO,
-        None,
-    ))
+    InvocationStatus::Invoked(InFlightInvocationMetadata {
+        service_id: service_id.into(),
+        journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
+        deployment_id: None,
+        method: "service".into(),
+        response_sinks: HashSet::new(),
+        timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
+        source: Source::Ingress,
+        completion_retention_time: Duration::ZERO,
+        idempotency_key: None,
+    })
 }
 
 fn suspended_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
     InvocationStatus::Suspended {
-        metadata: InvocationMetadata::new(
-            service_id.into(),
-            JournalMetadata::new(0, ServiceInvocationSpanContext::empty()),
-            None,
-            "service".into(),
-            HashSet::new(),
-            StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
-            Source::Ingress,
-            Duration::ZERO,
-            None,
-        ),
+        metadata: InFlightInvocationMetadata {
+            service_id: service_id.into(),
+            journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
+            deployment_id: None,
+            method: "service".into(),
+            response_sinks: HashSet::new(),
+            timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
+            source: Source::Ingress,
+            completion_retention_time: Duration::ZERO,
+            idempotency_key: None,
+        },
         waiting_for_completed_entries: HashSet::default(),
     }
 }

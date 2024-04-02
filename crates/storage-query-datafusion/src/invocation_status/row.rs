@@ -11,7 +11,7 @@
 use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
 use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
@@ -51,6 +51,10 @@ pub(crate) fn append_invocation_status_row(
 
     // Additional invocation metadata
     let metadata = match status_row.invocation_status {
+        InvocationStatus::Inboxed(_) => {
+            row.status("inboxed");
+            None
+        }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
             Some(metadata)
@@ -77,7 +81,7 @@ pub(crate) fn append_invocation_status_row(
 fn fill_invocation_metadata(
     row: &mut InvocationStatusRowBuilder,
     output: &mut String,
-    meta: InvocationMetadata,
+    meta: InFlightInvocationMetadata,
 ) {
     // journal_metadata and stats are filled by other functions
     row.handler(meta.method);

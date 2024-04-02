@@ -18,18 +18,11 @@ define_table!(inbox(
     partition_key: DataType::UInt64,
 
     component: DataType::LargeUtf8,
-    handler: DataType::LargeUtf8,
-
     component_key: DataType::LargeUtf8,
 
     id: DataType::LargeUtf8,
 
     sequence_number: DataType::UInt64,
-
-    invoked_by: DataType::LargeUtf8,
-    invoked_by_component: DataType::LargeUtf8,
-    invoked_by_id: DataType::LargeUtf8,
-    trace_id: DataType::LargeUtf8,
 
     created_at: DataType::Date64,
 ));
