@@ -106,8 +106,12 @@ impl MemoryOptions {
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::RT0002)]
-#[error("configuration error: {0}")]
-pub struct Error(#[from] figment::Error);
+pub enum Error {
+    #[error("configuration loading error: {0}")]
+    Figment(#[from] figment::Error),
+    #[error("configuration serialization error: {0}")]
+    Serde(#[from] serde_yaml::Error),
+}
 
 impl Configuration {
     // Methods to access the configuration
@@ -222,5 +226,10 @@ impl Configuration {
 
     fn extract(figment: Figment) -> Result<Self, Error> {
         Ok(figment.extract()?)
+    }
+
+    /// Dumps the configuration to a string
+    pub fn dump(&self) -> Result<String, Error> {
+        Ok(serde_yaml::to_string(self)?)
     }
 }
