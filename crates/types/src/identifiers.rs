@@ -634,7 +634,7 @@ impl LambdaARN {
     }
 }
 
-#[cfg(feature = "serde_schema")]
+#[cfg(feature = "schemars")]
 impl schemars::JsonSchema for LambdaARN {
     fn schema_name() -> String {
         "LambdaARN".into()

@@ -65,9 +65,9 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
     serde::Serialize,
     serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[display(fmt = "N{}", _0)]
-pub struct PlainNodeId(#[cfg_attr(feature = "serde_schema", schemars(default))] u32);
+pub struct PlainNodeId(#[cfg_attr(feature = "schemars", schemars(default))] u32);
 
 impl NodeId {
     pub fn new(id: u32, generation: Option<u32>) -> NodeId {

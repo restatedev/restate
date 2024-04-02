@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-types/serde_schema"]
+options_schema = ["dep:schemars", "restate-types/schemars"]
 
 [dependencies]
 restate-schema-api = { workspace = true }
