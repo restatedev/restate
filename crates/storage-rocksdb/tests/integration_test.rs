@@ -23,6 +23,7 @@ use std::pin::pin;
 use tempfile::tempdir;
 use tokio_stream::StreamExt;
 
+mod idempotency_table_test;
 mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_table_test;

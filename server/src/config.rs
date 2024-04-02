@@ -8,22 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Div;
+use std::path::Path;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use derive_getters::Getters;
 use figment::providers::{Env, Format, Serialized, Toml, Yaml};
 use figment::Figment;
-use restate_core::options::{CommonOptionCliOverride, CommonOptions};
+use once_cell::sync::Lazy;
+use restate_types::arc_util::{ArcSwapExt, Pinned, Updateable};
+use restate_types::config::notify_config_update;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::ops::Div;
-use std::path::Path;
 
 pub use restate_admin::Options as AdminOptions;
 pub use restate_bifrost::Options as BifrostOptions;
+use restate_core::options::{CommonOptionCliOverride, CommonOptions};
 pub use restate_meta::{
     Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
     OptionsBuilderError as MetaOptionsBuilderError,
 };
 use restate_storage_rocksdb::TableKind;
+
+static CONFIGURATION: Lazy<ArcSwap<Configuration>> = Lazy::new(ArcSwap::default);
+
+pub fn set_config(config: Configuration) {
+    CONFIGURATION.store(Arc::new(config));
+    notify_config_update();
+}
 
 /// # Restate configuration file
 ///
@@ -99,6 +112,28 @@ impl MemoryOptions {
 pub struct Error(#[from] figment::Error);
 
 impl Configuration {
+    // Methods to access the configuration
+
+    pub fn current() -> &'static impl ArcSwapExt<Self> {
+        &CONFIGURATION
+    }
+
+    pub fn pinned() -> Pinned<Self> {
+        CONFIGURATION.pinned()
+    }
+
+    pub fn updateable() -> impl Updateable<Self> {
+        CONFIGURATION.to_updateable()
+    }
+
+    pub fn updateable_common() -> impl Updateable<CommonOptions> {
+        CONFIGURATION.map_as_updateable(|c| c.common())
+    }
+
+    pub fn updateable_worker() -> impl Updateable<restate_worker::Options> {
+        CONFIGURATION.map_as_updateable(|c| &c.node().worker)
+    }
+
     /// Load [`Configuration`] from file with overrides from from environment variables and command
     /// line arguments.
     pub fn load(
@@ -108,23 +143,36 @@ impl Configuration {
         Self::load_with_default(Configuration::default(), config_file, cli_overrides)
     }
 
+    pub fn load_default() -> Configuration {
+        let default = Self::load_custom_default(Configuration::default()).expect("default config");
+        Self::extract(default).expect("default config")
+    }
+
     /// Load [`Configuration`] from an optional file with overrides from environment
     /// variables based on a default configuration.
     pub fn load_with_default(
-        default_configuration: Configuration,
+        default: Configuration,
         config_file: Option<&Path>,
         cli_overrides: CommonOptionCliOverride,
     ) -> Result<Self, Error> {
-        let figment = Figment::from(Serialized::defaults(default_configuration));
-        let cli_overrides = Figment::from(Serialized::defaults(cli_overrides));
+        let figment = Self::load_custom_default(default)?;
+        let figment = Self::merge_with_file(figment, config_file);
+        let figment = Self::merge_with_env(figment);
+        let figment = Self::merge_with_cli_overrides(figment, cli_overrides);
+        Self::extract(figment)
+    }
 
+    fn load_custom_default(default: Configuration) -> Result<Figment, Error> {
+        let figment = Figment::from(Serialized::defaults(default));
         // get memory options separately, and use them to set certain defaults
         let memory: MemoryOptions = Figment::from(Serialized::defaults(MemoryOptions::default()))
             .merge(Env::prefixed("MEMORY_").split("__"))
             .extract()?;
-        let figment = memory.apply_defaults(figment);
+        Ok(memory.apply_defaults(figment))
+    }
 
-        let figment = if let Some(config_file) = config_file {
+    fn merge_with_file(figment: Figment, config_file: Option<&Path>) -> Figment {
+        if let Some(config_file) = config_file {
             match config_file.extension() {
                 Some(ext) if ext == "yaml" || ext == "yml" => {
                     figment.merge(Yaml::file_exact(config_file))
@@ -137,9 +185,11 @@ impl Configuration {
             }
         } else {
             figment
-        };
+        }
+    }
 
-        let figment = figment
+    fn merge_with_env(figment: Figment) -> Figment {
+        figment
             .merge(Env::prefixed("RESTATE_").split("__"))
             // Override tracing.log with RUST_LOG, if present
             .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log_filter".into()))
@@ -163,10 +213,16 @@ impl Configuration {
                     .only(&["AWS_EXTERNAL_ID"])
                     .map(|_| "worker.invoker.service_client.lambda.assume_role_external_id".into()),
             )
-            // CLI takes precedence over everything
-            .merge(cli_overrides)
-            .extract()?;
+    }
 
-        Ok(figment)
+    fn merge_with_cli_overrides(
+        figment: Figment,
+        cli_overrides: CommonOptionCliOverride,
+    ) -> Figment {
+        figment.merge(Figment::from(Serialized::defaults(cli_overrides)))
+    }
+
+    fn extract(figment: Figment) -> Result<Self, Error> {
+        Ok(figment.extract()?)
     }
 }

@@ -36,6 +36,11 @@ message KvPair {
     bytes value = 2;
 }
 
+message Duration {
+    uint64 secs = 1;
+    uint32 nanos = 2;
+}
+
 // ---------------------------------------------------------------------
 // Service Invocation
 // ---------------------------------------------------------------------
@@ -58,7 +63,7 @@ message InvocationStatus {
     message Invoked {
         ServiceId service_id = 1;
         JournalMeta journal_meta = 2;
-        ServiceInvocationResponseSink response_sink = 3;
+        repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         bytes method_name = 6;
@@ -67,12 +72,17 @@ message InvocationStatus {
             string value = 8;
         }
         Source source = 9;
+        Duration completion_retention_time = 10;
+        oneof idempotency_key {
+            google.protobuf.Empty idempotency_key_none = 11;
+            string idempotency_key_value = 12;
+        }
     }
 
     message Suspended {
         ServiceId service_id = 1;
         JournalMeta journal_meta = 2;
-        ServiceInvocationResponseSink response_sink = 3;
+        repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         repeated uint32 waiting_for_completed_entries = 6;
@@ -82,6 +92,15 @@ message InvocationStatus {
             string value = 9;
         }
         Source source = 10;
+        Duration completion_retention_time = 11;
+        oneof idempotency_key {
+            google.protobuf.Empty idempotency_key_none = 12;
+            string idempotency_key_value = 13;
+        }
+    }
+
+    message Completed {
+        ResponseResult result = 1;
     }
 
     message Free {
@@ -91,6 +110,7 @@ message InvocationStatus {
         Invoked invoked = 1;
         Suspended suspended = 2;
         Free free = 3;
+        Completed completed = 4;
     }
 }
 
@@ -411,4 +431,12 @@ message DedupSequenceNumber {
         // Variant which is used for guarding against messages from previous epochs/leaders
         EpochSequenceNumber epoch_sequence_number = 2;
     }
+}
+
+// ---------------------------------------------------------------------
+// Idempotency
+// ---------------------------------------------------------------------
+
+message IdempotencyMetadata {
+    bytes invocation_id = 1;
 }

@@ -23,7 +23,7 @@ use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInvocation};
 use restate_storage_api::invocation_status_table::{InvocationMetadata, InvocationStatus};
-use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
@@ -58,7 +58,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::{Deref, RangeInclusive};
 use std::pin::pin;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, warn};
 
 pub trait StateReader {
     fn get_virtual_object_status(
@@ -150,7 +150,7 @@ where
     ///
     /// We use the returned service invocation id and span relation to log the effects (see [`Effects#log`]).
     #[instrument(level = "trace", skip_all, fields(command = ?command), err)]
-    pub(crate) async fn on_apply<State: StateReader>(
+    pub(crate) async fn on_apply<State: StateReader + ReadOnlyJournalTable>(
         &mut self,
         command: Command,
         effects: &mut Effects,
@@ -341,7 +341,7 @@ where
                 self.handle_outgoing_message(msg, effects);
             }
             BuiltinServiceEffect::End(None) => {
-                self.end_invocation(
+                self.end_built_in_invocation(
                     effects,
                     full_invocation_id.clone(),
                     invocation_metadata.clone(),
@@ -518,7 +518,12 @@ where
         let span_context = service_invocation.span_context;
         let parent_span = span_context.as_parent();
 
-        self.try_send_failure_response(effects, &fid, service_invocation.response_sink, &error);
+        self.send_response_to_sinks(
+            effects,
+            &InvocationId::from(&fid),
+            service_invocation.response_sink,
+            &error,
+        );
 
         self.notify_invocation_result(
             &fid,
@@ -753,7 +758,7 @@ where
         }
     }
 
-    async fn try_invoker_effect<State: StateReader>(
+    async fn try_invoker_effect<State: StateReader + ReadOnlyJournalTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -775,7 +780,7 @@ where
         }
     }
 
-    async fn on_invoker_effect<State: StateReader>(
+    async fn on_invoker_effect<State: StateReader + ReadOnlyJournalTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -843,7 +848,7 @@ where
                 }
             }
             InvokerEffectKind::End => {
-                self.end_invocation(effects, full_invocation_id, invocation_metadata)
+                self.end_invocation(state, effects, full_invocation_id, invocation_metadata)
                     .await?;
             }
             InvokerEffectKind::Failed(e) => {
@@ -855,7 +860,68 @@ where
         Ok((related_sid, span_relation))
     }
 
-    async fn end_invocation(
+    async fn end_invocation<State: StateReader + ReadOnlyJournalTable>(
+        &mut self,
+        state: &mut State,
+        effects: &mut Effects,
+        full_invocation_id: FullInvocationId,
+        invocation_metadata: InvocationMetadata,
+    ) -> Result<(), Error> {
+        // Send response back, if anyone is interested
+        if !invocation_metadata.response_sinks.is_empty() {
+            let invocation_id = InvocationId::from(&full_invocation_id);
+
+            // Find last output entry
+            let mut output_entry = None;
+            for i in (0..invocation_metadata.journal_metadata.length).rev() {
+                if let JournalEntry::Entry(e) = state
+                    .get_journal_entry(&invocation_id, i)
+                    .await?
+                    .unwrap_or_else(|| panic!("There should be a journal entry at index {}", i))
+                {
+                    if e.ty() == EntryType::Output {
+                        output_entry = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(output_entry) = output_entry {
+                let_assert!(
+                    Entry::Output(OutputEntry { result }) =
+                        output_entry.deserialize_entry_ref::<Codec>()?
+                );
+                self.send_response_to_sinks(
+                    effects,
+                    &InvocationId::from(&full_invocation_id),
+                    invocation_metadata.response_sinks.clone(),
+                    result,
+                );
+            } else {
+                // We don't panic on this, although it indicates a bug at the moment.
+                warn!("Invocation completed without an output entry. This is not supported yet.");
+                return Ok(());
+            }
+        }
+
+        self.notify_invocation_result(
+            &full_invocation_id,
+            invocation_metadata.method,
+            invocation_metadata.journal_metadata.span_context,
+            invocation_metadata.timestamps.creation_time(),
+            Ok(()),
+            effects,
+        );
+
+        self.end_invocation_lifecycle(
+            full_invocation_id,
+            invocation_metadata.journal_metadata.length,
+            effects,
+        )
+        .await
+    }
+
+    async fn end_built_in_invocation(
         &mut self,
         effects: &mut Effects,
         full_invocation_id: FullInvocationId,
@@ -885,10 +951,10 @@ where
         invocation_metadata: InvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        self.try_send_failure_response(
+        self.send_response_to_sinks(
             effects,
-            &full_invocation_id,
-            invocation_metadata.response_sink,
+            &InvocationId::from(&full_invocation_id),
+            invocation_metadata.response_sinks,
             &error,
         );
 
@@ -909,23 +975,21 @@ where
         .await
     }
 
-    fn try_send_failure_response(
+    fn send_response_to_sinks(
         &mut self,
         effects: &mut Effects,
-        full_invocation_id: &FullInvocationId,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        error: &InvocationError,
+        invocation_id: &InvocationId,
+        response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
+        res: impl Into<ResponseResult>,
     ) {
-        if let Some(response_sink) = response_sink {
-            // TODO: We probably only need to send the response if we haven't send a response before
-            self.send_response(
-                create_response_message(
-                    &InvocationId::from(full_invocation_id),
-                    response_sink,
-                    ResponseResult::from(error),
-                ),
-                effects,
-            );
+        let result = res.into();
+        for response_sink in response_sinks {
+            let response_message =
+                create_response_message(invocation_id, response_sink, result.clone());
+            match response_message {
+                ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
+                ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
+            }
         }
     }
 
@@ -947,21 +1011,7 @@ where
             // nothing to do
             EnrichedEntryHeader::Input { .. } => {}
             EnrichedEntryHeader::Output { .. } => {
-                if let Some(ref response_sink) = invocation_metadata.response_sink {
-                    let_assert!(
-                        Entry::Output(OutputEntry { result }) =
-                            journal_entry.deserialize_entry_ref::<Codec>()?
-                    );
-
-                    self.send_response(
-                        create_response_message(
-                            &InvocationId::from(&full_invocation_id),
-                            response_sink.clone(),
-                            result.into(),
-                        ),
-                        effects,
-                    );
-                }
+                // Just store it, on End we send back the responses
             }
             EnrichedEntryHeader::GetState { is_completed, .. } => {
                 if !is_completed {
@@ -1355,11 +1405,9 @@ where
         self.outbox_seq_number += 1;
     }
 
-    fn send_response(&mut self, response: ResponseMessage, effects: &mut Effects) {
-        match response {
-            ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
-            ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
-        }
+    fn outbox_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
+        effects.enqueue_into_outbox(self.outbox_seq_number, message);
+        self.outbox_seq_number += 1;
     }
 
     fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {

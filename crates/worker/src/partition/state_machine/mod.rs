@@ -95,7 +95,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::InboxTable;
     use restate_storage_api::invocation_status_table::{
-        InvocationMetadata, InvocationStatus, ReadOnlyInvocationStatusTable,
+        InvocationMetadata, InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
     };
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
@@ -107,14 +107,16 @@ mod tests {
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     };
+    use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
         InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
         ServiceInvocation, ServiceInvocationResponseSink, Source,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
-    use restate_types::journal::{Completion, CompletionResult};
+    use restate_types::journal::{Completion, CompletionResult, EntryResult};
     use restate_types::journal::{Entry, EntryType};
     use restate_types::state_mut::ExternalStateMutation;
+    use restate_types::GenerationalNodeId;
     use std::collections::{HashMap, HashSet};
     use tempfile::tempdir;
     use test_log::test;
@@ -536,6 +538,88 @@ mod tests {
                     ])
                 ))
             }))
+        );
+
+        state_machine.shutdown().await
+    }
+
+    #[test(tokio::test)]
+    async fn send_ingress_response_to_multiple_targets() -> TestResult {
+        let mut state_machine = MockStateMachine::default();
+        let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+        let invocation_id = InvocationId::from(&fid);
+
+        let actions = state_machine
+            .apply(Command::Invoke(ServiceInvocation {
+                fid: fid.clone(),
+                method_name: ByteString::from("MyHandler"),
+                argument: Default::default(),
+                source: Source::Ingress,
+                response_sink: Some(ServiceInvocationResponseSink::Ingress(
+                    GenerationalNodeId::new(1, 1),
+                )),
+                span_context: Default::default(),
+                headers: vec![],
+                execution_time: None,
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(pat!(Action::Invoke {
+                full_invocation_id: eq(fid.clone()),
+                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+            }))
+        );
+
+        // Let's add another ingress
+        let mut txn = state_machine.rocksdb_storage.transaction();
+        let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
+        invocation_status
+            .get_invocation_metadata_mut()
+            .unwrap()
+            .append_response_sink(ServiceInvocationResponseSink::Ingress(
+                GenerationalNodeId::new(2, 2),
+            ));
+        txn.put_invocation_status(&invocation_id, invocation_status)
+            .await;
+        txn.commit().await.unwrap();
+
+        // Now let's send the output entry
+        let response_bytes = Bytes::from_static(b"123");
+        let actions = state_machine
+            .apply(Command::InvokerEffect(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                        EntryResult::Success(response_bytes.clone()),
+                    )),
+                },
+            }))
+            .await;
+        // No ingress response is expected at this point because the invocation did not end yet
+        assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
+
+        // Send the End Effect
+        let actions = state_machine
+            .apply(Command::InvokerEffect(InvokerEffect {
+                full_invocation_id: fid.clone(),
+                kind: InvokerEffectKind::End,
+            }))
+            .await;
+        // At this point we expect the completion to be forwarded to the invoker
+        assert_that!(
+            actions,
+            all!(
+                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                    target_node: eq(GenerationalNodeId::new(1, 1)),
+                    response: eq(ResponseResult::Success(response_bytes.clone()))
+                })))),
+                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                    target_node: eq(GenerationalNodeId::new(2, 2)),
+                    response: eq(ResponseResult::Success(response_bytes.clone()))
+                })))),
+            )
         );
 
         state_machine.shutdown().await
