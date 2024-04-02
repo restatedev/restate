@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_server::Configuration;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::info;
 
@@ -19,6 +20,24 @@ pub(super) async fn shutdown() -> &'static str {
 
     info!(%signal, "Received signal, starting shutdown.");
     signal
+}
+
+/// Dump the configuration to the log (level=info) on SIGUSR1
+pub(super) async fn sigusr_dump_config() {
+    let mut stream = signal(SignalKind::user_defined1()).expect(
+        "failed to register handler for
+SIGUSR",
+    );
+
+    loop {
+        stream.recv().await;
+        info!("Received SIGUSR1, dumping configuration");
+        let config = Configuration::pinned();
+        info!(
+            "{}",
+            toml::to_string(config.as_ref()).expect("valid config")
+        );
+    }
 }
 
 async fn await_signal(kind: SignalKind) {
