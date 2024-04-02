@@ -5394,6 +5394,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "serde_yaml",
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "test-log",
@@ -5555,7 +5556,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_with",
- "serde_yaml",
  "thiserror",
  "tikv-jemallocator",
  "tokio",
@@ -7916,7 +7916,6 @@ dependencies = [
  "restate-worker",
  "schemars",
  "serde_json",
- "serde_yaml",
  "tokio",
  "tonic 0.10.2",
 ]
