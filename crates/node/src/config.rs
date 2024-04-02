@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -22,18 +22,16 @@ use restate_types::config::notify_config_update;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-pub use restate_admin::Options as AdminOptions;
-pub use restate_bifrost::Options as BifrostOptions;
 use restate_core::options::{CommonOptionCliOverride, CommonOptions};
-pub use restate_meta::{
-    Options as MetaOptions, OptionsBuilder as MetaOptionsBuilder,
-    OptionsBuilderError as MetaOptionsBuilderError,
-};
 use restate_storage_rocksdb::TableKind;
+
+use crate::Options;
 
 static CONFIGURATION: Lazy<ArcSwap<Configuration>> = Lazy::new(ArcSwap::default);
 
-pub fn set_config(config: Configuration) {
+/// Set the current configuration, this is temporary until we have a dedicated configuration loader
+/// thread.
+pub fn set_current_config(config: Configuration) {
     CONFIGURATION.store(Arc::new(config));
     notify_config_update();
 }
@@ -58,7 +56,7 @@ pub struct Configuration {
     #[serde(flatten)]
     pub common: CommonOptions,
     #[serde(flatten)]
-    pub node: restate_node::Options,
+    pub node: Options,
 }
 
 /// Global memory options. These may only be set by environment variable
