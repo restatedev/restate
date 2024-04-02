@@ -75,6 +75,7 @@ pub mod codes {
     pub const UNKNOWN: InvocationErrorCode = INTERNAL;
     pub const ABORTED: InvocationErrorCode = InvocationErrorCode(409);
     pub const KILLED: InvocationErrorCode = ABORTED;
+    pub const GONE: InvocationErrorCode = InvocationErrorCode(410);
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
 }
@@ -200,6 +201,8 @@ pub const KILLED_INVOCATION_ERROR: InvocationError =
 //  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.
 pub const CANCELED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "canceled");
+
+pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
 
 /// Error parsing/decoding a resource ID.
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
