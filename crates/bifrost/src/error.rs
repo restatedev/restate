@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::ShutdownError;
+use restate_core::{ShutdownError, SyncError};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -26,16 +26,14 @@ pub enum Error {
     UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}")]
     InvalidLsn(Lsn),
-    #[error("cannot fetch log metadata")]
-    MetadataSync,
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),
     #[cfg(any(test, feature = "local_loglet"))]
     #[error(transparent)]
     LogStoreError(#[from] LogStoreError),
-    #[error("failed reading logs config from metadata store: {0}")]
-    // unfortunately, we have to use Arc here, because the ReadError is not Clone.
-    MetadataStore(#[from] Arc<restate_metadata_store::ReadError>),
+    #[error("failed syncing logs metadata: {0}")]
+    // unfortunately, we have to use Arc here, because the SyncError is not Clone.
+    MetadataSync(#[from] Arc<SyncError>),
 }
 
 #[derive(Debug, thiserror::Error)]

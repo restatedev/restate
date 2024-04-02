@@ -160,9 +160,10 @@ where
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
 
         let my_node_id = GenerationalNodeId::new(1, 1);
-        let metadata_manager = MetadataManager::build(network_sender.clone());
-        let metadata = metadata_manager.metadata();
         let metadata_store_client = MetadataStoreClient::new_in_memory();
+        let metadata_manager =
+            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
+        let metadata = metadata_manager.metadata();
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());

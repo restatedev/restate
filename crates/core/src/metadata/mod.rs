@@ -27,8 +27,18 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version, Versioned};
 
+use crate::metadata::manager::Command;
+use crate::metadata_store::ReadError;
 use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error("failed syncing with metadata store: {0}")]
+    MetadataStore(#[from] ReadError),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+}
 
 /// The kind of versioned metadata that can be synchronized across nodes.
 
@@ -122,6 +132,17 @@ impl Metadata {
     /// Watch for version updates of this metadata kind.
     pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
         self.inner.write_watches[metadata_kind].receive.clone()
+    }
+
+    /// Syncs the given metadata_kind from the underlying metadata store.
+    pub async fn sync(&self, metadata_kind: MetadataKind) -> Result<(), SyncError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.sender
+            .send(Command::SyncMetadata(metadata_kind, result_tx))
+            .map_err(|_| ShutdownError)?;
+        result_rx.await.map_err(|_| ShutdownError)??;
+
+        Ok(())
     }
 }
 
