@@ -284,7 +284,8 @@ impl Node {
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
         // Need to run start in new tc scope to have access to metadata()
-        tc.run_in_scope("bifrost-init", None, self.bifrost.start()).await?;
+        tc.run_in_scope("bifrost-init", None, self.bifrost.start())
+            .await?;
 
         if let Some(admin_role) = self.admin_role {
             tc.spawn(
@@ -344,8 +345,8 @@ impl Node {
                     } else {
                         let partition_table =
                             FixedPartitionTable::new(Version::MIN, options.worker.partitions);
+                        debug!("Initializing a new partition table: {partition_table:?}");
 
-                        debug!("Initializing a new partition table: {partition_table:?}",);
                         Operation::Upsert(partition_table)
                     }
                 },
@@ -362,13 +363,15 @@ impl Node {
         Self::retry_on_network_error(|| {
             metadata_store_client.read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs| {
                 if let Some(logs) = logs {
-                    info!("Retrieved logs configuration: {logs:?}");
+                    debug!("Retrieved logs configuration: {logs:?}");
+
                     Operation::Return(logs)
                 } else {
                     let logs =
                         create_static_metadata(options.bifrost.default_provider, num_partitions);
 
-                    info!("Initializing a new logs configuration: {logs:?}",);
+                    debug!("Initializing a new logs configuration: {logs:?}",);
+
                     Operation::Upsert(logs)
                 }
             })
