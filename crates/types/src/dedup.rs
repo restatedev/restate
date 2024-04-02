@@ -13,8 +13,7 @@ use crate::message::MessageIndex;
 use bytestring::ByteString;
 use std::cmp::Ordering;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DedupInformation {
     pub producer_id: ProducerId,
     pub sequence_number: DedupSequenceNumber,
@@ -45,8 +44,7 @@ impl DedupInformation {
 
 static SELF_PRODUCER: ByteString = ByteString::from_static("SELF");
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProducerId {
     Partition(PartitionId),
     Other(ByteString),
@@ -58,8 +56,7 @@ impl ProducerId {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DedupSequenceNumber {
     /// Sequence number to deduplicate messages. Use this type if you want to deduplicate
     /// messages independent of the sender's leader epoch. This requires that the sequence
@@ -71,8 +68,7 @@ pub enum DedupSequenceNumber {
     Esn(EpochSequenceNumber),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EpochSequenceNumber {
     pub leader_epoch: LeaderEpoch,
     pub sequence_number: MessageIndex,

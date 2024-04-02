@@ -19,8 +19,7 @@ pub type EnrichedEntryHeader = EntryHeader<InvokeEnrichmentResult, AwakeableEnri
 pub type EnrichedRawEntry = RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>;
 
 /// Result of the target service resolution
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvokeEnrichmentResult {
     pub invocation_uuid: InvocationUuid,
     pub service_key: Bytes,
@@ -29,8 +28,7 @@ pub struct InvokeEnrichmentResult {
     pub span_context: ServiceInvocationSpanContext,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AwakeableEnrichmentResult {
     pub invocation_id: InvocationId,
     pub entry_index: EntryIndex,

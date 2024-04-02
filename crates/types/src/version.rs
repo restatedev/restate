@@ -21,8 +21,9 @@
     derive_more::From,
     derive_more::Into,
     derive_more::AddAssign,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[display(fmt = "v{}", _0)]
 pub struct Version(u32);
 

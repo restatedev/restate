@@ -52,9 +52,8 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "type"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
 #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "serde_schema",
@@ -74,10 +73,7 @@ pub enum RetryPolicy {
         /// Interval between retries.
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         interval: humantime::Duration,
         /// # Max attempts
@@ -94,10 +90,7 @@ pub enum RetryPolicy {
         /// Initial interval for the first retry attempt.
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         initial_interval: humantime::Duration,
 
@@ -114,10 +107,7 @@ pub enum RetryPolicy {
         /// # Max interval
         ///
         /// Maximum interval between retries.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")
-        )]
+        #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
         #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
         max_interval: Option<humantime::Duration>,
     },

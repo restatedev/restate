@@ -20,8 +20,7 @@ pub type PlainEntryHeader = EntryHeader<(), ()>;
 pub type PlainRawEntry = RawEntry<(), ()>;
 
 /// This struct represents a serialized journal entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     header: EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
     entry: Bytes,
@@ -99,8 +98,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     Input,
     Output,

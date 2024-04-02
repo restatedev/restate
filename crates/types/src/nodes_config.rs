@@ -32,10 +32,9 @@ pub enum NodesConfigError {
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
-#[derive(Debug, Hash, EnumSetType, strum_macros::Display)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Hash, EnumSetType, strum_macros::Display, serde::Serialize, serde::Deserialize)]
+#[enumset(serialize_repr = "list")]
+#[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "clap", clap(rename_all = "snake_case"))]
 pub enum Role {
@@ -46,8 +45,7 @@ pub enum Role {
     MetadataStore,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
@@ -55,15 +53,15 @@ pub struct NodesConfiguration {
     name_lookup: HashMap<String, PlainNodeId>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, strum_macros::EnumIs)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Debug, Clone, Eq, PartialEq, strum_macros::EnumIs, serde::Serialize, serde::Deserialize,
+)]
 enum MaybeNode {
     Tombstone,
     Node(NodeConfig),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,

@@ -11,7 +11,7 @@ publish = false
 default = []
 
 [dependencies]
-restate-types = { workspace = true, features = ["serde"] }
+restate-types = { workspace = true }
 
 bincode = { workspace = true }
 bytes = { workspace = true }

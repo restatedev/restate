@@ -22,7 +22,7 @@ restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
-restate-types = { workspace = true, features = ["serde", "serde_schema"] }
+restate-types = { workspace = true, features = ["serde_schema"] }
 
 anyhow = { workspace = true }
 bincode = { workspace = true }

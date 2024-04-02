@@ -22,8 +22,9 @@ use bytes::Bytes;
     derive_more::Display,
     derive_more::From,
     derive_more::Into,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogId(u64);
 
 /// Index of an entry in the log
@@ -48,8 +49,9 @@ impl LogId {
     derive_more::From,
     derive_more::Add,
     derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Lsn(u64);
 
 impl SequenceNumber for Lsn {

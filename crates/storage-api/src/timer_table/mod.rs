@@ -17,8 +17,7 @@ use restate_types::invocation::ServiceInvocation;
 use std::cmp::Ordering;
 use std::future::Future;
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TimerKey {
     pub timestamp: u64,
     pub invocation_uuid: InvocationUuid,

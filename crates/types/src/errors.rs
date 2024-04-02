@@ -17,9 +17,8 @@ use std::fmt;
 /// if you don't know the actual error type or if it is not important.
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 
 impl InvocationErrorCode {
@@ -81,8 +80,7 @@ pub mod codes {
 }
 
 /// This struct represents errors arisen when processing a service invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationError {
     code: InvocationErrorCode,
     message: Cow<'static, str>,
