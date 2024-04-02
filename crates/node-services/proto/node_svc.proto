@@ -44,16 +44,6 @@ message IdentResponse {
   dev.restate.common.NodeId node_id = 2;
 }
 
-message TerminationRequest {
-  // todo: Replace with proper protobuf
-  bytes invocation_termination = 1;
-}
-
-message StateMutationRequest {
-  // todo: Replace with proper protobuf
-  bytes state_mutation = 1;
-}
-
 message StorageQueryRequest { string query = 1; }
 
 message StorageQueryResponse {
