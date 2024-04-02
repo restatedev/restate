@@ -86,6 +86,7 @@ mod tests {
     use super::*;
 
     use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+    use assert2::assert;
     use bytes::Bytes;
     use bytestring::ByteString;
     use futures::{StreamExt, TryStreamExt};
@@ -93,9 +94,9 @@ mod tests {
     use googletest::{all, assert_that, pat, property};
     use restate_invoker_api::InvokeInputJournal;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
-    use restate_storage_api::inbox_table::InboxTable;
     use restate_storage_api::invocation_status_table::{
-        InvocationMetadata, InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
+        InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
+        ReadOnlyInvocationStatusTable,
     };
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
@@ -222,9 +223,11 @@ mod tests {
             .unwrap();
         assert_that!(
             invocation_status,
-            pat!(InvocationStatus::Invoked(pat!(InvocationMetadata {
-                service_id: eq(fid.service_id)
-            })))
+            pat!(InvocationStatus::Invoked(pat!(
+                InFlightInvocationMetadata {
+                    service_id: eq(fid.service_id)
+                }
+            )))
         );
 
         state_machine.shutdown().await
@@ -341,14 +344,14 @@ mod tests {
             }))
             .await;
 
-        let result = state_machine
+        let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation(inboxed_fid.clone())
+            .get_invocation_status(&InvocationId::from(&inboxed_fid))
             .await?;
 
-        // assert that inboxed invocation is in inbox
-        assert!(result.is_some());
+        // assert that inboxed invocation is in invocation_status
+        assert!(let InvocationStatus::Inboxed(_) = current_invocation_status);
 
         let actions = state_machine
             .apply(Command::TerminateInvocation(InvocationTermination::kill(
@@ -356,14 +359,14 @@ mod tests {
             )))
             .await;
 
-        let result = state_machine
+        let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation(inboxed_fid.clone())
+            .get_invocation_status(&InvocationId::from(&inboxed_fid))
             .await?;
 
-        // assert that inboxed invocation has been removed
-        assert!(result.is_none());
+        // assert that invocation status was removed
+        assert!(let InvocationStatus::Free = current_invocation_status);
 
         fn outbox_message_matcher(
             caller_fid: FullInvocationId,

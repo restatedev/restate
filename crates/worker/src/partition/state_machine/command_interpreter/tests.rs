@@ -10,7 +10,7 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
-use restate_storage_api::invocation_status_table::JournalMetadata;
+use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
@@ -36,14 +36,14 @@ impl StateReaderMock {
     pub fn mock_invocation_metadata(
         journal_length: u32,
         service_id: ServiceId,
-    ) -> InvocationMetadata {
-        InvocationMetadata {
+    ) -> InFlightInvocationMetadata {
+        InFlightInvocationMetadata {
             service_id,
             journal_metadata: JournalMetadata {
                 length: journal_length,
                 span_context: ServiceInvocationSpanContext::empty(),
             },
-            ..InvocationMetadata::mock()
+            ..InFlightInvocationMetadata::mock()
         }
     }
 
@@ -151,32 +151,6 @@ impl StateReader for StateReaderMock {
             .get(invocation_id)
             .cloned()
             .unwrap_or(InvocationStatus::Free))
-    }
-
-    fn get_inboxed_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send {
-        let invocation_id = InvocationId::from(maybe_fid.into());
-
-        let result = self
-            .inboxes
-            .values()
-            .flat_map(|v| v.iter())
-            .find_map(|inbox_entry| {
-                if let InboxEntry::Invocation(invocation) = &inbox_entry.inbox_entry {
-                    if invocation.fid.invocation_uuid == invocation_id.invocation_uuid() {
-                        return Some(SequenceNumberInvocation {
-                            inbox_sequence_number: inbox_entry.inbox_sequence_number,
-                            invocation: invocation.clone(),
-                        });
-                    }
-                }
-
-                None
-            });
-
-        futures::future::ready(Ok(result))
     }
 
     async fn is_entry_resumable(
@@ -428,15 +402,26 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
         inboxed_fid.service_id.clone(),
         SequenceNumberInboxEntry {
             inbox_sequence_number: 0,
-            inbox_entry: InboxEntry::Invocation(ServiceInvocation {
-                fid: inboxed_fid.clone(),
-                response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                    caller: caller_fid.clone(),
-                    entry_index: 0,
-                }),
-                ..ServiceInvocation::mock()
-            }),
+            inbox_entry: InboxEntry::Invocation(inboxed_fid.clone()),
         },
+    );
+    state_mock.invocations.insert(
+        InvocationId::from(&inboxed_fid),
+        InvocationStatus::Inboxed(InboxedInvocation {
+            inbox_sequence_number: 0,
+            response_sinks: HashSet::from([ServiceInvocationResponseSink::PartitionProcessor {
+                caller: caller_fid.clone(),
+                entry_index: 0,
+            }]),
+            timestamps: StatusTimestamps::now(),
+            service_id: inboxed_fid.service_id.clone(),
+            handler_name: Default::default(),
+            argument: Default::default(),
+            source: Source::Ingress,
+            span_context: Default::default(),
+            headers: vec![],
+            execution_time: None,
+        }),
     );
 
     command_interpreter
@@ -515,7 +500,7 @@ async fn kill_call_tree() -> Result<(), Error> {
     assert_that!(
         effects,
         all!(
-            contains(pat!(Effect::AbortInvocation(eq(fid.clone())))),
+            contains(pat!(Effect::SendAbortInvocationToInvoker(eq(fid.clone())))),
             contains(pat!(Effect::DropJournalAndPopInbox {
                 full_invocation_id: eq(fid.clone()),
             })),

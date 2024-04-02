@@ -12,7 +12,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::invocation_status_table::InvocationMetadata;
+use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InboxedInvocation};
 use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
@@ -39,17 +39,19 @@ use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level}
 
 #[derive(Debug)]
 pub(crate) enum Effect {
-    // service status changes
+    // InvocationStatus changes
     InvokeService(ServiceInvocation),
     ResumeService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     },
     SuspendService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
+    StoreInboxedInvocation(InvocationId, InboxedInvocation),
+    FreeInvocation(InvocationId),
 
     // In-/outbox
     EnqueueIntoInbox {
@@ -101,7 +103,7 @@ pub(crate) enum Effect {
     StoreDeploymentId {
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     },
     AppendJournalEntry {
         invocation_id: InvocationId,
@@ -138,7 +140,7 @@ pub(crate) enum Effect {
     },
 
     // Invoker commands
-    AbortInvocation(FullInvocationId),
+    SendAbortInvocationToInvoker(FullInvocationId),
     SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
 
     // State mutations
@@ -186,7 +188,7 @@ impl Effect {
             ),
             Effect::ResumeService {
                 metadata:
-                    InvocationMetadata {
+                    InFlightInvocationMetadata {
                         method,
                         journal_metadata: JournalMetadata { length, .. },
                         ..
@@ -218,6 +220,21 @@ impl Effect {
                     restate.journal.length = metadata.journal_metadata.length,
                     "Effect: Suspend service waiting on entries {:?}",
                     waiting_for_completed_entries
+                )
+            }
+            Effect::StoreInboxedInvocation(id, inboxed_invocation) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = inboxed_invocation.inbox_sequence_number,
+                    "Effect: Store inboxed invocation"
+                )
+            }
+            Effect::FreeInvocation(id) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    "Effect: Free invocation"
                 )
             }
             Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
@@ -538,7 +555,7 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::AbortInvocation(_) => {
+            Effect::SendAbortInvocationToInvoker(_) => {
                 debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
             }
             Effect::SendStoredEntryAckToInvoker(_, _) => {
@@ -589,7 +606,7 @@ impl Effects {
     pub(crate) fn resume_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::ResumeService {
             invocation_id,
@@ -600,7 +617,7 @@ impl Effects {
     pub(crate) fn suspend_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
@@ -608,6 +625,21 @@ impl Effects {
             metadata,
             waiting_for_completed_entries,
         })
+    }
+
+    pub(crate) fn store_inboxed_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        inboxed_invocation: InboxedInvocation,
+    ) {
+        self.effects.push(Effect::StoreInboxedInvocation(
+            invocation_id,
+            inboxed_invocation,
+        ))
+    }
+
+    pub(crate) fn free_invocation(&mut self, invocation_id: InvocationId) {
+        self.effects.push(Effect::FreeInvocation(invocation_id))
     }
 
     pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {
@@ -703,7 +735,7 @@ impl Effects {
         &mut self,
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::StoreDeploymentId {
             invocation_id,
@@ -795,7 +827,7 @@ impl Effects {
 
     pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
         self.effects
-            .push(Effect::AbortInvocation(full_invocation_id));
+            .push(Effect::SendAbortInvocationToInvoker(full_invocation_id));
     }
 
     pub(crate) fn send_stored_ack_to_invoker(

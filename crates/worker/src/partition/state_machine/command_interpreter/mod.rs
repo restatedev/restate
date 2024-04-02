@@ -21,8 +21,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInvocation};
-use restate_storage_api::invocation_status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::invocation_status_table::{
+    InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
@@ -70,11 +72,6 @@ pub trait StateReader {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = StorageResult<InvocationStatus>> + Send;
-
-    fn get_inboxed_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send;
 
     fn is_entry_resumable(
         &mut self,
@@ -243,14 +240,27 @@ where
         } else if let VirtualObjectStatus::Unlocked = service_status {
             effects.invoke_service(service_invocation);
         } else {
-            self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
+            let inbox_seq_number = self.enqueue_into_inbox(
+                effects,
+                InboxEntry::Invocation(service_invocation.fid.clone()),
+            );
+            effects.store_inboxed_invocation(
+                InvocationId::from(&service_invocation.fid),
+                InboxedInvocation::from_service_invocation(service_invocation, inbox_seq_number),
+            );
         }
         Ok((Some(fid), span_relation))
     }
 
-    fn enqueue_into_inbox(&mut self, effects: &mut Effects, inbox_entry: InboxEntry) {
+    fn enqueue_into_inbox(
+        &mut self,
+        effects: &mut Effects,
+        inbox_entry: InboxEntry,
+    ) -> MessageIndex {
+        let inbox_seq_number = self.inbox_seq_number;
         effects.enqueue_into_inbox(self.inbox_seq_number, inbox_entry);
         self.inbox_seq_number += 1;
+        inbox_seq_number
     }
 
     async fn handle_external_state_mutation<State: StateReader>(
@@ -265,7 +275,7 @@ where
 
         match service_status {
             VirtualObjectStatus::Locked(_) => {
-                self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation))
+                self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation));
             }
             VirtualObjectStatus::Unlocked => effects.apply_state_mutation(mutation),
         }
@@ -316,7 +326,7 @@ where
         &mut self,
         effects: &mut Effects,
         full_invocation_id: &FullInvocationId,
-        invocation_metadata: &InvocationMetadata,
+        invocation_metadata: &InFlightInvocationMetadata,
         nbis_effect: BuiltinServiceEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
@@ -401,48 +411,26 @@ where
 
                 Ok((Some(fid), related_span))
             }
+            InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
+                TerminationFlavor::Kill,
+                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                inboxed,
+                effects,
+            ),
             _ => {
-                self.try_terminate_inboxed_invocation(
-                    TerminationFlavor::Kill,
-                    maybe_fid,
-                    state,
-                    effects,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn try_terminate_inboxed_invocation<State: StateReader>(
-        &mut self,
-        termination_flavor: TerminationFlavor,
-        maybe_fid: MaybeFullInvocationId,
-        state: &mut State,
-        effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let (termination_command, error) = match termination_flavor {
-            TerminationFlavor::Kill => ("kill", KILLED_INVOCATION_ERROR),
-            TerminationFlavor::Cancel => ("cancel", CANCELED_INVOCATION_ERROR),
-        };
-
-        // check if service invocation is in inbox
-        let inbox_entry = state.get_inboxed_invocation(maybe_fid.clone()).await?;
-
-        if let Some(inbox_entry) = inbox_entry {
-            self.terminate_inboxed_invocation(inbox_entry, error, effects)
-        } else {
-            trace!("Received {termination_command} command for unknown invocation with id '{maybe_fid}'.");
-            // We still try to send the abort signal to the invoker,
-            // as it might be the case that previously the user sent an abort signal
-            // but some message was still between the invoker/PP queues.
-            // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
-            // and the abort message can overtake the invoke/resume.
-            // Consequently the invoker might have not received the abort and the user tried to send it again.
-            if let MaybeFullInvocationId::Full(fid) = maybe_fid {
-                effects.abort_invocation(fid.clone());
-                Ok((Some(fid), SpanRelation::None))
-            } else {
-                Ok((None, SpanRelation::None))
+                trace!("Received kill command for unknown invocation with id '{maybe_fid}'.");
+                // We still try to send the abort signal to the invoker,
+                // as it might be the case that previously the user sent an abort signal
+                // but some message was still between the invoker/PP queues.
+                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                // and the abort message can overtake the invoke/resume.
+                // Consequently the invoker might have not received the abort and the user tried to send it again.
+                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
+                    effects.abort_invocation(fid.clone());
+                    Ok((Some(fid), SpanRelation::None))
+                } else {
+                    Ok((None, SpanRelation::None))
+                }
             }
         }
     }
@@ -494,47 +482,66 @@ where
 
                 Ok((Some(fid), related_span))
             }
+            InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
+                TerminationFlavor::Cancel,
+                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                inboxed,
+                effects,
+            ),
             _ => {
-                self.try_terminate_inboxed_invocation(
-                    TerminationFlavor::Cancel,
-                    maybe_fid,
-                    state,
-                    effects,
-                )
-                .await
+                trace!("Received kill command for unknown invocation with id '{maybe_fid}'.");
+                // We still try to send the abort signal to the invoker,
+                // as it might be the case that previously the user sent an abort signal
+                // but some message was still between the invoker/PP queues.
+                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                // and the abort message can overtake the invoke/resume.
+                // Consequently the invoker might have not received the abort and the user tried to send it again.
+                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
+                    effects.abort_invocation(fid.clone());
+                    Ok((Some(fid), SpanRelation::None))
+                } else {
+                    Ok((None, SpanRelation::None))
+                }
             }
         }
     }
 
     fn terminate_inboxed_invocation(
         &mut self,
-        inbox_entry: SequenceNumberInvocation,
-        error: InvocationError,
+        termination_flavor: TerminationFlavor,
+        fid: FullInvocationId,
+        inboxed_invocation: InboxedInvocation,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        // remove service invocation from inbox and send failure response
-        let service_invocation = inbox_entry.invocation;
-        let fid = service_invocation.fid;
-        let span_context = service_invocation.span_context;
+        let error = match termination_flavor {
+            TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
+            TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
+        };
+
+        let InboxedInvocation {
+            inbox_sequence_number,
+            response_sinks,
+            handler_name,
+            span_context,
+            ..
+        } = inboxed_invocation;
+
         let parent_span = span_context.as_parent();
 
-        self.send_response_to_sinks(
-            effects,
-            &InvocationId::from(&fid),
-            service_invocation.response_sink,
-            &error,
-        );
-
+        // Reply back to callers with error, and publish end trace
+        self.send_response_to_sinks(effects, &InvocationId::from(&fid), response_sinks, &error);
         self.notify_invocation_result(
             &fid,
-            service_invocation.method_name,
+            handler_name,
             span_context,
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
             effects,
         );
 
-        effects.delete_inbox_entry(fid.service_id.clone(), inbox_entry.inbox_sequence_number);
+        // Delete inbox entry and invocation status.
+        effects.delete_inbox_entry(fid.service_id.clone(), inbox_sequence_number);
+        effects.free_invocation(InvocationId::from(&fid));
 
         Ok((Some(fid), parent_span))
     }
@@ -542,7 +549,7 @@ where
     async fn kill_invocation<State: StateReader>(
         &mut self,
         full_invocation_id: FullInvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
@@ -788,7 +795,7 @@ where
             full_invocation_id,
             kind,
         }: InvokerEffect,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(FullInvocationId, SpanRelation), Error> {
         let related_sid = full_invocation_id.clone();
         let span_relation = invocation_metadata
@@ -865,7 +872,7 @@ where
         state: &mut State,
         effects: &mut Effects,
         full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         // Send response back, if anyone is interested
         if !invocation_metadata.response_sinks.is_empty() {
@@ -925,7 +932,7 @@ where
         &mut self,
         effects: &mut Effects,
         full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         self.notify_invocation_result(
             &full_invocation_id,
@@ -948,7 +955,7 @@ where
         &mut self,
         effects: &mut Effects,
         full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
         self.send_response_to_sinks(
@@ -1000,7 +1007,7 @@ where
         full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         mut journal_entry: EnrichedRawEntry,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,

@@ -15,9 +15,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use restate_storage_api::deduplication_table::ReadOnlyDeduplicationTable;
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::inbox_table::{
-    InboxEntry, SequenceNumberInboxEntry, SequenceNumberInvocation,
-};
+use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
@@ -36,7 +34,6 @@ use restate_types::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     WithPartitionKey,
 };
-use restate_types::invocation::MaybeFullInvocationId;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::logs::Lsn;
@@ -294,15 +291,6 @@ where
     ) -> StorageResult<InvocationStatus> {
         self.assert_partition_key(invocation_id);
         self.inner.get_invocation_status(invocation_id).await
-    }
-
-    fn get_inboxed_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send {
-        let maybe_fid = maybe_fid.into();
-        self.assert_partition_key(&maybe_fid);
-        self.inner.get_invocation(maybe_fid)
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
@@ -607,6 +595,25 @@ where
         journal_length: EntryIndex,
     ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
         self.inner.get_journal(invocation_id, journal_length)
+    }
+}
+
+impl<TransactionType> ReadOnlyInvocationStatusTable for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = StorageResult<InvocationStatus>> + Send {
+        self.inner.get_invocation_status(invocation_id)
+    }
+
+    fn invoked_invocations(
+        &mut self,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<FullInvocationId>> + Send {
+        self.inner.invoked_invocations(partition_key_range)
     }
 }
 
