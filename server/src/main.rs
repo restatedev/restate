@@ -158,7 +158,7 @@ fn main() {
             }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                serde_yaml::to_string(&config).unwrap()
+                config.dump().unwrap()
             );
 
             WipeMode::wipe(
@@ -200,6 +200,7 @@ fn main() {
                         info!("Restate has been gracefully shut down.");
                     }
                 },
+                _ = signal::sigusr_dump_config() => {},
                 _ = task_center_watch => {
                     // Shutdown was requested by task center and it has completed.
                 },
