@@ -18,11 +18,10 @@ use std::sync::Arc;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
-use restate_core::{metadata, MetadataWriter};
+use restate_core::{metadata, MetadataKind, MetadataWriter};
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::logs::metadata::{Logs, ProviderKind};
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::Version;
 use tracing::{error, instrument};
 
@@ -196,21 +195,13 @@ impl BifrostInner {
         }
     }
 
-    /// Immediately fetch new metadata from metadata store and update the local copy
-    ///
-    /// NOTE: The current version assumes static metadata map!
+    /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
-
-        if let Some(logs) = self
-            .metadata_store_client
-            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+        metadata()
+            .sync(MetadataKind::Logs)
             .await
-            .map_err(Arc::new)?
-        {
-            self.metadata_writer.update(logs).await?;
-        }
-
+            .map_err(Arc::new)?;
         Ok(())
     }
 

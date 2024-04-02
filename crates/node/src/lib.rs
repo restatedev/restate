@@ -124,7 +124,8 @@ impl Node {
 
         let mut router_builder = MessageRouterBuilder::default();
         let networking = Networking::default();
-        let metadata_manager = MetadataManager::build(networking.clone());
+        let metadata_manager =
+            MetadataManager::build(networking.clone(), metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
 
         let bifrost = options
@@ -282,7 +283,8 @@ impl Node {
         let bifrost = self.bifrost.handle();
 
         // Ensures bifrost has initial metadata synced up before starting the worker.
-        self.bifrost.start().await?;
+        // Need to run start in new tc scope to have access to metadata()
+        tc.run_in_scope("bifrost-init", None, self.bifrost.start()).await?;
 
         if let Some(admin_role) = self.admin_role {
             tc.spawn(

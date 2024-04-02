@@ -14,11 +14,14 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate};
 use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::GenerationalNodeId;
@@ -27,6 +30,7 @@ use restate_types::{Version, Versioned};
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata;
+use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
 use crate::task_center;
 
@@ -35,8 +39,12 @@ use super::{Metadata, MetadataContainer, MetadataInner, MetadataKind, MetadataWr
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {}
+
 pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
+    SyncMetadata(MetadataKind, oneshot::Sender<Result<(), ReadError>>),
 }
 
 /// A handler for processing network messages targeting metadata manager
@@ -192,19 +200,21 @@ pub struct MetadataManager<N> {
     inner: Arc<MetadataInner>,
     inbound: CommandReceiver,
     networking: N,
+    metadata_store_client: MetadataStoreClient,
 }
 
 impl<N> MetadataManager<N>
 where
     N: NetworkSender + 'static + Clone,
 {
-    pub fn build(networking: N) -> Self {
+    pub fn build(networking: N, metadata_store_client: MetadataStoreClient) -> Self {
         let (self_sender, inbound) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(MetadataInner::default()),
             inbound,
             self_sender,
             networking,
+            metadata_store_client,
         }
     }
 
@@ -235,16 +245,22 @@ where
                     break;
                 }
                 Some(cmd) = self.inbound.recv() => {
-                    self.handle_command(cmd)
+                    self.handle_command(cmd).await;
                 }
             }
         }
         Ok(())
     }
 
-    fn handle_command(&mut self, cmd: Command) {
+    async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::UpdateMetadata(value, callback) => self.update_metadata(value, callback),
+            Command::SyncMetadata(kind, callback) => {
+                let result = self.sync_metadata(kind).await;
+                if callback.send(result).is_err() {
+                    trace!("Couldn't send synce metadata reply back. System is probably shutting down.");
+                }
+            }
         }
     }
 
@@ -264,6 +280,41 @@ where
         if let Some(callback) = callback {
             let _ = callback.send(());
         }
+    }
+
+    async fn sync_metadata(&mut self, metadata_kind: MetadataKind) -> Result<(), ReadError> {
+        match metadata_kind {
+            MetadataKind::NodesConfiguration => {
+                if let Some(nodes_config) = self
+                    .metadata_store_client
+                    .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+                    .await?
+                {
+                    self.update_nodes_configuration(nodes_config);
+                }
+            }
+            MetadataKind::PartitionTable => {
+                if let Some(partition_table) = self
+                    .metadata_store_client
+                    .get::<FixedPartitionTable>(PARTITION_TABLE_KEY.clone())
+                    .await?
+                {
+                    self.update_partition_table(partition_table);
+                }
+            }
+            MetadataKind::Logs => {
+                if let Some(logs) = self
+                    .metadata_store_client
+                    .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+                    .await?
+                {
+                    self.update_logs(logs);
+                }
+            }
+            MetadataKind::Schema => {}
+        }
+
+        Ok(())
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
@@ -372,8 +423,9 @@ mod tests {
         S: Fn(&mut T, Version),
     {
         let network_sender = MockNetworkSender::default();
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build(network_sender);
+        let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 
@@ -451,8 +503,9 @@ mod tests {
         I: Fn(&mut T),
     {
         let network_sender = MockNetworkSender::default();
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build(network_sender);
+        let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
         let metadata_writer = metadata_manager.writer();
         let metadata = metadata_manager.metadata();
 

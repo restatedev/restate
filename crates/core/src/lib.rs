@@ -17,7 +17,7 @@ mod task_center;
 mod task_center_types;
 
 pub use metadata::{
-    spawn_metadata_manager, Metadata, MetadataKind, MetadataManager, MetadataWriter,
+    spawn_metadata_manager, Metadata, MetadataKind, MetadataManager, MetadataWriter, SyncError,
 };
 pub use task_center::*;
 pub use task_center_types::*;
