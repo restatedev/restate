@@ -196,6 +196,17 @@ mod tests {
             action_collector
         }
 
+        pub async fn apply_multiple(
+            &mut self,
+            commands: impl IntoIterator<Item = Command>,
+        ) -> Vec<Action> {
+            let mut actions = vec![];
+            for command in commands {
+                actions.append(&mut self.apply(command).await)
+            }
+            actions
+        }
+
         pub fn storage(&mut self) -> &mut RocksDBStorage {
             &mut self.rocksdb_storage
         }
@@ -565,6 +576,7 @@ mod tests {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
+                idempotency: None,
             }))
             .await;
         assert_that!(
@@ -578,12 +590,9 @@ mod tests {
         // Let's add another ingress
         let mut txn = state_machine.rocksdb_storage.transaction();
         let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
-        invocation_status
-            .get_invocation_metadata_mut()
-            .unwrap()
-            .append_response_sink(ServiceInvocationResponseSink::Ingress(
-                GenerationalNodeId::new(2, 2),
-            ));
+        invocation_status.get_response_sinks_mut().unwrap().insert(
+            ServiceInvocationResponseSink::Ingress(GenerationalNodeId::new(2, 2)),
+        );
         txn.put_invocation_status(&invocation_id, invocation_status)
             .await;
         txn.commit().await.unwrap();
@@ -629,6 +638,409 @@ mod tests {
         state_machine.shutdown().await
     }
 
+    mod idempotency {
+        use super::*;
+        use std::time::Duration;
+
+        use restate_storage_api::idempotency_table::{
+            IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
+        };
+        use restate_storage_api::invocation_status_table::CompletedInvocation;
+        use restate_storage_api::timer_table::{Timer, TimerKey};
+        use restate_types::errors::GONE_INVOCATION_ERROR;
+        use restate_types::identifiers::IdempotencyId;
+        use restate_types::invocation::Idempotency;
+        use restate_wal_protocol::timer::TimerValue;
+        use test_log::test;
+
+        #[test(tokio::test)]
+        async fn start_idempotent_invocation() {
+            let mut state_machine = MockStateMachine::default();
+            let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let handler_name = ByteString::from_static("handler");
+            let invocation_id = InvocationId::from(&fid);
+            let idempotency = Idempotency {
+                key: ByteString::from_static("my-idempotency-key"),
+                retention: Duration::from_secs(60) * 60 * 24,
+            };
+            let idempotency_id = IdempotencyId::new(
+                fid.service_id.service_name.clone(),
+                Some(fid.service_id.key.clone()),
+                handler_name.clone(),
+                idempotency.key.clone(),
+            );
+
+            // Send fresh invocation with idempotency key
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    fid: fid.clone(),
+                    method_name: handler_name.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
+                        GenerationalNodeId::new(1, 1),
+                    )),
+                    idempotency: Some(idempotency),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::Invoke {
+                    full_invocation_id: eq(fid.clone()),
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                }))
+            );
+
+            // Assert idempotency key mapping exists
+            let mut txn = state_machine.storage().transaction();
+            assert_that!(
+                txn.get_idempotency_metadata(&idempotency_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                pat!(IdempotencyMetadata {
+                    invocation_id: eq(invocation_id.clone()),
+                })
+            );
+            txn.commit().await.unwrap();
+
+            // Send output, then end
+            let response_bytes = Bytes::from_static(b"123");
+            let actions = state_machine
+                .apply_multiple([
+                    Command::InvokerEffect(InvokerEffect {
+                        full_invocation_id: fid.clone(),
+                        kind: InvokerEffectKind::JournalEntry {
+                            entry_index: 1,
+                            entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                                EntryResult::Success(response_bytes.clone()),
+                            )),
+                        },
+                    }),
+                    Command::InvokerEffect(InvokerEffect {
+                        full_invocation_id: fid.clone(),
+                        kind: InvokerEffectKind::End,
+                    }),
+                ])
+                .await;
+
+            // Assert response and timeout
+            assert_that!(
+                actions,
+                all!(
+                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        response: eq(ResponseResult::Success(response_bytes.clone()))
+                    })))),
+                    contains(pat!(Action::ScheduleInvocationStatusCleanup {
+                        invocation_id: eq(invocation_id.clone())
+                    }))
+                )
+            );
+
+            // InvocationStatus contains completed
+            let invocation_status = state_machine
+                .storage()
+                .transaction()
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap();
+            assert_that!(
+                invocation_status,
+                pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
+                    response_result: eq(ResponseResult::Success(response_bytes))
+                })))
+            );
+
+            state_machine.shutdown().await.unwrap();
+        }
+
+        #[test(tokio::test)]
+        async fn complete_already_completed_invocation() {
+            let mut state_machine = MockStateMachine::default();
+            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let handler_name = ByteString::from_static("handler");
+            let invocation_id = InvocationId::from(&original_request_fid);
+            let idempotency = Idempotency {
+                key: ByteString::from_static("my-idempotency-key"),
+                retention: Duration::from_secs(60) * 60 * 24,
+            };
+            let idempotency_id = IdempotencyId::new(
+                original_request_fid.service_id.service_name.clone(),
+                Some(original_request_fid.service_id.key.clone()),
+                handler_name.clone(),
+                idempotency.key.clone(),
+            );
+            let response_bytes = Bytes::from_static(b"123");
+            let ingress_id = GenerationalNodeId::new(1, 1);
+
+            // Prepare idempotency metadata and completed status
+            let mut txn = state_machine.storage().transaction();
+            txn.put_idempotency_metadata(
+                &idempotency_id,
+                IdempotencyMetadata {
+                    invocation_id: invocation_id.clone(),
+                },
+            )
+            .await;
+            txn.put_invocation_status(
+                &invocation_id,
+                InvocationStatus::Completed(CompletedInvocation {
+                    service_id: original_request_fid.service_id.clone(),
+                    handler: handler_name.clone(),
+                    idempotency_key: Some(idempotency.key.clone()),
+                    response_result: ResponseResult::Success(response_bytes.clone()),
+                }),
+            )
+            .await;
+            txn.commit().await.unwrap();
+
+            // Send a request, should be completed immediately with result
+            let second_request_fid =
+                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    fid: second_request_fid.clone(),
+                    method_name: handler_name.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
+                    idempotency: Some(idempotency),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                    target_node: eq(ingress_id),
+                    response: eq(ResponseResult::Success(response_bytes.clone()))
+                }))))
+            );
+            assert_that!(
+                state_machine
+                    .storage()
+                    .transaction()
+                    .get_invocation_status(&InvocationId::from(&second_request_fid))
+                    .await
+                    .unwrap(),
+                pat!(InvocationStatus::Free)
+            );
+
+            state_machine.shutdown().await.unwrap();
+        }
+
+        #[test(tokio::test)]
+        async fn known_invocation_id_but_missing_completion() {
+            let mut state_machine = MockStateMachine::default();
+            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let handler_name = ByteString::from_static("handler");
+            let invocation_id = InvocationId::from(&original_request_fid);
+            let idempotency = Idempotency {
+                key: ByteString::from_static("my-idempotency-key"),
+                retention: Duration::from_secs(60) * 60 * 24,
+            };
+            let idempotency_id = IdempotencyId::new(
+                original_request_fid.service_id.service_name.clone(),
+                Some(original_request_fid.service_id.key.clone()),
+                handler_name.clone(),
+                idempotency.key.clone(),
+            );
+            let ingress_id = GenerationalNodeId::new(1, 1);
+
+            // Prepare idempotency metadata
+            let mut txn = state_machine.rocksdb_storage.transaction();
+            txn.put_idempotency_metadata(
+                &idempotency_id,
+                IdempotencyMetadata {
+                    invocation_id: invocation_id.clone(),
+                },
+            )
+            .await;
+            txn.commit().await.unwrap();
+
+            // Send a request, should be completed immediately with result
+            let second_request_fid =
+                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    fid: second_request_fid.clone(),
+                    method_name: handler_name.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
+                    idempotency: Some(idempotency),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                    target_node: eq(ingress_id),
+                    response: eq(ResponseResult::from(GONE_INVOCATION_ERROR))
+                }))))
+            );
+            assert_that!(
+                state_machine
+                    .storage()
+                    .transaction()
+                    .get_invocation_status(&InvocationId::from(&second_request_fid))
+                    .await
+                    .unwrap(),
+                pat!(InvocationStatus::Free)
+            );
+
+            state_machine.shutdown().await.unwrap();
+        }
+
+        #[test(tokio::test)]
+        async fn latch_invocation_while_executing() {
+            let mut state_machine = MockStateMachine::default();
+            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let handler_name = ByteString::from_static("handler");
+            let idempotency = Idempotency {
+                key: ByteString::from_static("my-idempotency-key"),
+                retention: Duration::from_secs(60) * 60 * 24,
+            };
+            let ingress_id_1 = GenerationalNodeId::new(1, 1);
+            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+
+            // Send fresh invocation with idempotency key
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    fid: original_request_fid.clone(),
+                    method_name: handler_name.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    idempotency: Some(idempotency.clone()),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::Invoke {
+                    full_invocation_id: eq(original_request_fid.clone()),
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                }))
+            );
+
+            // Latch to existing invocation
+            let second_request_fid =
+                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    fid: second_request_fid,
+                    method_name: handler_name.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_2)),
+                    idempotency: Some(idempotency),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(actions, not(contains(pat!(Action::IngressResponse(_)))));
+
+            // Send output
+            let response_bytes = Bytes::from_static(b"123");
+            let actions = state_machine
+                .apply_multiple([
+                    Command::InvokerEffect(InvokerEffect {
+                        full_invocation_id: original_request_fid.clone(),
+                        kind: InvokerEffectKind::JournalEntry {
+                            entry_index: 1,
+                            entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                                EntryResult::Success(response_bytes.clone()),
+                            )),
+                        },
+                    }),
+                    Command::InvokerEffect(InvokerEffect {
+                        full_invocation_id: original_request_fid.clone(),
+                        kind: InvokerEffectKind::End,
+                    }),
+                ])
+                .await;
+
+            // Assert responses
+            assert_that!(
+                actions,
+                all!(
+                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                        target_node: eq(ingress_id_1),
+                        response: eq(ResponseResult::Success(response_bytes.clone()))
+                    })))),
+                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
+                        target_node: eq(ingress_id_2),
+                        response: eq(ResponseResult::Success(response_bytes.clone()))
+                    })))),
+                )
+            );
+
+            state_machine.shutdown().await.unwrap();
+        }
+
+        #[test(tokio::test)]
+        async fn timer_cleanup() {
+            let mut state_machine = MockStateMachine::default();
+            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let handler_name = ByteString::from_static("handler");
+            let invocation_id = InvocationId::from(&original_request_fid);
+            let idempotency = Idempotency {
+                key: ByteString::from_static("my-idempotency-key"),
+                retention: Duration::from_secs(60) * 60 * 24,
+            };
+            let idempotency_id = IdempotencyId::new(
+                original_request_fid.service_id.service_name.clone(),
+                Some(original_request_fid.service_id.key.clone()),
+                handler_name.clone(),
+                idempotency.key.clone(),
+            );
+
+            // Prepare idempotency metadata and completed status
+            let mut txn = state_machine.storage().transaction();
+            txn.put_idempotency_metadata(
+                &idempotency_id,
+                IdempotencyMetadata {
+                    invocation_id: invocation_id.clone(),
+                },
+            )
+            .await;
+            txn.put_invocation_status(
+                &invocation_id,
+                InvocationStatus::Completed(CompletedInvocation {
+                    service_id: original_request_fid.service_id.clone(),
+                    handler: handler_name.clone(),
+                    idempotency_key: Some(idempotency.key.clone()),
+                    response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                }),
+            )
+            .await;
+            txn.commit().await.unwrap();
+
+            // Send timer fired command
+            let _ = state_machine
+                .apply(Command::Timer(TimerValue::new(
+                    TimerKey {
+                        timestamp: 0,
+                        invocation_uuid: invocation_id.invocation_uuid(),
+                        journal_index: 0,
+                    },
+                    Timer::CleanInvocationStatus(invocation_id.clone()),
+                )))
+                .await;
+            assert_that!(
+                state_machine
+                    .storage()
+                    .transaction()
+                    .get_invocation_status(&invocation_id)
+                    .await
+                    .unwrap(),
+                pat!(InvocationStatus::Free)
+            );
+            assert_that!(
+                state_machine
+                    .storage()
+                    .transaction()
+                    .get_idempotency_metadata(&idempotency_id)
+                    .await
+                    .unwrap(),
+                none()
+            );
+
+            state_machine.shutdown().await.unwrap();
+        }
+    }
+
     async fn mock_start_invocation_with_service_id(
         state_machine: &mut MockStateMachine,
         service_id: ServiceId,
@@ -645,6 +1057,7 @@ mod tests {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
+                idempotency: None,
             }))
             .await;
 

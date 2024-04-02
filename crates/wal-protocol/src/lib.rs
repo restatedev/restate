@@ -130,6 +130,8 @@ pub enum Command {
     InvokerEffect(restate_invoker_api::Effect),
     /// Timer has fired
     Timer(TimerValue),
+    /// Schedule timer
+    ScheduleTimer(TimerValue),
     /// Another partition processor is reporting a response of an invocation we requested.
     InvocationResponse(InvocationResponse),
     /// A built-in invoker reporting effects from an invocation.

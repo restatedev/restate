@@ -11,13 +11,17 @@
 use super::leadership::ActionEffect;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
+use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
+use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
 use std::ops::RangeInclusive;
+use std::time::SystemTime;
 
 /// Responsible for proposing [ActionEffect].
 pub(super) struct ActionEffectHandler {
@@ -95,6 +99,25 @@ impl ActionEffectHandler {
                     )
                     .await?;
                 }
+            }
+            ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                let header = self.create_header(invocation_id.partition_key());
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(
+                        header.clone(),
+                        Command::ScheduleTimer(TimerValue::new(
+                            TimerKey {
+                                timestamp: MillisSinceEpoch::from(SystemTime::now() + duration)
+                                    .as_u64(),
+                                invocation_uuid: invocation_id.invocation_uuid(),
+                                journal_index: 0,
+                            },
+                            Timer::CleanInvocationStatus(invocation_id),
+                        )),
+                    ),
+                )
+                .await?;
             }
         };
 
