@@ -38,10 +38,7 @@ fn generate_config_schema() -> anyhow::Result<()> {
 }
 
 fn generate_default_config() -> anyhow::Result<()> {
-    println!(
-        "{}",
-        serde_yaml::to_string(&restate_node::Configuration::default())?
-    );
+    println!("{}", restate_node::Configuration::default().dump()?);
     Ok(())
 }
 
