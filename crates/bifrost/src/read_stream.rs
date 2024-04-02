@@ -103,10 +103,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build(
-                node_env.metadata_store_client.clone(),
-                node_env.metadata_writer.clone(),
-            );
+            let bifrost_svc = bifrost_opts.build();
             let mut bifrost = bifrost_svc.handle();
 
             // start bifrost service in the background

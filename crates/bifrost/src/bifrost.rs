@@ -18,8 +18,7 @@ use std::sync::Arc;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
-use restate_core::{metadata, MetadataKind, MetadataWriter};
-use restate_metadata_store::MetadataStoreClient;
+use restate_core::{metadata, MetadataKind};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
@@ -46,11 +45,8 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "memory_loglet"))]
-    pub async fn new_in_memory(
-        metadata_store_client: MetadataStoreClient,
-        metadata_writer: MetadataWriter,
-    ) -> Self {
-        let bifrost_svc = Options::memory().build(metadata_store_client, metadata_writer);
+    pub async fn new_in_memory() -> Self {
+        let bifrost_svc = Options::memory().build();
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -122,24 +118,15 @@ pub struct BifrostInner {
     watchdog: WatchdogSender,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
     shutting_down: AtomicBool,
-    metadata_store_client: MetadataStoreClient,
-    metadata_writer: MetadataWriter,
 }
 
 impl BifrostInner {
-    pub fn new(
-        opts: Options,
-        watchdog: WatchdogSender,
-        metadata_store_client: MetadataStoreClient,
-        metadata_writer: MetadataWriter,
-    ) -> Self {
+    pub fn new(opts: Options, watchdog: WatchdogSender) -> Self {
         Self {
             opts,
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
-            metadata_store_client,
-            metadata_writer,
         }
     }
 
@@ -287,11 +274,7 @@ mod tests {
             .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            let mut bifrost = Bifrost::new_in_memory(
-                node_env.metadata_store_client.clone(),
-                node_env.metadata_writer.clone(),
-            )
-            .await;
+            let mut bifrost = Bifrost::new_in_memory().await;
 
             let mut clean_bifrost_clone = bifrost.clone();
 
@@ -370,10 +353,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build(
-                node_env.metadata_store_client.clone(),
-                node_env.metadata_writer.clone(),
-            );
+            let bifrost_svc = bifrost_opts.build();
             let mut bifrost = bifrost_svc.handle();
 
             // Inject out preconfigured memory provider

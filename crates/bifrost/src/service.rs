@@ -11,8 +11,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use restate_core::{task_center, MetadataWriter, TaskKind};
-use restate_metadata_store::MetadataStoreClient;
+use restate_core::{task_center, TaskKind};
 
 use crate::bifrost::BifrostInner;
 use crate::options::Options;
@@ -26,18 +25,9 @@ pub struct BifrostService {
 }
 
 impl BifrostService {
-    pub fn new(
-        opts: Options,
-        metadata_store_client: MetadataStoreClient,
-        metadata_writer: MetadataWriter,
-    ) -> Self {
+    pub fn new(opts: Options) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(
-            opts,
-            watchdog_sender,
-            metadata_store_client,
-            metadata_writer,
-        ));
+        let inner = Arc::new(BifrostInner::new(opts, watchdog_sender));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_receiver);
         Self {
