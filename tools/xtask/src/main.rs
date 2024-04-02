@@ -32,7 +32,7 @@ use tonic::transport::{Channel, Uri};
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
         .into_generator()
-        .into_root_schema_for::<restate_server::Configuration>();
+        .into_root_schema_for::<restate_node::Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
@@ -40,7 +40,7 @@ fn generate_config_schema() -> anyhow::Result<()> {
 fn generate_default_config() -> anyhow::Result<()> {
     println!(
         "{}",
-        serde_yaml::to_string(&restate_server::Configuration::default())?
+        serde_yaml::to_string(&restate_node::Configuration::default())?
     );
     Ok(())
 }

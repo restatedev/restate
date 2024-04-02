@@ -21,13 +21,13 @@ use restate_server::rt::build_tokio;
 use tokio::runtime::Runtime;
 
 use restate_core::{TaskCenter, TaskCenterFactory};
+use restate_node::Configuration;
+use restate_node::ConfigurationBuilder;
 use restate_node::Node;
 use restate_node::{
     AdminOptionsBuilder, MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder,
     WorkerOptionsBuilder,
 };
-use restate_server::config::ConfigurationBuilder;
-use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
 
 pub mod counter {

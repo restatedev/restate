@@ -14,9 +14,9 @@ use restate_core::options::CommonOptionCliOverride;
 use restate_core::TaskCenterFactory;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
+use restate_node::Configuration;
 use restate_server::build_info;
 use restate_server::rt::build_tokio;
-use restate_server::Configuration;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use std::error::Error;
@@ -123,6 +123,9 @@ fn main() {
         }
     };
 
+    restate_node::set_current_config(config);
+
+    let config = Configuration::pinned();
     let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
 
     let tc = TaskCenterFactory::create(runtime.handle().clone());
