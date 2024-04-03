@@ -86,7 +86,7 @@ pub fn set_current_config(config: Configuration) {
 ///
 /// For example, to configure `admin.bind_address`, the corresponding environment variable is `RESTATE_ADMIN__BIND_ADDRESS`.
 #[serde_as]
-#[derive(Debug, Default, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(default))]
 #[builder(default)]
