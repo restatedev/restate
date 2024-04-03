@@ -10,15 +10,16 @@
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::options::CommonOptionCliOverride;
 use restate_core::TaskCenterFactory;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_node::Configuration;
 use restate_server::build_info;
+use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_server::rt::build_tokio;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
+use restate_types::config::CommonOptionCliOverride;
 use std::error::Error;
 use std::ops::Div;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,11 @@ struct RestateArguments {
         value_name = "FILE"
     )]
     config_file: Option<PathBuf>,
+
+    /// Dumps the loaded configuration (or default if no config-file is set) to stdout and exits.
+    /// Defaults will include any values overridden by environment variables.
+    #[clap(long)]
+    dump_config: bool,
 
     /// Wipes the configured data before starting Restate.
     ///
@@ -112,8 +118,36 @@ const EXIT_CODE_FAILURE: i32 = 1;
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config = match Configuration::load(cli_args.config_file.as_deref(), cli_args.opts_overrides)
-    {
+    // We capture the absolute path of the config file on startup before we change the current
+    // working directory (base-dir arg)
+    let config_path = cli_args
+        .config_file
+        .as_ref()
+        .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
+
+    // Initial configuration loading
+    let config_loader = ConfigLoaderBuilder::default()
+        .load_env(true)
+        .path(config_path.clone())
+        .cli_override(cli_args.opts_overrides.clone())
+        .build()
+        .unwrap();
+
+    let config = match config_loader.load_once() {
+        Ok(c) => c,
+        Err(e) => {
+            // We cannot use tracing here as it's not configured yet
+            eprintln!("{}", e.decorate());
+            eprintln!("{:#?}", RestateCode::from(&e));
+            std::process::exit(EXIT_CODE_FAILURE);
+        }
+    };
+    if cli_args.dump_config {
+        println!("{}", config.dump().expect("config is toml serializable"));
+        std::process::exit(0);
+    }
+
+    let old_config = match Configuration::load(config_path.as_deref(), cli_args.opts_overrides) {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
@@ -123,7 +157,8 @@ fn main() {
         }
     };
 
-    restate_node::set_current_config(config);
+    restate_node::set_current_config(old_config);
+    restate_types::config::set_current_config(config);
 
     let config = Configuration::pinned();
     let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
@@ -160,6 +195,9 @@ fn main() {
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
                 config.dump().unwrap()
             );
+
+            // start config watcher
+            config_loader.start();
 
             WipeMode::wipe(
                 cli_args.wipe.as_ref(),

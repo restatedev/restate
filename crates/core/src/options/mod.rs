@@ -8,10 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[cfg(feature = "clap")]
-mod cli_option_overrides;
 mod common_options;
 
-#[cfg(feature = "clap")]
-pub use cli_option_overrides::*;
 pub use common_options::*;
