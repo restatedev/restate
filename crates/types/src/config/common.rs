@@ -84,6 +84,7 @@ pub struct CommonOptions {
     ///
     /// Size of the default thread pool used to perform internal tasks.
     /// If not set, it defaults to the number of CPU cores.
+    #[builder(setter(strip_option))]
     pub default_thread_pool_size: Option<usize>,
 
     /// # Tracing Endpoint

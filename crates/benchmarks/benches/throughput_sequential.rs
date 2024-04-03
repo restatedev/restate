@@ -19,8 +19,9 @@ use restate_benchmarks::counter::CounterAddRequest;
 use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
+    let old_config = restate_benchmarks::restate_old_configuration();
     let config = restate_benchmarks::restate_configuration();
-    let (tc, _rt) = restate_benchmarks::spawn_restate(config);
+    let tc = restate_benchmarks::spawn_restate(config, old_config);
 
     let current_thread_rt = Builder::new_current_thread()
         .enable_all()
