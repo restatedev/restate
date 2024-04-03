@@ -11,7 +11,6 @@ publish = false
 default = []
 
 test-util = []
-schemars = ["dep:schemars"]
 local_loglet = []
 memory_loglet = []
 
@@ -23,10 +22,12 @@ arc-swap = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-clap = { workspace = true, optional = true }
+clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
+derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
+hostname = { version = "0.4" }
 http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
@@ -41,6 +42,7 @@ strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
+toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
