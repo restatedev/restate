@@ -34,9 +34,9 @@ pub enum NodesConfigError {
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
 #[derive(Debug, Hash, EnumSetType, strum_macros::Display, serde::Serialize, serde::Deserialize)]
 #[enumset(serialize_repr = "list")]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[cfg_attr(feature = "clap", clap(rename_all = "snake_case"))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 pub enum Role {
     /// A worker runs partition processor (journal, state, and drives invocations)
     Worker,
