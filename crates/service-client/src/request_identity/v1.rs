@@ -1,142 +1,121 @@
-use std::borrow::Cow;
 use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use base64::Engine;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::{Body, Request};
-use itertools::Itertools;
+
 use ring::signature::{Ed25519KeyPair, KeyPair};
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::http::{HttpError, SigningPrivateKeyReadError};
 
-pub(crate) fn read_pem_file(
-    request_signing_private_key_pem_file: PathBuf,
-) -> Result<Vec<SigningKey>, SigningPrivateKeyReadError> {
-    let pem_bytes = std::fs::read(request_signing_private_key_pem_file)?;
-    let pems = pem::parse_many(pem_bytes)?;
-    let pem_length = pems.len();
+pub(crate) struct SigningKey {
+    header: jsonwebtoken::Header,
+    key: jsonwebtoken::EncodingKey,
+}
 
-    let keys = pems
-        .into_iter()
-        .map(|pem| {
-            Ed25519KeyPair::from_pkcs8_maybe_unchecked(pem.into_contents().as_slice())
-                .map_err(SigningPrivateKeyReadError::KeyRejected)
-        })
-        .try_fold(
-            Vec::with_capacity(pem_length),
-            |mut vec, key: Result<_, SigningPrivateKeyReadError>| {
-                vec.push(SigningKey(key?));
-                Result::<_, SigningPrivateKeyReadError>::Ok(vec)
+impl Debug for SigningKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("SigningKey(")?;
+        f.write_str(self.header.kid.as_ref().unwrap().as_str())?;
+        f.write_str(")")
+    }
+}
+
+impl SigningKey {
+    pub(crate) fn from_pem_file(
+        request_identity_private_key_pem_file: PathBuf,
+    ) -> Result<Self, SigningPrivateKeyReadError> {
+        let pem_bytes = std::fs::read(request_identity_private_key_pem_file)?;
+        let mut pems = pem::parse_many(pem_bytes)?;
+        if pems.len() != 1 {
+            return Err(SigningPrivateKeyReadError::OneKeyExpected(pems.len()));
+        };
+        let pem_bytes = pems.pop().unwrap().into_contents();
+
+        let keypair = Ed25519KeyPair::from_pkcs8_maybe_unchecked(pem_bytes.as_slice())
+            .map_err(SigningPrivateKeyReadError::KeyRejected)?;
+        let kid = format!(
+            "publickeyv1_{}",
+            bs58::encode(keypair.public_key()).into_string()
+        );
+        let key = jsonwebtoken::EncodingKey::from_ed_der(pem_bytes.as_slice());
+
+        info!(kid, "Loaded request identity key");
+
+        Ok(Self {
+            header: jsonwebtoken::Header {
+                typ: Some("JWT".into()),
+                kid: Some(kid),
+                alg: jsonwebtoken::Algorithm::EdDSA,
+                ..Default::default()
             },
-        )?;
-
-    info!(
-        public_keys = %CommaSep(&keys),
-        "Loaded request signing keys"
-    );
-
-    Ok(keys)
-}
-
-#[derive(Debug)]
-pub(crate) struct SigningKey(Ed25519KeyPair);
-
-impl Display for SigningKey {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("signingkeyv1_")?;
-        let string = bs58::encode(self.0.public_key()).into_string();
-        f.write_str(string.as_str())
+            key,
+        })
     }
 }
 
-struct CommaSep<'a, T>(&'a [T]);
-
-impl<'a, T: Display> Display for CommaSep<'a, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        for (i, v) in self.0.iter().enumerate() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(f, "{}", v)?;
-        }
-        Ok(())
-    }
+pub struct Signer<'key> {
+    claims: Claims,
+    signing_key: &'key SigningKey,
 }
 
-pub(crate) struct Signer<'keys> {
-    to_sign: String,
-    unix_seconds: HeaderValue,
-    signing_keys: &'keys [SigningKey],
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Claims {
+    aud: String,
+    exp: u64,
+    iat: u64,
+    nbf: u64,
 }
 
-const SECONDS_HEADER: HeaderName = HeaderName::from_static("x-restate-unix-seconds");
-const SIGNATURES_HEADER: HeaderName = HeaderName::from_static("x-restate-signatures");
-const PUBLIC_KEYS_HEADER: HeaderName = HeaderName::from_static("x-restate-public-keys");
+const JWT_HEADER: HeaderName = HeaderName::from_static("x-restate-jwt-v1");
 
-impl<'keys> Signer<'keys> {
+/// The time to add and subtract from the current time to determine expiry and not-before times
+const LEEWAY_SECONDS: u64 = 60;
+
+impl<'key> Signer<'key> {
     const SCHEME: HeaderValue = HeaderValue::from_static("v1");
 
-    pub(crate) fn new<'a>(
-        method: &'a str,
-        path: &'a str,
-        signing_keys: &'keys [SigningKey],
-    ) -> Result<Self, HttpError> {
+    pub(crate) fn new(path: String, signing_key: &'key SigningKey) -> Result<Self, HttpError> {
         let unix_seconds = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("duration since Unix epoch should be well-defined")
-            .as_secs()
-            .to_string();
-
-        let to_sign = format!("{}\n{}\n{}", method, path, unix_seconds);
+            .as_secs();
 
         Ok(Self {
-            to_sign,
-            unix_seconds: unix_seconds
-                .try_into()
-                .expect("u64 string must be a valid header value"),
-            signing_keys,
+            claims: Claims {
+                aud: path,
+                nbf: unix_seconds.saturating_sub(LEEWAY_SECONDS),
+                iat: unix_seconds,
+                exp: unix_seconds.saturating_add(LEEWAY_SECONDS),
+            },
+            signing_key,
         })
     }
 }
 
-impl<'keys> super::SignRequest for Signer<'keys> {
-    fn sign_request(self, mut request: Request<Body>) -> Request<Body> {
-        let (public_keys, signatures): (String, String) = {
-            let iter = self.signing_keys.iter().map(|k| {
-                (
-                    Cow::<str>::Owned(k.to_string()), // we use display format (bs58 with prefix) here for direct string comparison in sdks
-                    Cow::<str>::Owned(
-                        BASE64_URL_SAFE_NO_PAD.encode(k.0.sign(self.to_sign.as_bytes())),
-                    ),
-                )
-            });
-            Itertools::intersperse(iter, (Cow::Borrowed(","), Cow::Borrowed(",")))
-        }
-        .unzip();
+impl<'key> super::SignRequest for Signer<'key> {
+    type Error = jsonwebtoken::errors::Error;
+    fn sign_request(self, mut request: Request<Body>) -> Result<Request<Body>, Self::Error> {
+        let jwt = jsonwebtoken::encode(
+            &self.signing_key.header,
+            &self.claims,
+            &self.signing_key.key,
+        )?;
 
         request.headers_mut().extend([
             (super::SCHEME_HEADER, Self::SCHEME),
-            (SECONDS_HEADER, self.unix_seconds),
             (
-                PUBLIC_KEYS_HEADER,
-                public_keys
-                    .try_into()
-                    .expect("base58 must be a valid header value"),
-            ),
-            (
-                SIGNATURES_HEADER,
-                signatures
-                    .try_into()
-                    .expect("base64 must be a valid header value"),
+                JWT_HEADER,
+                jwt.try_into()
+                    .expect("jsonwebtokens must never have non-ascii characters"),
             ),
         ]);
 
-        request
+        Ok(request)
     }
 }
 
@@ -144,70 +123,41 @@ impl<'keys> super::SignRequest for Signer<'keys> {
 mod tests {
     use super::*;
     use crate::request_identity::SignRequest;
-    use ring::signature::VerificationAlgorithm;
+
+    use std::collections::HashSet;
     use std::io::Write;
 
-    static ONE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
+    static PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIPe++4ZTPQDF81otpoU/mOGHC2vOAVp9WbiCblvn3nXO
 -----END PRIVATE KEY-----"#;
-
-    static TWO_KEYS: &[u8] = br#"-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIPe++4ZTPQDF81otpoU/mOGHC2vOAVp9WbiCblvn3nXO
------END PRIVATE KEY-----
------BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIF9luJgnEYi48JkZU6ZegFj5njQ2nWVEomzH4mhd6fQa
------END PRIVATE KEY-----"#;
+    static PUBLIC_KEY: &[u8] = br#"-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
+-----END PUBLIC KEY-----"#;
 
     #[test]
     fn test_read_key() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
-        pemfile.write_all(ONE_KEY).unwrap();
+        pemfile.write_all(PRIVATE_KEY).unwrap();
 
-        let keys = read_pem_file(pemfile.path().to_path_buf()).unwrap();
+        let key = SigningKey::from_pem_file(pemfile.path().to_path_buf()).unwrap();
 
-        assert_eq!(keys.len(), 1);
         assert_eq!(
-            keys[0].to_string(),
-            "signingkeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY"
-        )
-    }
-
-    #[test]
-    fn test_read_multiple() {
-        let mut pemfile = tempfile::NamedTempFile::new().unwrap();
-        pemfile.write_all(TWO_KEYS).unwrap();
-
-        let keys = read_pem_file(pemfile.path().to_path_buf()).unwrap();
-
-        assert_eq!(keys.len(), 2);
-        assert_eq!(
-            keys[0].to_string(),
-            "signingkeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY"
-        );
-        assert_eq!(
-            keys[1].to_string(),
-            "signingkeyv1_CVmG1AvSyedeZpwwd3MRGbRu5yFt3QXXEpQJKyigB9A5"
+            key.header.kid.unwrap(),
+            "publickeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY"
         )
     }
 
     #[test]
     fn test_sign() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
-        pemfile.write_all(TWO_KEYS).unwrap();
+        pemfile.write_all(PRIVATE_KEY).unwrap();
 
-        let keys = read_pem_file(pemfile.path().to_path_buf()).unwrap();
-        let signer = Signer::new("POST", "/invoke/foo", &keys).unwrap();
+        let key = SigningKey::from_pem_file(pemfile.path().to_path_buf()).unwrap();
+        let signer = Signer::new("/invoke/foo".into(), &key).unwrap();
 
         let request = Request::new(Body::empty());
 
-        let request = signer.sign_request(request);
-
-        let seconds = request
-            .headers()
-            .get("x-restate-unix-seconds")
-            .expect("seconds header must be present")
-            .to_str()
-            .unwrap();
+        let request = signer.sign_request(request).unwrap();
 
         assert_eq!(
             request
@@ -216,35 +166,32 @@ MC4CAQAwBQYDK2VwBCIEIF9luJgnEYi48JkZU6ZegFj5njQ2nWVEomzH4mhd6fQa
                 .expect("signature scheme header must be present"),
             &Signer::SCHEME
         );
-        assert_eq!(seconds.len(), 10);
-        assert_eq!(
-            request.headers().get("x-restate-public-keys").expect("public keys header must be present"),
-            "signingkeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY,signingkeyv1_CVmG1AvSyedeZpwwd3MRGbRu5yFt3QXXEpQJKyigB9A5"
-        );
 
-        let signed = format!("POST\n/invoke/foo\n{}", seconds);
-
-        for (i, signature) in request
+        let jwt = request
             .headers()
-            .get("x-restate-signatures")
-            .expect("signature header must be present")
-            .to_str()
-            .unwrap()
-            .split(',')
-            .map(|sig| {
-                BASE64_URL_SAFE_NO_PAD
-                    .decode(sig)
-                    .expect("signatures must be valid base64")
-            })
-            .enumerate()
-        {
-            ring::signature::ED25519
-                .verify(
-                    keys[i].0.public_key().as_ref().into(),
-                    signed.as_bytes().into(),
-                    signature.as_slice().into(),
-                )
-                .expect("signature must validate")
-        }
+            .get("x-restate-jwt-v1")
+            .expect("jwt must be present");
+
+        let decoding_key = jsonwebtoken::DecodingKey::from_ed_pem(PUBLIC_KEY).unwrap();
+
+        let mut validate = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
+        validate.required_spec_claims =
+            HashSet::from(["aud".into(), "exp".into(), "iat".into(), "nbf".into()]);
+        validate.leeway = 0;
+        validate.reject_tokens_expiring_in_less_than = 0;
+        validate.validate_exp = true;
+        validate.validate_nbf = true;
+        validate.set_audience(&["/invoke/foo"]);
+
+        let decoded =
+            jsonwebtoken::decode::<Claims>(jwt.to_str().unwrap(), &decoding_key, &validate)
+                .expect("jwt must decode successfully");
+
+        assert_eq!(
+            decoded.header.kid.unwrap(),
+            "publickeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY"
+        );
+        assert_eq!(decoded.header.typ.unwrap(), "JWT");
+        assert_eq!(decoded.header.alg, jsonwebtoken::Algorithm::EdDSA);
     }
 }

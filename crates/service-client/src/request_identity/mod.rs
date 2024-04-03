@@ -6,18 +6,20 @@ pub(crate) mod v1;
 
 const SCHEME_HEADER: HeaderName = HeaderName::from_static("x-restate-signature-scheme");
 
-pub(crate) trait SignRequest {
-    fn sign_request(self, request: Request<Body>) -> Request<Body>;
+pub trait SignRequest {
+    type Error;
+    fn sign_request(self, request: Request<Body>) -> Result<Request<Body>, Self::Error>;
 }
 
 impl<T: SignRequest> SignRequest for Option<T> {
-    fn sign_request(self, mut request: Request<Body>) -> Request<Body> {
+    type Error = T::Error;
+    fn sign_request(self, mut request: Request<Body>) -> Result<Request<Body>, Self::Error> {
         match self {
             Some(signer) => signer.sign_request(request),
             None => {
                 const SCHEME: HeaderValue = HeaderValue::from_static("unsigned");
                 request.headers_mut().insert(SCHEME_HEADER, SCHEME);
-                request
+                Ok(request)
             }
         }
     }

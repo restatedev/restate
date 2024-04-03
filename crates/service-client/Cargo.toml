@@ -40,6 +40,7 @@ tracing = { workspace = true }
 pem = "3.0.3"
 ring = "0.17.8"
 bs58 = "0.5.0"
+jsonwebtoken = "9.1.0"
 
 aws-config = { version = "1.1.5", features = ["sso"] }
 aws-credential-types = "1.1.5"

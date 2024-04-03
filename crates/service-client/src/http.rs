@@ -12,7 +12,7 @@ use super::proxy::{Proxy, ProxyConnector};
 
 use crate::request_identity::SignRequest;
 use crate::utils::ErrorExt;
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
 use futures::future::Either;
 use futures::FutureExt;
 use hyper::client::HttpConnector;
@@ -52,16 +52,16 @@ pub struct Options {
     #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
     http_proxy: Option<Proxy>,
 
-    /// # Request signing private key PEM file
+    /// # Request identity private key PEM file
     ///
-    /// A path to a file, such as "/var/secrets/key.pem", which contains one or more ed25519 private
-    /// keys in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
-    /// If provided, these keys will be used to sign HTTP requests from this client in a custom format
-    /// that SDKs may optionally verify, proving that the caller is a particular Restate instance.
+    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
+    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
+    /// If provided, this key will be used to attach JWTs to HTTP requests from this client which
+    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
     ///
     /// This file is currently only read on client creation, but this may change in future.
     /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
-    request_signing_private_key_pem_file: Option<PathBuf>,
+    request_identity_private_key_pem_file: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -69,7 +69,7 @@ impl Default for Options {
         Self {
             http_keep_alive_options: Some(Default::default()),
             http_proxy: None,
-            request_signing_private_key_pem_file: None,
+            request_identity_private_key_pem_file: None,
         }
     }
 }
@@ -133,27 +133,29 @@ type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 pub struct HttpClient {
     client: hyper::Client<Connector, Body>,
     // this can be changed to re-read periodically if necessary
-    request_signing_keys: Arc<ArcSwap<Vec<crate::request_identity::v1::SigningKey>>>,
+    request_identity_key: Arc<ArcSwapOption<crate::request_identity::v1::SigningKey>>,
 }
 
 impl HttpClient {
     pub fn new(
         client: hyper::Client<Connector, Body>,
-        request_signing_private_key_pem_file: Option<PathBuf>,
+        request_identity_private_key_pem_file: Option<PathBuf>,
     ) -> Result<Self, HttpClientError> {
-        let request_signing_keys = if let Some(request_signing_private_key_pem_file) =
-            request_signing_private_key_pem_file
+        let request_identity_key = if let Some(request_identity_private_key_pem_file) =
+            request_identity_private_key_pem_file
         {
-            Arc::new(ArcSwap::new(Arc::new(crate::request_identity::v1::read_pem_file(
-                request_signing_private_key_pem_file,
-            )?)))
+            Arc::new(ArcSwapOption::from(Some(Arc::new(
+                crate::request_identity::v1::SigningKey::from_pem_file(
+                    request_identity_private_key_pem_file,
+                )?,
+            ))))
         } else {
-            Arc::new(ArcSwap::new(Arc::new(Vec::new())))
+            Arc::new(ArcSwapOption::from(None))
         };
 
         Ok(Self {
             client,
-            request_signing_keys,
+            request_identity_key,
         })
     }
 
@@ -176,7 +178,7 @@ impl HttpClient {
                     .enable_http2()
                     .build(),
             )),
-            options.request_signing_private_key_pem_file,
+            options.request_identity_private_key_pem_file,
         )?)
     }
 
@@ -233,14 +235,11 @@ impl HttpClient {
     ) -> impl Future<Output = Result<Response<Body>, HttpError>> + Send + 'static {
         let method = Method::POST;
 
-        let request_signing_keys = self.request_signing_keys.load();
+        let request_identity_key = self.request_identity_key.load();
 
-        let signer = if !request_signing_keys.is_empty() {
-            match crate::request_identity::v1::Signer::new(
-                method.as_str(),
-                path.path(),
-                request_signing_keys.as_slice(),
-            ) {
+        let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
+            match crate::request_identity::v1::Signer::new(path.path().into(), request_identity_key)
+            {
                 Ok(signing_parameters_v1) => Some(signing_parameters_v1),
                 Err(err) => return future::ready(Err(err)).right_future(),
             }
@@ -253,7 +252,10 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let request = signer.sign_request(request);
+        let request = match signer.sign_request(request) {
+            Ok(request) => request,
+            Err(err) => return future::ready(Err(err.into())).right_future(),
+        };
 
         let fut = self.client.request(request);
 
@@ -275,6 +277,8 @@ pub enum HttpClientError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SigningPrivateKeyReadError {
+    #[error("Only one private key in PEM format is expected, found {0}")]
+    OneKeyExpected(usize),
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -289,6 +293,8 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
+    #[error(transparent)]
+    IdentityV1(#[from] <super::request_identity::v1::Signer<'static> as SignRequest>::Error),
 }
 
 impl HttpError {
@@ -298,6 +304,7 @@ impl HttpError {
         match self {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
+            HttpError::IdentityV1(_) => false, // this really should never happen
         }
     }
 }
