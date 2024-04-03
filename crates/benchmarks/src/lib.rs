@@ -16,8 +16,8 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
-use restate_core::options::CommonOptionCliOverride;
 use restate_server::rt::build_tokio;
+use restate_types::config::CommonOptionCliOverride;
 use tokio::runtime::Runtime;
 
 use restate_core::{TaskCenter, TaskCenterFactory};

@@ -21,7 +21,7 @@ use crate::PlainNodeId;
 use super::LogFormat;
 
 #[serde_as]
-#[derive(Debug, clap::Parser, Serialize, Default)]
+#[derive(Debug, Clone, clap::Parser, Serialize, Default)]
 /// A subset of CommonOptions that can be parsed via the CLI. This **must** remain
 /// parse-compatible with CommonOptions.
 pub struct CommonOptionCliOverride {
