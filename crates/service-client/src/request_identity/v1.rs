@@ -143,7 +143,7 @@ impl<'keys> super::SignRequest for Signer<'keys> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request_signing::SignRequest;
+    use crate::request_identity::SignRequest;
     use ring::signature::VerificationAlgorithm;
     use std::io::Write;
 

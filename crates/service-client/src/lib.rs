@@ -32,7 +32,7 @@ mod http;
 mod lambda;
 mod options;
 mod proxy;
-mod request_signing;
+mod request_identity;
 mod utils;
 
 #[derive(Debug, Clone)]

@@ -10,8 +10,7 @@
 
 use super::proxy::{Proxy, ProxyConnector};
 
-use crate::request_signing;
-use crate::request_signing::SignRequest;
+use crate::request_identity::SignRequest;
 use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use futures::future::Either;
@@ -134,7 +133,7 @@ type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 pub struct HttpClient {
     client: hyper::Client<Connector, Body>,
     // this can be changed to re-read periodically if necessary
-    request_signing_keys: Arc<ArcSwap<Vec<request_signing::v1::SigningKey>>>,
+    request_signing_keys: Arc<ArcSwap<Vec<crate::request_identity::v1::SigningKey>>>,
 }
 
 impl HttpClient {
@@ -145,7 +144,7 @@ impl HttpClient {
         let request_signing_keys = if let Some(request_signing_private_key_pem_file) =
             request_signing_private_key_pem_file
         {
-            Arc::new(ArcSwap::new(Arc::new(request_signing::v1::read_pem_file(
+            Arc::new(ArcSwap::new(Arc::new(crate::request_identity::v1::read_pem_file(
                 request_signing_private_key_pem_file,
             )?)))
         } else {
@@ -237,7 +236,7 @@ impl HttpClient {
         let request_signing_keys = self.request_signing_keys.load();
 
         let signer = if !request_signing_keys.is_empty() {
-            match request_signing::v1::Signer::new(
+            match crate::request_identity::v1::Signer::new(
                 method.as_str(),
                 path.path(),
                 request_signing_keys.as_slice(),
