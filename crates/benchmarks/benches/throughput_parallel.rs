@@ -24,8 +24,9 @@ use tokio::runtime::Builder;
 use tonic::transport::Channel;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
+    let old_config = restate_benchmarks::restate_old_configuration();
     let config = restate_benchmarks::restate_configuration();
-    let (tc, _rt) = restate_benchmarks::spawn_restate(config);
+    let tc = restate_benchmarks::spawn_restate(config, old_config);
 
     let BenchmarkSettings {
         num_requests,
