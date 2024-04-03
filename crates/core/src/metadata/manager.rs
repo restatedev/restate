@@ -387,20 +387,17 @@ mod tests {
 
     use crate::metadata::spawn_metadata_manager;
     use crate::test_env::MockNetworkSender;
-    use crate::TaskCenterFactory;
+    use crate::{TaskCenterBuilder, TaskKind};
 
-    #[tokio::test]
-    async fn test_nodes_config_updates() -> Result<()> {
+    fn test_nodes_config_updates() -> Result<()> {
         test_updates(
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
             |metadata| metadata.nodes_config_version(),
             |value, version| value.set_version(version),
         )
-        .await
     }
 
-    #[tokio::test]
     async fn test_partition_table_updates() -> Result<()> {
         test_updates(
             FixedPartitionTable::new(Version::MIN, 42),
@@ -408,10 +405,9 @@ mod tests {
             |metadata| metadata.partition_table_version(),
             |value, version| value.set_version(version),
         )
-        .await
     }
 
-    async fn test_updates<T, F, S>(
+    fn test_updates<T, F, S>(
         value: T,
         kind: MetadataKind,
         config_version: F,
@@ -422,76 +418,77 @@ mod tests {
         F: Fn(&Metadata) -> Version,
         S: Fn(&mut T, Version),
     {
-        let network_sender = MockNetworkSender::default();
-        let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
-        let metadata_writer = metadata_manager.writer();
-        let metadata = metadata_manager.metadata();
+        let tc = TaskCenterBuilder::default().build()?;
+        tc.block_on("test", None, async move {
+            let network_sender = MockNetworkSender::default();
+            let metadata_store_client = MetadataStoreClient::new_in_memory();
+            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+            let metadata_writer = metadata_manager.writer();
+            let metadata = metadata_manager.metadata();
 
-        assert_eq!(Version::INVALID, config_version(&metadata));
+            assert_eq!(Version::INVALID, config_version(&metadata));
 
-        assert_eq!(Version::MIN, value.version());
-        // updates happening before metadata manager start should not get lost.
-        metadata_writer.submit(value.clone());
+            assert_eq!(Version::MIN, value.version());
+            // updates happening before metadata manager start should not get lost.
+            metadata_writer.submit(value.clone());
 
-        // start metadata manager
-        spawn_metadata_manager(&tc, metadata_manager)?;
+            let tc = task_center();
+            // start metadata manager
+            spawn_metadata_manager(&tc, metadata_manager)?;
 
-        let version = metadata.wait_for_version(kind, Version::MIN).await.unwrap();
-        assert_eq!(Version::MIN, version);
+            let version = metadata.wait_for_version(kind, Version::MIN).await.unwrap();
+            assert_eq!(Version::MIN, version);
 
-        // Wait should not block if waiting older version
-        let version2 = metadata
-            .wait_for_version(kind, Version::INVALID)
-            .await
+            // Wait should not block if waiting older version
+            let version2 = metadata
+                .wait_for_version(kind, Version::INVALID)
+                .await
+                .unwrap();
+            assert_eq!(version, version2);
+
+            let updated = Arc::new(AtomicBool::new(false));
+            tc.spawn(TaskKind::Disposable, "store", None, {
+                let metadata = metadata.clone();
+                let updated = Arc::clone(&updated);
+                async move {
+                    let _ = metadata.wait_for_version(kind, Version::from(3)).await;
+                    updated.store(true, Ordering::Release);
+                    Ok(())
+                }
+            })
             .unwrap();
-        assert_eq!(version, version2);
 
-        let updated = Arc::new(AtomicBool::new(false));
-        tokio::spawn({
-            let metadata = metadata.clone();
-            let updated = Arc::clone(&updated);
-            async move {
-                let _ = metadata.wait_for_version(kind, Version::from(3)).await;
-                updated.store(true, Ordering::Release);
-            }
-        });
+            // let's set the version to 3
+            let mut update_value = value.clone();
+            set_version_to(&mut update_value, Version::from(3));
 
-        // let's set the version to 3
-        let mut update_value = value.clone();
-        set_version_to(&mut update_value, Version::from(3));
+            metadata_writer.update(update_value).await?;
+            assert_eq!(true, updated.load(Ordering::Acquire));
 
-        metadata_writer.update(update_value).await?;
-        assert_eq!(true, updated.load(Ordering::Acquire));
-
-        tc.cancel_tasks(None, None).await;
-        Ok(())
+            tc.cancel_tasks(None, None).await;
+            Ok(())
+        })
     }
 
-    #[tokio::test]
-    async fn test_nodes_config_watchers() -> Result<()> {
+    fn test_nodes_config_watchers() -> Result<()> {
         test_watchers(
             create_mock_nodes_config(),
             MetadataKind::NodesConfiguration,
             |metadata| metadata.nodes_config_version(),
             |value| value.increment_version(),
         )
-        .await
     }
 
-    #[tokio::test]
-    async fn test_partition_table_watchers() -> Result<()> {
+    fn test_partition_table_watchers() -> Result<()> {
         test_watchers(
             FixedPartitionTable::new(Version::MIN, 42),
             MetadataKind::PartitionTable,
             |metadata| metadata.partition_table_version(),
             |value| value.increment_version(),
         )
-        .await
     }
 
-    async fn test_watchers<T, F, I>(
+    fn test_watchers<T, F, I>(
         value: T,
         kind: MetadataKind,
         config_version: F,
@@ -502,52 +499,54 @@ mod tests {
         F: Fn(&Metadata) -> Version,
         I: Fn(&mut T),
     {
-        let network_sender = MockNetworkSender::default();
-        let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-        let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
-        let metadata_writer = metadata_manager.writer();
-        let metadata = metadata_manager.metadata();
+        let tc = TaskCenterBuilder::default().build()?;
+        tc.block_on("test", None, async move {
+            let network_sender = MockNetworkSender::default();
+            let metadata_store_client = MetadataStoreClient::new_in_memory();
+            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+            let metadata_writer = metadata_manager.writer();
+            let metadata = metadata_manager.metadata();
 
-        assert_eq!(Version::INVALID, config_version(&metadata));
+            assert_eq!(Version::INVALID, config_version(&metadata));
 
-        assert_eq!(Version::MIN, value.version());
+            assert_eq!(Version::MIN, value.version());
 
-        // start metadata manager
-        spawn_metadata_manager(&tc, metadata_manager)?;
+            // start metadata manager
+            spawn_metadata_manager(&task_center(), metadata_manager)?;
 
-        let mut watcher1 = metadata.watch(kind);
-        assert_eq!(Version::INVALID, *watcher1.borrow());
-        let mut watcher2 = metadata.watch(kind);
-        assert_eq!(Version::INVALID, *watcher2.borrow());
+            let mut watcher1 = metadata.watch(kind);
+            assert_eq!(Version::INVALID, *watcher1.borrow());
+            let mut watcher2 = metadata.watch(kind);
+            assert_eq!(Version::INVALID, *watcher2.borrow());
 
-        metadata_writer.update(value.clone()).await?;
-        watcher1.changed().await?;
+            metadata_writer.update(value.clone()).await?;
+            watcher1.changed().await?;
 
-        assert_eq!(Version::MIN, *watcher1.borrow());
-        assert_eq!(Version::MIN, *watcher2.borrow());
+            assert_eq!(Version::MIN, *watcher1.borrow());
+            assert_eq!(Version::MIN, *watcher2.borrow());
 
-        // let's push multiple updates
-        let mut value = value.clone();
-        increment_version(&mut value);
-        metadata_writer.update(value.clone()).await?;
-        increment_version(&mut value);
-        metadata_writer.update(value.clone()).await?;
-        increment_version(&mut value);
-        metadata_writer.update(value.clone()).await?;
-        increment_version(&mut value);
-        metadata_writer.update(value.clone()).await?;
+            // let's push multiple updates
+            let mut value = value.clone();
+            increment_version(&mut value);
+            metadata_writer.update(value.clone()).await?;
+            increment_version(&mut value);
+            metadata_writer.update(value.clone()).await?;
+            increment_version(&mut value);
+            metadata_writer.update(value.clone()).await?;
+            increment_version(&mut value);
+            metadata_writer.update(value.clone()).await?;
 
-        // Watcher sees the latest value only.
-        watcher2.changed().await?;
-        assert_eq!(Version::from(5), *watcher2.borrow());
-        assert!(!watcher2.has_changed().unwrap());
+            // Watcher sees the latest value only.
+            watcher2.changed().await?;
+            assert_eq!(Version::from(5), *watcher2.borrow());
+            assert!(!watcher2.has_changed().unwrap());
 
-        watcher1.changed().await?;
-        assert_eq!(Version::from(5), *watcher1.borrow());
-        assert!(!watcher1.has_changed().unwrap());
+            watcher1.changed().await?;
+            assert_eq!(Version::from(5), *watcher1.borrow());
+            assert!(!watcher1.has_changed().unwrap());
 
-        Ok(())
+            Ok(())
+        })
     }
 
     fn create_mock_nodes_config() -> NodesConfiguration {
