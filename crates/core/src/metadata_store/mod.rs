@@ -10,6 +10,7 @@
 
 mod test_util;
 
+#[cfg(any(test, feature = "test-util"))]
 use crate::metadata_store::test_util::InMemoryMetadataStore;
 use async_trait::async_trait;
 use bytes::Bytes;

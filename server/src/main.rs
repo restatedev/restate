@@ -10,16 +10,15 @@
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::TaskCenterFactory;
+use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
-use restate_node::Configuration;
 use restate_server::build_info;
 use restate_server::config_loader::ConfigLoaderBuilder;
-use restate_server::rt::build_tokio;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::config::CommonOptionCliOverride;
+use restate_types::config::Configuration;
 use std::error::Error;
 use std::ops::Div;
 use std::path::{Path, PathBuf};
@@ -147,31 +146,34 @@ fn main() {
         std::process::exit(0);
     }
 
-    let old_config = match Configuration::load(config_path.as_deref(), cli_args.opts_overrides) {
-        Ok(c) => c,
-        Err(e) => {
-            // We cannot use tracing here as it's not configured yet
-            eprintln!("{}", e.decorate());
-            eprintln!("{:#?}", RestateCode::from(&e));
-            std::process::exit(EXIT_CODE_FAILURE);
-        }
-    };
+    let old_config =
+        match restate_node::Configuration::load(config_path.as_deref(), cli_args.opts_overrides) {
+            Ok(c) => c,
+            Err(e) => {
+                // We cannot use tracing here as it's not configured yet
+                eprintln!("{}", e.decorate());
+                eprintln!("{:#?}", RestateCode::from(&e));
+                std::process::exit(EXIT_CODE_FAILURE);
+            }
+        };
 
     restate_node::set_current_config(old_config);
     restate_types::config::set_current_config(config);
 
+    let old_config = restate_node::Configuration::pinned();
     let config = Configuration::pinned();
-    let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
 
-    let tc = TaskCenterFactory::create(runtime.handle().clone());
-
-    runtime.block_on({
+    let tc = TaskCenterBuilder::default()
+        .options(config.common.clone())
+        .build()
+        .expect("task_center builds");
+    tc.block_on("main", None, {
         let tc = tc.clone();
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =
-                init_tracing_and_logging(config.common(), "Restate binary", std::process::id())
+                init_tracing_and_logging(old_config.common(), "Restate binary", std::process::id())
                     .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible
@@ -193,7 +195,7 @@ fn main() {
             }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                config.dump().unwrap()
+                old_config.dump().unwrap()
             );
 
             // start config watcher
@@ -201,16 +203,16 @@ fn main() {
 
             WipeMode::wipe(
                 cli_args.wipe.as_ref(),
-                config.node.admin.meta.storage_path().into(),
-                config.node.worker.storage_path().into(),
-                config.node.bifrost.local.path.as_path(),
-                config.node.metadata_store.storage_path(),
+                old_config.node.admin.meta.storage_path().into(),
+                old_config.node.worker.storage_path().into(),
+                old_config.node.bifrost.local.path.as_path(),
+                old_config.node.metadata_store.storage_path(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");
 
             let task_center_watch = tc.watch_shutdown();
-            let node = Node::new(config.common.clone(), config.node.clone());
+            let node = Node::new(old_config.common.clone(), old_config.node.clone());
             if let Err(err) = node {
                 handle_error(err);
             }
@@ -225,7 +227,7 @@ fn main() {
                     let signal_reason = format!("received signal {}", signal_name);
 
                     let shutdown_with_timeout = tokio::time::timeout(
-                        config.common().shutdown_grace_period(),
+                        old_config.common().shutdown_grace_period(),
                         tc.shutdown_node(&signal_reason, 0)
                     );
 
@@ -245,7 +247,7 @@ fn main() {
             };
 
             shutdown_tracing(
-                config.common().shutdown_grace_period().div(2),
+                old_config.common().shutdown_grace_period().div(2),
                 tracing_guard,
             )
             .await;
