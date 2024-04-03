@@ -22,18 +22,19 @@ use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
 use pretty::Pretty;
-use restate_core::options::{CommonOptions, LogFormat};
+use restate_types::config::{CommonOptions, LogFormat};
 use std::env;
 use std::fmt::Display;
 use std::str::FromStr;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
-use tracing::{warn, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::reload::Handle;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, Registry};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -64,7 +65,7 @@ where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
     // only enable tracing if endpoint or json file is set.
-    if common_opts.tracing_endpoint().is_none() && common_opts.tracing_json_path().is_none() {
+    if common_opts.tracing_endpoint.is_none() && common_opts.tracing_json_path.is_none() {
         return Ok(None);
     }
 
@@ -83,7 +84,7 @@ where
     let mut tracer_provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
         .with_config(opentelemetry::sdk::trace::config().with_resource(resource));
 
-    if let Some(endpoint) = common_opts.tracing_endpoint() {
+    if let Some(endpoint) = &common_opts.tracing_endpoint {
         let exporter = SpanExporterBuilder::from(
             opentelemetry_otlp::new_exporter()
                 .tonic()
@@ -97,7 +98,7 @@ where
             ));
     }
 
-    if let Some(path) = common_opts.tracing_json_path() {
+    if let Some(path) = &common_opts.tracing_json_path {
         tracer_provider_builder =
             tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
                 BatchSpanProcessor::builder(
@@ -129,7 +130,7 @@ where
             .with_threads(false)
             .with_tracked_inactivity(false)
             .with_tracer(tracer)
-            .with_filter(EnvFilter::try_new(common_opts.tracing_filter())?),
+            .with_filter(EnvFilter::try_new(&common_opts.tracing_filter)?),
     ))
 }
 
@@ -172,12 +173,11 @@ fn parse_header_key_value_string(key_value_string: &str) -> Option<(&str, &str)>
 #[allow(clippy::type_complexity)]
 fn build_logging_layer<S>(
     common_opts: &CommonOptions,
-) -> Result<Filtered<Box<dyn Layer<S> + Send + Sync>, EnvFilter, S>, Error>
+) -> Result<Box<dyn Layer<S> + Send + Sync>, Error>
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
-    let filter = EnvFilter::try_new(common_opts.log_filter())?;
-    Ok(match common_opts.log_format() {
+    let k = match common_opts.log_format {
         LogFormat::Pretty => tracing_subscriber::fmt::layer()
             .event_format::<Pretty<SystemTime>>(Pretty::default())
             .fmt_fields(PrettyFields)
@@ -187,20 +187,18 @@ where
                     .with_max_level(Level::WARN)
                     .or_else(std::io::stdout),
             )
-            .with_ansi(!common_opts.log_disable_ansi_codes())
-            .boxed()
-            .with_filter(filter),
+            .with_ansi(!common_opts.log_disable_ansi_codes)
+            .boxed(),
         LogFormat::Compact => tracing_subscriber::fmt::layer()
             .compact()
-            .with_ansi(!common_opts.log_disable_ansi_codes())
-            .boxed()
-            .with_filter(filter),
+            .with_ansi(!common_opts.log_disable_ansi_codes)
+            .boxed(),
         LogFormat::Json => tracing_subscriber::fmt::layer()
             .json()
-            .with_ansi(!common_opts.log_disable_ansi_codes())
-            .boxed()
-            .with_filter(filter),
-    })
+            .with_ansi(!common_opts.log_disable_ansi_codes)
+            .boxed(),
+    };
+    Ok(k)
 }
 
 /// Instruments the process with logging and tracing. The method returns [`TracingGuard`] which
@@ -218,9 +216,11 @@ pub fn init_tracing_and_logging(
 
     let layers = tracing_subscriber::registry();
 
+    let filter = EnvFilter::try_new(&common_opts.log_filter)?;
+    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
     // Logging layer
     let layers = layers
-        .with(build_logging_layer(common_opts)?)
+        .with(build_logging_layer(common_opts)?.with_filter(filter))
         // Enables auto extraction of selected span labels in emitted metrics.
         // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
         .with(MetricsLayer::new());
@@ -238,12 +238,16 @@ pub fn init_tracing_and_logging(
 
     layers.init();
 
-    Ok(TracingGuard::default())
+    Ok(TracingGuard {
+        is_dropped: false,
+        reload_handle,
+    })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TracingGuard {
     is_dropped: bool,
+    reload_handle: Handle<EnvFilter, Registry>,
 }
 
 impl TracingGuard {
@@ -255,6 +259,20 @@ impl TracingGuard {
     pub fn shutdown(mut self) {
         opentelemetry::global::shutdown_tracer_provider();
         self.is_dropped = true;
+    }
+
+    pub fn reload_log_filter(&self, common_opts: &CommonOptions) {
+        info!("Setting log filter to '{}'", common_opts.log_filter);
+        let _ = &self.reload_handle.modify(|f| {
+            let new_filter = EnvFilter::try_new(&common_opts.log_filter);
+            match new_filter {
+                Ok(new_filter) => {
+                    *f = new_filter;
+                }
+                // don't use logging here, tracing will panic!
+                Err(e) => eprintln!("Failed to reload log filter: '{}'", e),
+            }
+        });
     }
 
     /// Shuts down the tracing instrumentation by running [`shutdown`] on a blocking Tokio thread.
