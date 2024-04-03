@@ -33,7 +33,7 @@ restate-schema-api = { workspace = true }
 restate-schema-impl = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }
 
 anyhow = { workspace = true }
