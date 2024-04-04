@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::InvocationId;
+use crate::identifiers::{IdempotencyId, InvocationId};
 use crate::invocation::ResponseResult;
 use crate::GenerationalNodeId;
 
@@ -16,5 +16,6 @@ use crate::GenerationalNodeId;
 pub struct IngressResponse {
     pub target_node: GenerationalNodeId,
     pub invocation_id: InvocationId,
+    pub idempotency_id: Option<IdempotencyId>,
     pub response: ResponseResult,
 }

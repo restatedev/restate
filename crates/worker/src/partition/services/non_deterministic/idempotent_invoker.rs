@@ -191,6 +191,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
         {
             self.send_response(create_response_message(
                 &InvocationId::from(&callee_fid),
+                None,
                 sink,
                 ResponseResult::Success(encoded_response.clone()),
             ))

@@ -591,6 +591,21 @@ impl IdempotencyId {
             partition_key,
         }
     }
+
+    pub fn combine(
+        service_id: ServiceId,
+        handler_name: ByteString,
+        idempotency_key: ByteString,
+    ) -> Self {
+        IdempotencyId::new(
+            service_id.service_name,
+            // The service_id.key will always be the idempotency key now for regular services,
+            // until we get rid of that field with https://github.com/restatedev/restate/issues/1329
+            Some(service_id.key),
+            handler_name,
+            idempotency_key,
+        )
+    }
 }
 
 impl WithPartitionKey for IdempotencyId {

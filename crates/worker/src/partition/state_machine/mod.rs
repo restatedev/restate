@@ -729,6 +729,7 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(IngressResponse {
                         target_node: eq(GenerationalNodeId::new(1, 1)),
+                        idempotency_id: some(eq(idempotency_id.clone())),
                         response: eq(ResponseResult::Success(response_bytes.clone()))
                     })))),
                     contains(pat!(Action::ScheduleInvocationStatusCleanup {
@@ -810,6 +811,7 @@ mod tests {
                 actions,
                 contains(pat!(Action::IngressResponse(pat!(IngressResponse {
                     target_node: eq(ingress_id),
+                    idempotency_id: some(eq(idempotency_id.clone())),
                     response: eq(ResponseResult::Success(response_bytes.clone()))
                 }))))
             );
@@ -871,6 +873,7 @@ mod tests {
                 actions,
                 contains(pat!(Action::IngressResponse(pat!(IngressResponse {
                     target_node: eq(ingress_id),
+                    idempotency_id: some(eq(idempotency_id.clone())),
                     response: eq(ResponseResult::from(GONE_INVOCATION_ERROR))
                 }))))
             );
@@ -896,6 +899,12 @@ mod tests {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
+            let idempotency_id = IdempotencyId::new(
+                original_request_fid.service_id.service_name.clone(),
+                Some(original_request_fid.service_id.key.clone()),
+                handler_name.clone(),
+                idempotency.key.clone(),
+            );
             let ingress_id_1 = GenerationalNodeId::new(1, 1);
             let ingress_id_2 = GenerationalNodeId::new(2, 1);
 
@@ -957,10 +966,12 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(IngressResponse {
                         target_node: eq(ingress_id_1),
+                        idempotency_id: some(eq(idempotency_id.clone())),
                         response: eq(ResponseResult::Success(response_bytes.clone()))
                     })))),
                     contains(pat!(Action::IngressResponse(pat!(IngressResponse {
                         target_node: eq(ingress_id_2),
+                        idempotency_id: some(eq(idempotency_id.clone())),
                         response: eq(ResponseResult::Success(response_bytes.clone()))
                     })))),
                 )

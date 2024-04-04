@@ -230,6 +230,7 @@ impl<S: StateReader> InvocationContext<'_, S> {
         if let Some(response_sink) = self.response_sink {
             self.send_response(create_response_message(
                 &InvocationId::from(self.full_invocation_id),
+                None,
                 response_sink.clone(),
                 res,
             ));

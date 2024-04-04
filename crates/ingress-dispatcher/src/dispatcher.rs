@@ -200,7 +200,7 @@ impl MessageHandler for IngressDispatcher {
         match msg {
             IngressMessage::InvocationResponse(response) => {
                 if let Some((_, (map_response_action, sender))) =
-                    self.state.waiting_responses.remove(&response.id)
+                    self.state.waiting_responses.remove(&response.invocation_id)
                 {
                     let mapped_response = match response.response.into() {
                         Ok(v) => map_response_action.map(v),
@@ -217,7 +217,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         debug!(
-                            restate.invocation.id = %response.id,
+                            restate.invocation.id = %response.invocation_id,
                             partition_processor_peer = %peer,
                             "Sent response of invocation out");
                     }
@@ -370,28 +370,29 @@ mod tests {
                     })
                 );
 
-                // Now check we get the response is routed back to the handler correctly
-                let response = Bytes::from_static(b"vmoaifnuei");
-                let expiry_time = "2023-09-25T07:47:58.661309Z".to_string();
-                node_env
-                    .network_sender
-                    .send(
-                        metadata().my_node_id().into(),
-                        &IngressMessage::InvocationResponse(InvocationResponse {
-                            id: service_invocation.fid.into(),
-                            response: ResponseResult::Success(
-                                IdempotentInvokeResponse {
-                                    expiry_time: expiry_time.clone(),
-                                    response: Some(idempotent_invoke_response::Response::Success(
-                                        response.clone(),
-                                    )),
-                                }
-                                .encode_to_vec()
-                                .into(),
-                            ),
-                        }),
-                    )
-                    .await?;
+            // Now check we get the response is routed back to the handler correctly
+            let response = Bytes::from_static(b"vmoaifnuei");
+            let expiry_time = "2023-09-25T07:47:58.661309Z".to_string();
+            node_env
+                .network_sender
+                .send(
+                    metadata().my_node_id().into(),
+                    &IngressMessage::InvocationResponse(InvocationResponse {
+                        invocation_id: service_invocation.fid.into(),
+                        idempotency_id: None,
+                        response: ResponseResult::Success(
+                            IdempotentInvokeResponse {
+                                expiry_time: expiry_time.clone(),
+                                response: Some(idempotent_invoke_response::Response::Success(
+                                    response.clone(),
+                                )),
+                            }
+                            .encode_to_vec()
+                            .into(),
+                        ),
+                    }),
+                )
+                .await?;
 
                 assert_that!(
                     res.await?,
