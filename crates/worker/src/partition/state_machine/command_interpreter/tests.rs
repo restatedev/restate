@@ -68,7 +68,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            VirtualObjectStatus::Locked(invocation_id.clone()),
+            VirtualObjectStatus::Locked(invocation_id),
         );
         self.register_invocation_status(
             invocation_id,
@@ -91,7 +91,7 @@ impl StateReaderMock {
 
         self.services.insert(
             service_id.clone(),
-            VirtualObjectStatus::Locked(invocation_id.clone()),
+            VirtualObjectStatus::Locked(invocation_id),
         );
         self.register_invocation_status(
             invocation_id,
@@ -112,8 +112,7 @@ impl StateReaderMock {
         invocation_status: InvocationStatus,
         journal: Vec<JournalEntry>,
     ) {
-        self.invocations
-            .insert(invocation_id.clone(), invocation_status);
+        self.invocations.insert(invocation_id, invocation_status);
         self.journals.insert(invocation_id, journal);
     }
 
@@ -276,7 +275,7 @@ async fn awakeable_with_success() {
         },
     ));
     let cmd = Command::InvokerEffect(InvokerEffect {
-        full_invocation_id: sid_caller.clone(),
+        invocation_id: InvocationId::from(&sid_caller),
         kind: EffectKind::JournalEntry {
             entry_index: 1,
             entry,
@@ -305,10 +304,7 @@ async fn awakeable_with_success() {
             result: ResponseResult::Success(_),
         }) = message
     );
-    assert_eq!(
-        id,
-        MaybeFullInvocationId::Partial(InvocationId::from(sid_callee))
-    );
+    assert_eq!(id, InvocationId::from(&sid_callee));
     assert_eq!(entry_index, 1);
 }
 
@@ -331,7 +327,7 @@ async fn awakeable_with_failure() {
         },
     ));
     let cmd = Command::InvokerEffect(InvokerEffect {
-        full_invocation_id: sid_caller.clone(),
+        invocation_id: InvocationId::from(&sid_caller),
         kind: EffectKind::JournalEntry {
             entry_index: 1,
             entry,
@@ -360,10 +356,7 @@ async fn awakeable_with_failure() {
             result: ResponseResult::Failure(failure),
         }) = message
     );
-    assert_eq!(
-        id,
-        MaybeFullInvocationId::Partial(InvocationId::from(sid_callee))
-    );
+    assert_eq!(id, InvocationId::from(sid_callee));
     assert_eq!(entry_index, 1);
     assert_eq!(failure.message(), "Some failure");
 }
@@ -376,9 +369,10 @@ async fn send_response_using_invocation_id() {
     let mut state_reader = StateReaderMock::default();
 
     let fid = FullInvocationId::mock_random();
+    let invocation_id = InvocationId::from(&fid);
 
     let cmd = Command::InvocationResponse(InvocationResponse {
-        id: MaybeFullInvocationId::Partial(InvocationId::from(fid.clone())),
+        id: invocation_id,
         entry_index: 1,
         result: ResponseResult::Success(Bytes::from_static(b"hello")),
     });
@@ -393,11 +387,11 @@ async fn send_response_using_invocation_id() {
         effects.into_inner(),
         all!(
             contains(pat!(Effect::StoreCompletion {
-                invocation_id: eq(InvocationId::from(&fid)),
+                invocation_id: eq(invocation_id),
                 completion: pat!(Completion { entry_index: eq(1) })
             })),
             contains(pat!(Effect::ForwardCompletion {
-                full_invocation_id: eq(fid),
+                invocation_id: eq(invocation_id),
                 completion: pat!(Completion { entry_index: eq(1) })
             }))
         )
@@ -417,6 +411,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
 
     let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
     let caller_fid = FullInvocationId::mock_random();
+    let caller_invocation_id = InvocationId::from(&caller_fid);
 
     state_mock.lock_service(ServiceId::new("svc", "key"));
     state_mock.enqueue_into_inbox(
@@ -431,7 +426,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
         InvocationStatus::Inboxed(InboxedInvocation {
             inbox_sequence_number: 0,
             response_sinks: HashSet::from([ServiceInvocationResponseSink::PartitionProcessor {
-                caller: caller_fid.clone(),
+                caller: InvocationId::from(&caller_fid),
                 entry_index: 0,
             }]),
             timestamps: StatusTimestamps::now(),
@@ -467,7 +462,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
                 message: pat!(
                     restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                         InvocationResponse {
-                            id: eq(MaybeFullInvocationId::from(caller_fid)),
+                            id: eq(caller_invocation_id),
                             entry_index: eq(0),
                             result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
                         }
@@ -519,7 +514,9 @@ async fn kill_call_tree() -> Result<(), Error> {
     assert_that!(
         effects,
         all!(
-            contains(pat!(Effect::SendAbortInvocationToInvoker(eq(fid.clone())))),
+            contains(pat!(Effect::SendAbortInvocationToInvoker(eq(
+                InvocationId::from(&fid)
+            )))),
             contains(pat!(Effect::FreeInvocation(eq(InvocationId::from(&fid))))),
             contains(pat!(Effect::DropJournal {
                 invocation_id: eq(InvocationId::from(&fid)),

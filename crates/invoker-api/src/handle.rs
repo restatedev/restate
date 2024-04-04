@@ -12,8 +12,8 @@ use super::Effect;
 use super::JournalMetadata;
 
 use restate_errors::NotRunningError;
-use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
-use restate_types::identifiers::{FullInvocationId, PartitionKey};
+use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId};
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use std::future::Future;
@@ -27,36 +27,29 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
-// TODO We can remove FullInvocationId awareness from the invoker completely
-
 pub trait ServiceHandle {
     type Future: Future<Output = Result<(), NotRunningError>>;
 
     fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future;
-
-    fn resume(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
+        // TODO replace this with InvocationTarget with https://github.com/restatedev/restate/issues/1329
+        service_id: ServiceId,
         journal: InvokeInputJournal,
     ) -> Self::Future;
 
     fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     ) -> Self::Future;
 
     fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) -> Self::Future;
 
@@ -65,7 +58,7 @@ pub trait ServiceHandle {
     fn abort_invocation(
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     ) -> Self::Future;
 
     fn register_partition(

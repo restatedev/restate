@@ -108,7 +108,7 @@ mod tests {
         let expected_entry_index = 2_u32;
 
         let input_str = AwakeableIdentifier {
-            invocation_id: expected_invocation_id.clone(),
+            invocation_id: expected_invocation_id,
             entry_index: expected_entry_index,
         }
         .to_string();

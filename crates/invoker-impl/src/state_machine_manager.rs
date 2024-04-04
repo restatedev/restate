@@ -23,7 +23,7 @@ pub(super) struct InvocationStateMachineManager {
 #[derive(Debug)]
 struct PartitionInvocationStateMachineCoordinator {
     output_tx: mpsc::Sender<Effect>,
-    invocation_state_machines: HashMap<FullInvocationId, InvocationStateMachine>,
+    invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
 }
 
@@ -45,11 +45,11 @@ impl InvocationStateMachineManager {
     pub(super) fn resolve_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: &FullInvocationId,
+        invocation_id: &InvocationId,
     ) -> Option<(&mpsc::Sender<Effect>, &mut InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .get_mut(full_invocation_id)
+                .get_mut(invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }
@@ -58,11 +58,11 @@ impl InvocationStateMachineManager {
     pub(super) fn remove_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: &FullInvocationId,
+        invocation_id: &InvocationId,
     ) -> Option<(&mpsc::Sender<Effect>, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
-                .remove(full_invocation_id)
+                .remove(invocation_id)
                 .map(|ism| (&p.output_tx, ism))
         })
     }
@@ -71,7 +71,7 @@ impl InvocationStateMachineManager {
     pub(super) fn remove_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<HashMap<FullInvocationId, InvocationStateMachine>> {
+    ) -> Option<HashMap<InvocationId, InvocationStateMachine>> {
         self.partitions
             .remove(&partition)
             .map(|p| p.invocation_state_machines)
@@ -98,13 +98,13 @@ impl InvocationStateMachineManager {
     pub(super) fn register_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        fid: FullInvocationId,
+        id: InvocationId,
         ism: InvocationStateMachine,
     ) {
         self.resolve_partition(partition)
             .expect("Cannot register an invocation on an unknown partition")
             .invocation_state_machines
-            .insert(fid, ism);
+            .insert(id, ism);
     }
 
     #[inline]

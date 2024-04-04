@@ -34,7 +34,7 @@ async fn get_idempotency_key() {
             "my-idempotency-key".into(),
         ),
         IdempotencyMetadata {
-            invocation_id: invocation_id_1.clone(),
+            invocation_id: invocation_id_1,
         },
     )
     .await;
@@ -47,7 +47,7 @@ async fn get_idempotency_key() {
             "my-idempotency-key".into(),
         ),
         IdempotencyMetadata {
-            invocation_id: invocation_id_2.clone(),
+            invocation_id: invocation_id_2,
         },
     )
     .await;

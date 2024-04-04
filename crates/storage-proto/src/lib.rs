@@ -1175,14 +1175,9 @@ pub mod storage {
                         .ok_or(ConversionError::missing_field("response_sink"))?
                     {
                         ResponseSink::PartitionProcessor(partition_processor) => {
-                            let caller = restate_types::identifiers::FullInvocationId::try_from(
-                                partition_processor
-                                    .caller
-                                    .ok_or(ConversionError::missing_field("caller"))?,
-                            )?;
                             Some(
                                 restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
-                                    caller,
+                                    caller: restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller).map_err(ConversionError::invalid_data)?,
                                     entry_index: partition_processor.entry_index,
                                 },
                             )
@@ -1233,7 +1228,7 @@ pub mod storage {
                             },
                         ) => ResponseSink::PartitionProcessor(PartitionProcessor {
                             entry_index,
-                            caller: Some(FullInvocationId::from(caller)),
+                            caller: Bytes::copy_from_slice(&caller.to_bytes()),
                         }),
                         Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(node_id)) => {
                             ResponseSink::Ingress(Ingress {
@@ -1727,10 +1722,9 @@ pub mod storage {
                         ) => restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(
                             restate_types::invocation::InvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                id: invocation_response
-                                    .maybe_fid
-                                    .ok_or(ConversionError::missing_field("maybe_fid"))?
-                                    .try_into()?,
+                                id: restate_types::identifiers::InvocationId::from_slice(
+                                    &invocation_response.invocation_id,
+                                )?,
                                 result: restate_types::invocation::ResponseResult::try_from(
                                     invocation_response
                                         .response_result
@@ -1785,9 +1779,9 @@ pub mod storage {
                         ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
                             OutboxServiceInvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                maybe_fid: Some(MaybeFullInvocationId::from(
-                                    invocation_response.id,
-                                )),
+                                invocation_id: Bytes::copy_from_slice(
+                                    &invocation_response.id.to_bytes(),
+                                ),
                                 response_result: Some(ResponseResult::from(
                                     invocation_response.result,
                                 )),

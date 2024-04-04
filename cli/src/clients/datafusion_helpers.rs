@@ -1012,10 +1012,9 @@ pub async fn get_invocation_journal(
                     invoked_handler,
                     invoked_component_key,
                 }),
-                "Awakeable" => JournalEntryType::Awakeable(AwakeableIdentifier::new(
-                    my_invocation_id.clone(),
-                    index,
-                )),
+                "Awakeable" => {
+                    JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))
+                }
                 "GetState" => JournalEntryType::GetState,
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,

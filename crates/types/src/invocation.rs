@@ -146,8 +146,7 @@ impl fmt::Display for MaybeFullInvocationId {
 /// Representing a response for a caller
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationResponse {
-    /// Depending on the source of the response, this can be either the full identifier, or the short one.
-    pub id: MaybeFullInvocationId,
+    pub id: InvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,
 }
@@ -193,8 +192,7 @@ impl From<&InvocationError> for ResponseResult {
 pub enum ServiceInvocationResponseSink {
     /// The invocation has been created by a partition processor and is expecting a response.
     PartitionProcessor {
-        // TODO this can be changed to simply InvocationId
-        caller: FullInvocationId,
+        caller: InvocationId,
         entry_index: EntryIndex,
     },
     /// The result needs to be used as input argument of a new invocation

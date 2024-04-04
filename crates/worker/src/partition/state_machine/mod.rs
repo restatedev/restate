@@ -248,11 +248,12 @@ mod tests {
     async fn awakeable_completion_received_before_entry() -> TestResult {
         let mut state_machine = MockStateMachine::default();
         let fid = mock_start_invocation(&mut state_machine).await;
+        let invocation_id = InvocationId::from(&fid);
 
         // Send completion first
         let _ = state_machine
             .apply(Command::InvocationResponse(InvocationResponse {
-                id: MaybeFullInvocationId::Full(fid.clone()),
+                id: invocation_id,
                 entry_index: 1,
                 result: ResponseResult::Success(Bytes::default()),
             }))
@@ -274,7 +275,7 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
@@ -286,7 +287,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::ForwardCompletion {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id),
                 completion: eq(Completion::new(
                     1,
                     CompletionResult::Success(Bytes::default())
@@ -312,7 +313,7 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::Suspended {
                     waiting_for_completed_entries: HashSet::from([1]),
                 },
@@ -336,6 +337,7 @@ mod tests {
         let fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
         let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
         let caller_fid = FullInvocationId::mock_random();
+        let caller_invocation_id = InvocationId::from(&caller_fid);
 
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
@@ -348,7 +350,7 @@ mod tests {
             .apply(Command::Invoke(ServiceInvocation {
                 fid: inboxed_fid.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                    caller: caller_fid.clone(),
+                    caller: caller_invocation_id,
                     entry_index: 0,
                 }),
                 ..ServiceInvocation::mock()
@@ -380,12 +382,12 @@ mod tests {
         assert!(let InvocationStatus::Free = current_invocation_status);
 
         fn outbox_message_matcher(
-            caller_fid: FullInvocationId,
+            caller_id: InvocationId,
         ) -> impl Matcher<ActualT = restate_storage_api::outbox_table::OutboxMessage> {
             pat!(
                 restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(pat!(
                     restate_types::invocation::InvocationResponse {
-                        id: eq(MaybeFullInvocationId::Full(caller_fid)),
+                        id: eq(caller_id),
                         entry_index: eq(0),
                         result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
                     }
@@ -396,7 +398,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::NewOutboxMessage {
-                message: outbox_message_matcher(caller_fid.clone())
+                message: outbox_message_matcher(caller_invocation_id)
             }))
         );
 
@@ -409,7 +411,7 @@ mod tests {
 
         assert_that!(
             outbox_message,
-            some((ge(0), outbox_message_matcher(caller_fid.clone())))
+            some((ge(0), outbox_message_matcher(caller_invocation_id)))
         );
 
         state_machine.shutdown().await
@@ -419,6 +421,7 @@ mod tests {
     async fn mutate_state() -> anyhow::Result<()> {
         let mut state_machine = MockStateMachine::default();
         let fid = mock_start_invocation(&mut state_machine).await;
+        let invocation_id = InvocationId::from(&fid);
 
         let first_state_mutation: HashMap<Bytes, Bytes> = [
             (Bytes::from_static(b"foobar"), Bytes::from_static(b"foobar")),
@@ -461,7 +464,7 @@ mod tests {
         // next invocation is found
         state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::End,
             }))
             .await;
@@ -493,10 +496,11 @@ mod tests {
 
         let fid =
             mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+        let invocation_id = InvocationId::from(&fid);
 
         state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
@@ -518,6 +522,7 @@ mod tests {
     async fn get_state_keys() -> TestResult {
         let mut state_machine = MockStateMachine::default();
         let fid = mock_start_invocation(&mut state_machine).await;
+        let invocation_id = InvocationId::from(&fid);
 
         // Mock some state
         let mut txn = state_machine.rocksdb_storage.transaction();
@@ -529,7 +534,7 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
@@ -541,7 +546,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::ForwardCompletion {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id),
                 completion: eq(Completion::new(
                     1,
                     ProtobufRawEntryCodec::serialize_get_state_keys_completion(vec![
@@ -598,7 +603,7 @@ mod tests {
         let response_bytes = Bytes::from_static(b"123");
         let actions = state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -613,7 +618,7 @@ mod tests {
         // Send the End Effect
         let actions = state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
-                full_invocation_id: fid.clone(),
+                invocation_id,
                 kind: InvokerEffectKind::End,
             }))
             .await;
@@ -695,7 +700,7 @@ mod tests {
                     .unwrap()
                     .unwrap(),
                 pat!(IdempotencyMetadata {
-                    invocation_id: eq(invocation_id.clone()),
+                    invocation_id: eq(invocation_id),
                 })
             );
             txn.commit().await.unwrap();
@@ -705,7 +710,7 @@ mod tests {
             let actions = state_machine
                 .apply_multiple([
                     Command::InvokerEffect(InvokerEffect {
-                        full_invocation_id: fid.clone(),
+                        invocation_id,
                         kind: InvokerEffectKind::JournalEntry {
                             entry_index: 1,
                             entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -714,7 +719,7 @@ mod tests {
                         },
                     }),
                     Command::InvokerEffect(InvokerEffect {
-                        full_invocation_id: fid.clone(),
+                        invocation_id,
                         kind: InvokerEffectKind::End,
                     }),
                 ])
@@ -730,7 +735,7 @@ mod tests {
                         response: eq(ResponseResult::Success(response_bytes.clone()))
                     })))),
                     contains(pat!(Action::ScheduleInvocationStatusCleanup {
-                        invocation_id: eq(invocation_id.clone())
+                        invocation_id: eq(invocation_id)
                     }))
                 )
             );
@@ -773,13 +778,8 @@ mod tests {
 
             // Prepare idempotency metadata and completed status
             let mut txn = state_machine.storage().transaction();
-            txn.put_idempotency_metadata(
-                &idempotency_id,
-                IdempotencyMetadata {
-                    invocation_id: invocation_id.clone(),
-                },
-            )
-            .await;
+            txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+                .await;
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
@@ -845,13 +845,8 @@ mod tests {
 
             // Prepare idempotency metadata
             let mut txn = state_machine.rocksdb_storage.transaction();
-            txn.put_idempotency_metadata(
-                &idempotency_id,
-                IdempotencyMetadata {
-                    invocation_id: invocation_id.clone(),
-                },
-            )
-            .await;
+            txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+                .await;
             txn.commit().await.unwrap();
 
             // Send a request, should be completed immediately with result
@@ -891,6 +886,7 @@ mod tests {
         async fn latch_invocation_while_executing() {
             let mut state_machine = MockStateMachine::default();
             let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
+            let original_invocation_id = InvocationId::from(&original_request_fid);
             let handler_name = ByteString::from_static("handler");
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
@@ -942,7 +938,7 @@ mod tests {
             let actions = state_machine
                 .apply_multiple([
                     Command::InvokerEffect(InvokerEffect {
-                        full_invocation_id: original_request_fid.clone(),
+                        invocation_id: original_invocation_id,
                         kind: InvokerEffectKind::JournalEntry {
                             entry_index: 1,
                             entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -951,7 +947,7 @@ mod tests {
                         },
                     }),
                     Command::InvokerEffect(InvokerEffect {
-                        full_invocation_id: original_request_fid.clone(),
+                        invocation_id: original_invocation_id,
                         kind: InvokerEffectKind::End,
                     }),
                 ])
@@ -996,13 +992,8 @@ mod tests {
 
             // Prepare idempotency metadata and completed status
             let mut txn = state_machine.storage().transaction();
-            txn.put_idempotency_metadata(
-                &idempotency_id,
-                IdempotencyMetadata {
-                    invocation_id: invocation_id.clone(),
-                },
-            )
-            .await;
+            txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+                .await;
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
@@ -1023,7 +1014,7 @@ mod tests {
                         invocation_uuid: invocation_id.invocation_uuid(),
                         journal_index: 0,
                     },
-                    Timer::CleanInvocationStatus(invocation_id.clone()),
+                    Timer::CleanInvocationStatus(invocation_id),
                 )))
                 .await;
             assert_that!(
