@@ -13,15 +13,16 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{Configuration, LocalLogletOptions};
 use restate_types::logs::metadata::LogletParams;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
-use super::{LocalLoglet, Options};
+use super::LocalLoglet;
 use crate::loglet::{Loglet, LogletOffset, LogletProvider};
-use crate::loglets::local_loglet::log_store_writer::WriterOptions;
 use crate::Error;
 use crate::ProviderError;
 
@@ -30,18 +31,18 @@ pub struct LocalLogletProvider {
     log_store: RocksDbLogStore,
     active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
     log_writer: OnceLock<RocksDbLogWriterHandle>,
-    opts: Options,
 }
 
 impl LocalLogletProvider {
-    pub fn new(opts: Options) -> Result<Arc<Self>, ProviderError> {
-        let log_store = RocksDbLogStore::new(&opts).context("RockDb LogStore")?;
+    pub fn new(
+        updateable_options: impl Updateable<LocalLogletOptions> + Send + 'static,
+    ) -> Result<Arc<Self>, ProviderError> {
+        let log_store = RocksDbLogStore::new(updateable_options).context("RockDb LogStore")?;
 
         Ok(Arc::new(Self {
             log_store,
             active_loglets: Default::default(),
             log_writer: OnceLock::new(),
-            opts,
         }))
     }
 }
@@ -86,15 +87,13 @@ impl LogletProvider for LocalLogletProvider {
     }
 
     fn start(&self) -> Result<(), ProviderError> {
-        let writer_options = WriterOptions {
-            channel_size: self.opts.writer_queue_len,
-            commit_time_interval: self.opts.writer_commit_time_interval.into(),
-            batch_size_threshold: self.opts.writer_queue_len,
-            flush_wal_on_commit: self.opts.flush_wal_on_commit,
-            disable_wal: self.opts.rocksdb_disable_wal,
-        };
-
-        let log_writer = self.log_store.create_writer(writer_options).start()?;
+        let mut updateable = Configuration::mapped_updateable(|c| &c.bifrost.local);
+        let opts = &updateable.load().rocksdb;
+        let manual_wal_flush = opts.rocksdb_batch_wal_flushes() && !opts.rocksdb_disable_wal();
+        let log_writer = self
+            .log_store
+            .create_writer(manual_wal_flush)
+            .start(updateable)?;
         self.log_writer
             .set(log_writer)
             .expect("local loglet started once");

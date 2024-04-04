@@ -11,7 +11,9 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, ArcSwapAny, Cache};
+use arc_swap::cache::MapCache;
+use arc_swap::strategy::Strategy;
+use arc_swap::{ArcSwap, ArcSwapAny, Cache, RefCnt};
 use serde::Serialize;
 
 pub struct Pinned<T> {
@@ -52,11 +54,25 @@ pub trait Updateable<T> {
     fn load(&mut self) -> &T;
 }
 
-impl<R, T> Updateable<T> for R
+impl<A, T, S> Updateable<T::Target> for Cache<A, T>
 where
-    R: arc_swap::cache::Access<T>,
+    A: Deref<Target = ArcSwapAny<T, S>>,
+    T: RefCnt + Deref<Target = <T as RefCnt>::Base>,
+    S: Strategy<T>,
 {
-    fn load(&mut self) -> &T {
+    fn load(&mut self) -> &T::Target {
+        arc_swap::cache::Access::load(self)
+    }
+}
+
+impl<A, T, S, F, U> Updateable<U> for MapCache<A, T, F>
+where
+    A: Deref<Target = ArcSwapAny<T, S>>,
+    T: RefCnt,
+    S: Strategy<T>,
+    F: FnMut(&T) -> &U,
+{
+    fn load(&mut self) -> &U {
         arc_swap::cache::Access::load(self)
     }
 }
@@ -70,7 +86,7 @@ impl<T> Constant<T> {
     }
 }
 
-impl<T> arc_swap::cache::Access<T> for Constant<T> {
+impl<T> Updateable<T> for Constant<T> {
     fn load(&mut self) -> &T {
         &self.0
     }

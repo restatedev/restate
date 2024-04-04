@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 mod util;
 
+use enumset::EnumSet;
 pub use util::*;
 mod admin;
 mod aws;
@@ -48,8 +49,9 @@ use serde_with::serde_as;
 
 use super::arc_util::{ArcSwapExt, Pinned, Updateable};
 use crate::errors::GenericError;
+use crate::nodes_config::Role;
 
-static CONFIGURATION: Lazy<ArcSwap<Configuration>> = Lazy::new(ArcSwap::default);
+static CONFIGURATION: Lazy<Arc<ArcSwap<Configuration>>> = Lazy::new(Arc::default);
 static NODE_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 fn data_dir(dir: &str) -> PathBuf {
@@ -103,7 +105,7 @@ pub struct Configuration {
 
 impl Configuration {
     // Access the raw swappable configuration
-    pub fn current() -> &'static impl ArcSwapExt<Self> {
+    pub fn current() -> &'static Arc<ArcSwap<Self>> {
         &CONFIGURATION
     }
 
@@ -159,6 +161,17 @@ impl Configuration {
             .rocksdb
             .apply_common(&self.common.rocksdb);
         self
+    }
+
+    pub fn roles(&self) -> &EnumSet<Role> {
+        &self.common.roles
+    }
+    pub fn has_role(&self, role: Role) -> bool {
+        self.common.roles.contains(role)
+    }
+
+    pub fn node_name(&self) -> &str {
+        &self.common.node_name
     }
 
     /// Dumps the configuration to a string

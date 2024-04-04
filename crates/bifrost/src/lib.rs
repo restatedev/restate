@@ -12,7 +12,6 @@ mod bifrost;
 mod error;
 mod loglet;
 mod loglets;
-mod options;
 mod read_stream;
 mod service;
 mod types;
@@ -20,7 +19,6 @@ mod watchdog;
 
 pub use bifrost::Bifrost;
 pub use error::{Error, ProviderError};
-pub use options::Options;
 pub use read_stream::LogReadStream;
 pub use service::BifrostService;
 pub use types::*;

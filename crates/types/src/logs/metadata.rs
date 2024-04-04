@@ -66,7 +66,7 @@ pub struct LogletParams(String);
     strum_macros::EnumIter,
     strum_macros::Display,
 )]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
     Local,
