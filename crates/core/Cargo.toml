@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-test-util = ["dep:rand"]
+test-util = ["dep:rand", "tokio/test-util"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
