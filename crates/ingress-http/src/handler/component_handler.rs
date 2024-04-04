@@ -27,9 +27,6 @@ use serde::Serialize;
 use std::time::{Duration, Instant};
 use tracing::{info, trace, warn, Instrument};
 
-// TODO make this configurable!
-const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
-
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 
@@ -75,7 +72,8 @@ where
         };
 
         // Check if Idempotency-Key is available
-        let idempotency = parse_idempotency(req.headers())?;
+        let idempotency =
+            parse_idempotency(req.headers(), invocation_target_meta.idempotency_retention)?;
 
         // Craft FullInvocationId
         let fid = if let TargetType::VirtualObject { key } = target {
@@ -318,7 +316,10 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
         .collect()
 }
 
-fn parse_idempotency(headers: &HeaderMap) -> Result<Option<Idempotency>, HandlerError> {
+fn parse_idempotency(
+    headers: &HeaderMap,
+    retention: Duration,
+) -> Result<Option<Idempotency>, HandlerError> {
     let idempotency_key = if let Some(idempotency_key) = headers.get(IDEMPOTENCY_KEY) {
         ByteString::from(
             idempotency_key
@@ -331,7 +332,6 @@ fn parse_idempotency(headers: &HeaderMap) -> Result<Option<Idempotency>, Handler
 
     Ok(Some(Idempotency {
         key: idempotency_key,
-        // TODO allow configure this on a service basis via admin api
-        retention: DEFAULT_IDEMPOTENCY_RETENTION,
+        retention,
     }))
 }
