@@ -12,5 +12,5 @@ mod grpc_svc;
 pub mod local;
 
 pub use restate_core::metadata_store::{
-    MetadataStoreClient, Operation, Precondition, ReadError, ReadModifyWriteError, WriteError,
+    MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };

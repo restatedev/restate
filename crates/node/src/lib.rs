@@ -25,12 +25,12 @@ use std::time::Duration;
 
 use codederror::CodedError;
 use tokio::time::Instant;
-use tracing::{debug, error, info, trace};
+use tracing::{error, info, trace};
 
 use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
+use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_types::logs::metadata::{create_static_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
@@ -320,23 +320,9 @@ impl Node {
         config: &Configuration,
     ) -> Result<FixedPartitionTable, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
-            metadata_store_client.read_modify_write(
-                PARTITION_TABLE_KEY.clone(),
-                |partition_table| {
-                    if let Some(partition_table) = partition_table {
-                        debug!("Retrieved partition table: {partition_table:?}");
-                        Operation::Return(partition_table)
-                    } else {
-                        let partition_table = FixedPartitionTable::new(
-                            Version::MIN,
-                            config.worker.bootstrap_num_partitions,
-                        );
-                        debug!("Initializing a new partition table: {partition_table:?}");
-
-                        Operation::Upsert(partition_table)
-                    }
-                },
-            )
+            metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
+                FixedPartitionTable::new(Version::MIN, config.worker.bootstrap_num_partitions)
+            })
         })
         .await
     }
@@ -347,19 +333,8 @@ impl Node {
         num_partitions: u64,
     ) -> Result<Logs, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
-            metadata_store_client.read_modify_write(BIFROST_CONFIG_KEY.clone(), |logs| {
-                if let Some(logs) = logs {
-                    debug!("Retrieved logs configuration: {logs:?}");
-
-                    Operation::Return(logs)
-                } else {
-                    let logs =
-                        create_static_metadata(config.bifrost.default_provider, num_partitions);
-
-                    debug!("Initializing a new logs configuration: {logs:?}",);
-
-                    Operation::Upsert(logs)
-                }
+            metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
+                create_static_metadata(config.bifrost.default_provider, num_partitions)
             })
         })
         .await
@@ -394,7 +369,7 @@ impl Node {
                                 if let Some(previous_node_generation) = previous_node_generation {
                                     if node_config.current_generation.is_newer_than(previous_node_generation) {
                                         // detected a concurrent registration of the same node
-                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
+                                        return Err(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
                                     }
                                 } else {
                                     // remember the previous node generation to detect concurrent modifications
@@ -434,7 +409,7 @@ impl Node {
                             nodes_config.upsert_node(my_node_config);
                             nodes_config.increment_version();
 
-                            Operation::Upsert(nodes_config)
+                            Ok(nodes_config)
                         },
                     )
                 }).await
