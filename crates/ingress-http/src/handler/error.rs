@@ -37,16 +37,12 @@ pub(crate) enum HandlerError {
     UrlDecodingError(string::FromUtf8Error),
     #[error("the invoked component is not public")]
     PrivateComponent,
-    #[error("bad idempotency header: {0:?}")]
-    BadIdempotency(anyhow::Error),
     #[error("cannot read body: {0:?}")]
     Body(anyhow::Error),
     #[error("unavailable")]
     Unavailable,
     #[error("method not allowed")]
     MethodNotAllowed,
-    #[error("using the idempotency key and send together is not yet supported")]
-    SendAndIdempotencyKey,
     #[error("invocation error: {0:?}")]
     Invocation(InvocationError),
     #[error("input validation error: {0}")]
@@ -76,12 +72,10 @@ impl HandlerError {
             HandlerError::NotFound => StatusCode::NOT_FOUND,
             HandlerError::BadComponentPath => StatusCode::BAD_REQUEST,
             HandlerError::PrivateComponent => StatusCode::BAD_REQUEST,
-            HandlerError::BadIdempotency(_) => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             HandlerError::UrlDecodingError(_) => StatusCode::BAD_REQUEST,
-            HandlerError::SendAndIdempotencyKey => StatusCode::NOT_IMPLEMENTED,
             HandlerError::BadAwakeablesPath => StatusCode::BAD_REQUEST,
             HandlerError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             HandlerError::Invocation(e) => {

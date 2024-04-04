@@ -16,7 +16,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressRequest,
+    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
 use restate_pb::restate::internal::Event;
 use restate_schema_api::subscription::{
@@ -130,7 +130,7 @@ impl MessageSender {
             attributes: Self::generate_events_attributes(msg, self.subscription.id()),
         };
 
-        let req = IngressRequest::event(
+        let req = IngressDispatcherRequest::event(
             &self.subscription,
             event,
             SpanRelation::Parent(ingress_span_context),
