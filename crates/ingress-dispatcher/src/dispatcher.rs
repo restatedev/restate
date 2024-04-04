@@ -274,13 +274,18 @@ impl MapResponseAction {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use super::*;
 
     use googletest::{assert_that, pat};
     use restate_core::network::NetworkSender;
     use restate_core::TestCoreEnvBuilder;
     use restate_node_protocol::ingress::InvocationResponse;
+    use restate_types::arc_util::ArcSwapExt;
+    use restate_types::config::Configuration;
     use restate_types::identifiers::WithPartitionKey;
+    use restate_types::logs::metadata::ProviderKind;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
     use test_log::test;
@@ -299,7 +304,11 @@ mod tests {
             .add_mock_nodes_config()
             .with_partition_table(FixedPartitionTable::new(Version::MIN, 1));
 
-        let bifrost_svc = restate_bifrost::Options::memory().build();
+        let mut config: Configuration = Configuration::current().snapshot().deref().clone();
+        config.bifrost.default_provider = ProviderKind::InMemory;
+        restate_types::config::set_current_config(config);
+
+        let bifrost_svc = restate_bifrost::BifrostService::new(env_builder.metadata.clone());
         let bifrost = bifrost_svc.handle();
         let dispatcher = IngressDispatcher::new(bifrost.clone());
 

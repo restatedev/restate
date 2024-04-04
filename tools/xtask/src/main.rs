@@ -32,13 +32,13 @@ use tonic::transport::{Channel, Uri};
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
         .into_generator()
-        .into_root_schema_for::<restate_node::Configuration>();
+        .into_root_schema_for::<restate_node::config::Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
 
 fn generate_default_config() -> anyhow::Result<()> {
-    println!("{}", restate_node::Configuration::default().dump()?);
+    println!("{}", restate_node::config::Configuration::default().dump()?);
     Ok(())
 }
 

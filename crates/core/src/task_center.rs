@@ -10,12 +10,13 @@
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::{Future, FutureExt};
 use metrics::counter;
+use restate_types::config::CommonOptions;
 use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -33,23 +34,88 @@ const EXIT_CODE_FAILURE: i32 = 1;
 #[error("system is shutting down")]
 pub struct ShutdownError;
 
+#[derive(Debug, thiserror::Error)]
+pub enum TaskCenterBuildError {
+    #[error(transparent)]
+    Tokio(#[from] tokio::io::Error),
+}
+
 /// Used to create a new task center. In practice, there should be a single task center for the
 /// entire process but we might need to create more than one in integration test scenarios.
-pub struct TaskCenterFactory {}
-impl TaskCenterFactory {
-    pub fn create(runtime: tokio::runtime::Handle) -> TaskCenter {
+#[derive(Default)]
+pub struct TaskCenterBuilder {
+    default_runtime_handle: Option<tokio::runtime::Handle>,
+    default_runtime: Option<tokio::runtime::Runtime>,
+    options: Option<CommonOptions>,
+    #[cfg(any(test, feature = "test-util"))]
+    pause_time: bool,
+}
+
+impl TaskCenterBuilder {
+    pub fn default_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
+        self.default_runtime_handle = Some(handle);
+        self.default_runtime = None;
+        self
+    }
+
+    pub fn options(mut self, options: CommonOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    pub fn default_runtime(mut self, runtime: tokio::runtime::Runtime) -> Self {
+        self.default_runtime_handle = Some(runtime.handle().clone());
+        self.default_runtime = Some(runtime);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn pause_time(mut self, pause_time: bool) -> Self {
+        self.pause_time = pause_time;
+        self
+    }
+
+    pub fn build(mut self) -> Result<TaskCenter, TaskCenterBuildError> {
+        let options = self.options.unwrap_or_default();
+        if self.default_runtime_handle.is_none() {
+            let mut default_runtime_builder = tokio_builder(&options);
+            #[cfg(any(test, feature = "test-util"))]
+            if self.pause_time {
+                default_runtime_builder.start_paused(self.pause_time);
+            }
+            let default_runtime = default_runtime_builder.build()?;
+            self.default_runtime_handle = Some(default_runtime.handle().clone());
+            self.default_runtime = Some(default_runtime);
+        }
+
         metric_definitions::describe_metrics();
-        TaskCenter {
+        Ok(TaskCenter {
             inner: Arc::new(TaskCenterInner {
-                runtime,
+                default_runtime_handle: self.default_runtime_handle.unwrap(),
+                default_runtime: self.default_runtime,
                 global_cancel_token: CancellationToken::new(),
                 shutdown_requested: AtomicBool::new(false),
                 current_exit_code: AtomicI32::new(0),
                 tasks: Mutex::new(HashMap::new()),
                 global_metadata: OnceLock::new(),
             }),
-        }
+        })
     }
+}
+
+fn tokio_builder(common_opts: &CommonOptions) -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all().thread_name_fn(|| {
+        static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+        let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+        format!("rs:worker-{}", id)
+    });
+
+    if let Some(worker_threads) = common_opts.default_thread_pool_size {
+        builder.worker_threads(worker_threads);
+    }
+
+    builder
 }
 
 /// Task center is used to manage long-running and background tasks and their lifecycle.
@@ -61,9 +127,14 @@ pub struct TaskCenter {
 static_assertions::assert_impl_all!(TaskCenter: Send, Sync, Clone);
 
 impl TaskCenter {
-    /// Used to monitor an on-going shutdown when requested
+    /// Use to monitor an on-going shutdown when requested
     pub fn watch_shutdown(&self) -> WaitForCancellationFutureOwned {
         self.inner.global_cancel_token.clone().cancelled_owned()
+    }
+
+    /// Use to monitor an on-going shutdown when requested
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.inner.global_cancel_token.clone()
     }
 
     /// The exit code that the process should exit with.
@@ -139,7 +210,7 @@ impl TaskCenter {
         let mut handle_mut = task.join_handle.lock().unwrap();
 
         let task_cloned = Arc::clone(&task);
-        let join_handle = inner.runtime.spawn(wrapper(
+        let join_handle = inner.default_runtime_handle.spawn(wrapper(
             self.clone(),
             id,
             kind,
@@ -308,6 +379,22 @@ impl TaskCenter {
                 //  * It was shut down concurrently and already exited (or failed)
             }
         }
+    }
+
+    /// Sets the current task_center but doesn't create a task. Use this when you need to run a
+    /// future within task_center scope.
+    pub fn block_on<F, O>(
+        &self,
+        name: &'static str,
+        partition_id: Option<PartitionId>,
+        future: F,
+    ) -> O
+    where
+        F: Future<Output = O>,
+    {
+        self.inner
+            .default_runtime_handle
+            .block_on(self.run_in_scope(name, partition_id, future))
     }
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
@@ -486,7 +573,12 @@ impl TaskCenter {
 }
 
 struct TaskCenterInner {
-    runtime: tokio::runtime::Handle,
+    default_runtime_handle: tokio::runtime::Handle,
+    /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
+    /// is None, it means that it's the responsibility of the Handle owner to correctly drop
+    /// tokio's runtime after dropping the task center.
+    #[allow(dead_code)]
+    default_runtime: Option<tokio::runtime::Runtime>,
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
@@ -632,12 +724,20 @@ mod tests {
 
     use googletest::prelude::*;
     use restate_test_util::assert_eq;
+    use restate_types::config::CommonOptionsBuilder;
     use tracing_test::traced_test;
 
     #[tokio::test(start_paused = true)]
     #[traced_test]
     async fn test_basic_lifecycle() -> Result<()> {
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+        let common_opts = CommonOptionsBuilder::default()
+            .default_thread_pool_size(3)
+            .build()
+            .unwrap();
+        let tc = TaskCenterBuilder::default()
+            .options(common_opts)
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?;
         let start = tokio::time::Instant::now();
         tc.spawn(TaskKind::RoleRunner, "worker-role", None, async {
             info!("Hello async");

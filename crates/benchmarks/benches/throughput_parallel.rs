@@ -20,12 +20,14 @@ use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::counter::counter_client::CounterClient;
 use restate_benchmarks::counter::CounterAddRequest;
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
+use restate_types::arc_util::Constant;
 use tokio::runtime::Builder;
 use tonic::transport::Channel;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
+    let old_config = restate_benchmarks::restate_old_configuration();
     let config = restate_benchmarks::restate_configuration();
-    let (tc, _rt) = restate_benchmarks::spawn_restate(config);
+    let tc = restate_benchmarks::spawn_restate(Constant::new(config), old_config);
 
     let BenchmarkSettings {
         num_requests,

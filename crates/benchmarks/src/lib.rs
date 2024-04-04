@@ -16,18 +16,16 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
-use restate_server::rt::build_tokio;
-use restate_types::config::CommonOptionCliOverride;
-use tokio::runtime::Runtime;
-
-use restate_core::{TaskCenter, TaskCenterFactory};
-use restate_node::Configuration;
-use restate_node::ConfigurationBuilder;
-use restate_node::Node;
-use restate_node::{
-    AdminOptionsBuilder, MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder,
+use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{
+    CommonOptionCliOverride, CommonOptionsBuilder, Configuration, ConfigurationBuilder,
     WorkerOptionsBuilder,
 };
+use tokio::runtime::Runtime;
+
+use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
+use restate_node::Node;
 use restate_types::retries::RetryPolicy;
 
 pub mod counter {
@@ -64,20 +62,26 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
         .is_success(),);
 }
 
-pub fn spawn_restate(config: Configuration) -> (TaskCenter, Runtime) {
-    let rt = build_tokio(config.common()).expect("Tokio runtime must build");
-
-    let tc = TaskCenterFactory::create(rt.handle().clone());
+pub fn spawn_restate(
+    mut updateable_config: impl Updateable<Configuration> + Send + 'static,
+    old_config: restate_node::config::Configuration,
+) -> TaskCenter {
+    let common = &updateable_config.load().common;
+    let tc = TaskCenterBuilder::default()
+        .options(common.clone())
+        .build()
+        .expect("task_center builds");
     let cloned_tc = tc.clone();
-    rt.block_on(async move {
-        let node = Node::new(config.common, config.node).expect("Restate node must build");
+    tc.spawn(TaskKind::TestRunner, "benchmark", None, async move {
+        let config = updateable_config.load();
+        let node = Node::new(&old_config, config).expect("Restate node must build");
         cloned_tc
-            .run_in_scope("startup", None, node.start())
+            .run_in_scope("startup", None, node.start(updateable_config))
             .await
-            .expect("Restate node must boot");
-    });
+    })
+    .unwrap();
 
-    (tc, rt)
+    tc
 }
 
 pub fn flamegraph_options<'a>() -> Options<'a> {
@@ -90,40 +94,70 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
     options
 }
 
-pub fn restate_configuration() -> Configuration {
-    let meta_options = MetaOptionsBuilder::default()
+pub fn restate_old_configuration() -> restate_node::config::Configuration {
+    let meta_options = restate_node::MetaOptionsBuilder::default()
         .schema_storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
         .expect("building meta options should work");
 
-    let rocksdb_options = RocksdbOptionsBuilder::default()
+    let rocksdb_options = restate_node::RocksdbOptionsBuilder::default()
         .path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
         .expect("building rocksdb options should work");
 
-    let worker_options = WorkerOptionsBuilder::default()
+    let worker_options = restate_node::WorkerOptionsBuilder::default()
         .partitions(10)
         .storage_rocksdb(rocksdb_options)
         .build()
         .expect("building worker options should work");
 
-    let admin_options = AdminOptionsBuilder::default()
+    let admin_options = restate_node::AdminOptionsBuilder::default()
         .meta(meta_options)
         .build()
         .expect("building admin options should work");
 
-    let node_options = NodeOptionsBuilder::default()
+    let node_options = restate_node::NodeOptionsBuilder::default()
         .worker(worker_options)
         .admin(admin_options)
         .build()
         .expect("building the configuration should work");
 
-    let config = ConfigurationBuilder::default()
+    let config = restate_node::config::ConfigurationBuilder::default()
         .node(node_options)
         .build()
         .expect("building the configuration should work");
 
-    Configuration::load_with_default(config, None, CommonOptionCliOverride::default())
+    restate_node::config::Configuration::load_with_default(
+        config,
+        None,
+        CommonOptionCliOverride::default(),
+    )
+    .expect("configuration loading should not fail")
+}
+
+pub fn restate_configuration() -> Configuration {
+    let common_options = CommonOptionsBuilder::default()
+        .base_dir(tempfile::tempdir().expect("tempdir failed").into_path())
+        .build()
+        .expect("building common options should work");
+
+    let worker_options = WorkerOptionsBuilder::default()
+        .bootstrap_num_partitions(10)
+        .build()
+        .expect("building worker options should work");
+
+    let config = ConfigurationBuilder::default()
+        .common(common_options)
+        .worker(worker_options)
+        .build()
+        .expect("building the configuration should work");
+
+    ConfigLoaderBuilder::default()
+        .load_env(true)
+        .custom_default(config)
+        .build()
+        .expect("builder should build")
+        .load_once()
         .expect("configuration loading should not fail")
 }
 

@@ -11,13 +11,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use restate_types::arc_util::Updateable;
+use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use rocksdb::{BlockBasedOptions, Cache, DBCompactionStyle, DBCompressionType, DB};
 use tracing::{debug, warn};
 
 use super::keys::{MetadataKey, MetadataKind};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
-use super::log_store_writer::{LogStoreWriter, WriterOptions};
-use super::Options;
+use super::log_store_writer::LogStoreWriter;
 
 pub(crate) static DATA_CF: &str = "logstore_data";
 pub(crate) static METADATA_CF: &str = "logstore_metadata";
@@ -40,14 +41,20 @@ pub struct RocksDbLogStore {
 }
 
 impl RocksDbLogStore {
-    pub fn new(options: &Options) -> Result<Self, LogStoreError> {
-        let cache = if options.rocksdb_cache_size > 0 {
-            Some(Cache::new_lru_cache(options.rocksdb_cache_size))
+    pub fn new(
+        mut updateable_options: impl Updateable<LocalLogletOptions> + Send + 'static,
+    ) -> Result<Self, LogStoreError> {
+        // todo start a task that updates rocksdb options
+        let options = &updateable_options.load();
+        let rock_opts = &options.rocksdb;
+        // todo: get shared rocksdb cache
+        let cache = if rock_opts.rocksdb_cache_size() > 0 {
+            Some(Cache::new_lru_cache(rock_opts.rocksdb_cache_size()))
         } else {
             None
         };
 
-        let mut metadata_cf_options = cf_common_options(options, cache.clone());
+        let mut metadata_cf_options = cf_common_options(rock_opts, cache.clone());
         metadata_cf_options.set_min_write_buffer_number_to_merge(10);
         metadata_cf_options.set_max_successive_merges(10);
         // Merge operator for log state updates
@@ -60,13 +67,13 @@ impl RocksDbLogStore {
         let cfs = [
             rocksdb::ColumnFamilyDescriptor::new(
                 DATA_CF,
-                cf_common_options(options, cache.clone()),
+                cf_common_options(rock_opts, cache.clone()),
             ),
             rocksdb::ColumnFamilyDescriptor::new(METADATA_CF, metadata_cf_options),
         ];
-        let db_options = db_options(options);
+        let db_options = db_options(rock_opts);
 
-        let db = DB::open_cf_descriptors(&db_options, &options.path, cfs)?;
+        let db = DB::open_cf_descriptors(&db_options, options.data_dir(), cfs)?;
 
         Ok(Self { db: Arc::new(db) })
     }
@@ -93,8 +100,8 @@ impl RocksDbLogStore {
         }
     }
 
-    pub fn create_writer(&self, opts: WriterOptions) -> LogStoreWriter {
-        LogStoreWriter::new(self.db.clone(), opts)
+    pub fn create_writer(&self, manual_wal_flush: bool) -> LogStoreWriter {
+        LogStoreWriter::new(self.db.clone(), manual_wal_flush)
     }
 
     pub fn db(&self) -> &DB {
@@ -114,17 +121,17 @@ impl RocksDbLogStore {
     }
 }
 
-fn db_options(opts: &Options) -> rocksdb::Options {
+fn db_options(opts: &RocksDbOptions) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     db_options.create_if_missing(true);
     db_options.create_missing_column_families(true);
-    if opts.rocksdb_threads > 0 {
-        db_options.increase_parallelism(opts.rocksdb_threads as i32);
-        db_options.set_max_background_jobs(opts.rocksdb_threads as i32);
+    if opts.rocksdb_num_threads() > 0 {
+        db_options.increase_parallelism(opts.rocksdb_num_threads() as i32);
+        db_options.set_max_background_jobs(opts.rocksdb_num_threads() as i32);
     }
 
     // todo: integrate with node-ctrl monitoring
-    if !opts.rocksdb_disable_statistics {
+    if !opts.rocksdb_disable_statistics() {
         db_options.enable_statistics();
         // Reasonable default, but we might expose this as a config in the future.
         db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
@@ -138,13 +145,13 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     //
     // Disable automatic WAL flushing if flush_wal_on_commit is enabled
     // We will call flush manually, when we commit a storage transaction.
-    if !opts.rocksdb_disable_wal {
-        db_options.set_manual_wal_flush(opts.flush_wal_on_commit);
+    if !opts.rocksdb_disable_wal() {
+        db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
         //
         // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
         // We set this value to 10GB by default, to make sure that we don't flush
         // memtables prematurely.
-        db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size);
+        db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
     }
     //
     // write buffer
@@ -176,14 +183,14 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     db_options
 }
 
-fn cf_common_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
+fn cf_common_options(opts: &RocksDbOptions, cache: Option<Cache>) -> rocksdb::Options {
     let mut cf_options = rocksdb::Options::default();
     //
     //
     // write buffer
     //
-    if opts.rocksdb_write_buffer_size > 0 {
-        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size)
+    if opts.rocksdb_write_buffer_size() > 0 {
+        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size())
     }
 
     cf_options.set_compaction_style(DBCompactionStyle::Universal);

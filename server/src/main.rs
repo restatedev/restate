@@ -10,19 +10,18 @@
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::TaskCenterFactory;
+use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
-use restate_node::Configuration;
 use restate_server::build_info;
 use restate_server::config_loader::ConfigLoaderBuilder;
-use restate_server::rt::build_tokio;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::config::CommonOptionCliOverride;
+use restate_types::config::Configuration;
 use std::error::Error;
 use std::ops::Div;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
 use tracing::error;
@@ -85,8 +84,8 @@ impl WipeMode {
         mode: Option<&WipeMode>,
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
-        local_loglet_storage_dir: &Path,
-        local_metadata_store_storage_dir: &Path,
+        local_loglet_storage_dir: PathBuf,
+        local_metadata_store_storage_dir: PathBuf,
     ) -> io::Result<()> {
         let (wipe_meta, wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
             Some(WipeMode::Worker) => (false, true, true, false),
@@ -147,7 +146,10 @@ fn main() {
         std::process::exit(0);
     }
 
-    let old_config = match Configuration::load(config_path.as_deref(), cli_args.opts_overrides) {
+    let old_config = match restate_node::config::Configuration::load(
+        config_path.as_deref(),
+        cli_args.opts_overrides,
+    ) {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
@@ -157,21 +159,21 @@ fn main() {
         }
     };
 
-    restate_node::set_current_config(old_config);
     restate_types::config::set_current_config(config);
 
     let config = Configuration::pinned();
-    let runtime = build_tokio(config.common()).expect("failed to build Tokio runtime!");
 
-    let tc = TaskCenterFactory::create(runtime.handle().clone());
-
-    runtime.block_on({
+    let tc = TaskCenterBuilder::default()
+        .options(config.common.clone())
+        .build()
+        .expect("task_center builds");
+    tc.block_on("main", None, {
         let tc = tc.clone();
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =
-                init_tracing_and_logging(config.common(), "Restate binary", std::process::id())
+                init_tracing_and_logging(&config.common, "Restate binary", std::process::id())
                     .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible
@@ -193,7 +195,7 @@ fn main() {
             }
             info!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                config.dump().unwrap()
+                old_config.dump().unwrap()
             );
 
             // start config watcher
@@ -201,51 +203,73 @@ fn main() {
 
             WipeMode::wipe(
                 cli_args.wipe.as_ref(),
-                config.node.admin.meta.storage_path().into(),
-                config.node.worker.storage_path().into(),
-                config.node.bifrost.local.path.as_path(),
-                config.node.metadata_store.storage_path(),
+                config.admin.data_dir(),
+                config.worker.data_dir(),
+                config.bifrost.local.data_dir(),
+                config.metadata_store.data_dir(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");
 
-            let task_center_watch = tc.watch_shutdown();
-            let node = Node::new(config.common.clone(), config.node.clone());
+            let node = Node::new(&old_config, &config);
             if let Err(err) = node {
                 handle_error(err);
             }
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
+            let _ = tc.spawn(
+                TaskKind::SystemBoot,
+                "init",
+                None,
+                node.unwrap().start(Configuration::updateable()),
+            );
 
-            tokio::select! {
-                signal_name = signal::shutdown() => {
-                    info!("Received shutdown signal.");
-                    let signal_reason = format!("received signal {}", signal_name);
+            let task_center_watch = tc.shutdown_token();
+            tokio::pin!(task_center_watch);
 
-                    let shutdown_with_timeout = tokio::time::timeout(
-                        config.common().shutdown_grace_period(),
-                        tc.shutdown_node(&signal_reason, 0)
-                    );
+            let config_update_watcher = restate_types::config::config_watcher();
+            tokio::pin!(config_update_watcher);
+            let mut shutdown = false;
+            while !shutdown {
+                tokio::select! {
+                    signal_name = signal::shutdown() => {
+                        info!("Received shutdown signal.");
+                        shutdown = true;
+                        let signal_reason = format!("received signal {}", signal_name);
 
-                    // ignore the result because we are shutting down
-                    let shutdown_result = shutdown_with_timeout.await;
 
-                    if shutdown_result.is_err() {
-                        warn!("Could not gracefully shut down Restate, terminating now.");
-                    } else {
-                        info!("Restate has been gracefully shut down.");
+                        let shutdown_with_timeout = tokio::time::timeout(
+                            Configuration::pinned().common.shutdown_grace_period(),
+                            tc.shutdown_node(&signal_reason, 0)
+                        );
+
+                        // ignore the result because we are shutting down
+                        let shutdown_result = shutdown_with_timeout.await;
+
+                        if shutdown_result.is_err() {
+                            warn!("Could not gracefully shut down Restate, terminating now.");
+                        } else {
+                            info!("Restate has been gracefully shut down.");
+                        }
+                    },
+                    _ = config_update_watcher.changed() => {
+                        let config = Configuration::pinned();
+                        tracing_guard.reload_log_filter(&config.common);
                     }
-                },
-                _ = signal::sigusr_dump_config() => {},
-                _ = task_center_watch => {
-                    // Shutdown was requested by task center and it has completed.
-                },
-            };
+                    _ = signal::sigusr_dump_config() => {},
+                    _ = task_center_watch.cancelled() => {
+                        shutdown = true;
+                        // Shutdown was requested by task center and it has completed.
+                    },
+                };
+            }
 
             shutdown_tracing(
-                config.common().shutdown_grace_period().div(2),
+                Configuration::pinned()
+                    .common
+                    .shutdown_grace_period()
+                    .div(2),
                 tracing_guard,
             )
             .await;

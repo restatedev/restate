@@ -11,8 +11,6 @@ publish = false
 default = []
 
 test-util = []
-local_loglet = []
-memory_loglet = []
 
 [dependencies]
 restate-base64-util = { workspace = true }

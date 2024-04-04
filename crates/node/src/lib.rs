@@ -8,21 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod config;
+pub mod config;
 mod network_server;
 mod options;
 mod roles;
 
 use bincode::error::{DecodeError, EncodeError};
 use bytes::Bytes;
-pub use config::{set_current_config, Configuration, ConfigurationBuilder};
 pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
 pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::options::CommonOptions;
 pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{CommonOptions, Configuration};
 pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -85,8 +85,6 @@ pub enum BuildError {
 }
 
 pub struct Node {
-    common_opts: CommonOptions,
-    options: Options,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
@@ -96,30 +94,34 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(common_opts: CommonOptions, options: Options) -> Result<Self, BuildError> {
-        let opts = options.clone();
+    pub fn new(
+        old_config: &config::Configuration,
+        config: &Configuration,
+    ) -> Result<Self, BuildError> {
         // ensure we have cluster admin role if bootstrapping.
-        if *common_opts.allow_bootstrap() {
+        if config.common.allow_bootstrap {
             info!("Bootstrapping cluster");
-            if !common_opts.roles().contains(Role::Admin) {
+            if !config.has_role(Role::Admin) {
                 return Err(BuildError::Bootstrap(format!(
-                    "Node must include the 'admin' role when starting in bootstrap mode. Currently it has roles {}", common_opts.roles()
+                    "Node must include the 'admin' role when starting in bootstrap mode. Currently it has roles {}", config.roles()
                 )));
             }
 
-            if !common_opts.roles().contains(Role::MetadataStore) {
-                return Err(BuildError::Bootstrap(format!("Node must include the 'metadata_store' role when starting in bootstrap mode. Currently it has roles {}", common_opts.roles())));
+            if !config.has_role(Role::MetadataStore) {
+                return Err(BuildError::Bootstrap(format!("Node must include the 'metadata-store' role when starting in bootstrap mode. Currently it has roles {}", config.roles())));
             }
         }
 
-        let metadata_store_role = if common_opts.roles().contains(Role::MetadataStore) {
-            Some(options.metadata_store.clone().build()?)
+        let metadata_store_role = if config.has_role(Role::MetadataStore) {
+            Some(LocalMetadataStoreService::from_options(
+                &config.metadata_store,
+            )?)
         } else {
             None
         };
 
         let metadata_store_client = restate_metadata_store::local::create_client(
-            common_opts.metadata_store_address().clone(),
+            config.common.metadata_store_address.clone(),
         );
 
         let mut router_builder = MessageRouterBuilder::default();
@@ -127,23 +129,23 @@ impl Node {
         let metadata_manager =
             MetadataManager::build(networking.clone(), metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
+        let metadata = metadata_manager.metadata();
+        let bifrost = BifrostService::new(metadata);
 
-        let bifrost = options.bifrost.clone().build();
-
-        let admin_role = if common_opts.roles().contains(Role::Admin) {
+        let admin_role = if config.has_role(Role::Admin) {
             Some(AdminRole::new(
-                options.admin.clone(),
-                options.kafka.clone(),
+                old_config.node.admin.clone(),
+                old_config.node.kafka.clone(),
                 networking.clone(),
             )?)
         } else {
             None
         };
 
-        let worker_role = if common_opts.roles().contains(Role::Worker) {
+        let worker_role = if config.has_role(Role::Worker) {
             Some(WorkerRole::new(
-                options.worker.clone(),
-                options.kafka.clone(),
+                old_config.node.worker.clone(),
+                old_config.node.kafka.clone(),
                 &mut router_builder,
                 networking.clone(),
                 bifrost.handle(),
@@ -154,7 +156,7 @@ impl Node {
         };
 
         let server = NetworkServer::new(
-            common_opts.clone(),
+            old_config.common.clone(),
             networking.connection_manager(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
@@ -169,7 +171,7 @@ impl Node {
                     cluster_controller.cluster_controller_handle(),
                     cluster_controller.schema_reader(),
                     restate_metadata_store::local::create_client(
-                        common_opts.metadata_store_address().clone(),
+                        config.common.metadata_store_address.clone(),
                     ),
                 )
             }),
@@ -183,8 +185,6 @@ impl Node {
             .set_message_router(message_router);
 
         Ok(Node {
-            common_opts,
-            options: opts,
             metadata_manager,
             bifrost,
             metadata_store_role,
@@ -194,7 +194,10 @@ impl Node {
         })
     }
 
-    pub async fn start(self) -> Result<(), anyhow::Error> {
+    pub async fn start(
+        self,
+        mut updateble_config: impl Updateable<Configuration> + Send + 'static,
+    ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
         if let Some(metadata_store) = self.metadata_store_role {
@@ -209,12 +212,12 @@ impl Node {
             )?;
         }
 
+        let config = updateble_config.load();
         let metadata_store_client = restate_metadata_store::local::create_client(
-            self.common_opts.metadata_store_address().clone(),
+            config.common.metadata_store_address.clone(),
         );
 
-        let nodes_config =
-            Self::upsert_node_config(&metadata_store_client, &self.common_opts).await?;
+        let nodes_config = Self::upsert_node_config(&metadata_store_client, &config.common).await?;
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
@@ -227,8 +230,7 @@ impl Node {
         metadata_writer.update(nodes_config).await?;
 
         let (partition_table, logs) =
-            Self::fetch_or_insert_static_configuration(&metadata_store_client, &self.options)
-                .await?;
+            Self::fetch_or_insert_static_configuration(&metadata_store_client, config).await?;
 
         // sanity check
         if partition_table.num_partitions()
@@ -244,31 +246,31 @@ impl Node {
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config
-            .find_node_by_name(self.common_opts.node_name())
+            .find_node_by_name(&config.common.node_name)
             .expect("node config should have been upserted");
 
         let my_node_id = my_node_config.current_generation;
 
         // Safety checks, same node (if set)?
-        if self
-            .common_opts
-            .force_node_id()
+        if config
+            .common
+            .force_node_id
             .is_some_and(|n| n != my_node_id.as_plain())
         {
             return Err(Error::SafetyCheck(
                 format!(
                     "Node ID mismatch: configured node ID is {}, but the nodes configuration contains {}",
-                    self.common_opts.force_node_id().unwrap(),
+                    config.common.force_node_id.unwrap(),
                     my_node_id.as_plain()
                     )))?;
         }
 
         // Same cluster?
-        if self.common_opts.cluster_name() != nodes_config.cluster_name() {
+        if config.common.cluster_name != nodes_config.cluster_name() {
             return Err(Error::SafetyCheck(
                 format!(
                     "Cluster name mismatch: configured cluster name is '{}', but the nodes configuration contains '{}'",
-                    self.common_opts.cluster_name(),
+                    config.common.cluster_name,
                     nodes_config.cluster_name()
                     )))?;
         }
@@ -289,7 +291,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                admin_role.start(*self.common_opts.allow_bootstrap(), bifrost.clone()),
+                admin_role.start(config.common.allow_bootstrap, bifrost.clone()),
             )?;
         }
 
@@ -314,7 +316,7 @@ impl Node {
 
     async fn fetch_or_insert_static_configuration(
         metadata_store_client: &MetadataStoreClient,
-        options: &Options,
+        options: &Configuration,
     ) -> Result<(FixedPartitionTable, Logs), ReadModifyWriteError> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
@@ -330,7 +332,7 @@ impl Node {
 
     async fn fetch_or_insert_partition_table(
         metadata_store_client: &MetadataStoreClient,
-        options: &Options,
+        config: &Configuration,
     ) -> Result<FixedPartitionTable, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
             metadata_store_client.read_modify_write(
@@ -340,8 +342,10 @@ impl Node {
                         debug!("Retrieved partition table: {partition_table:?}");
                         Operation::Return(partition_table)
                     } else {
-                        let partition_table =
-                            FixedPartitionTable::new(Version::MIN, options.worker.partitions);
+                        let partition_table = FixedPartitionTable::new(
+                            Version::MIN,
+                            config.worker.bootstrap_num_partitions,
+                        );
                         debug!("Initializing a new partition table: {partition_table:?}");
 
                         Operation::Upsert(partition_table)
@@ -354,7 +358,7 @@ impl Node {
 
     async fn fetch_or_insert_logs_configuration(
         metadata_store_client: &MetadataStoreClient,
-        options: &Options,
+        config: &Configuration,
         num_partitions: u64,
     ) -> Result<Logs, ReadModifyWriteError> {
         Self::retry_on_network_error(|| {
@@ -365,7 +369,7 @@ impl Node {
                     Operation::Return(logs)
                 } else {
                     let logs =
-                        create_static_metadata(options.bifrost.default_provider, num_partitions);
+                        create_static_metadata(config.bifrost.default_provider, num_partitions);
 
                     debug!("Initializing a new logs configuration: {logs:?}",);
 
@@ -388,24 +392,24 @@ impl Node {
                             let mut nodes_config = nodes_config.unwrap_or_else(|| {
                                 NodesConfiguration::new(
                                     Version::INVALID,
-                                    common_opts.cluster_name().clone(),
+                                    common_opts.cluster_name.clone(),
                                 )
                             });
 
                             // check whether we have registered before
                             let node_config =
-                                nodes_config.find_node_by_name(common_opts.node_name()).cloned();
+                                nodes_config.find_node_by_name(&common_opts.node_name).cloned();
 
                             let my_node_config = if let Some(mut node_config) = node_config {
                                 assert_eq!(
-                                    common_opts.node_name(), &node_config.name,
+                                    common_opts.node_name, node_config.name,
                                     "node name must match"
                                 );
 
                                 if let Some(previous_node_generation) = previous_node_generation {
                                     if node_config.current_generation.is_newer_than(previous_node_generation) {
                                         // detected a concurrent registration of the same node
-                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
+                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name));
                                     }
                                 } else {
                                     // remember the previous node generation to detect concurrent modifications
@@ -413,13 +417,13 @@ impl Node {
                                 }
 
                                 // update node_config
-                                node_config.roles = *common_opts.roles();
-                                node_config.address = common_opts.advertise_address().clone();
+                                node_config.roles = common_opts.roles;
+                                node_config.address = common_opts.advertised_address.clone();
                                 node_config.current_generation.bump_generation();
 
                                 node_config
                             } else {
-                                let plain_node_id = common_opts.force_node_id().unwrap_or_else(|| {
+                                let plain_node_id = common_opts.force_node_id.unwrap_or_else(|| {
                                     nodes_config
                                         .max_plain_node_id()
                                         .map(|n| n.next())
@@ -435,10 +439,10 @@ impl Node {
                                 let my_node_id = plain_node_id.with_generation(1);
 
                                 NodeConfig::new(
-                                    common_opts.node_name().clone(),
+                                    common_opts.node_name.clone(),
                                     my_node_id,
-                                    common_opts.advertise_address().clone(),
-                                    *common_opts.roles(),
+                                    common_opts.advertised_address.clone(),
+                                    common_opts.roles,
                                 )
                             };
 
