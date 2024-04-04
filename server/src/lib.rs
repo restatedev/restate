@@ -9,5 +9,6 @@
 // by the Apache License, Version 2.0.
 
 pub mod build_info;
+pub mod config_loader;
 pub mod future_util;
 pub mod rt;
