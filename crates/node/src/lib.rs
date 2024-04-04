@@ -127,8 +127,8 @@ impl Node {
         let metadata_manager =
             MetadataManager::build(networking.clone(), metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
-
-        let bifrost = options.bifrost.clone().build();
+        let metadata = metadata_manager.metadata();
+        let bifrost = options.bifrost.clone().build(metadata);
 
         let admin_role = if common_opts.roles().contains(Role::Admin) {
             Some(AdminRole::new(

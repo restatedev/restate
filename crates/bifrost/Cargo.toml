@@ -8,10 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["memory_loglet", "local_loglet"]
 options_schema = ["dep:schemars"]
-local_loglet = ["dep:rocksdb", "restate-types/local_loglet"]
-memory_loglet = ["restate-types/memory_loglet"]
 
 [dependencies]
 restate-core = { workspace = true }
@@ -30,7 +27,7 @@ drain = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 humantime = { workspace = true }
 once_cell = { workspace = true }
-rocksdb = { workspace = true, optional = true }
+rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
