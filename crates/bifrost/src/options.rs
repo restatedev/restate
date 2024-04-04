@@ -10,6 +10,7 @@
 
 use crate::loglets::local_loglet;
 use crate::service::BifrostService;
+use restate_core::Metadata;
 use restate_types::logs::metadata::ProviderKind;
 
 /// # Bifrost options
@@ -24,7 +25,6 @@ pub struct Options {
     /// # The default kind of loglet to be used
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     pub default_provider: ProviderKind,
-    #[cfg(any(test, feature = "local_loglet"))]
     #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
     /// Configuration of local loglet provider
     pub local: local_loglet::Options,
@@ -34,18 +34,16 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             default_provider: ProviderKind::Local,
-            #[cfg(any(test, feature = "local_loglet"))]
             local: local_loglet::Options::default(),
         }
     }
 }
 
 impl Options {
-    pub fn build(self) -> BifrostService {
-        BifrostService::new(self)
+    pub fn build(self, metadata: Metadata) -> BifrostService {
+        BifrostService::new(self, metadata)
     }
 
-    #[cfg(any(test, feature = "memory_loglet"))]
     pub fn memory() -> Self {
         Self {
             default_provider: ProviderKind::InMemory,

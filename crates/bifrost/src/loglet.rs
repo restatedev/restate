@@ -17,19 +17,14 @@ use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
 use crate::{Error, LogRecord, LsnExt, Options, ProviderError};
 
-// why? because if all loglet features are disabled, clippy will complain about options being
-// unused.
-#[allow(unused_variables)]
 pub fn create_provider(
     kind: ProviderKind,
     options: &Options,
 ) -> Result<Arc<dyn LogletProvider>, ProviderError> {
     match kind {
-        #[cfg(any(test, feature = "local_loglet"))]
         ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
             options.local.clone(),
         )?),
-        #[cfg(any(test, feature = "memory_loglet"))]
         ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),
     }
 }
