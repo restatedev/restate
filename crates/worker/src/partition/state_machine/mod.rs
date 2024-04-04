@@ -107,6 +107,7 @@ mod tests {
     use restate_types::arc_util::Constant;
     use restate_types::config::WorkerOptions;
     use restate_types::errors::codes;
+    use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
     };
@@ -387,10 +388,7 @@ mod tests {
                     restate_types::invocation::InvocationResponse {
                         id: eq(MaybeFullInvocationId::Full(caller_fid)),
                         entry_index: eq(0),
-                        result: pat!(ResponseResult::Failure(
-                            eq(codes::ABORTED),
-                            eq(ByteString::from_static("killed"))
-                        ))
+                        result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
                     }
                 ))
             )

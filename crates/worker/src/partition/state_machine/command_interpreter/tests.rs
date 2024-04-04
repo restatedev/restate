@@ -346,7 +346,7 @@ async fn awakeable_with_failure() {
         OutboxMessage::ServiceResponse(InvocationResponse {
             id,
             entry_index,
-            result: ResponseResult::Failure(codes::BAD_REQUEST, failure_reason),
+            result: ResponseResult::Failure(failure),
         }) = message
     );
     assert_eq!(
@@ -354,7 +354,7 @@ async fn awakeable_with_failure() {
         MaybeFullInvocationId::Partial(InvocationId::from(sid_callee))
     );
     assert_eq!(entry_index, 1);
-    assert_eq!(failure_reason, "Some failure");
+    assert_eq!(failure.message(), "Some failure");
 }
 
 #[test(tokio::test)]
@@ -458,10 +458,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
                         InvocationResponse {
                             id: eq(MaybeFullInvocationId::from(caller_fid)),
                             entry_index: eq(0),
-                            result: pat!(ResponseResult::Failure(
-                                eq(codes::ABORTED),
-                                eq(ByteString::from_static("killed"))
-                            ))
+                            result: eq(ResponseResult::Failure(KILLED_INVOCATION_ERROR))
                         }
                     ))
                 )
