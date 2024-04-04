@@ -12,14 +12,12 @@ mod keys;
 mod log_state;
 mod log_store;
 mod log_store_writer;
-mod options;
 mod provider;
 mod utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 pub use log_store::LogStoreError;
-pub use options::Options;
 pub use provider::LocalLogletProvider;
 use restate_core::ShutdownError;
 use restate_types::logs::{Payload, SequenceNumber};

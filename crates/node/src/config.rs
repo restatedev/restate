@@ -10,7 +10,6 @@
 
 use std::ops::Div;
 use std::path::Path;
-use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use derive_getters::Getters;
@@ -18,7 +17,7 @@ use figment::providers::{Env, Format, Serialized, Toml, Yaml};
 use figment::Figment;
 use once_cell::sync::Lazy;
 use restate_types::arc_util::{ArcSwapExt, Pinned, Updateable};
-use restate_types::config::{notify_config_update, CommonOptionCliOverride};
+use restate_types::config::CommonOptionCliOverride;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -28,13 +27,6 @@ use restate_storage_rocksdb::TableKind;
 use crate::Options;
 
 static CONFIGURATION: Lazy<ArcSwap<Configuration>> = Lazy::new(ArcSwap::default);
-
-/// Set the current configuration, this is temporary until we have a dedicated configuration loader
-/// thread.
-pub fn set_current_config(config: Configuration) {
-    CONFIGURATION.store(Arc::new(config));
-    notify_config_update();
-}
 
 /// # Restate configuration file
 ///

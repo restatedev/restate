@@ -11,9 +11,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use crate::logs::metadata::ProviderKind;
 
 use super::{data_dir, RocksDbOptions, RocksDbOptionsBuilder};
 
@@ -41,30 +42,6 @@ impl Default for BifrostOptions {
     }
 }
 
-/// An enum with the list of supported loglet providers.
-/// For each variant we must have a corresponding implementation of the
-/// [`crate::loglet::Loglet`] trait
-#[derive(
-    Debug,
-    Clone,
-    Hash,
-    Eq,
-    PartialEq,
-    Copy,
-    serde::Serialize,
-    serde::Deserialize,
-    Enum,
-    strum_macros::EnumIter,
-    strum_macros::Display,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProviderKind {
-    /// A local rocksdb-backed loglet.
-    Local,
-    /// An in-memory loglet, primarily for testing.
-    InMemory,
-}
-
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -77,16 +54,17 @@ pub struct LocalLogletOptions {
 
     /// Trigger a commit when the batch size exceeds this threshold. Set to 0 or 1 to commit the
     /// write batch on every command.
+    ///
+    /// Supports hot-reloading.
     pub writer_commit_batch_size_threshold: usize,
     /// Trigger a commit when the time since the last commit exceeds this threshold.
+    ///
+    /// Supports hot-reloading.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub writer_commit_time_interval: humantime::Duration,
     /// The maximum number of write commands that can be queued.
     pub writer_queue_len: usize,
-    /// If true, rocksdb flushes follow writing record batches, otherwise, we
-    /// fallback to rocksdb automatic WAL flushes.
-    pub flush_wal_on_commit: bool,
 }
 
 impl LocalLogletOptions {
@@ -106,7 +84,6 @@ impl Default for LocalLogletOptions {
             writer_commit_batch_size_threshold: 200,
             writer_commit_time_interval: Duration::from_millis(13).into(),
             writer_queue_len: 200,
-            flush_wal_on_commit: true,
         }
     }
 }

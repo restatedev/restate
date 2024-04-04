@@ -21,7 +21,5 @@ use restate_worker::KafkaIngressOptions;
 pub struct Options {
     pub worker: restate_worker::Options,
     pub admin: restate_admin::Options,
-    pub bifrost: restate_bifrost::Options,
-    pub metadata_store: restate_metadata_store::local::Options,
     pub kafka: KafkaIngressOptions,
 }
