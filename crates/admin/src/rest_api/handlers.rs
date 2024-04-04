@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use crate::state::AdminServiceState;
 
+use crate::state::AdminServiceState;
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
+use restate_core::metadata;
 use restate_meta_rest_model::handlers::*;
 use restate_schema_api::component::ComponentMetadataResolver;
 
@@ -29,17 +30,23 @@ use restate_schema_api::component::ComponentMetadataResolver;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_component_handlers(
-    State(state): State<AdminServiceState>,
+pub async fn list_component_handlers<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(component_name): Path<String>,
 ) -> Result<Json<ListComponentHandlersResponse>, MetaApiError> {
-    match state.schemas().resolve_latest_component(&component_name) {
-        Some(metadata) => Ok(ListComponentHandlersResponse {
-            handlers: metadata.handlers,
-        }
-        .into()),
-        None => Err(MetaApiError::ComponentNotFound(component_name)),
-    }
+    state
+        .task_center
+        .run_in_scope_sync("list-component-handlers", None, || {
+            match metadata().schema_registry().and_then(|schema_registry| {
+                schema_registry.resolve_latest_component(&component_name)
+            }) {
+                Some(metadata) => Ok(ListComponentHandlersResponse {
+                    handlers: metadata.handlers,
+                }
+                .into()),
+                None => Err(MetaApiError::ComponentNotFound(component_name)),
+            }
+        })
 }
 
 /// Get a handler of a component
@@ -61,27 +68,33 @@ pub async fn list_component_handlers(
         )
     )
 )]
-pub async fn get_component_handler(
-    State(state): State<AdminServiceState>,
+pub async fn get_component_handler<V>(
+    State(state): State<AdminServiceState<V>>,
     Path((component_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError> {
-    match state.schemas().resolve_latest_component(&component_name) {
-        Some(metadata) => {
-            match metadata
-                .handlers
-                .into_iter()
-                .find(|handler| handler.name == handler_name)
-            {
-                Some(handler) => Ok(handler.into()),
+    state
+        .task_center
+        .run_in_scope_sync("get-component-handler", None, || {
+            match metadata().schema_registry().and_then(|schema_registry| {
+                schema_registry.resolve_latest_component(&component_name)
+            }) {
+                Some(metadata) => {
+                    match metadata
+                        .handlers
+                        .into_iter()
+                        .find(|handler| handler.name == handler_name)
+                    {
+                        Some(handler) => Ok(handler.into()),
+                        _ => Err(MetaApiError::HandlerNotFound {
+                            component_name,
+                            handler_name,
+                        }),
+                    }
+                }
                 _ => Err(MetaApiError::HandlerNotFound {
                     component_name,
                     handler_name,
                 }),
             }
-        }
-        _ => Err(MetaApiError::HandlerNotFound {
-            component_name,
-            handler_name,
-        }),
-    }
+        })
 }

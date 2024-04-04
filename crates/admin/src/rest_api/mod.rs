@@ -20,17 +20,16 @@ mod subscriptions;
 
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
-use restate_meta::{FileMetaReader, MetaReader};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_node_services::node_svc::UpdateSchemaRequest;
+use restate_schema_api::subscription::SubscriptionValidator;
 use restate_types::identifiers::PartitionKey;
 use restate_wal_protocol::{Destination, Header, Source};
-use tonic::transport::Channel;
-use tracing::debug;
 
 use crate::state::AdminServiceState;
 
-pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
+pub fn create_router<V>(state: AdminServiceState<V>) -> axum::Router<()>
+where
+    V: SubscriptionValidator + Send + Sync + Clone + 'static,
+{
     // Setup the router
     axum_integration::Router::new()
         .route(
@@ -100,39 +99,6 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
         )
         .expect("Error when building the OpenAPI specification")
         .with_state(state)
-}
-
-/// Notifies the node about schema changes. This method is best-effort and will not fail if the node
-/// could not be reached or the schema changes cannot serialized.
-async fn notify_node_about_schema_changes(
-    schema_reader: &FileMetaReader,
-    mut node_svc_client: NodeSvcClient<Channel>,
-) {
-    let schema_updates = schema_reader
-        .read()
-        .await
-        .map_err(anyhow::Error::from)
-        .and_then(|schema_updates| {
-            bincode::serde::encode_to_vec(schema_updates, bincode::config::standard())
-                .map_err(anyhow::Error::from)
-        });
-
-    if let Err(err) = schema_updates {
-        debug!("Failed serializing schema changes for notifying node about schema changes: {err}");
-        return;
-    }
-
-    let schema_updates = schema_updates.unwrap();
-
-    let result = node_svc_client
-        .update_schemas(UpdateSchemaRequest {
-            schema_bin: schema_updates.into(),
-        })
-        .await;
-
-    if let Err(err) = result {
-        debug!("Failed notifying node about schema changes: {err}");
-    }
 }
 
 fn create_envelope_header(partition_key: PartitionKey) -> Header {

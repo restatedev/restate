@@ -12,7 +12,7 @@ use super::*;
 
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 
-impl InvocationTargetResolver for Schemas {
+impl InvocationTargetResolver for SchemaRegistry {
     fn resolve_latest_invocation_target(
         &self,
         component_name: impl AsRef<str>,
@@ -25,5 +25,17 @@ impl InvocationTargetResolver for Schemas {
                 .map(|handler_schemas| handler_schemas.target_meta.clone())
         })
         .flatten()
+    }
+}
+
+impl InvocationTargetResolver for SchemaView {
+    fn resolve_latest_invocation_target(
+        &self,
+        component_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> Option<InvocationTargetMetadata> {
+        self.0
+            .load()
+            .resolve_latest_invocation_target(component_name, handler_name)
     }
 }

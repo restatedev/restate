@@ -8,23 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schemas;
+use super::{SchemaRegistry, SchemaView};
 
 use restate_schema_api::subscription::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 use restate_types::identifiers::SubscriptionId;
 
-impl SubscriptionResolver for Schemas {
+impl SubscriptionResolver for SchemaRegistry {
     fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
-        let schemas = self.0.load();
-        schemas.subscriptions.get(&id).cloned()
+        self.subscriptions.get(&id).cloned()
     }
 
     fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        let schemas = self.0.load();
-        schemas
-            .subscriptions
+        self.subscriptions
             .values()
             .filter(|sub| {
                 for f in filters {
@@ -36,5 +33,15 @@ impl SubscriptionResolver for Schemas {
             })
             .cloned()
             .collect()
+    }
+}
+
+impl SubscriptionResolver for SchemaView {
+    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
+        self.0.load().get_subscription(id)
+    }
+
+    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
+        self.0.load().list_subscriptions(filters)
     }
 }

@@ -11,50 +11,70 @@
 use anyhow::Context;
 use codederror::CodedError;
 use restate_types::arc_util::ArcSwapExt;
+use std::time::Duration;
 use tonic::transport::Channel;
 use tracing::info;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
-use restate_core::{task_center, TaskKind};
-use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
+use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::{task_center, MetadataWriter, TaskKind};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_protocol::discovery::ComponentDiscovery;
 use restate_types::config::{IngressOptions, UpdateableConfiguration};
+use restate_types::retries::RetryPolicy;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
-    #[error("failed creating meta: {0}")]
-    Meta(
-        #[from]
-        #[code]
-        restate_meta::BuildError,
-    ),
+    #[error("unknown")]
+    #[code(unknown)]
+    Unknown,
+    #[error("failed building the admin service: {0}")]
+    #[code(unknown)]
+    AdminService(#[from] restate_admin::service::BuildError),
+    #[error("failed building the service client: {0}")]
+    #[code(unknown)]
+    ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-#[derive(Debug)]
 pub struct AdminRole {
     updateable_config: UpdateableConfiguration,
     controller: restate_cluster_controller::Service,
-    admin: AdminService,
-    meta: MetaService<FileMetaStorage, IngressOptions>,
+    admin: AdminService<IngressOptions>,
 }
 
 impl AdminRole {
-    pub fn new(updateable_config: UpdateableConfiguration) -> Result<Self, AdminRoleBuildError> {
+    pub fn new(
+        updateable_config: UpdateableConfiguration,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Result<Self, AdminRoleBuildError> {
         let config = updateable_config.pinned();
-        let meta = MetaService::from_options(
-            &config.admin,
-            &config.common.service_client,
+
+        // Total duration roughly 66 seconds
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            10,
+            Some(Duration::from_secs(20)),
+        );
+        let client =
+            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
+        let component_discovery = ComponentDiscovery::new(retry_policy, client);
+
+        let admin = AdminService::new(
+            metadata_writer,
+            metadata_store_client,
             config.ingress.clone(),
-        )?;
-        let admin = AdminService::new(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+            component_discovery,
+        );
 
         Ok(AdminRole {
             updateable_config,
             controller: restate_cluster_controller::Service::default(),
             admin,
-            meta,
         })
     }
 
@@ -62,27 +82,14 @@ impl AdminRole {
         self.controller.handle()
     }
 
-    pub fn schema_reader(&self) -> FileMetaReader {
-        self.meta.schema_reader()
-    }
-
     pub async fn start(
-        mut self,
+        self,
         _bootstrap_cluster: bool,
         bifrost: Bifrost,
     ) -> Result<(), anyhow::Error> {
         info!("Running admin role");
 
-        // Init the meta. This will reload the schemas in memory.
-        self.meta.init().await?;
         let tc = task_center();
-
-        tc.spawn_child(
-            TaskKind::SystemService,
-            "meta-service",
-            None,
-            self.meta.run(),
-        )?;
 
         tc.spawn_child(
             TaskKind::SystemService,

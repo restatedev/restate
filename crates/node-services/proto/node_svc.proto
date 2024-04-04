@@ -23,9 +23,6 @@ service NodeSvc {
   // responses
   rpc QueryStorage(StorageQueryRequest) returns (stream StorageQueryResponse);
 
-  // Updates the schema information on the worker node
-  rpc UpdateSchemas(UpdateSchemaRequest) returns (google.protobuf.Empty);
-
   // Create a bidirectional node-to-node stream
   rpc CreateConnection(stream dev.restate.node.Message) returns (stream dev.restate.node.Message);
 }
@@ -50,5 +47,3 @@ message StorageQueryResponse {
   bytes header = 1;
   bytes data = 2;
 }
-
-message UpdateSchemaRequest { bytes schema_bin = 1; }

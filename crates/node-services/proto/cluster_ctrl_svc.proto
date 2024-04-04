@@ -17,17 +17,6 @@ service ClusterCtrlSvc {
   // Attach worker at cluster controller
   rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
 
-  // Fetch the current schema information
-  rpc FetchSchemas(FetchSchemasRequest) returns (FetchSchemasResponse);
-}
-
-message FetchSchemasRequest {
-  // provide schema version information
-}
-
-message FetchSchemasResponse {
-  // todo: Replace with proper protobuf
-  bytes schemas_bin = 1;
 }
 
 message AttachmentRequest {

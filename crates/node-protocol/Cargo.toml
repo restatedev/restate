@@ -12,6 +12,8 @@ default = []
 
 [dependencies]
 restate-types = { workspace = true }
+# merge schema creates with restate-types?
+restate-schema = { workspace =true }
 
 bincode = { workspace = true }
 bytes = { workspace = true }

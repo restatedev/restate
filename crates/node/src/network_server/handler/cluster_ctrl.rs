@@ -11,20 +11,14 @@
 use tonic::{async_trait, Request, Response, Status};
 use tracing::debug;
 
-use restate_meta::MetaReader;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_node_services::cluster_ctrl::{AttachmentRequest, AttachmentResponse};
-use restate_node_services::cluster_ctrl::{FetchSchemasRequest, FetchSchemasResponse};
 
-use crate::network_server::AdminDependencies;
-
-pub struct ClusterCtrlSvcHandler {
-    admin_deps: AdminDependencies,
-}
+pub struct ClusterCtrlSvcHandler {}
 
 impl ClusterCtrlSvcHandler {
-    pub fn new(admin_deps: AdminDependencies) -> Self {
-        Self { admin_deps }
+    pub fn new() -> Self {
+        Self {}
     }
 }
 
@@ -37,25 +31,5 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let node_id = request.into_inner().node_id.expect("node id must be set");
         debug!("Attaching node '{:?}'", node_id);
         Ok(Response::new(AttachmentResponse {}))
-    }
-
-    async fn fetch_schemas(
-        &self,
-        _request: Request<FetchSchemasRequest>,
-    ) -> Result<Response<FetchSchemasResponse>, Status> {
-        let schema_updates = self.admin_deps.schema_reader.read().await.map_err(|err| {
-            Status::internal(format!("Could not read schema information: '{}'", err))
-        })?;
-
-        let serialized_updates =
-            bincode::serde::encode_to_vec(schema_updates, bincode::config::standard()).map_err(
-                |err| {
-                    Status::internal(format!("Could not serialize schema information: '{}'", err))
-                },
-            )?;
-
-        Ok(Response::new(FetchSchemasResponse {
-            schemas_bin: serialized_updates.into(),
-        }))
     }
 }

@@ -14,9 +14,10 @@ use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
-use restate_meta::MetaService;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_protocol::discovery::ComponentDiscovery;
 use restate_types::arc_util::Constant;
 use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
@@ -92,14 +93,10 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let config = Configuration::default();
-    let mut meta = MetaService::from_options(&config.admin, &config.common.service_client, Mock)
-        .expect("expect to build meta service");
     let openapi_address = format!(
         "http://localhost:{}/openapi",
         config.admin.bind_address.port()
     );
-    let admin_service = AdminService::new(meta.schemas(), meta.meta_handle(), meta.schema_reader());
-    meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
@@ -107,6 +104,17 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         .tc
         .run_in_scope("bifrost init", None, Bifrost::init())
         .await;
+
+    let admin_service = AdminService::new(
+        node_env.metadata_writer.clone(),
+        node_env.metadata_store_client.clone(),
+        Mock,
+        ComponentDiscovery::new(
+            RetryPolicy::default(),
+            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
+                .unwrap(),
+        ),
+    );
 
     node_env.tc.spawn(
         TaskKind::TestRunner,

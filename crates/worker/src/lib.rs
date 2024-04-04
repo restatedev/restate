@@ -38,7 +38,7 @@ use restate_invoker_impl::{
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
-use restate_schema_impl::Schemas;
+use restate_schema::SchemaView;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
@@ -55,7 +55,7 @@ use restate_types::Version;
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
 
-type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
+type ExternalClientIngress = HyperServerIngress<SchemaView, IngressDispatcher>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -104,8 +104,8 @@ pub struct Worker {
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
-        EntryEnricher<Schemas, ProtobufRawEntryCodec>,
-        Schemas,
+        EntryEnricher<SchemaView, ProtobufRawEntryCodec>,
+        SchemaView,
     >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
@@ -120,7 +120,7 @@ impl Worker {
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schemas: Schemas,
+        schema_view: SchemaView,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
@@ -129,7 +129,7 @@ impl Worker {
             networking,
             bifrost,
             router_builder,
-            schemas,
+            schema_view,
             metadata_store_client,
         )
     }
@@ -139,7 +139,7 @@ impl Worker {
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schemas: Schemas,
+        schema_view: SchemaView,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         let ingress_dispatcher = IngressDispatcher::new(bifrost);
@@ -150,7 +150,7 @@ impl Worker {
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
             ingress_dispatcher.clone(),
-            schemas.clone(),
+            schema_view.clone(),
         );
 
         // ingress_kafka
@@ -173,15 +173,15 @@ impl Worker {
             &config.worker.invoker,
             invoker_storage_reader.clone(),
             invoker_storage_reader,
-            EntryEnricher::new(schemas.clone()),
-            schemas.clone(),
+            EntryEnricher::new(schema_view.clone()),
+            schema_view.clone(),
         )?;
 
         let storage_query_context = QueryContext::from_options(
             &config.admin.query_engine,
             rocksdb_storage.clone(),
             invoker.status_reader(),
-            schemas.clone(),
+            schema_view.clone(),
         )?;
         let storage_query_postgres = PostgresQueryService::from_options(
             &config.admin.query_engine,

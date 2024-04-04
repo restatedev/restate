@@ -43,7 +43,6 @@ restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
-restate-meta = { path = "crates/meta" }
 restate-meta-rest-model = { path = "crates/meta-rest-model" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-network = { path = "crates/network" }
@@ -52,8 +51,8 @@ restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }
+restate-schema = { path = "crates/schema" }
 restate-schema-api = { path = "crates/schema-api" }
-restate-schema-impl = { path = "crates/schema-impl" }
 restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
 restate-service-client = { path = "crates/service-client" }

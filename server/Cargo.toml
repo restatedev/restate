@@ -30,7 +30,6 @@ restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
-restate-meta = { workspace = true }
 restate-node = { workspace = true }
 restate-storage-rocksdb = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }

@@ -67,8 +67,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation(
-    State(mut state): State<AdminServiceState>,
+pub async fn delete_invocation<V>(
+    State(mut state): State<AdminServiceState<V>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {

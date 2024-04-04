@@ -12,15 +12,17 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::subscriptions::*;
-use restate_schema_api::subscription::SubscriptionResolver;
+use restate_schema_api::subscription::{SubscriptionResolver, SubscriptionValidator};
 
-use crate::rest_api::notify_node_about_schema_changes;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
+use restate_core::metadata;
+use restate_schema::SchemaRegistry;
 use restate_types::identifiers::SubscriptionId;
+use restate_types::metadata_store::keys::SCHEMA_REGISTRY_KEY;
 
 /// Create subscription.
 #[openapi(
@@ -38,22 +40,34 @@ use restate_types::identifiers::SubscriptionId;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn create_subscription<V: SubscriptionValidator>(
+    State(state): State<AdminServiceState<V>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
-    let subscription = state
-        .meta_handle()
-        .create_subscription(
-            // Do not allow users to create their own subscription ids.
-            None, /* subscription_id */
-            payload.source,
-            payload.sink,
-            payload.options,
-        )
+    let mut subscription_id = None;
+
+    let schema_registry = state
+        .metadata_store_client
+        .read_modify_write(SCHEMA_REGISTRY_KEY.clone(), |schema_registry| {
+            let mut schema_registry: SchemaRegistry = schema_registry.unwrap_or_default();
+            subscription_id = Some(schema_registry.add_subscription(
+                None,
+                payload.source.clone(),
+                payload.sink.clone(),
+                payload.options.clone(),
+                &state.subscription_validator,
+            )?);
+            schema_registry.increment_version();
+
+            Ok::<_, restate_schema::Error>(schema_registry)
+        })
         .await?;
 
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
+    let subscription = schema_registry
+        .get_subscription(subscription_id.expect("subscription was just added"))
+        .expect("subscription was just added");
+
+    state.metadata_writer.update(schema_registry).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -77,16 +91,20 @@ pub async fn create_subscription(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn get_subscription<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
-    let subscription = state
-        .schemas()
-        .get_subscription(subscription_id)
-        .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
+    state
+        .task_center
+        .run_in_scope_sync("get-subscription", None, || {
+            let subscription = metadata()
+                .schema_registry()
+                .and_then(|schema_registry| schema_registry.get_subscription(subscription_id))
+                .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
 
-    Ok(SubscriptionResponse::from(subscription).into())
+            Ok(SubscriptionResponse::from(subscription).into())
+        })
 }
 
 /// List subscriptions.
@@ -114,8 +132,8 @@ pub async fn get_subscription(
         )
     )
 )]
-pub async fn list_subscriptions(
-    State(state): State<AdminServiceState>,
+pub async fn list_subscriptions<V>(
+    State(state): State<AdminServiceState<V>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
 ) -> Json<ListSubscriptionsResponse> {
     let filters = match (sink, source) {
@@ -130,15 +148,23 @@ pub async fn list_subscriptions(
         _ => vec![],
     };
 
-    ListSubscriptionsResponse {
-        subscriptions: state
-            .schemas()
-            .list_subscriptions(&filters)
-            .into_iter()
-            .map(SubscriptionResponse::from)
-            .collect(),
-    }
-    .into()
+    state
+        .task_center
+        .run_in_scope_sync("list-subscriptions", None, || {
+            ListSubscriptionsResponse {
+                subscriptions: metadata()
+                    .schema_registry()
+                    .map(|schema_registry| {
+                        schema_registry
+                            .list_subscriptions(&filters)
+                            .into_iter()
+                            .map(SubscriptionResponse::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+            .into()
+        })
 }
 
 /// Delete subscription.
@@ -162,16 +188,28 @@ pub async fn list_subscriptions(
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn delete_subscription<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
-    state
-        .meta_handle()
-        .delete_subscription(subscription_id)
+    let schema_registry = state
+        .metadata_store_client
+        .read_modify_write(SCHEMA_REGISTRY_KEY.clone(), |schema_registry| {
+            let mut schema_registry: SchemaRegistry = schema_registry.unwrap_or_default();
+
+            if schema_registry
+                .remove_subscription(subscription_id)
+                .is_some()
+            {
+                schema_registry.increment_version();
+                Ok(schema_registry)
+            } else {
+                Err(restate_schema::Error::NotFound)
+            }
+        })
         .await?;
 
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
+    state.metadata_writer.update(schema_registry).await?;
 
     Ok(StatusCode::ACCEPTED)
 }

@@ -126,7 +126,11 @@ impl Node {
         let bifrost = BifrostService::new(metadata);
 
         let admin_role = if config.has_role(Role::Admin) {
-            Some(AdminRole::new(updateable_config.clone())?)
+            Some(AdminRole::new(
+                updateable_config.clone(),
+                metadata_manager.writer(),
+                metadata_store_client.clone(),
+            )?)
         } else {
             None
         };
@@ -149,14 +153,12 @@ impl Node {
                 WorkerDependencies::new(
                     worker.rocksdb_storage().clone(),
                     worker.storage_query_context().clone(),
-                    worker.schemas(),
                     worker.subscription_controller(),
                 )
             }),
             admin_role.as_ref().map(|cluster_controller| {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
-                    cluster_controller.schema_reader(),
                     restate_metadata_store::local::create_client(
                         config.common.metadata_store_address.clone(),
                     ),

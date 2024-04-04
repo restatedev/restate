@@ -33,8 +33,8 @@ restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["builtin-service"] }
+restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = [ "component", "subscription"] }
-restate-schema-impl = { workspace = true }
 restate-serde-util = { workspace = true, features = ["proto"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-id", "protocol", "message" ] }

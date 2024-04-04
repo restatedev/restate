@@ -4947,12 +4947,11 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-futures-util",
- "restate-meta",
  "restate-meta-rest-model",
  "restate-node-services",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -5291,8 +5290,8 @@ dependencies = [
  "restate-futures-util",
  "restate-ingress-dispatcher",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
@@ -5363,43 +5362,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "restate-meta"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "bincode",
- "bytestring",
- "codederror",
- "derive_builder",
- "drain",
- "futures",
- "googletest",
- "http 0.2.12",
- "restate-core",
- "restate-errors",
- "restate-fs-util",
- "restate-futures-util",
- "restate-meta-rest-model",
- "restate-schema-api",
- "restate-schema-impl",
- "restate-serde-util",
- "restate-service-client",
- "restate-service-protocol",
- "restate-test-util",
- "restate-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_with",
- "tempfile",
- "test-log",
- "thiserror",
- "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -5529,13 +5491,14 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-grpc-util",
- "restate-meta",
  "restate-metadata-store",
  "restate-network",
  "restate-node-protocol",
  "restate-node-services",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
+ "restate-service-client",
+ "restate-service-protocol",
  "restate-storage-query-datafusion",
  "restate-storage-rocksdb",
  "restate-test-util",
@@ -5575,6 +5538,7 @@ dependencies = [
  "prost 0.12.3",
  "prost-build",
  "prost-types",
+ "restate-schema",
  "restate-types",
  "serde",
  "strum 0.26.2",
@@ -5624,6 +5588,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-schema"
+version = "0.9.0"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "codederror",
+ "googletest",
+ "http 0.2.12",
+ "restate-errors",
+ "restate-schema-api",
+ "restate-service-protocol",
+ "restate-test-util",
+ "restate-types",
+ "serde",
+ "test-log",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "restate-schema-api"
 version = "0.9.0"
 dependencies = [
@@ -5641,31 +5626,6 @@ dependencies = [
  "serde_with",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "restate-schema-impl"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "bytes",
- "codederror",
- "googletest",
- "http 0.2.12",
- "restate-errors",
- "restate-pb",
- "restate-schema-api",
- "restate-serde-util",
- "restate-service-protocol",
- "restate-test-util",
- "restate-types",
- "serde",
- "serde_json",
- "test-log",
- "thiserror",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -5703,7 +5663,6 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-fs-util",
- "restate-meta",
  "restate-node",
  "restate-storage-rocksdb",
  "restate-tracing-instrumentation",
@@ -6101,8 +6060,8 @@ dependencies = [
  "restate-network",
  "restate-node-protocol",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -8085,12 +8044,13 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-core",
- "restate-meta",
  "restate-metadata-store",
  "restate-node",
  "restate-node-services",
  "restate-schema-api",
  "restate-server",
+ "restate-service-client",
+ "restate-service-protocol",
  "restate-types",
  "restate-worker",
  "schemars",

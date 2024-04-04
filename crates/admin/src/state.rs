@@ -10,18 +10,18 @@
 //
 
 use restate_bifrost::Bifrost;
-use restate_core::TaskCenter;
-use restate_meta::{FileMetaReader, MetaHandle};
+use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::{MetadataWriter, TaskCenter};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_impl::Schemas;
+use restate_service_protocol::discovery::ComponentDiscovery;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState {
-    meta_handle: MetaHandle,
-    schemas: Schemas,
-    node_svc_client: NodeSvcClient<Channel>,
-    schema_reader: FileMetaReader,
+pub struct AdminServiceState<V> {
+    pub metadata_writer: MetadataWriter,
+    pub metadata_store_client: MetadataStoreClient,
+    pub subscription_validator: V,
+    pub component_discovery: ComponentDiscovery,
     pub bifrost: Bifrost,
     pub task_center: TaskCenter,
 }
@@ -31,38 +31,22 @@ pub struct QueryServiceState {
     pub node_svc_client: NodeSvcClient<Channel>,
 }
 
-impl AdminServiceState {
+impl<V> AdminServiceState<V> {
     pub fn new(
-        meta_handle: MetaHandle,
-        schemas: Schemas,
-        node_svc_client: NodeSvcClient<Channel>,
-        schema_reader: FileMetaReader,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
+        subscription_validator: V,
+        component_discovery: ComponentDiscovery,
         bifrost: Bifrost,
         task_center: TaskCenter,
     ) -> Self {
         Self {
-            meta_handle,
-            schemas,
-            node_svc_client,
-            schema_reader,
+            metadata_writer,
+            metadata_store_client,
+            subscription_validator,
+            component_discovery,
             bifrost,
             task_center,
         }
-    }
-
-    pub fn meta_handle(&self) -> &MetaHandle {
-        &self.meta_handle
-    }
-
-    pub fn schemas(&self) -> &Schemas {
-        &self.schemas
-    }
-
-    pub fn node_svc_client(&self) -> NodeSvcClient<Channel> {
-        self.node_svc_client.clone()
-    }
-
-    pub fn schema_reader(&self) -> &FileMetaReader {
-        &self.schema_reader
     }
 }

@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, trace, warn};
 
-use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate};
+use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, SchemaRegistry};
 use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
@@ -275,6 +275,9 @@ where
             MetadataContainer::Logs(logs) => {
                 self.update_logs(logs);
             }
+            MetadataContainer::SchemaRegistry(schemas) => {
+                self.update_schemas(schemas);
+            }
         }
 
         if let Some(callback) = callback {
@@ -311,7 +314,7 @@ where
                     self.update_logs(logs);
                 }
             }
-            MetadataKind::Schema => {}
+            MetadataKind::Schemas => {}
         }
 
         Ok(())
@@ -333,6 +336,12 @@ where
         let maybe_new_version = Self::update_internal(&self.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
+    }
+
+    fn update_schemas(&mut self, schemas: SchemaRegistry) {
+        let maybe_new_version = Self::update_internal(&self.inner.schema_registry, schemas);
+
+        self.notify_watches(maybe_new_version, MetadataKind::Schemas);
     }
 
     fn update_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {

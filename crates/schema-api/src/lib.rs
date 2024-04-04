@@ -478,6 +478,7 @@ pub mod component {
 
 #[cfg(feature = "subscription")]
 pub mod subscription {
+    use restate_types::errors::GenericError;
     use std::collections::HashMap;
     use std::fmt;
 
@@ -627,7 +628,7 @@ pub mod subscription {
     }
 
     pub trait SubscriptionValidator {
-        type Error: Into<anyhow::Error>;
+        type Error: Into<GenericError>;
 
         fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
     }

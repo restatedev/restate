@@ -16,8 +16,9 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_meta::Error as MetaError;
-use restate_schema_impl::{ComponentError, DeploymentError, ErrorKind};
+use restate_core::metadata_store::ReadModifyWriteError;
+use restate_core::ShutdownError;
+use restate_schema::{ComponentError, DeploymentError};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -42,7 +43,7 @@ pub enum MetaApiError {
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
     #[error(transparent)]
-    Meta(#[from] MetaError),
+    SchemaRegistry(#[from] restate_schema::Error),
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -67,23 +68,21 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::Meta(MetaError::SchemaRegistry(schema_registry_error)) => {
-                match schema_registry_error.kind() {
-                    ErrorKind::NotFound => StatusCode::NOT_FOUND,
-                    ErrorKind::Override
-                    | ErrorKind::Component(ComponentError::DifferentType { .. })
-                    | ErrorKind::Component(ComponentError::RemovedHandlers { .. })
-                    | ErrorKind::Deployment(DeploymentError::IncorrectId { .. }) => {
-                        StatusCode::CONFLICT
-                    }
-                    ErrorKind::Component(_) => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::BAD_REQUEST,
+            MetaApiError::SchemaRegistry(schema_registry_error) => match schema_registry_error {
+                restate_schema::Error::NotFound => StatusCode::NOT_FOUND,
+                restate_schema::Error::Override
+                | restate_schema::Error::Component(ComponentError::DifferentType { .. })
+                | restate_schema::Error::Component(ComponentError::RemovedHandlers { .. })
+                | restate_schema::Error::Deployment(DeploymentError::IncorrectId { .. }) => {
+                    StatusCode::CONFLICT
                 }
-            }
+                restate_schema::Error::Component(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_REQUEST,
+            },
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {
-            MetaApiError::Meta(m) => ErrorDescriptionResponse {
+            MetaApiError::SchemaRegistry(m) => ErrorDescriptionResponse {
                 message: m.decorate().to_string(),
                 restate_code: m.code().map(Code::code),
             },
@@ -124,5 +123,20 @@ impl ToResponses for MetaApiError {
             },
             ..Default::default()
         })
+    }
+}
+
+impl From<ReadModifyWriteError<restate_schema::Error>> for MetaApiError {
+    fn from(value: ReadModifyWriteError<restate_schema::Error>) -> Self {
+        match value {
+            ReadModifyWriteError::FailedOperation(err) => MetaApiError::SchemaRegistry(err),
+            err => MetaApiError::Internal(err.to_string()),
+        }
+    }
+}
+
+impl From<ShutdownError> for MetaApiError {
+    fn from(value: ShutdownError) -> Self {
+        MetaApiError::Internal(value.to_string())
     }
 }

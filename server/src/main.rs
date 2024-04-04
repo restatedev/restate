@@ -70,8 +70,6 @@ struct RestateArguments {
 enum WipeMode {
     /// Wipe all worker state, including all the service instances and their state, all enqueued invocations, all waiting timers.
     Worker,
-    /// Wipe all the meta information, including discovered services and their respective schemas.
-    Meta,
     /// Wipe the local rocksdb-based loglet.
     LocalLoglet,
     /// Wipe the local rocksdb-based metadata-store.
@@ -83,23 +81,18 @@ enum WipeMode {
 impl WipeMode {
     async fn wipe(
         mode: Option<&WipeMode>,
-        meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
         local_loglet_storage_dir: PathBuf,
         local_metadata_store_storage_dir: PathBuf,
     ) -> io::Result<()> {
-        let (wipe_meta, wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
-            Some(WipeMode::Worker) => (false, true, true, false),
-            Some(WipeMode::Meta) => (true, false, false, false),
-            Some(WipeMode::LocalLoglet) => (false, false, true, false),
-            Some(WipeMode::LocalMetadataStore) => (false, false, false, true),
-            Some(WipeMode::All) => (true, true, true, true),
-            None => (false, false, false, false),
+        let (wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
+            Some(WipeMode::Worker) => (true, true, false),
+            Some(WipeMode::LocalLoglet) => (false, true, false),
+            Some(WipeMode::LocalMetadataStore) => (false, false, true),
+            Some(WipeMode::All) => (true, true, true),
+            None => (false, false, false),
         };
 
-        if wipe_meta {
-            restate_fs_util::remove_dir_all_if_exists(meta_storage_dir).await?;
-        }
         if wipe_worker {
             restate_fs_util::remove_dir_all_if_exists(worker_storage_dir).await?;
         }
@@ -199,7 +192,6 @@ fn main() {
                 let config = Configuration::pinned();
                 WipeMode::wipe(
                     cli_args.wipe.as_ref(),
-                    config.admin.data_dir(),
                     config.worker.data_dir(),
                     config.bifrost.local.data_dir(),
                     config.metadata_store.data_dir(),
