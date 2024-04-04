@@ -18,11 +18,11 @@ use figment::providers::{Env, Format, Serialized, Toml, Yaml};
 use figment::Figment;
 use once_cell::sync::Lazy;
 use restate_types::arc_util::{ArcSwapExt, Pinned, Updateable};
-use restate_types::config::notify_config_update;
+use restate_types::config::{notify_config_update, CommonOptionCliOverride};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_core::options::{CommonOptionCliOverride, CommonOptions};
+use restate_core::options::CommonOptions;
 use restate_storage_rocksdb::TableKind;
 
 use crate::Options;

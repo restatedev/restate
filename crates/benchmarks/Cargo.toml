@@ -15,7 +15,7 @@ frame-pointer = ["pprof/frame-pointer"]
 restate-core = { workspace = true }
 restate-node = { workspace = true }
 restate-server = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
 drain = { workspace = true }
