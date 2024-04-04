@@ -14,7 +14,6 @@ use anyhow::Context;
 use restate_core::{task_center, Metadata, TaskKind};
 
 use crate::bifrost::BifrostInner;
-use crate::options::Options;
 use crate::watchdog::Watchdog;
 use crate::Bifrost;
 
@@ -25,9 +24,9 @@ pub struct BifrostService {
 }
 
 impl BifrostService {
-    pub fn new(opts: Options, metadata: Metadata) -> Self {
+    pub fn new(metadata: Metadata) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(opts, metadata, watchdog_sender));
+        let inner = Arc::new(BifrostInner::new(metadata, watchdog_sender));
         let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(inner.clone(), watchdog_receiver);
         Self {

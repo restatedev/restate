@@ -25,7 +25,6 @@ use restate_types::Version;
 use tracing::{error, instrument};
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
-use crate::options::Options;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{Error, FindTailAttributes, LogReadStream, LogRecord};
 
@@ -44,9 +43,18 @@ impl Bifrost {
         Self { inner }
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn new_in_memory() -> Self {
+        use restate_types::arc_util::ArcSwapExt;
+        use restate_types::config::Configuration;
+
+        use crate::BifrostService;
+
         let metadata = metadata();
-        let bifrost_svc = Options::memory().build(metadata);
+        let mut config: Configuration = Configuration::current().snapshot().deref().clone();
+        config.bifrost.default_provider = ProviderKind::InMemory;
+        restate_types::config::set_current_config(config);
+        let bifrost_svc = BifrostService::new(metadata);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -114,7 +122,6 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    opts: Options,
     metadata: Metadata,
     watchdog: WatchdogSender,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
@@ -122,9 +129,8 @@ pub struct BifrostInner {
 }
 
 impl BifrostInner {
-    pub fn new(opts: Options, metadata: Metadata, watchdog: WatchdogSender) -> Self {
+    pub fn new(metadata: Metadata, watchdog: WatchdogSender) -> Self {
         Self {
-            opts,
             metadata,
             watchdog,
             providers: Default::default(),
@@ -201,8 +207,8 @@ impl BifrostInner {
     fn provider_for(&self, kind: ProviderKind) -> &dyn LogletProvider {
         self.providers[kind]
             .get_or_init(|| {
-                let provider = crate::loglet::create_provider(kind, &self.opts)
-                    .expect("provider is able to get created");
+                let provider =
+                    crate::loglet::create_provider(kind).expect("provider is able to get created");
                 if let Err(e) = provider.start() {
                     error!("Failed to start loglet provider {}: {}", kind, e);
                     // todo: Handle provider errors by a graceful system shutdown
@@ -353,20 +359,12 @@ mod tests {
             // to ensure that appends do not fail while waiting for the loglet;
             let memory_provider = MemoryLogletProvider::with_init_delay(delay);
 
-            let bifrost_opts = Options {
-                default_provider: ProviderKind::InMemory,
-                ..Options::default()
-            };
-            let bifrost_svc = bifrost_opts.build(metadata());
-            let mut bifrost = bifrost_svc.handle();
+            let mut bifrost = Bifrost::new_in_memory().await;
 
             // Inject out preconfigured memory provider
             bifrost
                 .inner()
                 .inject_provider(ProviderKind::InMemory, memory_provider);
-
-            // start bifrost service in the background
-            bifrost_svc.start().await.unwrap();
 
             let start = tokio::time::Instant::now();
             let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;

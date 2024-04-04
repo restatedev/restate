@@ -13,8 +13,11 @@ use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::grpc::handler::LocalMetadataStoreHandler;
 use crate::local::store::LocalMetadataStore;
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_types::config::MetadataStoreOptions;
 use restate_types::net::BindAddress;
 use tonic::server::NamedService;
+
+use super::BuildError;
 
 pub struct LocalMetadataStoreService {
     metadata_store: LocalMetadataStore,
@@ -37,6 +40,13 @@ impl LocalMetadataStoreService {
             metadata_store,
             bind_address,
         }
+    }
+    pub fn from_options(opts: &MetadataStoreOptions) -> Result<Self, BuildError> {
+        let store = LocalMetadataStore::new(opts.data_dir(), opts.request_queue_length)?;
+        Ok(LocalMetadataStoreService::new(
+            store,
+            opts.bind_address.clone(),
+        ))
     }
 
     pub fn grpc_service_name(&self) -> &str {
