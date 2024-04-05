@@ -12,18 +12,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use restate_types::config::Configuration;
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
-use crate::{Error, LogRecord, LsnExt, Options, ProviderError};
+use crate::{Error, LogRecord, LsnExt, ProviderError};
 
-pub fn create_provider(
-    kind: ProviderKind,
-    options: &Options,
-) -> Result<Arc<dyn LogletProvider>, ProviderError> {
+pub fn create_provider(kind: ProviderKind) -> Result<Arc<dyn LogletProvider>, ProviderError> {
     match kind {
         ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
-            options.local.clone(),
+            Configuration::mapped_updateable(|c| &c.bifrost.local),
         )?),
         ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),
     }

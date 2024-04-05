@@ -21,7 +21,7 @@ use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::Configuration;
 use std::error::Error;
 use std::ops::Div;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
 use tracing::error;
@@ -84,8 +84,8 @@ impl WipeMode {
         mode: Option<&WipeMode>,
         meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
-        local_loglet_storage_dir: &Path,
-        local_metadata_store_storage_dir: &Path,
+        local_loglet_storage_dir: PathBuf,
+        local_metadata_store_storage_dir: PathBuf,
     ) -> io::Result<()> {
         let (wipe_meta, wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
             Some(WipeMode::Worker) => (false, true, true, false),
@@ -146,21 +146,21 @@ fn main() {
         std::process::exit(0);
     }
 
-    let old_config =
-        match restate_node::Configuration::load(config_path.as_deref(), cli_args.opts_overrides) {
-            Ok(c) => c,
-            Err(e) => {
-                // We cannot use tracing here as it's not configured yet
-                eprintln!("{}", e.decorate());
-                eprintln!("{:#?}", RestateCode::from(&e));
-                std::process::exit(EXIT_CODE_FAILURE);
-            }
-        };
+    let old_config = match restate_node::config::Configuration::load(
+        config_path.as_deref(),
+        cli_args.opts_overrides,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            // We cannot use tracing here as it's not configured yet
+            eprintln!("{}", e.decorate());
+            eprintln!("{:#?}", RestateCode::from(&e));
+            std::process::exit(EXIT_CODE_FAILURE);
+        }
+    };
 
-    restate_node::set_current_config(old_config);
     restate_types::config::set_current_config(config);
 
-    let old_config = restate_node::Configuration::pinned();
     let config = Configuration::pinned();
 
     let tc = TaskCenterBuilder::default()
@@ -203,22 +203,27 @@ fn main() {
 
             WipeMode::wipe(
                 cli_args.wipe.as_ref(),
-                old_config.node.admin.meta.storage_path().into(),
-                old_config.node.worker.storage_path().into(),
-                old_config.node.bifrost.local.path.as_path(),
-                old_config.node.metadata_store.storage_path(),
+                config.admin.data_dir(),
+                config.worker.data_dir(),
+                config.bifrost.local.data_dir(),
+                config.metadata_store.data_dir(),
             )
             .await
             .expect("Error when trying to wipe the configured storage path");
 
-            let node = Node::new(old_config.common.clone(), old_config.node.clone());
+            let node = Node::new(&old_config, &config);
             if let Err(err) = node {
                 handle_error(err);
             }
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
+            let _ = tc.spawn(
+                TaskKind::SystemBoot,
+                "init",
+                None,
+                node.unwrap().start(Configuration::updateable()),
+            );
 
             let task_center_watch = tc.shutdown_token();
             tokio::pin!(task_center_watch);
@@ -233,8 +238,9 @@ fn main() {
                         shutdown = true;
                         let signal_reason = format!("received signal {}", signal_name);
 
+
                         let shutdown_with_timeout = tokio::time::timeout(
-                            old_config.common().shutdown_grace_period(),
+                            Configuration::pinned().common.shutdown_grace_period(),
                             tc.shutdown_node(&signal_reason, 0)
                         );
 
@@ -260,7 +266,10 @@ fn main() {
             }
 
             shutdown_tracing(
-                old_config.common().shutdown_grace_period().div(2),
+                Configuration::pinned()
+                    .common
+                    .shutdown_grace_period()
+                    .div(2),
                 tracing_guard,
             )
             .await;

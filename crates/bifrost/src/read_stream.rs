@@ -79,6 +79,8 @@ impl LogReadStream {
 #[cfg(test)]
 mod tests {
 
+    use crate::Bifrost;
+
     use super::*;
 
     use googletest::prelude::*;
@@ -86,10 +88,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::Payload;
-
-    use crate::Options;
 
     #[tokio::test]
     #[traced_test]
@@ -99,15 +98,7 @@ mod tests {
         tc.run_in_scope("test", None, async {
             let read_after = Lsn::from(5);
 
-            let bifrost_opts = Options {
-                default_provider: ProviderKind::InMemory,
-                ..Options::default()
-            };
-            let bifrost_svc = bifrost_opts.build(restate_core::metadata());
-            let mut bifrost = bifrost_svc.handle();
-
-            // start bifrost service in the background
-            bifrost_svc.start().await.unwrap();
+            let mut bifrost = Bifrost::init().await;
 
             let mut reader = bifrost.create_reader(LogId::from(0), Lsn::from(5));
             assert_eq!(read_after, reader.current_read_pointer());

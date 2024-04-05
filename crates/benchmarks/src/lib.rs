@@ -17,6 +17,7 @@ use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
 use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_types::arc_util::Updateable;
 use restate_types::config::{
     CommonOptionCliOverride, CommonOptionsBuilder, Configuration, ConfigurationBuilder,
     WorkerOptionsBuilder,
@@ -61,15 +62,22 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
         .is_success(),);
 }
 
-pub fn spawn_restate(config: Configuration, old_config: restate_node::Configuration) -> TaskCenter {
+pub fn spawn_restate(
+    mut updateable_config: impl Updateable<Configuration> + Send + 'static,
+    old_config: restate_node::config::Configuration,
+) -> TaskCenter {
+    let common = &updateable_config.load().common;
     let tc = TaskCenterBuilder::default()
-        .options(config.common.clone())
+        .options(common.clone())
         .build()
         .expect("task_center builds");
     let cloned_tc = tc.clone();
     tc.spawn(TaskKind::TestRunner, "benchmark", None, async move {
-        let node = Node::new(old_config.common, old_config.node).expect("Restate node must build");
-        cloned_tc.run_in_scope("startup", None, node.start()).await
+        let config = updateable_config.load();
+        let node = Node::new(&old_config, config).expect("Restate node must build");
+        cloned_tc
+            .run_in_scope("startup", None, node.start(updateable_config))
+            .await
     })
     .unwrap();
 
@@ -86,7 +94,7 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
     options
 }
 
-pub fn restate_old_configuration() -> restate_node::Configuration {
+pub fn restate_old_configuration() -> restate_node::config::Configuration {
     let meta_options = restate_node::MetaOptionsBuilder::default()
         .schema_storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
@@ -114,13 +122,17 @@ pub fn restate_old_configuration() -> restate_node::Configuration {
         .build()
         .expect("building the configuration should work");
 
-    let config = restate_node::ConfigurationBuilder::default()
+    let config = restate_node::config::ConfigurationBuilder::default()
         .node(node_options)
         .build()
         .expect("building the configuration should work");
 
-    restate_node::Configuration::load_with_default(config, None, CommonOptionCliOverride::default())
-        .expect("configuration loading should not fail")
+    restate_node::config::Configuration::load_with_default(
+        config,
+        None,
+        CommonOptionCliOverride::default(),
+    )
+    .expect("configuration loading should not fail")
 }
 
 pub fn restate_configuration() -> Configuration {
