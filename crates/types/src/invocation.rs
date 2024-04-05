@@ -77,6 +77,12 @@ impl ServiceInvocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationInput {
+    pub argument: Bytes,
+    pub headers: Vec<Header>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MaybeFullInvocationId {
     Partial(InvocationId),
     Full(FullInvocationId),

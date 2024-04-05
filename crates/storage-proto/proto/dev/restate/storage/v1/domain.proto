@@ -106,11 +106,28 @@ message InvocationStatus {
     message Free {
     }
 
+    message Inboxed {
+        uint64 inbox_sequence_number = 1;
+        repeated ServiceInvocationResponseSink response_sinks = 2;
+        uint64 creation_time = 3;
+        uint64 modification_time = 4;
+
+        ServiceId service_id = 5;
+        bytes handler = 6;
+
+        bytes argument = 7;
+        Source source = 8;
+        SpanContext span_context = 9;
+        repeated Header headers = 10;
+        uint64 execution_time = 11;
+    }
+
     oneof status {
         Invoked invoked = 1;
         Suspended suspended = 2;
         Free free = 3;
         Completed completed = 4;
+        Inboxed inboxed = 5;
     }
 }
 
@@ -200,12 +217,8 @@ message StateMutation {
 }
 
 message InboxEntry {
-    // Kept for backwards compatibility, should be removed once no more migrations are needed
-    ServiceInvocation service_invocation = 2;
-
-    // All new InboxEntries should have an entry starting from Restate >= 0.7.1
     oneof entry {
-        ServiceInvocation invocation = 3;
+        FullInvocationId invocation_id = 3;
         StateMutation state_mutation = 4;
     }
 }
