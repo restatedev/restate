@@ -52,6 +52,8 @@ use crate::errors::GenericError;
 static CONFIGURATION: Lazy<ArcSwap<Configuration>> = Lazy::new(ArcSwap::default);
 static NODE_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+pub type UpdateableConfiguration = Arc<ArcSwap<Configuration>>;
+
 fn data_dir(dir: &str) -> PathBuf {
     NODE_BASE_DIR
         .get()
@@ -103,7 +105,7 @@ pub struct Configuration {
 
 impl Configuration {
     // Access the raw swappable configuration
-    pub fn current() -> &'static impl ArcSwapExt<Self> {
+    pub fn current() -> &'static UpdateableConfiguration {
         &CONFIGURATION
     }
 
