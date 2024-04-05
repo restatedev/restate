@@ -14,7 +14,6 @@ use thiserror::Error;
 
 use restate_types::logs::{LogId, Lsn};
 
-#[cfg(any(test, feature = "local_loglet"))]
 use crate::loglets::local_loglet::LogStoreError;
 use crate::types::SealReason;
 
@@ -28,7 +27,6 @@ pub enum Error {
     InvalidLsn(Lsn),
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),
-    #[cfg(any(test, feature = "local_loglet"))]
     #[error(transparent)]
     LogStoreError(#[from] LogStoreError),
     #[error("failed syncing logs metadata: {0}")]

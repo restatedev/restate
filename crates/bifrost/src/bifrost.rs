@@ -18,7 +18,7 @@ use std::sync::Arc;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
-use restate_core::{metadata, MetadataKind};
+use restate_core::{metadata, Metadata, MetadataKind};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
@@ -44,9 +44,9 @@ impl Bifrost {
         Self { inner }
     }
 
-    #[cfg(any(test, feature = "memory_loglet"))]
     pub async fn new_in_memory() -> Self {
-        let bifrost_svc = Options::memory().build();
+        let metadata = metadata();
+        let bifrost_svc = Options::memory().build(metadata);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -115,15 +115,17 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // held across an async boundary.
 pub struct BifrostInner {
     opts: Options,
+    metadata: Metadata,
     watchdog: WatchdogSender,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
     shutting_down: AtomicBool,
 }
 
 impl BifrostInner {
-    pub fn new(opts: Options, watchdog: WatchdogSender) -> Self {
+    pub fn new(opts: Options, metadata: Metadata, watchdog: WatchdogSender) -> Self {
         Self {
             opts,
+            metadata,
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
@@ -185,7 +187,7 @@ impl BifrostInner {
     /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
-        metadata()
+        self.metadata
             .sync(MetadataKind::Logs)
             .await
             .map_err(Arc::new)?;
@@ -226,7 +228,8 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper, Error> {
-        let tail_segment = metadata()
+        let tail_segment = self
+            .metadata
             .logs()
             .and_then(|logs| logs.tail_segment(log_id))
             .ok_or(Error::UnknownLogId(log_id))?;
@@ -237,7 +240,8 @@ impl BifrostInner {
     }
 
     async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper, Error> {
-        let segment = metadata()
+        let segment = self
+            .metadata
             .logs()
             .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
             .ok_or(Error::UnknownLogId(log_id))?;
@@ -353,7 +357,7 @@ mod tests {
                 default_provider: ProviderKind::InMemory,
                 ..Options::default()
             };
-            let bifrost_svc = bifrost_opts.build();
+            let bifrost_svc = bifrost_opts.build(metadata());
             let mut bifrost = bifrost_svc.handle();
 
             // Inject out preconfigured memory provider
