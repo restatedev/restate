@@ -11,10 +11,8 @@
 mod handler;
 mod layers;
 mod metric_definitions;
-mod options;
 mod server;
 
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;

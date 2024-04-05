@@ -9,11 +9,9 @@
 // by the Apache License, Version 2.0.
 
 mod error;
-mod options;
 mod rest_api;
 pub mod service;
 mod state;
 mod storage_query;
 
-pub use crate::options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use error::Error;

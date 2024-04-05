@@ -240,15 +240,13 @@ fn get_property(db: &DB, cf_handle: &impl AsColumnFamilyRef, name: &str) -> u64 
 
 fn get_memory_usage_stats(
     dbs: Option<&[&DB]>,
-    cache: Option<rocksdb::Cache>,
+    cache: &rocksdb::Cache,
 ) -> Result<rocksdb::perf::MemoryUsage, rocksdb::Error> {
     let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
     if let Some(dbs_) = dbs {
         dbs_.iter().for_each(|db| builder.add_db(db));
     }
-    if let Some(cache) = cache {
-        builder.add_cache(&cache);
-    }
+    builder.add_cache(cache);
 
     builder.build()
 }

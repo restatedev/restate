@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bincode::error::DecodeError;
+use restate_types::config::UpdateableConfiguration;
 use std::time::Duration;
 
 use codederror::CodedError;
@@ -32,9 +33,8 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
-use restate_worker::Options as WorkerOptions;
 use restate_worker::SubscriptionController;
-use restate_worker::{KafkaIngressOptions, SubscriptionControllerHandle, Worker};
+use restate_worker::{SubscriptionControllerHandle, Worker};
 use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -107,8 +107,7 @@ pub struct WorkerRole {
 
 impl WorkerRole {
     pub fn new(
-        options: WorkerOptions,
-        kafka_options: KafkaIngressOptions,
+        updateable_config: UpdateableConfiguration,
         router_builder: &mut MessageRouterBuilder,
         networking: Networking,
         bifrost: Bifrost,
@@ -116,8 +115,7 @@ impl WorkerRole {
     ) -> Result<Self, WorkerRoleBuildError> {
         let schemas = Schemas::default();
         let worker = Worker::from_options(
-            options,
-            kafka_options,
+            updateable_config,
             networking,
             bifrost,
             router_builder,

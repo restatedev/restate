@@ -8,22 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod config;
 mod network_server;
-mod options;
 mod roles;
 
 use bincode::error::{DecodeError, EncodeError};
 use bytes::Bytes;
-pub use options::{Options, OptionsBuilder as NodeOptionsBuilder};
-pub use restate_admin::OptionsBuilder as AdminOptionsBuilder;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
-pub use restate_meta::OptionsBuilder as MetaOptionsBuilder;
 use restate_network::Networking;
-use restate_types::arc_util::Updateable;
-use restate_types::config::{CommonOptions, Configuration};
-pub use restate_worker::{OptionsBuilder as WorkerOptionsBuilder, RocksdbOptionsBuilder};
+use restate_types::arc_util::ArcSwapExt;
+use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::future::Future;
@@ -85,6 +79,7 @@ pub enum BuildError {
 }
 
 pub struct Node {
+    updateable_config: UpdateableConfiguration,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
@@ -94,10 +89,8 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(
-        old_config: &config::Configuration,
-        config: &Configuration,
-    ) -> Result<Self, BuildError> {
+    pub fn new(updateable_config: UpdateableConfiguration) -> Result<Self, BuildError> {
+        let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
             info!("Bootstrapping cluster");
@@ -133,19 +126,14 @@ impl Node {
         let bifrost = BifrostService::new(metadata);
 
         let admin_role = if config.has_role(Role::Admin) {
-            Some(AdminRole::new(
-                old_config.node.admin.clone(),
-                old_config.node.kafka.clone(),
-                networking.clone(),
-            )?)
+            Some(AdminRole::new(updateable_config.clone())?)
         } else {
             None
         };
 
         let worker_role = if config.has_role(Role::Worker) {
             Some(WorkerRole::new(
-                old_config.node.worker.clone(),
-                old_config.node.kafka.clone(),
+                updateable_config.clone(),
                 &mut router_builder,
                 networking.clone(),
                 bifrost.handle(),
@@ -156,7 +144,6 @@ impl Node {
         };
 
         let server = NetworkServer::new(
-            old_config.common.clone(),
             networking.connection_manager(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
@@ -185,6 +172,7 @@ impl Node {
             .set_message_router(message_router);
 
         Ok(Node {
+            updateable_config,
             metadata_manager,
             bifrost,
             metadata_store_role,
@@ -194,12 +182,10 @@ impl Node {
         })
     }
 
-    pub async fn start(
-        self,
-        mut updateble_config: impl Updateable<Configuration> + Send + 'static,
-    ) -> Result<(), anyhow::Error> {
+    pub async fn start(self) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
+        let config = self.updateable_config.pinned();
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
                 TaskKind::MetadataStore,
@@ -212,7 +198,6 @@ impl Node {
             )?;
         }
 
-        let config = updateble_config.load();
         let metadata_store_client = restate_metadata_store::local::create_client(
             config.common.metadata_store_address.clone(),
         );
@@ -230,7 +215,7 @@ impl Node {
         metadata_writer.update(nodes_config).await?;
 
         let (partition_table, logs) =
-            Self::fetch_or_insert_static_configuration(&metadata_store_client, config).await?;
+            Self::fetch_or_insert_static_configuration(&metadata_store_client, &config).await?;
 
         // sanity check
         if partition_table.num_partitions()
@@ -246,7 +231,7 @@ impl Node {
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config
-            .find_node_by_name(&config.common.node_name)
+            .find_node_by_name(config.common.node_name())
             .expect("node config should have been upserted");
 
         let my_node_id = my_node_config.current_generation;
@@ -266,11 +251,11 @@ impl Node {
         }
 
         // Same cluster?
-        if config.common.cluster_name != nodes_config.cluster_name() {
+        if config.common.cluster_name() != nodes_config.cluster_name() {
             return Err(Error::SafetyCheck(
                 format!(
                     "Cluster name mismatch: configured cluster name is '{}', but the nodes configuration contains '{}'",
-                    config.common.cluster_name,
+                    config.common.cluster_name(),
                     nodes_config.cluster_name()
                     )))?;
         }
@@ -308,7 +293,7 @@ impl Node {
             TaskKind::RpcServer,
             "node-rpc-server",
             None,
-            self.server.run(),
+            self.server.run(config.common.clone()),
         )?;
 
         Ok(())
@@ -392,24 +377,24 @@ impl Node {
                             let mut nodes_config = nodes_config.unwrap_or_else(|| {
                                 NodesConfiguration::new(
                                     Version::INVALID,
-                                    common_opts.cluster_name.clone(),
+                                    common_opts.cluster_name().to_owned(),
                                 )
                             });
 
                             // check whether we have registered before
                             let node_config =
-                                nodes_config.find_node_by_name(&common_opts.node_name).cloned();
+                                nodes_config.find_node_by_name(common_opts.node_name()).cloned();
 
                             let my_node_config = if let Some(mut node_config) = node_config {
                                 assert_eq!(
-                                    common_opts.node_name, node_config.name,
+                                    common_opts.node_name(), node_config.name,
                                     "node name must match"
                                 );
 
                                 if let Some(previous_node_generation) = previous_node_generation {
                                     if node_config.current_generation.is_newer_than(previous_node_generation) {
                                         // detected a concurrent registration of the same node
-                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name));
+                                        return Operation::Fail(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
                                     }
                                 } else {
                                     // remember the previous node generation to detect concurrent modifications
@@ -439,7 +424,7 @@ impl Node {
                                 let my_node_id = plain_node_id.with_generation(1);
 
                                 NodeConfig::new(
-                                    common_opts.node_name.clone(),
+                                    common_opts.node_name().to_owned(),
                                     my_node_id,
                                     common_opts.advertised_address.clone(),
                                     common_opts.roles,

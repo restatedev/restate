@@ -12,7 +12,6 @@ mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
-mod options;
 mod quota;
 mod state_machine_manager;
 mod status_store;
@@ -33,6 +32,8 @@ use restate_invoker_api::{
 use restate_queue::SegmentQueue;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_timer_queue::TimerQueue;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
@@ -46,7 +47,7 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -55,10 +56,6 @@ use tracing::{debug, trace};
 
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-pub use options::{
-    Options, OptionsBuilder, OptionsBuilderError, ServiceClientOptionsBuilder,
-    ServiceClientOptionsBuilderError,
-};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 
@@ -85,6 +82,7 @@ trait InvocationTaskRunner {
     #[allow(clippy::too_many_arguments)]
     fn start_invocation_task(
         &self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -97,11 +95,6 @@ trait InvocationTaskRunner {
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
     client: ServiceClient,
-    inactivity_timeout: Duration,
-    abort_timeout: Duration,
-    disable_eager_state: bool,
-    message_size_warning: usize,
-    message_size_limit: Option<usize>,
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
@@ -119,6 +112,7 @@ where
 {
     fn start_invocation_task(
         &self,
+        opts: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         fid: FullInvocationId,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -132,11 +126,11 @@ where
                 partition,
                 fid,
                 RESTATE_SERVICE_PROTOCOL_VERSION,
-                self.inactivity_timeout,
-                self.abort_timeout,
-                self.disable_eager_state,
-                self.message_size_warning,
-                self.message_size_limit,
+                opts.inactivity_timeout.into(),
+                opts.abort_timeout.into(),
+                opts.disable_eager_state,
+                opts.message_size_warning,
+                opts.message_size_limit,
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
@@ -173,16 +167,9 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry
 impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        options: &InvokerOptions,
         deployment_metadata_resolver: DMR,
-        retry_policy: RetryPolicy,
-        inactivity_timeout: Duration,
-        abort_timeout: Duration,
-        disable_eager_state: bool,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
         client: ServiceClient,
-        tmp_dir: PathBuf,
-        concurrency_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
@@ -194,7 +181,7 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         Self {
             input_tx,
             status_tx,
-            tmp_dir,
+            tmp_dir: options.gen_tmp_dir(),
             inner: ServiceInner {
                 input_rx,
                 status_rx,
@@ -202,20 +189,14 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
-                    inactivity_timeout,
-                    abort_timeout,
-                    disable_eager_state,
-                    message_size_warning,
-                    message_size_limit,
                     journal_reader,
                     state_reader,
                     entry_enricher,
                     deployment_metadata_resolver,
                 },
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
+                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
@@ -223,7 +204,8 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     }
 
     pub fn from_options<JS>(
-        options: Options,
+        service_client_options: &ServiceClientOptions,
+        invoker_options: &InvokerOptions,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
@@ -236,22 +218,13 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         DMR: DeploymentResolver,
     {
         metric_definitions::describe_metrics();
-        let client = ServiceClient::from_options(
-            options.service_client().clone(),
-            AssumeRoleCacheMode::Unbounded,
-        )?;
+        let client =
+            ServiceClient::from_options(service_client_options, AssumeRoleCacheMode::Unbounded)?;
 
         Ok(Service::new(
+            invoker_options,
             deployment_registry,
-            options.retry_policy().clone(),
-            **options.inactivity_timeout(),
-            (*options.abort_timeout()).into(),
-            *options.disable_eager_state(),
-            *options.message_size_warning(),
-            *options.message_size_limit(),
             client,
-            options.tmp_dir().clone(),
-            *options.concurrency_limit(),
             journal_reader,
             state_reader,
             entry_enricher,
@@ -284,7 +257,10 @@ where
         ChannelStatusReader(self.status_tx.clone())
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(
+        self,
+        mut updateable_options: impl Updateable<InvokerOptions> + Send + 'static,
+    ) -> anyhow::Result<()> {
         let Service {
             tmp_dir,
             inner: mut service,
@@ -300,8 +276,9 @@ where
             .expect("Cannot initialize input spillable queue");
 
         loop {
+            let options = updateable_options.load();
             if !service
-                .step(&mut segmented_input_queue, shutdown.as_mut())
+                .step(options, &mut segmented_input_queue, shutdown.as_mut())
                 .await
             {
                 break;
@@ -331,9 +308,6 @@ struct ServiceInner<InvocationTaskRunner> {
     // Invocation task factory
     invocation_task_runner: InvocationTaskRunner,
 
-    // Invoker service arguments
-    retry_policy: RetryPolicy,
-
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
     retry_timers: TimerQueue<(PartitionLeaderEpoch, FullInvocationId)>,
@@ -349,6 +323,7 @@ where
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
         &mut self,
+        options: &InvokerOptions,
         segmented_input_queue: &mut SegmentQueue<InvokeCommand>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
@@ -388,13 +363,13 @@ where
                         self.handle_completion(partition, full_invocation_id, completion);
                     },
                     InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
+                        self.handle_stored_entry_ack(options, partition, full_invocation_id, entry_index).await;
                     }
                 }
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(invoke_input_command.partition, invoke_input_command.full_invocation_id, invoke_input_command.journal).await;
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.full_invocation_id, invoke_input_command.journal).await;
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -434,7 +409,7 @@ where
             },
             timer = self.retry_timers.await_timer() => {
                 let (partition, fid) = timer.into_inner();
-                self.handle_retry_timer_fired(partition, fid).await;
+                self.handle_retry_timer_fired(options, partition, fid).await;
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -489,6 +464,7 @@ where
     )]
     async fn handle_invoke(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
@@ -503,10 +479,11 @@ where
 
         self.quota.reserve_slot();
         self.start_invocation_task(
+            options,
             partition,
             full_invocation_id,
             journal,
-            InvocationStateMachine::create(self.retry_policy.clone()),
+            InvocationStateMachine::create(options.retry_policy.clone()),
         )
         .await
     }
@@ -522,11 +499,12 @@ where
     )]
     async fn handle_retry_timer_fired(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
     ) {
         trace!("Retry timeout fired");
-        self.handle_retry_event(partition, full_invocation_id, |sm| {
+        self.handle_retry_event(options, partition, full_invocation_id, |sm| {
             sm.notify_retry_timer_fired()
         })
         .await;
@@ -544,12 +522,13 @@ where
     )]
     async fn handle_stored_entry_ack(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
     ) {
         trace!("Received a new stored journal entry acknowledgement");
-        self.handle_retry_event(partition, full_invocation_id, |sm| {
+        self.handle_retry_event(options, partition, full_invocation_id, |sm| {
             sm.notify_stored_ack(entry_index)
         })
         .await;
@@ -911,6 +890,7 @@ where
 
     async fn start_invocation_task(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
         journal: InvokeInputJournal,
@@ -919,6 +899,7 @@ where
         // Start the InvocationTask
         let (completions_tx, completions_rx) = mpsc::unbounded_channel();
         let abort_handle = self.invocation_task_runner.start_invocation_task(
+            options,
             partition,
             full_invocation_id.clone(),
             self.invocation_tasks_tx.clone(),
@@ -945,6 +926,7 @@ where
 
     async fn handle_retry_event<FN>(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         full_invocation_id: FullInvocationId,
         f: FN,
@@ -959,6 +941,7 @@ where
             if ism.is_ready_to_retry() {
                 trace!("Going to retry now");
                 self.start_invocation_task(
+                    options,
                     partition,
                     full_invocation_id,
                     InvokeInputJournal::NoCachedJournal,
@@ -994,6 +977,8 @@ mod tests {
     use bytes::Bytes;
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
+    use restate_types::arc_util::Constant;
+    use restate_types::config::InvokerOptionsBuilder;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1009,7 +994,6 @@ mod tests {
     use restate_types::retries::RetryPolicy;
 
     use crate::invocation_task::InvocationTaskError;
-    use crate::options::ServiceClientOptions;
     use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
@@ -1020,7 +1004,6 @@ mod tests {
         #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
-            retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
         ) -> (
             mpsc::UnboundedSender<InputCommand>,
@@ -1042,7 +1025,6 @@ mod tests {
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
@@ -1075,6 +1057,7 @@ mod tests {
     {
         fn start_invocation_task(
             &self,
+            _options: &InvokerOptions,
             partition: PartitionLeaderEpoch,
             fid: FullInvocationId,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -1100,24 +1083,25 @@ mod tests {
     async fn input_order_is_maintained() {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
-        let tempdir = tempfile::tempdir().unwrap();
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
         let service = Service::new(
+            &invoker_options,
             // all invocations are unknown leading to immediate retries
             MockDeploymentMetadataRegistry::default(),
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            RetryPolicy::fixed_delay(Duration::ZERO, 1),
-            Duration::ZERO,
-            Duration::ZERO,
-            false,
-            1024,
-            None,
             ServiceClient::from_options(
-                ServiceClientOptions::default(),
+                &ServiceClientOptions::default(),
                 restate_service_client::AssumeRoleCacheMode::None,
             )
             .unwrap(),
-            tempdir.into_path(),
-            None,
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
             entry_enricher::mocks::MockEntryEnricher,
@@ -1126,7 +1110,12 @@ mod tests {
         let mut handle = service.handle();
 
         let invoker_task_id = tc
-            .spawn(TaskKind::SystemService, "invoker", None, service.run())
+            .spawn(
+                TaskKind::SystemService,
+                "invoker",
+                None,
+                service.run(Constant::new(invoker_options)),
+            )
             .unwrap();
 
         let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
@@ -1157,6 +1146,17 @@ mod tests {
 
     #[test(tokio::test)]
     async fn quota_allows_one_concurrent_invocation() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+
         let mut segment_queue = SegmentQueue::new(tempdir().unwrap().into_path(), 1024);
         let cancel_token = CancellationToken::new();
         let shutdown = cancel_token.cancelled();
@@ -1166,7 +1166,7 @@ mod tests {
         let sid_2 = mock_sid();
 
         let (_invoker_tx, _status_tx, mut service_inner) =
-            ServiceInner::mock(|_, _, _, _, _| ready(()), Default::default(), Some(1));
+            ServiceInner::mock(|_, _, _, _, _| ready(()), Some(1));
         let _ = service_inner.register_mock_partition();
 
         // Enqueue sid_1 and sid_2
@@ -1188,7 +1188,7 @@ mod tests {
         // Now step the state machine to start the invocation
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
 
@@ -1203,7 +1203,7 @@ mod tests {
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
         assert!(service_inner
@@ -1223,7 +1223,7 @@ mod tests {
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
         assert!(service_inner
@@ -1240,6 +1240,16 @@ mod tests {
 
     #[test(tokio::test)]
     async fn reclaim_quota_after_abort() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
         let fid = mock_sid();
 
         let (_, _status_tx, mut service_inner) = ServiceInner::mock(
@@ -1259,7 +1269,6 @@ mod tests {
                 });
                 pending() // Never ends
             },
-            Default::default(),
             Some(2),
         );
         let _ = service_inner.register_mock_partition();
@@ -1267,6 +1276,7 @@ mod tests {
         // Invoke the service
         service_inner
             .handle_invoke(
+                &invoker_options,
                 MOCK_PARTITION,
                 fid.clone(),
                 InvokeInputJournal::NoCachedJournal,

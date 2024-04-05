@@ -22,14 +22,14 @@ pub struct KafkaClusterOptions {
     /// # Servers
     ///
     /// Initial list of brokers (host or host:port).
-    pub(crate) brokers: Vec<String>,
+    pub brokers: Vec<String>,
 
     /// # Additional options
     ///
     /// Free floating list of kafka options in the same form of rdkafka. For more details on all the available options:
     /// https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
     #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
-    pub(crate) additional_options: HashMap<String, String>,
+    pub additional_options: HashMap<String, String>,
 }
 
 /// # Subscription options
@@ -43,5 +43,5 @@ pub struct KafkaIngressOptions {
     ///
     /// Configuration parameters for the known kafka clusters
     #[serde(flatten)]
-    pub(crate) clusters: HashMap<String, KafkaClusterOptions>,
+    pub clusters: HashMap<String, KafkaClusterOptions>,
 }

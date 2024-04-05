@@ -16,7 +16,7 @@ use serde_with::serde_as;
 
 use crate::logs::metadata::ProviderKind;
 
-use super::{data_dir, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Bifrost options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -65,11 +65,21 @@ pub struct LocalLogletOptions {
     pub writer_commit_time_interval: humantime::Duration,
     /// The maximum number of write commands that can be queued.
     pub writer_queue_len: usize,
+
+    #[cfg(any(test, feature = "test-util"))]
+    #[serde(skip, default = "super::default_arc_tmp")]
+    data_dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl LocalLogletOptions {
+    #[cfg(not(any(test, feature = "test-util")))]
     pub fn data_dir(&self) -> PathBuf {
-        data_dir("local-loglet")
+        super::data_dir("local-loglet")
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.path().join("local-loglet")
     }
 }
 
@@ -84,6 +94,8 @@ impl Default for LocalLogletOptions {
             writer_commit_batch_size_threshold: 200,
             writer_commit_time_interval: Duration::from_millis(13).into(),
             writer_queue_len: 200,
+            #[cfg(any(test, feature = "test-util"))]
+            data_dir: super::default_arc_tmp(),
         }
     }
 }

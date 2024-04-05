@@ -146,25 +146,11 @@ fn main() {
         std::process::exit(0);
     }
 
-    let old_config = match restate_node::config::Configuration::load(
-        config_path.as_deref(),
-        cli_args.opts_overrides,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            // We cannot use tracing here as it's not configured yet
-            eprintln!("{}", e.decorate());
-            eprintln!("{:#?}", RestateCode::from(&e));
-            std::process::exit(EXIT_CODE_FAILURE);
-        }
-    };
-
+    // Setting initial configuration as global current
     restate_types::config::set_current_config(config);
 
-    let config = Configuration::pinned();
-
     let tc = TaskCenterBuilder::default()
-        .options(config.common.clone())
+        .options(Configuration::pinned().common.clone())
         .build()
         .expect("task_center builds");
     tc.block_on("main", None, {
@@ -172,9 +158,12 @@ fn main() {
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
-            let tracing_guard =
-                init_tracing_and_logging(&config.common, "Restate binary", std::process::id())
-                    .expect("failed to configure logging and tracing!");
+            let tracing_guard = init_tracing_and_logging(
+                &Configuration::pinned().common,
+                "Restate binary",
+                std::process::id(),
+            )
+            .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible
             let prev_hook = std::panic::take_hook();
@@ -184,46 +173,44 @@ fn main() {
                 prev_hook(panic_info);
             }));
 
-            info!("Starting Restate Server {}", build_info::build_info());
+            info!(
+                node_name = Configuration::pinned().node_name(),
+                "Starting Restate Server {}",
+                build_info::build_info()
+            );
             if cli_args.config_file.is_some() {
                 info!(
-                    "Loading configuration file from {}",
-                    cli_args.config_file.as_ref().unwrap().display()
+                    config_file = %cli_args.config_file.as_ref().unwrap().display(),
+                    "Loaded configuration file",
                 );
             } else {
-                info!("Loading default built-in configuration");
+                info!("Loaded default configuration");
             }
-            info!(
-                "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                old_config.dump().unwrap()
-            );
 
             // start config watcher
             config_loader.start();
 
-            WipeMode::wipe(
-                cli_args.wipe.as_ref(),
-                config.admin.data_dir(),
-                config.worker.data_dir(),
-                config.bifrost.local.data_dir(),
-                config.metadata_store.data_dir(),
-            )
-            .await
-            .expect("Error when trying to wipe the configured storage path");
+            {
+                let config = Configuration::pinned();
+                WipeMode::wipe(
+                    cli_args.wipe.as_ref(),
+                    config.admin.data_dir(),
+                    config.worker.data_dir(),
+                    config.bifrost.local.data_dir(),
+                    config.metadata_store.data_dir(),
+                )
+                .await
+                .expect("Error when trying to wipe the configured storage path");
+            }
 
-            let node = Node::new(&old_config, &config);
+            let node = Node::new(Configuration::current().clone());
             if let Err(err) = node {
                 handle_error(err);
             }
             // We ignore errors since we will wait for shutdown below anyway.
             // This starts node roles and the rest of the system async under tasks managed by
             // the TaskCenter.
-            let _ = tc.spawn(
-                TaskKind::SystemBoot,
-                "init",
-                None,
-                node.unwrap().start(Configuration::updateable()),
-            );
+            let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
 
             let task_center_watch = tc.shutdown_token();
             tokio::pin!(task_center_watch);
