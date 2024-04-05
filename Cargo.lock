@@ -5938,7 +5938,7 @@ dependencies = [
  "opentelemetry-contrib",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
- "restate-core",
+ "restate-types",
  "schemars",
  "serde",
  "thiserror",

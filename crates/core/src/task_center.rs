@@ -127,9 +127,14 @@ pub struct TaskCenter {
 static_assertions::assert_impl_all!(TaskCenter: Send, Sync, Clone);
 
 impl TaskCenter {
-    /// Used to monitor an on-going shutdown when requested
+    /// Use to monitor an on-going shutdown when requested
     pub fn watch_shutdown(&self) -> WaitForCancellationFutureOwned {
         self.inner.global_cancel_token.clone().cancelled_owned()
+    }
+
+    /// Use to monitor an on-going shutdown when requested
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.inner.global_cancel_token.clone()
     }
 
     /// The exit code that the process should exit with.
