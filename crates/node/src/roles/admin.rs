@@ -20,7 +20,7 @@ use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_types::config::{KafkaIngressOptions, UpdateableConfiguration};
+use restate_types::config::{IngressOptions, UpdateableConfiguration};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -37,7 +37,7 @@ pub struct AdminRole {
     updateable_config: UpdateableConfiguration,
     controller: restate_cluster_controller::Service,
     admin: AdminService,
-    meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
+    meta: MetaService<FileMetaStorage, IngressOptions>,
 }
 
 impl AdminRole {
@@ -46,7 +46,7 @@ impl AdminRole {
         let meta = MetaService::from_options(
             &config.admin,
             &config.common.service_client,
-            config.ingress.kafka.clone(),
+            config.ingress.clone(),
         )?;
         let admin = AdminService::new(meta.schemas(), meta.meta_handle(), meta.schema_reader());
 

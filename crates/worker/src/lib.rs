@@ -157,7 +157,7 @@ impl Worker {
         let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
-                config.ingress.kafka.clone(),
+                config.ingress.clone(),
                 ingress_kafka.create_command_sender(),
             );
 
@@ -252,7 +252,7 @@ impl Worker {
             self.ingress_kafka.run(
                 self.updateable_config
                     .clone()
-                    .map_as_updateable_owned(|c| &c.ingress.kafka),
+                    .map_as_updateable_owned(|c| &c.ingress),
             ),
         )?;
 

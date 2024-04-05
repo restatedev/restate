@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use super::KafkaIngressOptions;
+use super::KafkaClusterOptions;
 
 /// # Ingress options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -34,7 +34,14 @@ pub struct IngressOptions {
     /// Max allowed value is 2305843009213693950
     pub concurrent_api_requests_limit: usize,
 
-    pub kafka: KafkaIngressOptions,
+    kafka_clusters: Vec<KafkaClusterOptions>,
+}
+
+impl IngressOptions {
+    pub fn get_kafka_cluster(&self, name: &str) -> Option<&KafkaClusterOptions> {
+        // a cluster is likely to have a very small number of kafka clusters configured.
+        self.kafka_clusters.iter().find(|c| c.name == name)
+    }
 }
 
 impl Default for IngressOptions {
@@ -43,7 +50,7 @@ impl Default for IngressOptions {
             bind_address: "0.0.0.0:8080".parse().unwrap(),
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: Semaphore::MAX_PERMITS - 1,
-            kafka: Default::default(),
+            kafka_clusters: Default::default(),
         }
     }
 }

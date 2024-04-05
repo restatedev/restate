@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub struct KafkaClusterOptions {
+    /// Cluster name (Used to identify subscriptions).
+    pub name: String,
     /// # Servers
     ///
     /// Initial list of brokers (host or host:port).
@@ -30,18 +32,4 @@ pub struct KafkaClusterOptions {
     /// https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
     #[serde(flatten, skip_serializing_if = "HashMap::is_empty")]
     pub additional_options: HashMap<String, String>,
-}
-
-/// # Subscription options
-#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schemars", schemars(rename = "SubscriptionOptions"))]
-#[serde(rename_all = "kebab-case")]
-#[builder(default)]
-pub struct KafkaIngressOptions {
-    /// # Kafka clusters
-    ///
-    /// Configuration parameters for the known kafka clusters
-    #[serde(flatten)]
-    pub clusters: HashMap<String, KafkaClusterOptions>,
 }
