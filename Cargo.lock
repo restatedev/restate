@@ -5704,7 +5704,6 @@ dependencies = [
  "humantime",
  "hyper 0.14.28",
  "hyper-rustls",
- "itertools 0.11.0",
  "jsonwebtoken",
  "once_cell",
  "pem 3.0.3",
@@ -5718,7 +5717,6 @@ dependencies = [
  "serde_with",
  "tempfile",
  "thiserror",
- "tokio",
  "tracing",
 ]
 

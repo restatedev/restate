@@ -27,7 +27,6 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io;
 
 /// # HTTP client options
 #[serde_as]
@@ -280,7 +279,7 @@ pub enum SigningPrivateKeyReadError {
     #[error("Only one private key in PEM format is expected, found {0}")]
     OneKeyExpected(usize),
     #[error(transparent)]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
     #[error(transparent)]
     Pem(#[from] pem::PemError),
     #[error("Key was rejected by ring: {0}")]
