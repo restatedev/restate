@@ -47,7 +47,7 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     pub partition_id: PartitionId,
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
-    timer_service_options: restate_timer::Options,
+    num_timers_in_memory_limit: Option<usize>,
     channel_size: usize,
 
     invoker_tx: InvokerInputSender,
@@ -66,7 +66,7 @@ where
     pub(super) fn new(
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: restate_timer::Options,
+        num_timers_in_memory_limit: Option<usize>,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         rocksdb_storage: RocksDBStorage,
@@ -74,7 +74,7 @@ where
         Self {
             partition_id,
             partition_key_range,
-            timer_service_options,
+            num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
             _entry_codec: Default::default(),
@@ -87,7 +87,7 @@ where
         let PartitionProcessor {
             partition_id,
             partition_key_range,
-            timer_service_options,
+            num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
             rocksdb_storage,
@@ -123,7 +123,7 @@ where
         let (mut state, mut action_effect_stream) = LeadershipState::follower(
             partition_id,
             partition_key_range.clone(),
-            timer_service_options,
+            num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
             bifrost,

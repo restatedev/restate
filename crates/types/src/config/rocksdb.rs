@@ -58,6 +58,7 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_batch_wal_flushes: Option<bool>,
 
+    // todo: Move to common_opts as cache will be shared
     /// # Maximum cache size
     ///
     /// The memory size used for rocksdb caches. Default is 1GB.

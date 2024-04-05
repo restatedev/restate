@@ -9,14 +9,10 @@
 // by the Apache License, Version 2.0.
 
 mod consumer_task;
-mod options;
 mod subscription_controller;
 
 use tokio::sync::mpsc;
 
-pub use options::{
-    KafkaClusterOptions, Options, OptionsBuilder, OptionsBuilderError, ValidationError,
-};
 pub use subscription_controller::{Command, Error, Service};
 
 pub type SubscriptionCommandSender = mpsc::Sender<Command>;

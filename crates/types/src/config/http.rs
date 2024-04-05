@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -37,6 +38,16 @@ pub struct HttpOptions {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub http_proxy: Option<ProxyUri>,
+    /// # Request identity private key PEM file
+    ///
+    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
+    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
+    /// If provided, this key will be used to attach JWTs to HTTP requests from this client which
+    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
+    ///
+    /// This file is currently only read on client creation, but this may change in future.
+    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
 }
 
 /// # HTTP/2 Keep alive options

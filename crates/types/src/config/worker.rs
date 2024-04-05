@@ -16,7 +16,7 @@ use serde_with::serde_as;
 
 use crate::retries::RetryPolicy;
 
-use super::{data_dir, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Worker options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -48,11 +48,21 @@ pub struct WorkerOptions {
     ///
     /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
     pub bootstrap_num_partitions: u64,
+
+    #[cfg(any(test, feature = "test-util"))]
+    #[serde(skip, default = "super::default_arc_tmp")]
+    data_dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl WorkerOptions {
+    #[cfg(not(any(test, feature = "test-util")))]
     pub fn data_dir(&self) -> PathBuf {
-        data_dir("db")
+        super::data_dir("db")
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.path().join("db")
     }
 }
 
@@ -69,6 +79,8 @@ impl Default for WorkerOptions {
             rocksdb,
             invoker: Default::default(),
             bootstrap_num_partitions: 64,
+            #[cfg(any(test, feature = "test-util"))]
+            data_dir: super::default_arc_tmp(),
         }
     }
 }
@@ -84,7 +96,7 @@ pub struct InvokerOptions {
     /// # Retry policy
     ///
     /// Retry policy to use for all the invocations handled by this invoker.
-    retry_policy: RetryPolicy,
+    pub retry_policy: RetryPolicy,
 
     /// # Inactivity timeout
     ///
@@ -98,7 +110,7 @@ pub struct InvokerOptions {
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    inactivity_timeout: humantime::Duration,
+    pub inactivity_timeout: humantime::Duration,
 
     /// # Abort timeout
     ///
@@ -113,32 +125,40 @@ pub struct InvokerOptions {
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    abort_timeout: humantime::Duration,
+    pub abort_timeout: humantime::Duration,
 
     /// # Message size warning
     ///
     /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
-    message_size_warning: usize,
+    pub message_size_warning: usize,
 
     /// # Message size limit
     ///
     /// Threshold to fail the invocation in case protocol messages coming from a service are larger than the specified amount.
-    message_size_limit: Option<usize>,
+    pub message_size_limit: Option<usize>,
 
     /// # Temporary directory
     ///
     /// Temporary directory to use for the invoker temporary files.
     /// If empty, the system temporary directory will be used instead.
-    tmp_dir: PathBuf,
+    tmp_dir: Option<PathBuf>,
 
     /// # Limit number of concurrent invocations from this node
     ///
     /// Number of concurrent invocations that can be processed by the invoker.
-    concurrent_invocations_limit: Option<usize>,
+    pub concurrent_invocations_limit: Option<usize>,
 
     // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    disable_eager_state: bool,
+    pub disable_eager_state: bool,
+}
+
+impl InvokerOptions {
+    pub fn gen_tmp_dir(&self) -> PathBuf {
+        self.tmp_dir.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new()))
+        })
+    }
 }
 
 impl Default for InvokerOptions {
@@ -155,7 +175,7 @@ impl Default for InvokerOptions {
             abort_timeout: Duration::from_secs(60).into(),
             message_size_warning: 1024 * 1024 * 10, // 10mb
             message_size_limit: None,
-            tmp_dir: std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new())),
+            tmp_dir: None,
             concurrent_invocations_limit: None,
             disable_eager_state: false,
         }

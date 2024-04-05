@@ -103,6 +103,8 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_rocksdb::RocksDBStorage;
     use restate_test_util::matchers::*;
+    use restate_types::arc_util::Constant;
+    use restate_types::config::WorkerOptions;
     use restate_types::errors::codes;
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -118,7 +120,6 @@ mod tests {
     use restate_types::state_mut::ExternalStateMutation;
     use restate_types::GenerationalNodeId;
     use std::collections::{HashMap, HashSet};
-    use tempfile::tempdir;
     use test_log::test;
     use tracing::info;
 
@@ -145,14 +146,14 @@ mod tests {
         }
 
         pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
-            let temp_dir = tempdir().unwrap();
-            info!("Using RocksDB temp directory {}", temp_dir.path().display());
-            let (rocksdb_storage, writer) = restate_storage_rocksdb::OptionsBuilder::default()
-                .path(temp_dir.into_path())
-                .build()
-                .unwrap()
-                .build()
-                .unwrap();
+            let worker_options = WorkerOptions::default();
+            info!(
+                "Using RocksDB temp directory {}",
+                worker_options.data_dir().display()
+            );
+            let (rocksdb_storage, writer) =
+                restate_storage_rocksdb::RocksDBStorage::new(Constant::new(worker_options))
+                    .unwrap();
 
             let (signal, watch) = drain::channel();
             let writer_join_handle = writer.run(watch);

@@ -10,9 +10,7 @@
 
 use anyhow::Context;
 use codederror::CodedError;
-use restate_admin::Options as AdminOptions;
-use restate_network::Networking;
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_types::arc_util::ArcSwapExt;
 use tonic::transport::Channel;
 use tracing::info;
 
@@ -21,7 +19,8 @@ use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{task_center, TaskKind};
 use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
-use restate_worker::KafkaIngressOptions;
+use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_types::config::{KafkaIngressOptions, UpdateableConfiguration};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -35,26 +34,24 @@ pub enum AdminRoleBuildError {
 
 #[derive(Debug)]
 pub struct AdminRole {
+    updateable_config: UpdateableConfiguration,
     controller: restate_cluster_controller::Service,
     admin: AdminService,
     meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
 }
 
 impl AdminRole {
-    pub fn new(
-        admin_options: AdminOptions,
-        kafka_options: KafkaIngressOptions,
-        _networking: Networking,
-    ) -> Result<Self, AdminRoleBuildError> {
-        let meta = MetaService::from_options(admin_options.meta.clone(), kafka_options)?;
-        let admin = AdminService::from_options(
-            admin_options,
-            meta.schemas(),
-            meta.meta_handle(),
-            meta.schema_reader(),
-        );
+    pub fn new(updateable_config: UpdateableConfiguration) -> Result<Self, AdminRoleBuildError> {
+        let config = updateable_config.pinned();
+        let meta = MetaService::from_options(
+            &config.admin,
+            &config.common.service_client,
+            config.ingress.kafka.clone(),
+        )?;
+        let admin = AdminService::new(meta.schemas(), meta.meta_handle(), meta.schema_reader());
 
         Ok(AdminRole {
+            updateable_config,
             controller: restate_cluster_controller::Service::default(),
             admin,
             meta,
@@ -78,15 +75,16 @@ impl AdminRole {
 
         // Init the meta. This will reload the schemas in memory.
         self.meta.init().await?;
+        let tc = task_center();
 
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::SystemService,
             "meta-service",
             None,
             self.meta.run(),
         )?;
 
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
@@ -102,11 +100,15 @@ impl AdminRole {
         .connect_lazy();
         let node_svc_client = NodeSvcClient::new(worker_channel);
 
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            self.admin.run(node_svc_client, bifrost),
+            self.admin.run(
+                self.updateable_config.map_as_updateable_owned(|c| &c.admin),
+                node_svc_client,
+                bifrost,
+            ),
         )?;
 
         Ok(())

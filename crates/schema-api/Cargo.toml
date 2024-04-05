@@ -16,7 +16,7 @@ serde = ["dep:serde", "dep:serde_with", "dep:restate-serde-util"]
 serde_schema = ["serde", "dep:schemars", "restate-types?/schemars", "restate-serde-util?/schema"]
 component = ["dep:bytes", "dep:restate-types"]
 invocation_target = ["component", "dep:bytes", "dep:restate-types", "dep:thiserror", "dep:http", "dep:restate-serde-util", "dep:bytestring", "dep:itertools"]
-subscription = ["dep:anyhow", "dep:restate-types"]
+subscription = ["dep:anyhow", "dep:restate-types", "dep:tracing", "dep:thiserror"]
 
 [dependencies]
 restate-base64-util = { workspace = true, optional = true }
@@ -33,3 +33,4 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
