@@ -32,13 +32,13 @@ use tonic::transport::{Channel, Uri};
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
         .into_generator()
-        .into_root_schema_for::<restate_node::Configuration>();
+        .into_root_schema_for::<restate_node::config::Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
 
 fn generate_default_config() -> anyhow::Result<()> {
-    println!("{}", restate_node::Configuration::default().dump()?);
+    println!("{}", restate_node::config::Configuration::default().dump()?);
     Ok(())
 }
 
@@ -105,7 +105,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let bifrost = node_env
         .tc
-        .run_in_scope("bifrost init", None, Bifrost::new_in_memory())
+        .run_in_scope("bifrost init", None, Bifrost::init())
         .await;
 
     node_env.tc.spawn(

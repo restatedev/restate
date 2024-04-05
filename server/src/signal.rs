@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node::Configuration;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{info, warn};
+
+use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {

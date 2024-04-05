@@ -44,8 +44,19 @@ pub struct RocksDbOptions {
     /// # Disable WAL
     ///
     /// The default depends on the different rocksdb use-cases at Restate.
+    ///
+    /// Supports hot-reloading (Partial / Bifrost only)
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_wal: Option<bool>,
+
+    /// # Flush WAL in batches
+    ///
+    /// when WAL is enabled, this allows Restate server to control WAL flushes in batches.
+    /// This trades off latency for IO throughput.
+    ///
+    /// Default: True.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_batch_wal_flushes: Option<bool>,
 
     /// # Maximum cache size
     ///
@@ -54,6 +65,8 @@ pub struct RocksDbOptions {
     rocksdb_cache_size: Option<usize>,
 
     /// Disable rocksdb statistics collection
+    ///
+    /// Default: False (statistics enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_statistics: Option<bool>,
 }
@@ -103,5 +116,9 @@ impl RocksDbOptions {
 
     pub fn rocksdb_disable_statistics(&self) -> bool {
         self.rocksdb_disable_statistics.unwrap_or(false)
+    }
+
+    pub fn rocksdb_batch_wal_flushes(&self) -> bool {
+        self.rocksdb_batch_wal_flushes.unwrap_or(true)
     }
 }
