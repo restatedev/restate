@@ -59,7 +59,7 @@ pub(crate) struct LeaderState {
 
 pub(crate) struct FollowerState<I> {
     partition_id: PartitionId,
-    timer_service_options: restate_timer::Options,
+    num_timers_in_memory_limit: Option<usize>,
     channel_size: usize,
     invoker_tx: I,
     networking: Networking,
@@ -94,7 +94,7 @@ where
     pub(crate) fn follower(
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: restate_timer::Options,
+        num_timers_in_memory_limit: Option<usize>,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         bifrost: Bifrost,
@@ -104,7 +104,7 @@ where
             Self::Follower(FollowerState {
                 partition_id,
                 partition_key_range,
-                timer_service_options,
+                num_timers_in_memory_limit,
                 channel_size,
                 invoker_tx,
                 bifrost,
@@ -156,11 +156,11 @@ where
             )
             .await?;
 
-            let timer_service = Box::pin(
-                follower_state
-                    .timer_service_options
-                    .build(partition_storage.clone(), TokioClock),
-            );
+            let timer_service = Box::pin(TimerService::new(
+                TokioClock,
+                follower_state.num_timers_in_memory_limit,
+                partition_storage.clone(),
+            ));
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
 
@@ -300,7 +300,7 @@ where
                     partition_id,
                     partition_key_range,
                     channel_size,
-                    timer_service_options: num_in_memory_timers,
+                    num_timers_in_memory_limit,
                     mut invoker_tx,
                     bifrost,
                     networking,
@@ -329,7 +329,7 @@ where
             Ok(Self::follower(
                 partition_id,
                 partition_key_range,
-                num_in_memory_timers,
+                num_timers_in_memory_limit,
                 channel_size,
                 invoker_tx,
                 bifrost,

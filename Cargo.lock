@@ -2327,7 +2327,6 @@ dependencies = [
  "atomic 0.6.0",
  "pear",
  "serde",
- "serde_yaml",
  "toml",
  "uncased",
  "version_check",
@@ -4948,6 +4947,7 @@ name = "restate-benchmarks"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "criterion",
  "drain",
  "futures",
@@ -5475,7 +5475,6 @@ dependencies = [
  "drain",
  "enum-map",
  "enumset",
- "figment",
  "futures",
  "googletest",
  "http 0.2.12",
@@ -5603,6 +5602,7 @@ dependencies = [
  "serde",
  "serde_with",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -5982,6 +5982,7 @@ dependencies = [
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "sync_wrapper",
+ "tempfile",
  "test-log",
  "thiserror",
  "tokio",

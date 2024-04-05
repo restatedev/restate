@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use super::consumer_task::MessageSender;
-use super::options::Options;
 use super::*;
 use std::collections::HashSet;
 
@@ -18,6 +17,8 @@ use rdkafka::error::KafkaError;
 use restate_core::cancellation_watcher;
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::subscription::{Source, Subscription};
+use restate_types::arc_util::Updateable;
+use restate_types::config::KafkaIngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -39,7 +40,6 @@ pub enum Error {
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service {
-    options: Options,
     dispatcher: IngressDispatcher,
 
     commands_tx: SubscriptionCommandSender,
@@ -47,11 +47,10 @@ pub struct Service {
 }
 
 impl Service {
-    pub(crate) fn new(options: Options, dispatcher: IngressDispatcher) -> Service {
+    pub fn new(dispatcher: IngressDispatcher) -> Service {
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
-            options,
             dispatcher,
             commands_tx,
             commands_rx,
@@ -62,7 +61,10 @@ impl Service {
         self.commands_tx.clone()
     }
 
-    pub async fn run(mut self) -> anyhow::Result<()> {
+    pub async fn run(
+        mut self,
+        mut updateable_config: impl Updateable<KafkaIngressOptions> + Send + 'static,
+    ) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
@@ -73,13 +75,17 @@ impl Service {
             Some(Duration::from_secs(10)),
         ));
 
+        // NOTE: Configuration is pinned to a certain snapshot until we support adding/removing
+        // subscriptions dynamically from config
+        let options = &updateable_config.load();
+
         loop {
             tokio::select! {
                 Some(cmd) = self.commands_rx.recv() => {
                     match cmd {
-                        Command::StartSubscription(sub) => self.handle_start_subscription(sub, &mut task_orchestrator),
+                        Command::StartSubscription(sub) => self.handle_start_subscription(options, sub, &mut task_orchestrator),
                         Command::StopSubscription(sub_id) => self.handle_stop_subscription(sub_id, &mut task_orchestrator),
-                        Command::UpdateSubscriptions(subscriptions) => self.handle_update_subscriptions(subscriptions, &mut task_orchestrator),
+                        Command::UpdateSubscriptions(subscriptions) => self.handle_update_subscriptions(options, subscriptions, &mut task_orchestrator),
                     }
                 }
                 _ = task_orchestrator.poll(), if !task_orchestrator.is_empty() => {},
@@ -96,6 +102,7 @@ impl Service {
 
     fn handle_start_subscription(
         &mut self,
+        options: &KafkaIngressOptions,
         subscription: Subscription,
         task_orchestrator: &mut TaskOrchestrator,
     ) {
@@ -104,13 +111,12 @@ impl Service {
         let Source::Kafka { cluster, topic, .. } = subscription.source();
 
         // Copy cluster options and subscription metadata into client_config
-        let cluster_options = self
-            .options
+        let cluster_options = options
             .clusters
             .get(cluster)
             .unwrap_or_else(|| panic!("KafkaOptions should contain the cluster '{}'", cluster));
 
-        client_config.set("metadata.broker.list", cluster_options.servers.clone());
+        client_config.set("metadata.broker.list", cluster_options.brokers.join(","));
         for (k, v) in cluster_options.additional_options.clone() {
             client_config.set(k, v);
         }
@@ -145,6 +151,7 @@ impl Service {
 
     fn handle_update_subscriptions(
         &mut self,
+        options: &KafkaIngressOptions,
         subscriptions: Vec<Subscription>,
         task_orchestrator: &mut TaskOrchestrator,
     ) {
@@ -153,7 +160,7 @@ impl Service {
 
         for subscription in subscriptions {
             if !running_subscriptions.contains(&subscription.id()) {
-                self.handle_start_subscription(subscription, task_orchestrator);
+                self.handle_start_subscription(options, subscription, task_orchestrator);
             } else {
                 running_subscriptions.remove(&subscription.id());
             }

@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{BuildError, FileMetaStorage, Options};
-
-use super::error::Error;
-use super::storage::MetaStorage;
-
 use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
@@ -28,12 +23,16 @@ use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{DeliveryOptions, DeploymentMetadata};
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
 use restate_schema_impl::{Schemas, SchemasUpdateCommand};
-use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::retries::RetryPolicy;
-
 use restate_service_client::{AssumeRoleCacheMode, Endpoint, ServiceClient};
 use restate_service_protocol::discovery;
 use restate_service_protocol::discovery::ComponentDiscovery;
+use restate_types::config::{AdminOptions, ServiceClientOptions};
+use restate_types::identifiers::{DeploymentId, SubscriptionId};
+use restate_types::retries::RetryPolicy;
+
+use super::error::Error;
+use super::storage::MetaStorage;
+use crate::{BuildError, FileMetaStorage};
 
 #[derive(Debug, Clone)]
 pub struct MetaHandle(UnboundedCommandSender<MetaHandleRequest, MetaHandleResponse>);
@@ -220,14 +219,15 @@ where
     SV: SubscriptionValidator,
 {
     pub fn from_options(
-        options: Options,
+        options: &AdminOptions,
+        service_client_opts: &ServiceClientOptions,
         subscription_validator: SV,
     ) -> Result<MetaService<FileMetaStorage, SV>, BuildError> {
         let schemas = Schemas::default();
-        let client = ServiceClient::from_options(options.discovery, AssumeRoleCacheMode::None)?;
+        let client = ServiceClient::from_options(service_client_opts, AssumeRoleCacheMode::None)?;
         Ok(MetaService::new(
             schemas.clone(),
-            FileMetaStorage::new(options.schema_storage_path)?,
+            FileMetaStorage::new(options.data_dir())?,
             subscription_validator,
             // Total duration roughly 66 seconds
             RetryPolicy::exponential(

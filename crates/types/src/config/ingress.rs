@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 use super::KafkaIngressOptions;
 
@@ -30,6 +31,7 @@ pub struct IngressOptions {
     /// # Concurrency limit
     ///
     /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded, the ingress will reply immediately with an appropriate status code.
+    /// Max allowed value is 2305843009213693950
     pub concurrent_api_requests_limit: usize,
 
     pub kafka: KafkaIngressOptions,
@@ -39,7 +41,8 @@ impl Default for IngressOptions {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:8080".parse().unwrap(),
-            concurrent_api_requests_limit: i64::MAX as usize,
+            // max is limited by Tower's LoadShedLayer.
+            concurrent_api_requests_limit: Semaphore::MAX_PERMITS - 1,
             kafka: Default::default(),
         }
     }

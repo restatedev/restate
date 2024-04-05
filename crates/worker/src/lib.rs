@@ -10,27 +10,6 @@
 
 extern crate core;
 
-use crate::invoker_integration::EntryEnricher;
-use crate::partition::storage::invoker::InvokerStorageReader;
-use codederror::CodedError;
-use restate_bifrost::Bifrost;
-use restate_core::network::MessageRouterBuilder;
-use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
-use restate_ingress_dispatcher::IngressDispatcher;
-use restate_ingress_http::HyperServerIngress;
-use restate_ingress_kafka::Service as IngressKafkaService;
-use restate_invoker_impl::{
-    ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
-};
-use restate_network::Networking;
-use restate_schema_impl::Schemas;
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_query_datafusion::context::QueryContext;
-use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use std::path::Path;
-use tracing::debug;
-
 mod error;
 mod handle;
 mod invoker_integration;
@@ -42,94 +21,41 @@ mod subscription_integration;
 
 pub use error::*;
 pub use handle::*;
+use restate_types::arc_util::ArcSwapExt;
+use restate_types::config::UpdateableConfiguration;
+pub use subscription_controller::SubscriptionController;
+pub use subscription_integration::SubscriptionControllerHandle;
 
-pub use restate_ingress_http::{
-    Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
-    OptionsBuilderError as IngressOptionsBuilderError,
-};
-pub use restate_ingress_kafka::{
-    Options as KafkaIngressOptions, OptionsBuilder as KafkaIngressOptionsBuilder,
-    OptionsBuilderError as KafkaIngressOptionsBuilderError,
-};
-pub use restate_invoker_impl::{
-    Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
-    OptionsBuilderError as InvokerOptionsBuilderError,
+use codederror::CodedError;
+use restate_bifrost::Bifrost;
+use restate_core::network::MessageRouterBuilder;
+use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
+use restate_ingress_dispatcher::IngressDispatcher;
+use restate_ingress_http::HyperServerIngress;
+use restate_ingress_kafka::Service as IngressKafkaService;
+use restate_invoker_impl::{
+    ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_metadata_store::MetadataStoreClient;
-pub use subscription_controller::SubscriptionController;
+use restate_network::Networking;
+use restate_schema_impl::Schemas;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_postgres::service::PostgresQueryService;
+use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
+use tracing::debug;
 
-pub use restate_storage_rocksdb::{
-    Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
-    OptionsBuilderError as RocksdbOptionsBuilderError,
-};
-pub use restate_timer::{
-    Options as TimerOptions, OptionsBuilder as TimerOptionsBuilder,
-    OptionsBuilderError as TimerOptionsBuilderError,
-};
-
-pub use restate_storage_query_datafusion::{
-    Options as StorageQueryDatafusionOptions,
-    OptionsBuilder as StorageQueryDatafusionOptionsBuilder,
-    OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
-};
-
+use crate::invoker_integration::EntryEnricher;
+use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition_processor_manager::{
     Action, PartitionProcessorManager, PartitionProcessorPlan, Role,
-};
-pub use crate::subscription_integration::SubscriptionControllerHandle;
-pub use restate_storage_query_postgres::{
-    Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
-    OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
 };
 use restate_types::Version;
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
+
 type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
-
-/// # Worker options
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "options_schema",
-    schemars(rename = "WorkerOptions", default)
-)]
-#[builder(default)]
-pub struct Options {
-    /// # Bounded channel size
-    channel_size: usize,
-    timers: TimerOptions,
-    storage_query_datafusion: StorageQueryDatafusionOptions,
-    storage_query_postgres: StorageQueryPostgresOptions,
-    storage_rocksdb: RocksdbOptions,
-    ingress: IngressOptions,
-    invoker: InvokerOptions,
-
-    /// # Partitions
-    ///
-    /// Number of partitions to be used to process messages.
-    ///
-    /// Note: This config entry **will be removed** in future Restate releases,
-    /// as the partitions number will be dynamically configured depending on the load.
-    ///
-    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    pub partitions: u64,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            channel_size: 64,
-            timers: Default::default(),
-            storage_query_datafusion: Default::default(),
-            storage_query_postgres: Default::default(),
-            storage_rocksdb: Default::default(),
-            ingress: Default::default(),
-            invoker: Default::default(),
-            partitions: 64,
-        }
-    }
-}
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -147,12 +73,6 @@ pub enum BuildError {
     ),
     #[code(unknown)]
     Invoker(#[from] restate_invoker_impl::BuildError),
-}
-
-impl Options {
-    pub fn storage_path(&self) -> &Path {
-        self.storage_rocksdb.path.as_path()
-    }
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -175,7 +95,7 @@ impl Error {
 }
 
 pub struct Worker {
-    options: Options,
+    updateable_config: UpdateableConfiguration,
     networking: Networking,
     metadata_store_client: MetadataStoreClient,
     storage_query_context: QueryContext,
@@ -196,8 +116,7 @@ pub struct Worker {
 
 impl Worker {
     pub fn from_options(
-        options: Options,
-        kafka_options: KafkaIngressOptions,
+        updateable_config: UpdateableConfiguration,
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -206,8 +125,7 @@ impl Worker {
     ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
         Worker::new(
-            options,
-            kafka_options,
+            updateable_config,
             networking,
             bifrost,
             router_builder,
@@ -217,59 +135,61 @@ impl Worker {
     }
 
     pub fn new(
-        opts: Options,
-        kafka_options: KafkaIngressOptions,
+        updateable_config: UpdateableConfiguration,
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
         schemas: Schemas,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
-        let options = opts.clone();
-
-        let Options {
-            ingress,
-            storage_query_datafusion,
-            storage_query_postgres,
-            storage_rocksdb,
-            ..
-        } = opts;
-
         let ingress_dispatcher = IngressDispatcher::new(bifrost);
         router_builder.add_message_handler(ingress_dispatcher.clone());
 
+        let config = updateable_config.pinned();
         // http ingress
-        let ingress_http = ingress.build(ingress_dispatcher.clone(), schemas.clone());
+        let ingress_http = HyperServerIngress::from_options(
+            &config.ingress,
+            ingress_dispatcher.clone(),
+            schemas.clone(),
+        );
 
         // ingress_kafka
-        let kafka_config_clone = kafka_options.clone();
-        let ingress_kafka = kafka_options.build(ingress_dispatcher.clone());
+        let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
-                kafka_config_clone,
+                config.ingress.kafka.clone(),
                 ingress_kafka.create_command_sender(),
             );
 
-        let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
+        let (rocksdb_storage, rocksdb_writer) = RocksDBStorage::new(
+            updateable_config
+                .clone()
+                .map_as_updateable_owned(|c| &c.worker),
+        )?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = InvokerService::from_options(
-            opts.invoker,
+            &config.common.service_client,
+            &config.worker.invoker,
             invoker_storage_reader.clone(),
             invoker_storage_reader,
             EntryEnricher::new(schemas.clone()),
             schemas.clone(),
         )?;
 
-        let storage_query_context = storage_query_datafusion.build(
+        let storage_query_context = QueryContext::from_options(
+            &config.admin.query_engine,
             rocksdb_storage.clone(),
             invoker.status_reader(),
             schemas.clone(),
         )?;
-        let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
+        let storage_query_postgres = PostgresQueryService::from_options(
+            &config.admin.query_engine,
+            storage_query_context.clone(),
+        );
 
         Ok(Self {
-            options,
+            updateable_config,
             networking,
             storage_query_context,
             storage_query_postgres,
@@ -329,19 +249,32 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             None,
-            self.ingress_kafka.run(),
+            self.ingress_kafka.run(
+                self.updateable_config
+                    .clone()
+                    .map_as_updateable_owned(|c| &c.ingress.kafka),
+            ),
         )?;
 
         let invoker_handle = self.invoker.handle();
 
         // Invoker service
-        tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "invoker",
+            None,
+            self.invoker.run(
+                self.updateable_config
+                    .clone()
+                    .map_as_updateable_owned(|c| &c.worker.invoker),
+            ),
+        )?;
 
         let shutdown = cancellation_watcher();
 
         let mut partition_processor_manager = PartitionProcessorManager::new(
+            self.updateable_config.clone(),
             metadata().my_node_id(),
-            self.options,
             self.metadata_store_client,
             self.rocksdb_storage,
             self.networking,

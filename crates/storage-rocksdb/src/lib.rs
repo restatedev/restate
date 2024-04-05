@@ -35,7 +35,8 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use restate_storage_api::{Storage, StorageError, Transaction};
-use restate_types::DEFAULT_STORAGE_DIRECTORY;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{RocksDbOptions, WorkerOptions};
 use rocksdb::Cache;
 use rocksdb::ColumnFamily;
 use rocksdb::DBCompressionType;
@@ -46,7 +47,7 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
 use rocksdb::{BlockBasedOptions, WriteOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
@@ -142,66 +143,6 @@ impl TableKind {
     }
 }
 
-/// # Storage options
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "options_schema",
-    schemars(rename = "StorageOptions", default)
-)]
-#[builder(default)]
-pub struct Options {
-    /// # Storage path
-    ///
-    /// The root path to use for the Rocksdb storage.
-    pub path: PathBuf,
-
-    /// # Threads
-    ///
-    /// The number of threads to reserve to Rocksdb background tasks.
-    pub threads: usize,
-
-    /// # Write Buffer size
-    ///
-    /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
-    /// The default is set such that 3 column families per table will use a total of 50% of the global memory limit
-    /// (`MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 64MiB with 8 tables.
-    pub write_buffer_size: usize,
-
-    /// # Maximum total WAL size
-    ///
-    /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
-    pub max_total_wal_size: u64,
-
-    /// # Maximum cache size
-    ///
-    /// The memory size used for rocksdb caches.
-    /// The default is roughly 33% of the global memory limit (set with `MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 1GiB.
-    pub cache_size: usize,
-
-    /// Disable rocksdb statistics collection
-    pub disable_statistics: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            path: Path::new(DEFAULT_STORAGE_DIRECTORY).join("db"),
-            threads: 10,
-            write_buffer_size: 0,
-            max_total_wal_size: 2 * (1 << 30), // 2 GiB
-            cache_size: 0,
-            disable_statistics: false,
-        }
-    }
-}
-
-impl Options {
-    pub fn build(self) -> std::result::Result<(RocksDBStorage, Writer), BuildError> {
-        RocksDBStorage::new(self)
-    }
-}
-
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
     #[error("db is locked: {0}")]
@@ -237,7 +178,7 @@ pub struct RocksDBStorage {
     writer_handle: WriterHandle,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
-    cache: Option<Cache>,
+    cache: Cache,
     options: Arc<rocksdb::Options>,
 }
 
@@ -248,14 +189,6 @@ impl std::fmt::Debug for RocksDBStorage {
             .field("writer_handle", &self.writer_handle)
             .field("key_buffer", &self.key_buffer)
             .field("value_buffer", &self.value_buffer)
-            .field(
-                "cache",
-                if self.cache.is_some() {
-                    &"<set>"
-                } else {
-                    &"<unset>"
-                },
-            )
             .finish()
     }
 }
@@ -273,16 +206,16 @@ impl Clone for RocksDBStorage {
     }
 }
 
-fn db_options(opts: &Options) -> rocksdb::Options {
+fn db_options(opts: &RocksDbOptions) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     db_options.create_if_missing(true);
     db_options.create_missing_column_families(true);
-    if opts.threads > 0 {
-        db_options.increase_parallelism(opts.threads as i32);
-        db_options.set_max_background_jobs(opts.threads as i32);
+    if opts.rocksdb_num_threads() > 0 {
+        db_options.increase_parallelism(opts.rocksdb_num_threads() as i32);
+        db_options.set_max_background_jobs(opts.rocksdb_num_threads() as i32);
     }
 
-    if !opts.disable_statistics {
+    if !opts.rocksdb_disable_statistics() {
         db_options.enable_statistics();
         // Reasonable default, but we might expose this as a config in the future.
         db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
@@ -296,15 +229,16 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     db_options.set_wal_size_limit_mb(0);
     db_options.set_wal_ttl_seconds(0);
     //
-    // Disable automatic WAL flushing.
-    // We will call flush manually, when we commit a storage transaction.
-    //
-    db_options.set_manual_wal_flush(true);
-    //
-    // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
-    // We set this value to 10GB by default, to make sure that we don't flush
-    // memtables prematurely.
-    db_options.set_max_total_wal_size(opts.max_total_wal_size);
+    if !opts.rocksdb_disable_wal() {
+        // Disable automatic WAL flushing.
+        // We will call flush manually, when we commit a storage transaction.
+        //
+        db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
+        // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
+        // We set this value to 10GB by default, to make sure that we don't flush
+        // memtables prematurely.
+        db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
+    }
     //
     // write buffer
     //
@@ -335,14 +269,14 @@ fn db_options(opts: &Options) -> rocksdb::Options {
     db_options
 }
 
-fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
+fn cf_options(opts: &RocksDbOptions, cache: Cache) -> rocksdb::Options {
     let mut cf_options = rocksdb::Options::default();
     //
     //
     // write buffer
     //
-    if opts.write_buffer_size > 0 {
-        cf_options.set_write_buffer_size(opts.write_buffer_size)
+    if opts.rocksdb_write_buffer_size() > 0 {
+        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size())
     }
     //
     // Most of the changes are highly temporal, we try to delay flushing
@@ -358,10 +292,8 @@ fn cf_options(opts: &Options, cache: Option<Cache>) -> rocksdb::Options {
     // use the latest Rocksdb table format.
     // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
     block_opts.set_format_version(5);
-    if let Some(cache) = cache {
-        block_opts.set_cache_index_and_filter_blocks(true);
-        block_opts.set_block_cache(&cache);
-    }
+    block_opts.set_cache_index_and_filter_blocks(true);
+    block_opts.set_block_cache(&cache);
     cf_options.set_block_based_table_factory(&block_opts);
     //
     // Set compactions per level
@@ -392,62 +324,77 @@ impl RocksDBStorage {
         self.options.clone()
     }
 
-    /// Block cache wrapper handle, It's set if block cache is enabled.
-    pub fn cache(&self) -> Option<Cache> {
-        self.cache.clone()
+    /// Block cache wrapper handle.
+    pub fn cache(&self) -> &Cache {
+        &self.cache
     }
 
-    fn new(opts: Options) -> std::result::Result<(Self, Writer), BuildError> {
-        let cache = if opts.cache_size > 0 {
-            Some(Cache::new_lru_cache(opts.cache_size))
-        } else {
-            None
-        };
+    pub fn new(
+        mut updateable_options: impl Updateable<WorkerOptions> + Send + 'static,
+    ) -> std::result::Result<(Self, Writer), BuildError> {
+        // todo start a task that updates rocksdb options
+        let options = &updateable_options.load();
+        let rock_opts = &options.rocksdb;
+
+        // todo: move to global cache
+        let cache = Cache::new_lru_cache(rock_opts.rocksdb_cache_size());
 
         let tables = vec![
             //
             // keyed by partition key + user key
             //
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Inbox), cf_options(&opts, cache.clone())),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(State), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Inbox),
+                cf_options(rock_opts, cache.clone()),
+            ),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(State),
+                cf_options(rock_opts, cache.clone()),
+            ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(InvocationStatus),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(ServiceStatus),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(Journal),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(Idempotency),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
             //
             // keyed by partition id + suffix
             //
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Outbox), cf_options(&opts, cache.clone())),
-            rocksdb::ColumnFamilyDescriptor::new(cf_name(Timers), cf_options(&opts, cache.clone())),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Outbox),
+                cf_options(rock_opts, cache.clone()),
+            ),
+            rocksdb::ColumnFamilyDescriptor::new(
+                cf_name(Timers),
+                cf_options(rock_opts, cache.clone()),
+            ),
             // keyed by partition_id + partition_id
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(Deduplication),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
             // keyed by partition_id + u64
             rocksdb::ColumnFamilyDescriptor::new(
                 cf_name(PartitionStateMachine),
-                cf_options(&opts, cache.clone()),
+                cf_options(rock_opts, cache.clone()),
             ),
         ];
 
-        let db_options = db_options(&opts);
+        let db_options = db_options(rock_opts);
 
-        let is_empty_db = Self::is_empty_db(&opts.path);
+        let is_empty_db = Self::is_empty_db(options.data_dir());
 
-        let rdb = DB::open_cf_descriptors(&db_options, opts.path, tables)
+        let rdb = DB::open_cf_descriptors(&db_options, options.data_dir(), tables)
             .map_err(BuildError::from_rocksdb_error)?;
 
         if is_empty_db {
@@ -869,6 +816,8 @@ mod tests {
     use crate::{BuildError, RocksDBStorage, STORAGE_FORMAT_VERSION};
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
+    use restate_types::arc_util::Constant;
+    use restate_types::config::WorkerOptions;
     use tempfile::tempdir;
     use test_log::test;
 
@@ -897,16 +846,10 @@ mod tests {
         //
         // create a rocksdb storage from options
         //
-        let temp_dir = tempdir().unwrap();
-        let path = temp_dir.into_path();
-
-        let opts = crate::Options {
-            path,
-            ..Default::default()
-        };
-        let (rocksdb, _) = opts
-            .clone()
-            .build()
+        // in test mode, base directory is a random temp dir automatically and is pinned to this
+        // worker options object.
+        let worker_options = WorkerOptions::default();
+        let (rocksdb, _) = RocksDBStorage::new(Constant::new(worker_options.clone()))
             .expect("RocksDB storage creation should succeed");
 
         // fake a different storage format version
@@ -915,8 +858,10 @@ mod tests {
 
         drop(rocksdb);
 
+        let maybe_rocksdb = RocksDBStorage::new(Constant::new(worker_options));
+
         assert_that!(
-            opts.build().err().unwrap(),
+            maybe_rocksdb.err().unwrap(),
             pat!(BuildError::IncompatibleStorageFormat(eq(
                 incompatible_version
             )))

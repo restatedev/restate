@@ -18,19 +18,15 @@ use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::Body;
 use hyper::{HeaderMap, Response, Uri};
+use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
 use std::fmt::Formatter;
 use std::future::Future;
 
 pub use crate::lambda::AssumeRoleCacheMode;
-pub use options::{
-    HttpClientOptionsBuilder, HttpClientOptionsBuilderError, LambdaClientOptionsBuilder,
-    LambdaClientOptionsBuilderError, Options, OptionsBuilder, OptionsBuilderError,
-};
 
 mod http;
 mod lambda;
-mod options;
 mod proxy;
 mod request_identity;
 mod utils;
@@ -49,13 +45,12 @@ impl ServiceClient {
     }
 
     pub fn from_options(
-        options: Options,
+        options: &ServiceClientOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Result<Self, BuildError> {
-        let (http, lambda) = options.dissolve();
         Ok(Self::new(
-            HttpClient::from_options(http)?,
-            LambdaClient::from_options(lambda, assume_role_cache_mode),
+            HttpClient::from_options(&options.http)?,
+            LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
         ))
     }
 }

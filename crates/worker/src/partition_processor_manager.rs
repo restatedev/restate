@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{Options, PartitionProcessor};
+use crate::PartitionProcessor;
 use anyhow::Context;
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
@@ -16,6 +16,8 @@ use restate_invoker_impl::ChannelServiceHandle;
 use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
 use restate_network::Networking;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::arc_util::ArcSwapExt;
+use restate_types::config::{UpdateableConfiguration, WorkerOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::logs::{LogId, Payload};
@@ -28,10 +30,10 @@ use std::ops::RangeInclusive;
 use tracing::debug;
 
 pub struct PartitionProcessorManager {
+    updateable_config: UpdateableConfiguration,
     node_id: GenerationalNodeId,
     running_partition_processors: HashMap<PartitionId, TaskId>,
 
-    options: Options,
     metadata_store_client: MetadataStoreClient,
     rocksdb_storage: RocksDBStorage,
     networking: Networking,
@@ -41,8 +43,8 @@ pub struct PartitionProcessorManager {
 
 impl PartitionProcessorManager {
     pub fn new(
+        updateable_config: UpdateableConfiguration,
         node_id: GenerationalNodeId,
-        options: Options,
         metadata_store_client: MetadataStoreClient,
         rocksdb_storage: RocksDBStorage,
         networking: Networking,
@@ -50,9 +52,9 @@ impl PartitionProcessorManager {
         invoker_handle: ChannelServiceHandle,
     ) -> Self {
         Self {
+            updateable_config,
             running_partition_processors: HashMap::default(),
             node_id,
-            options,
             metadata_store_client,
             rocksdb_storage,
             networking,
@@ -63,6 +65,8 @@ impl PartitionProcessorManager {
 
     #[allow(clippy::map_entry)]
     pub async fn apply_plan(&mut self, plan: PartitionProcessorPlan) -> anyhow::Result<()> {
+        let config = self.updateable_config.pinned();
+        let options = &config.worker;
         let partition_table = metadata()
             .wait_for_partition_table(plan.min_required_partition_table_version)
             .await?;
@@ -77,8 +81,12 @@ impl PartitionProcessorManager {
                         let partition_range = partition_table
                             .partition_range(partition_id)
                             .expect("partition_range to be known");
-                        let task_id =
-                            self.spawn_partition_processor(partition_id, partition_range, role)?;
+                        let task_id = self.spawn_partition_processor(
+                            options,
+                            partition_id,
+                            partition_range,
+                            role,
+                        )?;
                         self.running_partition_processors
                             .insert(partition_id, task_id);
                     } else {
@@ -96,11 +104,13 @@ impl PartitionProcessorManager {
 
     fn spawn_partition_processor(
         &mut self,
+        options: &WorkerOptions,
         partition_id: PartitionId,
         partition_range: RangeInclusive<PartitionKey>,
         role: Role,
     ) -> Result<TaskId, ShutdownError> {
-        let processor = self.create_partition_processor(partition_id, partition_range.clone());
+        let processor =
+            self.create_partition_processor(options, partition_id, partition_range.clone());
         let networking = self.networking.clone();
         let mut bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
@@ -129,14 +139,15 @@ impl PartitionProcessorManager {
 
     fn create_partition_processor(
         &self,
+        options: &WorkerOptions,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> PartitionProcessor {
         PartitionProcessor::new(
             partition_id,
             partition_key_range,
-            self.options.timers.clone(),
-            self.options.channel_size,
+            options.num_timers_in_memory_limit,
+            options.internal_queue_length,
             self.invoker_handle.clone(),
             self.rocksdb_storage.clone(),
         )

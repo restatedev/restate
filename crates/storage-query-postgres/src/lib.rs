@@ -9,9 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod extended_query;
-pub mod options;
 mod pgwire_server;
 pub mod service;
 
-pub use crate::options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use service::Error;

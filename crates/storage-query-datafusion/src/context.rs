@@ -8,13 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{analyzer, physical_optimizer};
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use codederror::CodedError;
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use std::sync::Arc;
+use restate_invoker_api::StatusHandle;
+use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::deployment::DeploymentResolver;
+use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::config::QueryEngineOptions;
+
+use crate::{analyzer, physical_optimizer};
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum BuildError {
+    #[error(transparent)]
+    #[code(unknown)]
+    Datafusion(#[from] DataFusionError),
+}
 
 #[derive(Clone)]
 pub struct QueryContext {
@@ -28,6 +45,35 @@ impl Default for QueryContext {
 }
 
 impl QueryContext {
+    pub fn from_options(
+        options: &QueryEngineOptions,
+        rocksdb: RocksDBStorage,
+        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        schemas: impl DeploymentResolver
+            + ComponentMetadataResolver
+            + Send
+            + Sync
+            + Debug
+            + Clone
+            + 'static,
+    ) -> Result<QueryContext, BuildError> {
+        let ctx = QueryContext::new(
+            options.memory_limit,
+            options.tmp_dir.clone(),
+            options.query_parallelism,
+        );
+        crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
+        crate::virtual_object_status::register_self(&ctx, rocksdb.clone())?;
+        crate::state::register_self(&ctx, rocksdb.clone())?;
+        crate::journal::register_self(&ctx, rocksdb.clone())?;
+        crate::invocation_state::register_self(&ctx, status)?;
+        crate::inbox::register_self(&ctx, rocksdb)?;
+        crate::deployment::register_self(&ctx, schemas.clone())?;
+        crate::component::register_self(&ctx, schemas)?;
+
+        Ok(ctx)
+    }
+
     pub fn new(
         memory_limit: Option<usize>,
         temp_folder: Option<String>,

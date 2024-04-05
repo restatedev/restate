@@ -481,7 +481,9 @@ pub mod subscription {
     use std::collections::HashMap;
     use std::fmt;
 
+    use restate_types::config::KafkaIngressOptions;
     use restate_types::identifiers::SubscriptionId;
+    use tracing::warn;
 
     #[derive(Debug, Clone, Eq, PartialEq, Default)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -628,6 +630,61 @@ pub mod subscription {
         type Error: Into<anyhow::Error>;
 
         fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("invalid option '{name}'. Reason: {reason}")]
+    pub struct ValidationError {
+        name: &'static str,
+        reason: &'static str,
+    }
+
+    impl SubscriptionValidator for KafkaIngressOptions {
+        type Error = ValidationError;
+
+        fn validate(&self, mut subscription: Subscription) -> Result<Subscription, Self::Error> {
+            // Retrieve the cluster option and merge them with subscription metadata
+            let Source::Kafka { cluster, .. } = subscription.source();
+            let cluster_options = &self.clusters.get(cluster).ok_or(ValidationError {
+            name: "source",
+            reason: "specified cluster in the source URI does not exist. Make sure it is defined in the KafkaOptions",
+        })?.additional_options;
+
+            if cluster_options.contains_key("enable.auto.commit")
+                || subscription.metadata().contains_key("enable.auto.commit")
+            {
+                warn!("The configuration option enable.auto.commit should not be set and it will be ignored.");
+            }
+            if cluster_options.contains_key("enable.auto.offset.store")
+                || subscription
+                    .metadata()
+                    .contains_key("enable.auto.offset.store")
+            {
+                warn!("The configuration option enable.auto.offset.store should not be set and it will be ignored.");
+            }
+
+            // Set the group.id if unset
+            if !(cluster_options.contains_key("group.id")
+                || subscription.metadata().contains_key("group.id"))
+            {
+                let group_id = subscription.id().to_string();
+
+                subscription
+                    .metadata_mut()
+                    .insert("group.id".to_string(), group_id);
+            }
+
+            // Set client.id if unset
+            if !(cluster_options.contains_key("client.id")
+                || subscription.metadata().contains_key("client.id"))
+            {
+                subscription
+                    .metadata_mut()
+                    .insert("client.id".to_string(), "restate".to_string());
+            }
+
+            Ok(subscription)
+        }
     }
 
     #[cfg(feature = "mocks")]

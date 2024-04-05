@@ -17,6 +17,8 @@ use restate_core::TestCoreEnv;
 use restate_meta::MetaService;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
+use restate_types::arc_util::Constant;
+use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
@@ -32,14 +34,18 @@ use tonic::transport::{Channel, Uri};
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
         .into_generator()
-        .into_root_schema_for::<restate_node::config::Configuration>();
+        .into_root_schema_for::<Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
 
-fn generate_default_config() -> anyhow::Result<()> {
-    println!("{}", restate_node::config::Configuration::default().dump()?);
-    Ok(())
+fn generate_default_config() {
+    println!(
+        "{}",
+        Configuration::default()
+            .dump()
+            .expect("default configuration")
+    );
 }
 
 // Need this for worker Handle
@@ -85,20 +91,14 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
-    let admin_options = restate_admin::Options::default();
-    let meta_options = restate_meta::Options::default();
-    let mut meta =
-        MetaService::from_options(meta_options, Mock).expect("expect to build meta service");
+    let config = Configuration::default();
+    let mut meta = MetaService::from_options(&config.admin, &config.common.service_client, Mock)
+        .expect("expect to build meta service");
     let openapi_address = format!(
         "http://localhost:{}/openapi",
-        admin_options.bind_address.port()
+        config.admin.bind_address.port()
     );
-    let admin_service = AdminService::from_options(
-        admin_options,
-        meta.schemas(),
-        meta.meta_handle(),
-        meta.schema_reader(),
-    );
+    let admin_service = AdminService::new(meta.schemas(), meta.meta_handle(), meta.schema_reader());
     meta.init().await.unwrap();
 
     // We start the Meta component, then download the openapi schema generated
@@ -113,6 +113,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         "doc-gen",
         None,
         admin_service.run(
+            Constant::new(config.admin),
             NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
             bifrost,
         ),
@@ -158,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         None => print_help(),
         Some(t) => match t.as_str() {
             "generate-config-schema" => generate_config_schema()?,
-            "generate-default-config" => generate_default_config()?,
+            "generate-default-config" => generate_default_config(),
             "generate-rest-api-doc" => generate_rest_api_doc().await?,
             invalid => {
                 print_help();
