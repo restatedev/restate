@@ -238,15 +238,11 @@ impl ReadOnlyJournalTable for StateReaderMock {
 }
 
 impl ReadOnlyIdempotencyTable for StateReaderMock {
-    fn get_idempotency_metadata(
+    async fn get_idempotency_metadata(
         &mut self,
         _idempotency_id: &IdempotencyId,
-    ) -> impl Future<Output = StorageResult<Option<IdempotencyMetadata>>> + Send {
+    ) -> StorageResult<Option<IdempotencyMetadata>> {
         unimplemented!();
-
-        // Code inference for impl Future won't work without this
-        #[allow(unreachable_code)]
-        futures::future::ok(None)
     }
 }
 

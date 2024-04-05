@@ -101,6 +101,8 @@ impl ActionEffectHandler {
                 }
             }
             ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                // We need this self proposal because we need to agree between leaders and followers on the wakeup time.
+                //  We can get rid of this once we'll have a synchronized clock between leaders/followers.
                 let header = self.create_header(invocation_id.partition_key());
                 append_envelope_to_bifrost(
                     &mut self.bifrost,
