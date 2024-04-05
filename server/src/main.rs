@@ -24,6 +24,7 @@ use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
+use tracing::debug;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -187,6 +188,10 @@ fn main() {
                 info!("Loaded default configuration");
             }
 
+            debug!(
+                "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
+                Configuration::pinned().dump().unwrap()
+            );
             // start config watcher
             config_loader.start();
 
