@@ -27,8 +27,8 @@ use metrics::counter;
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
-    StateReader,
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_queue::SegmentQueue;
 use restate_schema_api::deployment::DeploymentResolver;
@@ -153,8 +153,14 @@ where
 
 #[derive(Debug)]
 pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry> {
-    // Used for constructing the invoker sender
+    // Used for constructing the invoker sender and status reader
     input_tx: mpsc::UnboundedSender<InputCommand>,
+    status_tx: mpsc::UnboundedSender<
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    >,
     // For the segment queue
     tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
@@ -182,13 +188,16 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
         entry_enricher: EE,
     ) -> Service<JR, SR, EE, DMR> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
         Self {
             input_tx,
+            status_tx,
             tmp_dir,
             inner: ServiceInner {
                 input_rx,
+                status_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
@@ -266,7 +275,7 @@ where
     }
 
     pub fn status_reader(&self) -> ChannelStatusReader {
-        ChannelStatusReader(self.input_tx.clone())
+        ChannelStatusReader(self.status_tx.clone())
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
@@ -302,6 +311,12 @@ where
 #[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner> {
     input_rx: mpsc::UnboundedReceiver<InputCommand>,
+    status_rx: mpsc::UnboundedReceiver<
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    >,
 
     // Channel to communicate with invocation tasks
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -335,6 +350,17 @@ where
         F: Future<Output = ()>,
     {
         tokio::select! {
+            Some(cmd) = self.status_rx.recv() => {
+                let keys = cmd.payload();
+                let statuses = self
+                    .invocation_state_machine_manager
+                    .registered_partitions_with_keys(keys.clone())
+                    .flat_map(|partition| self.status_store.status_for_partition(partition))
+                    .filter(|status| keys.contains(&status.full_invocation_id().partition_key()))
+                    .collect();
+                let _ = cmd.reply(statuses);
+            },
+
             Some(input_message) = self.input_rx.recv() => {
                 match input_message {
                     // --- Spillable queue loading/offloading
@@ -357,16 +383,6 @@ where
                     },
                     InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
                         self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
-                    },
-                    InputCommand::ReadStatus(cmd) => {
-                        let keys = cmd.payload();
-                        let statuses = self
-                            .invocation_state_machine_manager
-                            .registered_partitions_with_keys(keys.clone())
-                            .flat_map(|partition| self.status_store.status_for_partition(partition))
-                            .filter(|status| keys.contains(&status.full_invocation_id().partition_key()))
-                            .collect();
-                        let _ = cmd.reply(statuses);
                     }
                 }
             },
@@ -995,16 +1011,28 @@ mod tests {
     const MOCK_PARTITION: PartitionLeaderEpoch = (0, LeaderEpoch::INITIAL);
 
     impl<ITR> ServiceInner<ITR> {
+        #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
             retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
-        ) -> (mpsc::UnboundedSender<InputCommand>, Self) {
+        ) -> (
+            mpsc::UnboundedSender<InputCommand>,
+            mpsc::UnboundedSender<
+                restate_futures_util::command::Command<
+                    RangeInclusive<PartitionKey>,
+                    Vec<InvocationStatusReport>,
+                >,
+            >,
+            Self,
+        ) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
+            let (status_tx, status_rx) = mpsc::unbounded_channel();
             let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
             let service_inner = Self {
                 input_rx,
+                status_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
@@ -1015,7 +1043,7 @@ mod tests {
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             };
-            (input_tx, service_inner)
+            (input_tx, status_tx, service_inner)
         }
 
         fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect>
@@ -1130,7 +1158,7 @@ mod tests {
         let sid_1 = mock_sid();
         let sid_2 = mock_sid();
 
-        let (_invoker_tx, mut service_inner) =
+        let (_invoker_tx, _status_tx, mut service_inner) =
             ServiceInner::mock(|_, _, _, _, _| ready(()), Default::default(), Some(1));
         let _ = service_inner.register_mock_partition();
 
@@ -1207,7 +1235,7 @@ mod tests {
     async fn reclaim_quota_after_abort() {
         let fid = mock_sid();
 
-        let (_, mut service_inner) = ServiceInner::mock(
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
             |partition,
              full_invocation_id,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,

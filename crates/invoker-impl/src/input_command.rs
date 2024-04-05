@@ -60,14 +60,6 @@ pub(crate) enum InputCommand {
         partition_key_range: RangeInclusive<PartitionKey>,
         sender: mpsc::Sender<Effect>,
     },
-
-    // Read status
-    ReadStatus(
-        restate_futures_util::command::Command<
-            RangeInclusive<PartitionKey>,
-            Vec<InvocationStatusReport>,
-        >,
-    ),
 }
 
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
@@ -190,7 +182,14 @@ impl ServiceHandle for ChannelServiceHandle {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChannelStatusReader(pub(super) mpsc::UnboundedSender<InputCommand>);
+pub struct ChannelStatusReader(
+    pub(super)  mpsc::UnboundedSender<
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    >,
+);
 
 impl StatusHandle for ChannelStatusReader {
     type Iterator = itertools::Either<
@@ -200,7 +199,7 @@ impl StatusHandle for ChannelStatusReader {
 
     async fn read_status(&self, keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
         let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
-        if self.0.send(InputCommand::ReadStatus(cmd)).is_err() {
+        if self.0.send(cmd).is_err() {
             return itertools::Either::Left(std::iter::empty::<InvocationStatusReport>());
         }
 
