@@ -33,7 +33,7 @@ use crate::network::{
 };
 use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
-use crate::{TaskCenter, TaskCenterFactory};
+use crate::{TaskCenter, TaskCenterBuilder};
 
 #[derive(Clone, Default)]
 pub struct MockNetworkSender {
@@ -157,7 +157,10 @@ where
         network_sender: N,
         network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
     ) -> Self {
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
 
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_store_client = MetadataStoreClient::new_in_memory();
