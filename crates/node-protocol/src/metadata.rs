@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
-pub use restate_schema::SchemaRegistry;
+pub use restate_schema::SchemaInformation;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -80,7 +80,7 @@ pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
     Logs(Logs),
-    SchemaRegistry(SchemaRegistry),
+    SchemaRegistry(SchemaInformation),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

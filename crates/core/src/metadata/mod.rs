@@ -21,7 +21,7 @@ use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
 pub use restate_node_protocol::metadata::MetadataKind;
-use restate_node_protocol::metadata::{MetadataContainer, SchemaRegistry};
+use restate_node_protocol::metadata::{MetadataContainer, SchemaInformation};
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -115,12 +115,12 @@ impl Metadata {
         }
     }
 
-    pub fn schema_registry(&self) -> Option<Arc<SchemaRegistry>> {
-        self.inner.schema_registry.load_full()
+    pub fn schema_information(&self) -> Option<Arc<SchemaInformation>> {
+        self.inner.schema_information.load_full()
     }
 
-    pub fn schema_registry_version(&self) -> Version {
-        let c = self.inner.schema_registry.load();
+    pub fn schema_information_version(&self) -> Version {
+        let c = self.inner.schema_information.load();
         match c.as_deref() {
             Some(c) => c.version(),
             None => Version::INVALID,
@@ -164,7 +164,7 @@ struct MetadataInner {
     nodes_config: ArcSwapOption<NodesConfiguration>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
     logs: ArcSwapOption<Logs>,
-    schema_registry: ArcSwapOption<SchemaRegistry>,
+    schema_information: ArcSwapOption<SchemaInformation>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 

@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::schema_registry::error::{
+    ComponentError, DeploymentError, SchemaError, SchemaRegistryError,
+};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -16,9 +19,7 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::ShutdownError;
-use restate_schema::{ComponentError, DeploymentError};
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -43,7 +44,9 @@ pub enum MetaApiError {
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
     #[error(transparent)]
-    SchemaRegistry(#[from] restate_schema::Error),
+    Schema(#[from] SchemaError),
+    #[error(transparent)]
+    Discovery(#[from] restate_service_protocol::discovery::DiscoveryError),
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -68,23 +71,27 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::SchemaRegistry(schema_registry_error) => match schema_registry_error {
-                restate_schema::Error::NotFound => StatusCode::NOT_FOUND,
-                restate_schema::Error::Override
-                | restate_schema::Error::Component(ComponentError::DifferentType { .. })
-                | restate_schema::Error::Component(ComponentError::RemovedHandlers { .. })
-                | restate_schema::Error::Deployment(DeploymentError::IncorrectId { .. }) => {
+            MetaApiError::Schema(schema_error) => match schema_error {
+                SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
+                SchemaError::Override(_)
+                | SchemaError::Component(ComponentError::DifferentType { .. })
+                | SchemaError::Component(ComponentError::RemovedHandlers { .. })
+                | SchemaError::Deployment(DeploymentError::IncorrectId { .. }) => {
                     StatusCode::CONFLICT
                 }
-                restate_schema::Error::Component(_) => StatusCode::BAD_REQUEST,
+                SchemaError::Component(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {
-            MetaApiError::SchemaRegistry(m) => ErrorDescriptionResponse {
+            MetaApiError::Schema(m) => ErrorDescriptionResponse {
                 message: m.decorate().to_string(),
                 restate_code: m.code().map(Code::code),
+            },
+            MetaApiError::Discovery(err) => ErrorDescriptionResponse {
+                message: err.decorate().to_string(),
+                restate_code: err.code().map(Code::code),
             },
             e => ErrorDescriptionResponse {
                 message: e.to_string(),
@@ -126,11 +133,13 @@ impl ToResponses for MetaApiError {
     }
 }
 
-impl From<ReadModifyWriteError<restate_schema::Error>> for MetaApiError {
-    fn from(value: ReadModifyWriteError<restate_schema::Error>) -> Self {
+impl From<SchemaRegistryError> for MetaApiError {
+    fn from(value: SchemaRegistryError) -> Self {
         match value {
-            ReadModifyWriteError::FailedOperation(err) => MetaApiError::SchemaRegistry(err),
-            err => MetaApiError::Internal(err.to_string()),
+            SchemaRegistryError::Schema(err) => MetaApiError::Schema(err),
+            SchemaRegistryError::Internal(msg) => MetaApiError::Internal(msg),
+            SchemaRegistryError::Shutdown(err) => MetaApiError::Internal(err.to_string()),
+            SchemaRegistryError::Discovery(err) => MetaApiError::Discovery(err),
         }
     }
 }

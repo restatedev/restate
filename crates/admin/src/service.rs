@@ -25,6 +25,7 @@ use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::SubscriptionValidator;
 use restate_service_protocol::discovery::ComponentDiscovery;
 
+use crate::schema_registry::SchemaRegistry;
 use crate::Error;
 use crate::{rest_api, state, storage_query};
 
@@ -33,10 +34,7 @@ use crate::{rest_api, state, storage_query};
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
 pub struct AdminService<V> {
-    metadata_writer: MetadataWriter,
-    metadata_store_client: MetadataStoreClient,
-    subscription_validator: V,
-    component_discovery: ComponentDiscovery,
+    schema_registry: SchemaRegistry<V>,
 }
 
 impl<V> AdminService<V>
@@ -50,10 +48,12 @@ where
         component_discovery: ComponentDiscovery,
     ) -> Self {
         Self {
-            metadata_writer,
-            metadata_store_client,
-            subscription_validator,
-            component_discovery,
+            schema_registry: SchemaRegistry::new(
+                metadata_store_client,
+                metadata_writer,
+                component_discovery,
+                subscription_validator,
+            ),
         }
     }
 
@@ -64,14 +64,9 @@ where
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.load();
-        let rest_state = state::AdminServiceState::new(
-            self.metadata_writer,
-            self.metadata_store_client,
-            self.subscription_validator,
-            self.component_discovery,
-            bifrost,
-            task_center(),
-        );
+
+        let rest_state =
+            state::AdminServiceState::new(self.schema_registry, bifrost, task_center());
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));

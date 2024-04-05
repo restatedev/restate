@@ -16,11 +16,11 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, trace, warn};
 
-use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, SchemaRegistry};
+use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, SchemaInformation};
 use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
 };
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -276,7 +276,7 @@ where
                 self.update_logs(logs);
             }
             MetadataContainer::SchemaRegistry(schemas) => {
-                self.update_schemas(schemas);
+                self.update_schema_information(schemas);
             }
         }
 
@@ -314,7 +314,15 @@ where
                     self.update_logs(logs);
                 }
             }
-            MetadataKind::Schemas => {}
+            MetadataKind::Schemas => {
+                if let Some(schema_information) = self
+                    .metadata_store_client
+                    .get::<SchemaInformation>(SCHEMA_INFORMATION_KEY.clone())
+                    .await?
+                {
+                    self.update_schema_information(schema_information)
+                }
+            }
         }
 
         Ok(())
@@ -338,8 +346,9 @@ where
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
-    fn update_schemas(&mut self, schemas: SchemaRegistry) {
-        let maybe_new_version = Self::update_internal(&self.inner.schema_registry, schemas);
+    fn update_schema_information(&mut self, schema_information: SchemaInformation) {
+        let maybe_new_version =
+            Self::update_internal(&self.inner.schema_information, schema_information);
 
         self.notify_watches(maybe_new_version, MetadataKind::Schemas);
     }

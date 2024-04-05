@@ -18,8 +18,10 @@ mod health;
 mod invocations;
 mod subscriptions;
 
+use codederror::CodedError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
+use restate_errors::warn_it;
 use restate_schema_api::subscription::SubscriptionValidator;
 use restate_types::identifiers::PartitionKey;
 use restate_wal_protocol::{Destination, Header, Source};
@@ -109,4 +111,12 @@ fn create_envelope_header(partition_key: PartitionKey) -> Header {
             dedup: None,
         },
     }
+}
+
+#[inline]
+fn log_error<T, E: CodedError>(result: Result<T, E>) -> Result<T, E> {
+    result.map_err(|err| {
+        warn_it!(err);
+        err
+    })
 }

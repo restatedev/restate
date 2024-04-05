@@ -9,19 +9,15 @@
 // by the Apache License, Version 2.0.
 //
 
+use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{MetadataWriter, TaskCenter};
+use restate_core::TaskCenter;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_service_protocol::discovery::ComponentDiscovery;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {
-    pub metadata_writer: MetadataWriter,
-    pub metadata_store_client: MetadataStoreClient,
-    pub subscription_validator: V,
-    pub component_discovery: ComponentDiscovery,
+    pub schema_registry: SchemaRegistry<V>,
     pub bifrost: Bifrost,
     pub task_center: TaskCenter,
 }
@@ -33,18 +29,12 @@ pub struct QueryServiceState {
 
 impl<V> AdminServiceState<V> {
     pub fn new(
-        metadata_writer: MetadataWriter,
-        metadata_store_client: MetadataStoreClient,
-        subscription_validator: V,
-        component_discovery: ComponentDiscovery,
+        schema_registry: SchemaRegistry<V>,
         bifrost: Bifrost,
         task_center: TaskCenter,
     ) -> Self {
         Self {
-            metadata_writer,
-            metadata_store_client,
-            subscription_validator,
-            component_discovery,
+            schema_registry,
             bifrost,
             task_center,
         }

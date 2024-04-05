@@ -1,18 +1,52 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
 use http::header::InvalidHeaderValue;
 use http::Uri;
+use restate_core::metadata_store::ReadModifyWriteError;
+use restate_core::ShutdownError;
 use restate_schema_api::invocation_target::BadInputContentType;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum Error {
+pub enum SchemaRegistryError {
+    #[error(transparent)]
+    Schema(
+        #[from]
+        #[code]
+        SchemaError,
+    ),
+    #[error(transparent)]
+    Discovery(
+        #[from]
+        #[code]
+        restate_service_protocol::discovery::DiscoveryError,
+    ),
+    #[error("internal error: {0}")]
+    #[code(unknown)]
+    Internal(String),
+    #[error(transparent)]
+    #[code(unknown)]
+    Shutdown(#[from] ShutdownError),
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum SchemaError {
     // Those are generic and used by all schema resources
-    #[error("not found in the schema registry")]
+    #[error("not found in the schema registry: {0}")]
     #[code(unknown)]
-    NotFound,
-    #[error("already exists in the schema registry")]
+    NotFound(String),
+    #[error("already exists in the schema registry: {0}")]
     #[code(unknown)]
-    Override,
+    Override(String),
 
     // Specific resources errors
     #[error(transparent)]
@@ -86,4 +120,13 @@ pub enum DeploymentError {
         requested: DeploymentId,
         existing: DeploymentId,
     },
+}
+
+impl From<ReadModifyWriteError<SchemaError>> for SchemaRegistryError {
+    fn from(value: ReadModifyWriteError<SchemaError>) -> Self {
+        match value {
+            ReadModifyWriteError::FailedOperation(err) => SchemaRegistryError::Schema(err),
+            err => SchemaRegistryError::Internal(err.to_string()),
+        }
+    }
 }

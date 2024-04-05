@@ -12,17 +12,15 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::subscriptions::*;
-use restate_schema_api::subscription::{SubscriptionResolver, SubscriptionValidator};
+use restate_schema_api::subscription::SubscriptionValidator;
 
+use crate::rest_api::log_error;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
-use restate_core::metadata;
-use restate_schema::SchemaRegistry;
 use restate_types::identifiers::SubscriptionId;
-use restate_types::metadata_store::keys::SCHEMA_REGISTRY_KEY;
 
 /// Create subscription.
 #[openapi(
@@ -44,30 +42,12 @@ pub async fn create_subscription<V: SubscriptionValidator>(
     State(state): State<AdminServiceState<V>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
-    let mut subscription_id = None;
-
-    let schema_registry = state
-        .metadata_store_client
-        .read_modify_write(SCHEMA_REGISTRY_KEY.clone(), |schema_registry| {
-            let mut schema_registry: SchemaRegistry = schema_registry.unwrap_or_default();
-            subscription_id = Some(schema_registry.add_subscription(
-                None,
-                payload.source.clone(),
-                payload.sink.clone(),
-                payload.options.clone(),
-                &state.subscription_validator,
-            )?);
-            schema_registry.increment_version();
-
-            Ok::<_, restate_schema::Error>(schema_registry)
-        })
-        .await?;
-
-    let subscription = schema_registry
-        .get_subscription(subscription_id.expect("subscription was just added"))
-        .expect("subscription was just added");
-
-    state.metadata_writer.update(schema_registry).await?;
+    let subscription = log_error(
+        state
+            .schema_registry
+            .create_subscription(payload.source, payload.sink, payload.options)
+            .await,
+    )?;
 
     Ok((
         StatusCode::CREATED,
@@ -95,16 +75,14 @@ pub async fn get_subscription<V>(
     State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
-    state
+    let subscription = state
         .task_center
         .run_in_scope_sync("get-subscription", None, || {
-            let subscription = metadata()
-                .schema_registry()
-                .and_then(|schema_registry| schema_registry.get_subscription(subscription_id))
-                .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
-
-            Ok(SubscriptionResponse::from(subscription).into())
+            state.schema_registry.get_subscription(subscription_id)
         })
+        .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
+
+    Ok(SubscriptionResponse::from(subscription).into())
 }
 
 /// List subscriptions.
@@ -148,23 +126,19 @@ pub async fn list_subscriptions<V>(
         _ => vec![],
     };
 
-    state
+    let subscriptions = state
         .task_center
         .run_in_scope_sync("list-subscriptions", None, || {
-            ListSubscriptionsResponse {
-                subscriptions: metadata()
-                    .schema_registry()
-                    .map(|schema_registry| {
-                        schema_registry
-                            .list_subscriptions(&filters)
-                            .into_iter()
-                            .map(SubscriptionResponse::from)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            }
-            .into()
-        })
+            state.schema_registry.list_subscriptions(&filters)
+        });
+
+    ListSubscriptionsResponse {
+        subscriptions: subscriptions
+            .into_iter()
+            .map(SubscriptionResponse::from)
+            .collect(),
+    }
+    .into()
 }
 
 /// Delete subscription.
@@ -192,24 +166,11 @@ pub async fn delete_subscription<V>(
     State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
-    let schema_registry = state
-        .metadata_store_client
-        .read_modify_write(SCHEMA_REGISTRY_KEY.clone(), |schema_registry| {
-            let mut schema_registry: SchemaRegistry = schema_registry.unwrap_or_default();
-
-            if schema_registry
-                .remove_subscription(subscription_id)
-                .is_some()
-            {
-                schema_registry.increment_version();
-                Ok(schema_registry)
-            } else {
-                Err(restate_schema::Error::NotFound)
-            }
-        })
-        .await?;
-
-    state.metadata_writer.update(schema_registry).await?;
-
+    log_error(
+        state
+            .schema_registry
+            .delete_subscription(subscription_id)
+            .await,
+    )?;
     Ok(StatusCode::ACCEPTED)
 }

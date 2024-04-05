@@ -43,12 +43,6 @@ pub enum WorkerRoleError {
         #[code]
         restate_worker::Error,
     ),
-    #[error(transparent)]
-    Schema(
-        #[from]
-        #[code]
-        SchemaError,
-    ),
     #[error("invalid cluster controller address: {0}")]
     #[code(unknown)]
     InvalidClusterControllerAddress(http::Error),
@@ -71,12 +65,6 @@ pub enum SchemaError {
     #[error("failed decoding grpc payload: {0}")]
     #[code(unknown)]
     Decode(#[from] bincode::error::DecodeError),
-    #[error("failed updating schemas: {0}")]
-    Update(
-        #[from]
-        #[code]
-        restate_schema::Error,
-    ),
     #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
     Subscription(#[from] restate_worker::WorkerHandleError),
@@ -203,7 +191,7 @@ impl WorkerRole {
                 },
                 version = metadata.wait_for_version(MetadataKind::Schemas, current_version) => {
                     version?;
-                    let schema_registry = metadata.schema_registry().expect("new schema information must be present");
+                    let schema_registry = metadata.schema_information().expect("new schema information must be present");
                     current_version = schema_registry.version();
                     schema_view.update(schema_registry);
 

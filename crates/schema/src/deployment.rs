@@ -8,21 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{SchemaRegistry, SchemaView};
+use super::{SchemaInformation, SchemaView};
 use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{Deployment, DeploymentMetadata, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DeploymentSchemas {
-    pub(crate) metadata: DeploymentMetadata,
+pub struct DeploymentSchemas {
+    pub metadata: DeploymentMetadata,
 
     // We need to store ComponentMetadata here only for queries
     // We could optimize the memory impact of this by reading these info from disk
-    pub(crate) components: Vec<ComponentMetadata>,
+    pub components: Vec<ComponentMetadata>,
 }
 
-impl DeploymentResolver for SchemaRegistry {
+impl DeploymentResolver for SchemaInformation {
     fn resolve_latest_deployment_for_component(
         &self,
         component_name: impl AsRef<str>,

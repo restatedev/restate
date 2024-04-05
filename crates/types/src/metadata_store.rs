@@ -19,7 +19,7 @@ pub mod keys {
     pub static PARTITION_TABLE_KEY: ByteString = ByteString::from_static("partition_table");
     pub static PARTITION_PROCESSOR_EPOCH_PREFIX: &str = "pp_epoch";
 
-    pub static SCHEMA_REGISTRY_KEY: ByteString = ByteString::from_static("schema_registry");
+    pub static SCHEMA_INFORMATION_KEY: ByteString = ByteString::from_static("schema_registry");
 
     pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {
         ByteString::from(format!("{PARTITION_PROCESSOR_EPOCH_PREFIX}_{partition_id}"))

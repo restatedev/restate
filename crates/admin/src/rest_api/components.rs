@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::create_envelope_header;
 use super::error::*;
+use super::{create_envelope_header, log_error};
 use crate::state::AdminServiceState;
 
 use axum::extract::{Path, State};
@@ -17,13 +17,9 @@ use axum::Json;
 use bytes::Bytes;
 use http::StatusCode;
 use okapi_operation::*;
-use restate_core::metadata;
 use restate_meta_rest_model::components::ListComponentsResponse;
 use restate_meta_rest_model::components::*;
-use restate_schema::SchemaRegistry;
-use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
-use restate_types::metadata_store::keys::SCHEMA_REGISTRY_KEY;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use tracing::warn;
@@ -38,17 +34,13 @@ use tracing::warn;
 pub async fn list_components<V>(
     State(state): State<AdminServiceState<V>>,
 ) -> Result<Json<ListComponentsResponse>, MetaApiError> {
-    state
+    let components = state
         .task_center
         .run_in_scope_sync("list-components", None, || {
-            Ok(ListComponentsResponse {
-                components: metadata()
-                    .schema_registry()
-                    .map(|schema_registry| schema_registry.list_components())
-                    .unwrap_or_default(),
-            }
-            .into())
-        })
+            state.schema_registry.list_components()
+        });
+
+    Ok(ListComponentsResponse { components }.into())
 }
 
 /// Get a component
@@ -70,14 +62,10 @@ pub async fn get_component<V>(
     state
         .task_center
         .run_in_scope_sync("get-component", None, || {
-            metadata()
-                .schema_registry()
-                .and_then(|schema_registry| {
-                    schema_registry.resolve_latest_component(&component_name)
-                })
-                .map(Into::into)
-                .ok_or_else(|| MetaApiError::ComponentNotFound(component_name))
+            state.schema_registry.get_component(&component_name)
         })
+        .map(Into::into)
+        .ok_or_else(|| MetaApiError::ComponentNotFound(component_name))
 }
 
 /// Modify a component
@@ -99,31 +87,19 @@ pub async fn modify_component<V>(
         ModifyComponentRequest,
     >,
 ) -> Result<Json<ComponentMetadata>, MetaApiError> {
-    state
+    let response = state
         .task_center
         .run_in_scope("modify-component", None, async {
-            let schema_registry = state
-                .metadata_store_client
-                .read_modify_write(SCHEMA_REGISTRY_KEY.clone(), |schema_registry| {
-                    let mut schema_registry: SchemaRegistry = schema_registry.unwrap_or_default();
-
-                    schema_registry.modify_component(component_name.clone(), public)?;
-                    schema_registry.increment_version();
-
-                    Ok::<_, restate_schema::Error>(schema_registry)
-                })
-                .await?;
-
-            let response = schema_registry
-                .resolve_latest_component(&component_name)
-                .map(Into::into)
-                .ok_or_else(|| MetaApiError::ComponentNotFound(component_name));
-
-            state.metadata_writer.update(schema_registry).await?;
-
-            response
+            log_error(
+                state
+                    .schema_registry
+                    .modify_component(component_name, public)
+                    .await,
+            )
         })
-        .await
+        .await?;
+
+    Ok(response.into())
 }
 
 /// Modify a component state

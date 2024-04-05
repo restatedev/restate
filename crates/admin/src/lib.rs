@@ -10,6 +10,7 @@
 
 mod error;
 mod rest_api;
+mod schema_registry;
 pub mod service;
 mod state;
 mod storage_query;

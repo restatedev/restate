@@ -53,6 +53,7 @@ tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+restate-schema = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 
