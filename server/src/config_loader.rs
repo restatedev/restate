@@ -77,11 +77,6 @@ impl ConfigLoader {
                     .only(&["AWS_EXTERNAL_ID"])
                     .map(|_| "aws_assume_role_external_id".into()),
             )
-            .merge(
-                Env::raw()
-                    .only(&["AWS_EXTERNAL_ID"])
-                    .map(|_| "aws_assume_role_external_id".into()),
-            )
     }
 
     pub fn start(self) {
