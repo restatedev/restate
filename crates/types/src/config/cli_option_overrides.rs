@@ -24,6 +24,7 @@ use super::LogFormat;
 #[derive(Debug, Clone, clap::Parser, Serialize, Default)]
 /// A subset of CommonOptions that can be parsed via the CLI. This **must** remain
 /// parse-compatible with CommonOptions.
+#[serde(rename_all = "kebab-case")]
 pub struct CommonOptionCliOverride {
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.

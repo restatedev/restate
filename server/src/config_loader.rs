@@ -67,7 +67,7 @@ impl ConfigLoader {
             .merge(
                 Env::prefixed("RESTATE_")
                     .split("__")
-                    .map(|k| k.as_str().replace("_", "-").into()),
+                    .map(|k| k.as_str().replace('_', "-").into()),
             )
             // Override tracing.log with RUST_LOG, if present
             .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log_filter".into()))
