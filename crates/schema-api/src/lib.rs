@@ -481,7 +481,7 @@ pub mod subscription {
     use std::collections::HashMap;
     use std::fmt;
 
-    use restate_types::config::KafkaIngressOptions;
+    use restate_types::config::IngressOptions;
     use restate_types::identifiers::SubscriptionId;
     use tracing::warn;
 
@@ -639,13 +639,13 @@ pub mod subscription {
         reason: &'static str,
     }
 
-    impl SubscriptionValidator for KafkaIngressOptions {
+    impl SubscriptionValidator for IngressOptions {
         type Error = ValidationError;
 
         fn validate(&self, mut subscription: Subscription) -> Result<Subscription, Self::Error> {
             // Retrieve the cluster option and merge them with subscription metadata
             let Source::Kafka { cluster, .. } = subscription.source();
-            let cluster_options = &self.clusters.get(cluster).ok_or(ValidationError {
+            let cluster_options = &self.get_kafka_cluster(cluster).ok_or(ValidationError {
             name: "source",
             reason: "specified cluster in the source URI does not exist. Make sure it is defined in the KafkaOptions",
         })?.additional_options;

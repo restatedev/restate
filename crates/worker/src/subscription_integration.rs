@@ -11,25 +11,25 @@
 use crate::{SubscriptionController, WorkerHandleError};
 use restate_ingress_kafka::SubscriptionCommandSender;
 use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::config::KafkaIngressOptions;
+use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use std::ops::Deref;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct SubscriptionControllerHandle(Arc<KafkaIngressOptions>, SubscriptionCommandSender);
+pub struct SubscriptionControllerHandle(Arc<IngressOptions>, SubscriptionCommandSender);
 
 impl SubscriptionControllerHandle {
     pub(crate) fn new(
-        kafka_options: KafkaIngressOptions,
+        ingress_options: IngressOptions,
         commands_tx: SubscriptionCommandSender,
     ) -> Self {
-        Self(Arc::new(kafka_options), commands_tx)
+        Self(Arc::new(ingress_options), commands_tx)
     }
 }
 
 impl SubscriptionValidator for SubscriptionControllerHandle {
-    type Error = <KafkaIngressOptions as SubscriptionValidator>::Error;
+    type Error = <IngressOptions as SubscriptionValidator>::Error;
 
     fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error> {
         SubscriptionValidator::validate(self.0.deref(), subscription)

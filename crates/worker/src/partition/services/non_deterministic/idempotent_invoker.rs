@@ -116,6 +116,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             self.span_context.as_parent(),
             vec![], // TODO we need to fix the data structure passed as input of this invoke method to be as close as possible to the original ServiceInvocation.
             None,
+            None,
         )));
 
         Ok(())
@@ -177,6 +178,7 @@ impl<'a, State: StateReader + Send + Sync> IdempotentInvokerBuiltInService
             SpanRelation::None,
             vec![],
             Some(idempotency_expiration_time.into()),
+            None,
         )));
 
         // Send response to registered sinks

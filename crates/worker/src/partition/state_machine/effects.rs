@@ -12,18 +12,20 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry_api::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::invocation_status_table::InvocationMetadata;
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
+};
 use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, InvocationId, ServiceId,
+    DeploymentId, EntryIndex, FullInvocationId, IdempotencyId, InvocationId, ServiceId,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
-    SpanRelation,
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
@@ -34,37 +36,42 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerValue;
 use std::collections::HashSet;
 use std::fmt;
+use std::time::Duration;
 use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 
 #[derive(Debug)]
 pub(crate) enum Effect {
-    // service status changes
+    // InvocationStatus changes
     InvokeService(ServiceInvocation),
     ResumeService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     },
     SuspendService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
+    StoreCompletedInvocation {
+        invocation_id: InvocationId,
+        retention: Duration,
+        completed_invocation: CompletedInvocation,
+    },
+    StoreInboxedInvocation(InvocationId, InboxedInvocation),
+    FreeInvocation(InvocationId),
 
     // In-/outbox
     EnqueueIntoInbox {
         seq_number: MessageIndex,
         inbox_entry: InboxEntry,
     },
+    PopInbox(ServiceId),
     EnqueueIntoOutbox {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
     TruncateOutbox(MessageIndex),
-    DropJournalAndPopInbox {
-        full_invocation_id: FullInvocationId,
-        journal_length: EntryIndex,
-    },
     DeleteInboxEntry {
         service_id: ServiceId,
         sequence_number: MessageIndex,
@@ -101,7 +108,15 @@ pub(crate) enum Effect {
     StoreDeploymentId {
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
+    },
+    AppendResponseSink {
+        invocation_id: InvocationId,
+        // We pass around the invocation_status here to avoid an additional read.
+        // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
+        // by using a merge operator in rocksdb.
+        previous_invocation_status: InvocationStatus,
+        additional_response_sink: ServiceInvocationResponseSink,
     },
     AppendJournalEntry {
         invocation_id: InvocationId,
@@ -121,6 +136,10 @@ pub(crate) enum Effect {
         full_invocation_id: FullInvocationId,
         completion: Completion,
     },
+    DropJournal {
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    },
 
     // Effects used only for tracing purposes
     TraceBackgroundInvoke {
@@ -138,12 +157,17 @@ pub(crate) enum Effect {
     },
 
     // Invoker commands
-    AbortInvocation(FullInvocationId),
+    SendAbortInvocationToInvoker(FullInvocationId),
     SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
 
     // State mutations
     MutateState(ExternalStateMutation),
 
+    // Idempotency
+    StoreIdempotencyId(IdempotencyId, InvocationId),
+    DeleteIdempotencyId(IdempotencyId),
+
+    // Send ingress response
     IngressResponse(IngressResponse),
 }
 
@@ -186,7 +210,7 @@ impl Effect {
             ),
             Effect::ResumeService {
                 metadata:
-                    InvocationMetadata {
+                    InFlightInvocationMetadata {
                         method,
                         journal_metadata: JournalMetadata { length, .. },
                         ..
@@ -218,6 +242,21 @@ impl Effect {
                     restate.journal.length = metadata.journal_metadata.length,
                     "Effect: Suspend service waiting on entries {:?}",
                     waiting_for_completed_entries
+                )
+            }
+            Effect::StoreInboxedInvocation(id, inboxed_invocation) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = inboxed_invocation.inbox_sequence_number,
+                    "Effect: Store inboxed invocation"
+                )
+            }
+            Effect::FreeInvocation(id) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    "Effect: Free invocation"
                 )
             }
             Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
@@ -311,11 +350,11 @@ impl Effect {
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
-            Effect::DropJournalAndPopInbox { journal_length, .. } => {
+            Effect::DropJournal { journal_length, .. } => {
                 debug_if_leader!(
                     is_leader,
                     restate.journal.length = journal_length,
-                    "Effect: Drop journal and pop from inbox"
+                    "Effect: Drop journal"
                 );
             }
             Effect::SetState {
@@ -417,6 +456,15 @@ impl Effect {
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         "Effect: Register background invoke timer"
+                    )
+                }
+                Timer::CleanInvocationStatus(invocation_id) => {
+                    debug_if_leader!(
+                        is_leader,
+                        restate.invocation.id = %invocation_id,
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        "Effect: Register cleanup invocation status timer"
                     )
                 }
             },
@@ -538,7 +586,7 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::AbortInvocation(_) => {
+            Effect::SendAbortInvocationToInvoker(_) => {
                 debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
             }
             Effect::SendStoredEntryAckToInvoker(_, _) => {
@@ -549,6 +597,47 @@ impl Effect {
                     is_leader,
                     "Effect: Mutate state for service id '{:?}'",
                     &state_mutation.component_id
+                );
+            }
+            Effect::StoreCompletedInvocation { invocation_id, .. } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store completed invocation"
+                );
+            }
+            Effect::PopInbox(service_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    rpc.service = %service_id.service_name,
+                    "Effect: Pop inbox"
+                );
+            }
+            Effect::AppendResponseSink {
+                invocation_id,
+                additional_response_sink,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store additional response sink {:?}",
+                    additional_response_sink
+                );
+            }
+            Effect::StoreIdempotencyId(idempotency_id, invocation_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store idempotency id {:?}",
+                    idempotency_id
+                );
+            }
+            Effect::DeleteIdempotencyId(idempotency_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Delete idempotency id {:?}",
+                    idempotency_id
                 );
             }
         }
@@ -589,7 +678,7 @@ impl Effects {
     pub(crate) fn resume_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::ResumeService {
             invocation_id,
@@ -600,7 +689,7 @@ impl Effects {
     pub(crate) fn suspend_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
@@ -608,6 +697,34 @@ impl Effects {
             metadata,
             waiting_for_completed_entries,
         })
+    }
+
+    pub(crate) fn store_inboxed_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        inboxed_invocation: InboxedInvocation,
+    ) {
+        self.effects.push(Effect::StoreInboxedInvocation(
+            invocation_id,
+            inboxed_invocation,
+        ))
+    }
+
+    pub(crate) fn store_completed_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        retention: Duration,
+        completed_invocation: CompletedInvocation,
+    ) {
+        self.effects.push(Effect::StoreCompletedInvocation {
+            invocation_id,
+            retention,
+            completed_invocation,
+        })
+    }
+
+    pub(crate) fn free_invocation(&mut self, invocation_id: InvocationId) {
+        self.effects.push(Effect::FreeInvocation(invocation_id))
     }
 
     pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {
@@ -626,6 +743,10 @@ impl Effects {
             service_id,
             sequence_number,
         });
+    }
+
+    pub(crate) fn pop_inbox(&mut self, service_id: ServiceId) {
+        self.effects.push(Effect::PopInbox(service_id))
     }
 
     pub(crate) fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
@@ -703,13 +824,26 @@ impl Effects {
         &mut self,
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::StoreDeploymentId {
             invocation_id,
             deployment_id,
             metadata,
         })
+    }
+
+    pub(crate) fn append_response_sink(
+        &mut self,
+        invocation_id: InvocationId,
+        previous_invocation_status: InvocationStatus,
+        response_sink: ServiceInvocationResponseSink,
+    ) {
+        self.effects.push(Effect::AppendResponseSink {
+            invocation_id,
+            previous_invocation_status,
+            additional_response_sink: response_sink,
+        });
     }
 
     pub(crate) fn append_journal_entry(
@@ -750,15 +884,11 @@ impl Effects {
         });
     }
 
-    pub(crate) fn drop_journal_and_pop_inbox(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        journal_length: EntryIndex,
-    ) {
-        self.effects.push(Effect::DropJournalAndPopInbox {
-            full_invocation_id,
+    pub(crate) fn drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex) {
+        self.effects.push(Effect::DropJournal {
+            invocation_id,
             journal_length,
-        });
+        })
     }
 
     pub(crate) fn trace_background_invoke(
@@ -795,7 +925,21 @@ impl Effects {
 
     pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
         self.effects
-            .push(Effect::AbortInvocation(full_invocation_id));
+            .push(Effect::SendAbortInvocationToInvoker(full_invocation_id));
+    }
+
+    pub(crate) fn store_idempotency_id(
+        &mut self,
+        idempotency_id: IdempotencyId,
+        invocation_id: InvocationId,
+    ) {
+        self.effects
+            .push(Effect::StoreIdempotencyId(idempotency_id, invocation_id));
+    }
+
+    pub(crate) fn delete_idempotency_id(&mut self, idempotency_id: IdempotencyId) {
+        self.effects
+            .push(Effect::DeleteIdempotencyId(idempotency_id));
     }
 
     pub(crate) fn send_stored_ack_to_invoker(

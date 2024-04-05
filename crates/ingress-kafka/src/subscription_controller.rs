@@ -18,7 +18,7 @@ use restate_core::cancellation_watcher;
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_schema_api::subscription::{Source, Subscription};
 use restate_types::arc_util::Updateable;
-use restate_types::config::KafkaIngressOptions;
+use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -63,7 +63,7 @@ impl Service {
 
     pub async fn run(
         mut self,
-        mut updateable_config: impl Updateable<KafkaIngressOptions> + Send + 'static,
+        mut updateable_config: impl Updateable<IngressOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
@@ -102,7 +102,7 @@ impl Service {
 
     fn handle_start_subscription(
         &mut self,
-        options: &KafkaIngressOptions,
+        options: &IngressOptions,
         subscription: Subscription,
         task_orchestrator: &mut TaskOrchestrator,
     ) {
@@ -112,8 +112,7 @@ impl Service {
 
         // Copy cluster options and subscription metadata into client_config
         let cluster_options = options
-            .clusters
-            .get(cluster)
+            .get_kafka_cluster(cluster)
             .unwrap_or_else(|| panic!("KafkaOptions should contain the cluster '{}'", cluster));
 
         client_config.set("metadata.broker.list", cluster_options.brokers.join(","));
@@ -151,7 +150,7 @@ impl Service {
 
     fn handle_update_subscriptions(
         &mut self,
-        options: &KafkaIngressOptions,
+        options: &IngressOptions,
         subscriptions: Vec<Subscription>,
         task_orchestrator: &mut TaskOrchestrator,
     ) {

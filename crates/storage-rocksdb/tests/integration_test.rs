@@ -68,6 +68,10 @@ async fn test_read_write() {
     close.await;
 }
 
+pub(crate) fn mock_full_invocation_id(service_id: ServiceId) -> FullInvocationId {
+    FullInvocationId::generate(service_id)
+}
+
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     ServiceInvocation::new(
         FullInvocationId::generate(service_id),
@@ -77,6 +81,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         None,
         SpanRelation::None,
         vec![],
+        None,
         None,
     )
 }
@@ -98,6 +103,7 @@ pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
         None,
         SpanRelation::None,
         vec![],
+        None,
         None,
     )
 }

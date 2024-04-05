@@ -64,18 +64,17 @@ impl ConfigLoader {
 
     fn merge_with_env(figment: Figment) -> Figment {
         figment
-            .merge(Env::prefixed("RESTATE_").split("__"))
+            .merge(
+                Env::prefixed("RESTATE_")
+                    .split("__")
+                    .map(|k| k.as_str().replace('_', "-").into()),
+            )
             // Override tracing.log with RUST_LOG, if present
             .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log_filter".into()))
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
                     .map(|_| "http_proxy".into()),
-            )
-            .merge(
-                Env::raw()
-                    .only(&["AWS_EXTERNAL_ID"])
-                    .map(|_| "aws_assume_role_external_id".into()),
             )
             .merge(
                 Env::raw()

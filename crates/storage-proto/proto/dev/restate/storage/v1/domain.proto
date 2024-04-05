@@ -101,9 +101,32 @@ message InvocationStatus {
 
     message Completed {
         ResponseResult result = 1;
+        ServiceId service_id = 2;
+        bytes handler_name = 3;
+        oneof idempotency_key {
+            google.protobuf.Empty idempotency_key_none = 12;
+            string idempotency_key_value = 13;
+        }
     }
 
     message Free {
+    }
+
+    message Inboxed {
+        uint64 inbox_sequence_number = 1;
+        repeated ServiceInvocationResponseSink response_sinks = 2;
+        uint64 creation_time = 3;
+        uint64 modification_time = 4;
+
+        ServiceId service_id = 5;
+        bytes handler = 6;
+
+        bytes argument = 7;
+        Source source = 8;
+        SpanContext span_context = 9;
+        repeated Header headers = 10;
+        uint64 execution_time = 11;
+        IdempotentRequestMetadata idempotency = 12;
     }
 
     oneof status {
@@ -111,6 +134,7 @@ message InvocationStatus {
         Suspended suspended = 2;
         Free free = 3;
         Completed completed = 4;
+        Inboxed inboxed = 5;
     }
 }
 
@@ -191,6 +215,7 @@ message ServiceInvocation {
     Source source = 6;
     repeated Header headers = 7;
     uint64 execution_time = 8;
+    IdempotentRequestMetadata idempotency = 9;
 }
 
 message StateMutation {
@@ -200,12 +225,8 @@ message StateMutation {
 }
 
 message InboxEntry {
-    // Kept for backwards compatibility, should be removed once no more migrations are needed
-    ServiceInvocation service_invocation = 2;
-
-    // All new InboxEntries should have an entry starting from Restate >= 0.7.1
     oneof entry {
-        ServiceInvocation invocation = 3;
+        FullInvocationId invocation_id = 3;
         StateMutation state_mutation = 4;
     }
 }
@@ -401,9 +422,14 @@ message Timer {
         bytes service_key = 2;
     }
 
+    message CleanInvocationStatus {
+        bytes invocation_id = 1;
+    }
+
     oneof value {
         CompleteSleepEntry complete_sleep_entry = 100;
         ServiceInvocation invoke = 101;
+        CleanInvocationStatus clean_invocation_status = 102;
     }
 }
 
@@ -439,4 +465,9 @@ message DedupSequenceNumber {
 
 message IdempotencyMetadata {
     bytes invocation_id = 1;
+}
+
+message IdempotentRequestMetadata {
+    string key = 1;
+    Duration retention = 2;
 }

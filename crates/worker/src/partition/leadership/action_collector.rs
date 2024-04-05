@@ -11,11 +11,13 @@
 use crate::partition::services::non_deterministic;
 use crate::partition::shuffle;
 use futures::{Stream, StreamExt};
+use restate_types::identifiers::InvocationId;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::timer::TimerValue;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 
@@ -25,6 +27,7 @@ pub(crate) enum ActionEffectStream {
         invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
         shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
         non_deterministic_service_invoker_stream: UnboundedReceiverStream<BuiltinServiceEffects>,
+        action_effects_stream: ReceiverStream<ActionEffect>,
     },
 }
 
@@ -33,6 +36,7 @@ impl ActionEffectStream {
         invoker_rx: mpsc::Receiver<restate_invoker_api::Effect>,
         shuffle_rx: mpsc::Receiver<shuffle::OutboxTruncation>,
         non_deterministic_service_invoker_rx: non_deterministic::EffectsReceiver,
+        action_effects_rx: mpsc::Receiver<ActionEffect>,
     ) -> Self {
         ActionEffectStream::Leader {
             invoker_stream: ReceiverStream::new(invoker_rx),
@@ -40,6 +44,7 @@ impl ActionEffectStream {
             non_deterministic_service_invoker_stream: UnboundedReceiverStream::new(
                 non_deterministic_service_invoker_rx,
             ),
+            action_effects_stream: ReceiverStream::new(action_effects_rx),
         }
     }
 }
@@ -50,6 +55,7 @@ pub(crate) enum ActionEffect {
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerValue),
     BuiltInInvoker(BuiltinServiceEffects),
+    ScheduleCleanupTimer(InvocationId, Duration),
 }
 
 impl Stream for ActionEffectStream {
@@ -62,6 +68,7 @@ impl Stream for ActionEffectStream {
                 invoker_stream,
                 shuffle_stream,
                 non_deterministic_service_invoker_stream,
+                action_effects_stream,
             } => {
                 let invoker_stream = invoker_stream.map(ActionEffect::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActionEffect::Shuffle);
@@ -71,7 +78,8 @@ impl Stream for ActionEffectStream {
                 let mut all_streams = futures::stream_select!(
                     invoker_stream,
                     shuffle_stream,
-                    non_deterministic_service_invoker_stream
+                    non_deterministic_service_invoker_stream,
+                    action_effects_stream
                 );
                 Pin::new(&mut all_streams).poll_next(cx)
             }

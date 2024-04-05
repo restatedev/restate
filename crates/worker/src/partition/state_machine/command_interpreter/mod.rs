@@ -21,19 +21,23 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInvocation};
-use restate_storage_api::invocation_status_table::{InvocationMetadata, InvocationStatus};
+use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
+use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+};
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
-    InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
+    KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, InvocationUuid, PartitionKey, ServiceId,
-    WithPartitionKey,
+    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, InvocationUuid, PartitionKey,
+    ServiceId, WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -70,11 +74,6 @@ pub trait StateReader {
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = StorageResult<InvocationStatus>> + Send;
-
-    fn get_inboxed_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send;
 
     fn is_entry_resumable(
         &mut self,
@@ -150,7 +149,9 @@ where
     ///
     /// We use the returned service invocation id and span relation to log the effects (see [`Effects#log`]).
     #[instrument(level = "trace", skip_all, fields(command = ?command), err)]
-    pub(crate) async fn on_apply<State: StateReader + ReadOnlyJournalTable>(
+    pub(crate) async fn on_apply<
+        State: StateReader + ReadOnlyJournalTable + ReadOnlyIdempotencyTable,
+    >(
         &mut self,
         command: Command,
         effects: &mut Effects,
@@ -198,20 +199,55 @@ where
                 // no-op :-)
                 Ok((None, SpanRelation::None))
             }
+            Command::ScheduleTimer(timer) => {
+                effects.register_timer(timer, Default::default());
+                Ok((None, SpanRelation::None))
+            }
         }
     }
 
-    async fn handle_invoke<State: StateReader>(
+    async fn handle_invoke<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
         service_invocation: ServiceInvocation,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         debug_assert!(
-            self.partition_key_range.contains(&service_invocation.fid.partition_key()),
+            self.partition_key_range.contains(&service_invocation.partition_key()),
                 "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
-                service_invocation.fid.partition_key(),
+                service_invocation.partition_key(),
                 self.partition_key_range);
+
+        // If an idempotency key is set, handle idempotency
+        if let Some(idempotency) = &service_invocation.idempotency {
+            let idempotency_id = IdempotencyId::new(
+                service_invocation.fid.service_id.service_name.clone(),
+                // The service_id.key will always be the idempotency key now,
+                // until we get rid of that field for regular services with https://github.com/restatedev/restate/issues/1329
+                Some(service_invocation.fid.service_id.key.clone()),
+                service_invocation.method_name.clone(),
+                idempotency.key.clone(),
+            );
+            if self
+                .try_resolve_idempotent_request(
+                    effects,
+                    state,
+                    &idempotency_id,
+                    &InvocationId::from(&service_invocation.fid),
+                    service_invocation.response_sink.as_ref(),
+                )
+                .await?
+            {
+                // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
+                return Ok((
+                    Some(service_invocation.fid),
+                    service_invocation.span_context.as_parent(),
+                ));
+            }
+            // Idempotent invocation needs to be processed for the first time, let's roll!
+            effects
+                .store_idempotency_id(idempotency_id, InvocationId::from(&service_invocation.fid));
+        }
 
         // If an execution_time is set, we schedule the invocation to be processed later
         if let Some(execution_time) = service_invocation.execution_time {
@@ -243,14 +279,88 @@ where
         } else if let VirtualObjectStatus::Unlocked = service_status {
             effects.invoke_service(service_invocation);
         } else {
-            self.enqueue_into_inbox(effects, InboxEntry::Invocation(service_invocation));
+            let inbox_seq_number = self.enqueue_into_inbox(
+                effects,
+                InboxEntry::Invocation(service_invocation.fid.clone()),
+            );
+            effects.store_inboxed_invocation(
+                InvocationId::from(&service_invocation.fid),
+                InboxedInvocation::from_service_invocation(service_invocation, inbox_seq_number),
+            );
         }
         Ok((Some(fid), span_relation))
     }
 
-    fn enqueue_into_inbox(&mut self, effects: &mut Effects, inbox_entry: InboxEntry) {
+    fn enqueue_into_inbox(
+        &mut self,
+        effects: &mut Effects,
+        inbox_entry: InboxEntry,
+    ) -> MessageIndex {
+        let inbox_seq_number = self.inbox_seq_number;
         effects.enqueue_into_inbox(self.inbox_seq_number, inbox_entry);
         self.inbox_seq_number += 1;
+        inbox_seq_number
+    }
+
+    /// If true is returned, the request has been resolved and no further processing is needed
+    async fn try_resolve_idempotent_request<State: StateReader + ReadOnlyIdempotencyTable>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        idempotency_id: &IdempotencyId,
+        caller_id: &InvocationId,
+        response_sink: Option<&ServiceInvocationResponseSink>,
+    ) -> Result<bool, Error> {
+        if let Some(idempotency_meta) = state.get_idempotency_metadata(idempotency_id).await? {
+            let original_invocation_id = idempotency_meta.invocation_id;
+            match state.get_invocation_status(&original_invocation_id).await? {
+                executing_invocation_status @ InvocationStatus::Invoked(_)
+                | executing_invocation_status @ InvocationStatus::Suspended { .. } => {
+                    if let Some(response_sink) = response_sink {
+                        if !executing_invocation_status
+                            .get_invocation_metadata()
+                            .expect("InvocationMetadata must be present")
+                            .response_sinks
+                            .contains(response_sink)
+                        {
+                            effects.append_response_sink(
+                                original_invocation_id,
+                                executing_invocation_status,
+                                response_sink.clone(),
+                            )
+                        }
+                    }
+                }
+                InvocationStatus::Inboxed(inboxed) => {
+                    if let Some(response_sink) = response_sink {
+                        if !inboxed.response_sinks.contains(response_sink) {
+                            effects.append_response_sink(
+                                original_invocation_id,
+                                InvocationStatus::Inboxed(inboxed),
+                                response_sink.clone(),
+                            )
+                        }
+                    }
+                }
+                InvocationStatus::Completed(completed) => {
+                    self.send_response_to_sinks(
+                        effects,
+                        caller_id,
+                        response_sink.cloned(),
+                        completed.response_result,
+                    );
+                }
+                InvocationStatus::Free => self.send_response_to_sinks(
+                    effects,
+                    caller_id,
+                    response_sink.cloned(),
+                    GONE_INVOCATION_ERROR,
+                ),
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     async fn handle_external_state_mutation<State: StateReader>(
@@ -265,7 +375,7 @@ where
 
         match service_status {
             VirtualObjectStatus::Locked(_) => {
-                self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation))
+                self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation));
             }
             VirtualObjectStatus::Unlocked => effects.apply_state_mutation(mutation),
         }
@@ -316,7 +426,7 @@ where
         &mut self,
         effects: &mut Effects,
         full_invocation_id: &FullInvocationId,
-        invocation_metadata: &InvocationMetadata,
+        invocation_metadata: &InFlightInvocationMetadata,
         nbis_effect: BuiltinServiceEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
@@ -351,7 +461,7 @@ where
             BuiltinServiceEffect::End(Some(e)) => {
                 self.fail_invocation(
                     effects,
-                    full_invocation_id.clone(),
+                    InvocationId::from(full_invocation_id),
                     invocation_metadata.clone(),
                     e,
                 )
@@ -401,48 +511,26 @@ where
 
                 Ok((Some(fid), related_span))
             }
+            InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
+                TerminationFlavor::Kill,
+                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                inboxed,
+                effects,
+            ),
             _ => {
-                self.try_terminate_inboxed_invocation(
-                    TerminationFlavor::Kill,
-                    maybe_fid,
-                    state,
-                    effects,
-                )
-                .await
-            }
-        }
-    }
-
-    async fn try_terminate_inboxed_invocation<State: StateReader>(
-        &mut self,
-        termination_flavor: TerminationFlavor,
-        maybe_fid: MaybeFullInvocationId,
-        state: &mut State,
-        effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let (termination_command, error) = match termination_flavor {
-            TerminationFlavor::Kill => ("kill", KILLED_INVOCATION_ERROR),
-            TerminationFlavor::Cancel => ("cancel", CANCELED_INVOCATION_ERROR),
-        };
-
-        // check if service invocation is in inbox
-        let inbox_entry = state.get_inboxed_invocation(maybe_fid.clone()).await?;
-
-        if let Some(inbox_entry) = inbox_entry {
-            self.terminate_inboxed_invocation(inbox_entry, error, effects)
-        } else {
-            trace!("Received {termination_command} command for unknown invocation with id '{maybe_fid}'.");
-            // We still try to send the abort signal to the invoker,
-            // as it might be the case that previously the user sent an abort signal
-            // but some message was still between the invoker/PP queues.
-            // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
-            // and the abort message can overtake the invoke/resume.
-            // Consequently the invoker might have not received the abort and the user tried to send it again.
-            if let MaybeFullInvocationId::Full(fid) = maybe_fid {
-                effects.abort_invocation(fid.clone());
-                Ok((Some(fid), SpanRelation::None))
-            } else {
-                Ok((None, SpanRelation::None))
+                trace!("Received kill command for unknown invocation with id '{maybe_fid}'.");
+                // We still try to send the abort signal to the invoker,
+                // as it might be the case that previously the user sent an abort signal
+                // but some message was still between the invoker/PP queues.
+                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                // and the abort message can overtake the invoke/resume.
+                // Consequently the invoker might have not received the abort and the user tried to send it again.
+                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
+                    effects.abort_invocation(fid.clone());
+                    Ok((Some(fid), SpanRelation::None))
+                } else {
+                    Ok((None, SpanRelation::None))
+                }
             }
         }
     }
@@ -494,47 +582,66 @@ where
 
                 Ok((Some(fid), related_span))
             }
+            InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
+                TerminationFlavor::Cancel,
+                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                inboxed,
+                effects,
+            ),
             _ => {
-                self.try_terminate_inboxed_invocation(
-                    TerminationFlavor::Cancel,
-                    maybe_fid,
-                    state,
-                    effects,
-                )
-                .await
+                trace!("Received cancel command for unknown invocation with id '{maybe_fid}'.");
+                // We still try to send the abort signal to the invoker,
+                // as it might be the case that previously the user sent an abort signal
+                // but some message was still between the invoker/PP queues.
+                // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
+                // and the abort message can overtake the invoke/resume.
+                // Consequently the invoker might have not received the abort and the user tried to send it again.
+                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
+                    effects.abort_invocation(fid.clone());
+                    Ok((Some(fid), SpanRelation::None))
+                } else {
+                    Ok((None, SpanRelation::None))
+                }
             }
         }
     }
 
     fn terminate_inboxed_invocation(
         &mut self,
-        inbox_entry: SequenceNumberInvocation,
-        error: InvocationError,
+        termination_flavor: TerminationFlavor,
+        fid: FullInvocationId,
+        inboxed_invocation: InboxedInvocation,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        // remove service invocation from inbox and send failure response
-        let service_invocation = inbox_entry.invocation;
-        let fid = service_invocation.fid;
-        let span_context = service_invocation.span_context;
+        let error = match termination_flavor {
+            TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
+            TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
+        };
+
+        let InboxedInvocation {
+            inbox_sequence_number,
+            response_sinks,
+            handler_name,
+            span_context,
+            ..
+        } = inboxed_invocation;
+
         let parent_span = span_context.as_parent();
 
-        self.send_response_to_sinks(
-            effects,
-            &InvocationId::from(&fid),
-            service_invocation.response_sink,
-            &error,
-        );
-
+        // Reply back to callers with error, and publish end trace
+        self.send_response_to_sinks(effects, &InvocationId::from(&fid), response_sinks, &error);
         self.notify_invocation_result(
             &fid,
-            service_invocation.method_name,
+            handler_name,
             span_context,
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
             effects,
         );
 
-        effects.delete_inbox_entry(fid.service_id.clone(), inbox_entry.inbox_sequence_number);
+        // Delete inbox entry and invocation status.
+        effects.delete_inbox_entry(fid.service_id.clone(), inbox_sequence_number);
+        effects.free_invocation(InvocationId::from(&fid));
 
         Ok((Some(fid), parent_span))
     }
@@ -542,7 +649,7 @@ where
     async fn kill_invocation<State: StateReader>(
         &mut self,
         full_invocation_id: FullInvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
@@ -556,7 +663,7 @@ where
 
         self.fail_invocation(
             effects,
-            full_invocation_id.clone(),
+            InvocationId::from(&full_invocation_id),
             metadata,
             KILLED_INVOCATION_ERROR,
         )
@@ -719,7 +826,7 @@ where
         }
     }
 
-    async fn on_timer<State: StateReader>(
+    async fn on_timer<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         timer_value: TimerValue,
         state: &mut State,
@@ -755,6 +862,39 @@ where
                 // where the invocation should be executed
                 self.handle_invoke(effects, state, service_invocation).await
             }
+            Timer::CleanInvocationStatus(invocation_id) => {
+                match state.get_invocation_status(&invocation_id).await? {
+                    InvocationStatus::Completed(CompletedInvocation {
+                        service_id,
+                        handler,
+                        idempotency_key: Some(idempotency_key),
+                        ..
+                    }) => {
+                        effects.free_invocation(invocation_id);
+                        // Also cleanup the associated idempotency key
+                        effects.delete_idempotency_id(IdempotencyId::new(
+                            service_id.service_name,
+                            // The service_id.key will always be the idempotency key now,
+                            // until we get rid of that field for regular services with https://github.com/restatedev/restate/issues/1329
+                            Some(service_id.key),
+                            handler,
+                            idempotency_key,
+                        ));
+                    }
+                    InvocationStatus::Completed(_) => {
+                        // Just free the invocation
+                        effects.free_invocation(invocation_id);
+                    }
+                    InvocationStatus::Free => {
+                        // Nothing to do
+                    }
+                    _ => {
+                        panic!("Unexpected state. Trying to cleanup an invocation that did not complete yet.")
+                    }
+                };
+
+                Ok((None, SpanRelation::None))
+            }
         }
     }
 
@@ -788,7 +928,7 @@ where
             full_invocation_id,
             kind,
         }: InvokerEffect,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(FullInvocationId, SpanRelation), Error> {
         let related_sid = full_invocation_id.clone();
         let span_relation = invocation_metadata
@@ -848,12 +988,22 @@ where
                 }
             }
             InvokerEffectKind::End => {
-                self.end_invocation(state, effects, full_invocation_id, invocation_metadata)
-                    .await?;
+                self.end_invocation(
+                    state,
+                    effects,
+                    InvocationId::from(&full_invocation_id),
+                    invocation_metadata,
+                )
+                .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                self.fail_invocation(effects, full_invocation_id, invocation_metadata, e)
-                    .await?;
+                self.fail_invocation(
+                    effects,
+                    InvocationId::from(&full_invocation_id),
+                    invocation_metadata,
+                    e,
+                )
+                .await?;
             }
         }
 
@@ -864,69 +1014,81 @@ where
         &mut self,
         state: &mut State,
         effects: &mut Effects,
-        full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
-        // Send response back, if anyone is interested
-        if !invocation_metadata.response_sinks.is_empty() {
-            let invocation_id = InvocationId::from(&full_invocation_id);
+        let service_id = invocation_metadata.service_id.clone();
+        let journal_length = invocation_metadata.journal_metadata.length;
+        let completion_retention_time = invocation_metadata.completion_retention_time;
 
-            // Find last output entry
-            let mut output_entry = None;
-            for i in (0..invocation_metadata.journal_metadata.length).rev() {
-                if let JournalEntry::Entry(e) = state
-                    .get_journal_entry(&invocation_id, i)
-                    .await?
-                    .unwrap_or_else(|| panic!("There should be a journal entry at index {}", i))
-                {
-                    if e.ty() == EntryType::Output {
-                        output_entry = Some(e);
-                        break;
-                    }
-                }
-            }
+        self.notify_invocation_result(
+            &FullInvocationId::combine(
+                invocation_metadata.service_id.clone(),
+                invocation_id.clone(),
+            ),
+            invocation_metadata.method.clone(),
+            invocation_metadata.journal_metadata.span_context.clone(),
+            invocation_metadata.timestamps.creation_time(),
+            Ok(()),
+            effects,
+        );
 
-            if let Some(output_entry) = output_entry {
-                let_assert!(
-                    Entry::Output(OutputEntry { result }) =
-                        output_entry.deserialize_entry_ref::<Codec>()?
-                );
-                self.send_response_to_sinks(
-                    effects,
-                    &InvocationId::from(&full_invocation_id),
-                    invocation_metadata.response_sinks.clone(),
-                    result,
-                );
+        // If there are any response sinks, or we need to store back the completed status,
+        //  we need to find the latest output entry
+        if !invocation_metadata.response_sinks.is_empty() || !completion_retention_time.is_zero() {
+            let result = if let Some(output_entry) = self
+                .read_last_output_entry(state, &invocation_id, journal_length)
+                .await?
+            {
+                ResponseResult::from(output_entry.result)
             } else {
                 // We don't panic on this, although it indicates a bug at the moment.
                 warn!("Invocation completed without an output entry. This is not supported yet.");
                 return Ok(());
+            };
+
+            // Send responses out
+            self.send_response_to_sinks(
+                effects,
+                &invocation_id,
+                invocation_metadata.response_sinks.clone(),
+                result.clone(),
+            );
+
+            // Store the completed status, if needed
+            if !completion_retention_time.is_zero() {
+                let (completed_invocation, completion_retention_time) =
+                    CompletedInvocation::from_in_flight_invocation_metadata(
+                        invocation_metadata,
+                        result,
+                    );
+                effects.store_completed_invocation(
+                    invocation_id.clone(),
+                    completion_retention_time,
+                    completed_invocation,
+                );
             }
         }
 
-        self.notify_invocation_result(
-            &full_invocation_id,
-            invocation_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
-            invocation_metadata.timestamps.creation_time(),
-            Ok(()),
-            effects,
-        );
+        // If no retention, immediately cleanup the invocation status
+        if completion_retention_time.is_zero() {
+            effects.free_invocation(invocation_id.clone());
+        }
+        effects.drop_journal(invocation_id, journal_length);
+        effects.pop_inbox(service_id);
 
-        self.end_invocation_lifecycle(
-            full_invocation_id,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        Ok(())
     }
 
+    // This needs a different method because for built-in invocations we send back the output as soon as we have it.
     async fn end_built_in_invocation(
         &mut self,
         effects: &mut Effects,
         full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
+        let invocation_id = InvocationId::from(&full_invocation_id);
+
         self.notify_invocation_result(
             &full_invocation_id,
             invocation_metadata.method,
@@ -936,43 +1098,65 @@ where
             effects,
         );
 
-        self.end_invocation_lifecycle(
-            full_invocation_id,
-            invocation_metadata.journal_metadata.length,
-            effects,
-        )
-        .await
+        effects.free_invocation(invocation_id.clone());
+        effects.drop_journal(invocation_id, invocation_metadata.journal_metadata.length);
+        effects.pop_inbox(full_invocation_id.service_id);
+
+        Ok(())
     }
 
     async fn fail_invocation(
         &mut self,
         effects: &mut Effects,
-        full_invocation_id: FullInvocationId,
-        invocation_metadata: InvocationMetadata,
+        invocation_id: InvocationId,
+        invocation_metadata: InFlightInvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        self.send_response_to_sinks(
-            effects,
-            &InvocationId::from(&full_invocation_id),
-            invocation_metadata.response_sinks,
-            &error,
-        );
+        let service_id = invocation_metadata.service_id.clone();
+        let journal_length = invocation_metadata.journal_metadata.length;
 
         self.notify_invocation_result(
-            &full_invocation_id,
-            invocation_metadata.method,
-            invocation_metadata.journal_metadata.span_context,
+            &FullInvocationId::combine(
+                invocation_metadata.service_id.clone(),
+                invocation_id.clone(),
+            ),
+            invocation_metadata.method.clone(),
+            invocation_metadata.journal_metadata.span_context.clone(),
             invocation_metadata.timestamps.creation_time(),
             Err((error.code(), error.to_string())),
             effects,
         );
 
-        self.end_invocation_lifecycle(
-            full_invocation_id,
-            invocation_metadata.journal_metadata.length,
+        let response_result = ResponseResult::from(error);
+
+        // Send responses out
+        self.send_response_to_sinks(
             effects,
-        )
-        .await
+            &invocation_id,
+            invocation_metadata.response_sinks.clone(),
+            response_result.clone(),
+        );
+
+        // Store the completed status or free it
+        if !invocation_metadata.completion_retention_time.is_zero() {
+            let (completed_invocation, completion_retention_time) =
+                CompletedInvocation::from_in_flight_invocation_metadata(
+                    invocation_metadata,
+                    response_result,
+                );
+            effects.store_completed_invocation(
+                invocation_id.clone(),
+                completion_retention_time,
+                completed_invocation,
+            );
+        } else {
+            effects.free_invocation(invocation_id.clone());
+        }
+
+        effects.drop_journal(invocation_id, journal_length);
+        effects.pop_inbox(service_id);
+
+        Ok(())
     }
 
     fn send_response_to_sinks(
@@ -1000,7 +1184,7 @@ where
         full_invocation_id: FullInvocationId,
         entry_index: EntryIndex,
         mut journal_entry: EnrichedRawEntry,
-        invocation_metadata: InvocationMetadata,
+        invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,
@@ -1333,6 +1517,35 @@ where
         })
     }
 
+    async fn read_last_output_entry<State: ReadOnlyJournalTable>(
+        &mut self,
+        state: &mut State,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<Option<OutputEntry>, Error> {
+        // Find last output entry
+        let mut output_entry = None;
+        for i in (0..journal_length).rev() {
+            if let JournalEntry::Entry(e) = state
+                .get_journal_entry(invocation_id, i)
+                .await?
+                .unwrap_or_else(|| panic!("There should be a journal entry at index {}", i))
+            {
+                if e.ty() == EntryType::Output {
+                    output_entry = Some(e);
+                    break;
+                }
+            }
+        }
+
+        output_entry
+            .map(|enriched_entry| {
+                let_assert!(Entry::Output(e) = enriched_entry.deserialize_entry_ref::<Codec>()?);
+                Ok(e)
+            })
+            .transpose()
+    }
+
     async fn handle_deterministic_built_in_service_invocation(
         &mut self,
         invocation: ServiceInvocation,
@@ -1375,17 +1588,6 @@ where
             creation_time,
             result,
         );
-    }
-
-    async fn end_invocation_lifecycle(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        journal_length: EntryIndex,
-        effects: &mut Effects,
-    ) -> Result<(), Error> {
-        effects.drop_journal_and_pop_inbox(full_invocation_id, journal_length);
-
-        Ok(())
     }
 
     fn handle_outgoing_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
@@ -1448,6 +1650,7 @@ where
             span_context,
             headers: vec![],
             execution_time,
+            idempotency: None,
         }
     }
 }

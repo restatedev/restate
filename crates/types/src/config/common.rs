@@ -58,7 +58,8 @@ pub struct CommonOptions {
 
     /// The working directory which this Restate node should use for relative paths. The default is
     /// `restate-data` under the current working directory.
-    pub base_dir: PathBuf,
+    #[builder(setter(strip_option))]
+    base_dir: Option<PathBuf>,
 
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Address of the metadata store server to bootstrap the node from.
@@ -169,6 +170,13 @@ impl CommonOptions {
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
     }
+    pub fn base_dir(&self) -> PathBuf {
+        self.base_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap()
+                .join(DEFAULT_STORAGE_DIRECTORY)
+        })
+    }
 }
 
 impl Default for CommonOptions {
@@ -182,9 +190,7 @@ impl Default for CommonOptions {
             // false by default. For now, this is true to make the converged deployment backward
             // compatible and easy for users.
             allow_bootstrap: true,
-            base_dir: std::env::current_dir()
-                .unwrap()
-                .join(DEFAULT_STORAGE_DIRECTORY),
+            base_dir: None,
             metadata_store_address: "http://127.0.0.1:5123"
                 .parse()
                 .expect("valid metadata store address"),

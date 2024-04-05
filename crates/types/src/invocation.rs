@@ -22,6 +22,7 @@ use opentelemetry_api::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags,
 use opentelemetry_api::Context;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -42,6 +43,13 @@ pub struct ServiceInvocation {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
+    pub idempotency: Option<Idempotency>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Idempotency {
+    pub key: ByteString,
+    pub retention: Duration,
 }
 
 impl ServiceInvocation {
@@ -61,6 +69,7 @@ impl ServiceInvocation {
         related_span: SpanRelation,
         headers: Vec<Header>,
         execution_time: Option<MillisSinceEpoch>,
+        idempotency: Option<Idempotency>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
         Self {
@@ -72,8 +81,21 @@ impl ServiceInvocation {
             span_context,
             headers,
             execution_time,
+            idempotency,
         }
     }
+}
+
+impl WithPartitionKey for ServiceInvocation {
+    fn partition_key(&self) -> PartitionKey {
+        self.fid.partition_key()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationInput {
+    pub argument: Bytes,
+    pub headers: Vec<Header>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -556,6 +578,7 @@ mod mocks {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
+                idempotency: None,
             }
         }
     }
