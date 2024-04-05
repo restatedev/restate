@@ -489,7 +489,7 @@ where
                 effects,
             ),
             _ => {
-                trace!("Received kill command for unknown invocation with id '{maybe_fid}'.");
+                trace!("Received cancel command for unknown invocation with id '{maybe_fid}'.");
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
                 // but some message was still between the invoker/PP queues.

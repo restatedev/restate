@@ -665,7 +665,7 @@ pub mod storage {
                 fn try_from(value: InboxEntry) -> Result<Self, Self::Error> {
                     Ok(
                         match value.entry.ok_or(ConversionError::missing_field("entry"))? {
-                            inbox_entry::Entry::Invocation(fid) => {
+                            inbox_entry::Entry::InvocationId(fid) => {
                                 restate_storage_api::inbox_table::InboxEntry::Invocation(
                                     restate_types::identifiers::FullInvocationId::try_from(fid)?,
                                 )
@@ -686,7 +686,7 @@ pub mod storage {
                 fn from(inbox_entry: restate_storage_api::inbox_table::InboxEntry) -> Self {
                     let inbox_entry = match inbox_entry {
                         restate_storage_api::inbox_table::InboxEntry::Invocation(fid) => {
-                            inbox_entry::Entry::Invocation(FullInvocationId::from(fid))
+                            inbox_entry::Entry::InvocationId(FullInvocationId::from(fid))
                         }
                         restate_storage_api::inbox_table::InboxEntry::StateMutation(
                             state_mutation,

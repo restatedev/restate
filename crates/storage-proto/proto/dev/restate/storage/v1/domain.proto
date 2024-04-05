@@ -218,7 +218,7 @@ message StateMutation {
 
 message InboxEntry {
     oneof entry {
-        FullInvocationId invocation = 3;
+        FullInvocationId invocation_id = 3;
         StateMutation state_mutation = 4;
     }
 }

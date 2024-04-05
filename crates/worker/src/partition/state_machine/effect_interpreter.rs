@@ -421,7 +421,11 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     let inboxed_status =
                         state_storage.get_invocation_status(&invocation_id).await?;
 
-                    let_assert!(InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status);
+                    let_assert!(
+                        InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
+                        "InvocationStatus must contain an Inboxed invocation for the id {}",
+                        invocation_id
+                    );
 
                     let (in_flight_invocation_meta, invocation_input) =
                         InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
