@@ -32,6 +32,7 @@ mod http;
 mod lambda;
 mod options;
 mod proxy;
+mod request_identity;
 mod utils;
 
 #[derive(Debug, Clone)]
@@ -47,13 +48,22 @@ impl ServiceClient {
         Self { http, lambda }
     }
 
-    pub fn from_options(options: Options, assume_role_cache_mode: AssumeRoleCacheMode) -> Self {
+    pub fn from_options(
+        options: Options,
+        assume_role_cache_mode: AssumeRoleCacheMode,
+    ) -> Result<Self, BuildError> {
         let (http, lambda) = options.dissolve();
-        Self::new(
-            HttpClient::from_options(http),
+        Ok(Self::new(
+            HttpClient::from_options(http)?,
             LambdaClient::from_options(lambda, assume_role_cache_mode),
-        )
+        ))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    #[error(transparent)]
+    Http(#[from] http::BuildError),
 }
 
 impl ServiceClient {

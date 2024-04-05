@@ -145,6 +145,8 @@ pub enum BuildError {
         #[code]
         restate_storage_rocksdb::BuildError,
     ),
+    #[code(unknown)]
+    Invoker(#[from] restate_invoker_impl::BuildError),
 }
 
 impl Options {
@@ -257,7 +259,7 @@ impl Worker {
             invoker_storage_reader,
             EntryEnricher::new(schemas.clone()),
             schemas.clone(),
-        );
+        )?;
 
         let storage_query_context = storage_query_datafusion.build(
             rocksdb_storage.clone(),
