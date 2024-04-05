@@ -11,9 +11,11 @@
 use crate::http::HttpClient;
 use crate::lambda::LambdaClient;
 
+use arc_swap::ArcSwapOption;
 use bytestring::ByteString;
 use core::fmt;
-use futures::future::Either;
+
+use futures::FutureExt;
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::Body;
@@ -21,9 +23,12 @@ use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
 use std::fmt::Formatter;
+use std::future;
 use std::future::Future;
+use std::sync::Arc;
 
 pub use crate::lambda::AssumeRoleCacheMode;
+use crate::request_identity::SignRequest;
 
 mod http;
 mod lambda;
@@ -37,28 +42,51 @@ pub struct ServiceClient {
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
     http: HttpClient,
     lambda: LambdaClient,
+    // this can be changed to re-read periodically if necessary
+    request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
 }
 
 impl ServiceClient {
-    pub(crate) fn new(http: HttpClient, lambda: LambdaClient) -> Self {
-        Self { http, lambda }
+    pub(crate) fn new(
+        http: HttpClient,
+        lambda: LambdaClient,
+        request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
+    ) -> Self {
+        Self {
+            http,
+            lambda,
+            request_identity_key,
+        }
     }
 
     pub fn from_options(
         options: &ServiceClientOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Result<Self, BuildError> {
+        let request_identity_key = if let Some(request_identity_private_key_pem_file) =
+            options.request_identity_private_key_pem_file.clone()
+        {
+            Arc::new(ArcSwapOption::from_pointee(
+                request_identity::v1::SigningKey::from_pem_file(
+                    request_identity_private_key_pem_file,
+                )?,
+            ))
+        } else {
+            Arc::new(ArcSwapOption::empty())
+        };
+
         Ok(Self::new(
-            HttpClient::from_options(&options.http)?,
+            HttpClient::from_options(&options.http),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
+            request_identity_key,
         ))
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
-    #[error(transparent)]
-    Http(#[from] http::BuildError),
+    #[error("Failed to read request identity private key: {0}")]
+    SigningPrivateKeyReadError(#[from] request_identity::v1::SigningPrivateKeyReadError),
 }
 
 impl ServiceClient {
@@ -66,22 +94,39 @@ impl ServiceClient {
         &self,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Response<Body>, ServiceClientError>> + Send + 'static {
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+
+        let request_identity_key = self.request_identity_key.load();
+
+        let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
+            Some(request_identity::v1::Signer::new(
+                parts.path.path(),
+                request_identity_key,
+            ))
+        } else {
+            None // will use null signing scheme
+        };
+
+        parts.headers = match signer.insert_identity(parts.headers) {
+            Ok(headers) => headers,
+            Err(err) => return future::ready(Err(err.into())).right_future(),
+        };
 
         match parts.address {
             Endpoint::Http(uri, version) => {
                 let fut = self
                     .http
                     .request(uri, version, body, parts.path, parts.headers);
-                Either::Left(async move { Ok(fut.await?) })
+                async move { Ok(fut.await?) }.left_future()
             }
             Endpoint::Lambda(arn, assume_role_arn) => {
                 let fut = self
                     .lambda
                     .invoke(arn, assume_role_arn, body, parts.path, parts.headers);
-                Either::Right(async move { Ok(fut.await?) })
+                async move { Ok(fut.await?) }.right_future()
             }
         }
+        .left_future()
     }
 }
 
@@ -91,6 +136,8 @@ pub enum ServiceClientError {
     Http(#[from] http::HttpError),
     #[error(transparent)]
     Lambda(#[from] lambda::LambdaError),
+    #[error(transparent)]
+    IdentityV1(#[from] <request_identity::v1::Signer<'static, 'static> as SignRequest>::Error),
 }
 
 impl ServiceClientError {
@@ -100,6 +147,7 @@ impl ServiceClientError {
         match self {
             ServiceClientError::Http(http_error) => http_error.is_retryable(),
             ServiceClientError::Lambda(lambda_error) => lambda_error.is_retryable(),
+            ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
     }
 }
