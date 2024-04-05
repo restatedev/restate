@@ -42,6 +42,7 @@ use restate_types::Version;
 
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
+use restate_node_protocol::metadata::MetadataKind;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -228,6 +229,9 @@ impl Node {
 
         metadata_writer.update(partition_table).await?;
         metadata_writer.update(logs).await?;
+
+        // fetch the latest schema information
+        metadata.sync(MetadataKind::Schemas).await?;
 
         let nodes_config = metadata.nodes_config();
 
