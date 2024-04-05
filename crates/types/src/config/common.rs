@@ -13,6 +13,7 @@ use std::str::FromStr;
 
 use enumset::EnumSet;
 use humantime::Duration;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -39,8 +40,8 @@ pub struct CommonOptions {
     /// # Node Name
     ///
     /// Unique name for this node in the cluster. The node must not change unless
-    /// it's started with empty local store. It defaults to the node hostname.
-    pub node_name: String,
+    /// it's started with empty local store. It defaults to the node's hostname.
+    node_name: Option<String>,
 
     /// If set, the node insists on acquiring this node ID.
     pub force_node_id: Option<PlainNodeId>,
@@ -49,7 +50,7 @@ pub struct CommonOptions {
     ///
     /// A unique identifier for the cluster. All nodes in the same cluster should
     /// have the same.
-    pub cluster_name: String,
+    cluster_name: String,
 
     /// If true, then a new cluster is bootstrapped. This node *must* be has an admin
     /// role and a new nodes configuration will be created that includes this node.
@@ -148,9 +149,25 @@ pub struct CommonOptions {
     pub rocksdb: RocksDbOptions,
 }
 
+static HOSTNAME: Lazy<String> = Lazy::new(|| {
+    hostname::get()
+        .map(|h| h.into_string().expect("hostname is valid unicode"))
+        .unwrap_or("INVALID_HOSTANAME".to_owned())
+});
+
 impl CommonOptions {
     pub fn shutdown_grace_period(&self) -> std::time::Duration {
         self.shutdown_timeout.into()
+    }
+    // todo: It's imperative that the node doesn't change its name after start. Move this to a
+    // Once lock to ensure it doesn't change over time, even if the physical hostname changes.
+    pub fn node_name(&self) -> &str {
+        self.node_name.as_ref().unwrap_or(&HOSTNAME)
+    }
+
+    // same as node_name
+    pub fn cluster_name(&self) -> &str {
+        &self.cluster_name
     }
 }
 
@@ -158,9 +175,7 @@ impl Default for CommonOptions {
     fn default() -> Self {
         Self {
             roles: EnumSet::all(),
-            node_name: hostname::get()
-                .map(|h| h.into_string().expect("hostname is valid unicode"))
-                .unwrap_or("localhost".to_owned()),
+            node_name: None,
             force_node_id: None,
             cluster_name: "localcluster".to_owned(),
             // boot strap the cluster by default. This is very likely to change in the future to be

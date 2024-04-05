@@ -11,21 +11,17 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use restate_storage_api::deduplication_table::DeduplicationTable;
 use restate_storage_api::Transaction;
+use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::arc_util::Constant;
+use restate_types::config::WorkerOptions;
 use restate_types::dedup::{DedupSequenceNumber, ProducerId};
-use std::path;
-use tempfile::tempdir;
 use tokio::runtime::Builder;
 
-async fn writing_to_rocksdb(base_path: &path::Path) {
+async fn writing_to_rocksdb(worker_options: WorkerOptions) {
     //
     // setup
     //
-    let opts = restate_storage_rocksdb::Options {
-        path: base_path.to_str().unwrap().into(),
-        ..Default::default()
-    };
-    let (mut rocksdb, writer) = opts
-        .build()
+    let (mut rocksdb, writer) = RocksDBStorage::new(Constant::new(worker_options))
         .expect("RocksDB storage creation should succeed");
 
     let (signal, watch) = drain::channel();
@@ -50,10 +46,11 @@ async fn writing_to_rocksdb(base_path: &path::Path) {
 fn basic_writing_reading_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("RocksDB");
     group.sample_size(10).bench_function("writing", |bencher| {
-        let temp_dir = tempdir().unwrap();
+        // This will generate a temp dir since we have test-util feature enabled
+        let worker_options = WorkerOptions::default();
         bencher
             .to_async(Builder::new_multi_thread().enable_all().build().unwrap())
-            .iter(|| writing_to_rocksdb(temp_dir.path()));
+            .iter(|| writing_to_rocksdb(worker_options.clone()));
     });
 
     group.finish();

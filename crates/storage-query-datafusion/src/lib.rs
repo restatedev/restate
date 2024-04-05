@@ -17,11 +17,10 @@ mod inbox;
 mod invocation_state;
 mod invocation_status;
 mod journal;
-mod options;
 mod physical_optimizer;
 mod state;
 mod table_macro;
 mod table_util;
 mod virtual_object_status;
 
-pub use crate::options::{BuildError, Options, OptionsBuilder, OptionsBuilderError};
+pub use context::BuildError;

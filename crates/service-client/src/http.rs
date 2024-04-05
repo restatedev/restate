@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::proxy::{Proxy, ProxyConnector};
+use super::proxy::ProxyConnector;
 
 use crate::request_identity::SignRequest;
 use crate::utils::ErrorExt;
@@ -20,111 +20,12 @@ use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
 use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
 use hyper_rustls::HttpsConnector;
-use serde_with::serde_as;
+use restate_types::config::HttpOptions;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-
-/// # HTTP client options
-#[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "options_schema",
-    schemars(rename = "HttpClientOptions", default)
-)]
-#[builder(default)]
-pub struct Options {
-    /// # HTTP/2 Keep-alive
-    ///
-    /// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
-    /// If unset, HTTP/2 keep-alive are disabled.
-    http_keep_alive_options: Option<Http2KeepAliveOptions>,
-    /// # Proxy URI
-    ///
-    /// A URI, such as `http://127.0.0.1:10001`, of a server to which all invocations should be sent, with the `Host` header set to the deployment URI.
-    /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
-    /// Can be overridden by the `HTTP_PROXY` environment variable.
-    #[cfg_attr(feature = "options_schema", schemars(with = "Option<String>"))]
-    http_proxy: Option<Proxy>,
-
-    /// # Request identity private key PEM file
-    ///
-    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
-    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
-    /// If provided, this key will be used to attach JWTs to HTTP requests from this client which
-    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
-    ///
-    /// This file is currently only read on client creation, but this may change in future.
-    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
-    request_identity_private_key_pem_file: Option<PathBuf>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            http_keep_alive_options: Some(Default::default()),
-            http_proxy: None,
-            request_identity_private_key_pem_file: None,
-        }
-    }
-}
-
-/// # HTTP/2 Keep alive options
-///
-/// Configuration for the HTTP/2 keep-alive mechanism, using PING frames.
-///
-/// Please note: most gateways don't propagate the HTTP/2 keep-alive between downstream and upstream hosts.
-/// In those environments, you need to make sure the gateway can detect a broken connection to the upstream deployment(s).
-#[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "options_schema", schemars(default))]
-pub struct Http2KeepAliveOptions {
-    /// # HTTP/2 Keep-alive interval
-    ///
-    /// Sets an interval for HTTP/2 PING frames should be sent to keep a
-    /// connection alive.
-    ///
-    /// You should set this timeout with a value lower than the `abort_timeout`.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub(crate) interval: humantime::Duration,
-
-    /// # Timeout
-    ///
-    /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
-    ///
-    /// If the ping is not acknowledged within the timeout, the connection will
-    /// be closed.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "options_schema", schemars(with = "String"))]
-    pub(crate) timeout: humantime::Duration,
-}
-
-impl Default for Http2KeepAliveOptions {
-    fn default() -> Self {
-        Self {
-            interval: Http2KeepAliveOptions::default_interval(),
-            timeout: Http2KeepAliveOptions::default_timeout(),
-        }
-    }
-}
-
-impl Http2KeepAliveOptions {
-    #[inline]
-    fn default_interval() -> humantime::Duration {
-        (Duration::from_secs(40)).into()
-    }
-
-    #[inline]
-    fn default_timeout() -> humantime::Duration {
-        (Duration::from_secs(20)).into()
-    }
-}
 
 type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
@@ -158,26 +59,23 @@ impl HttpClient {
         })
     }
 
-    pub fn from_options(options: Options) -> Result<HttpClient, BuildError> {
+    pub fn from_options(options: &HttpOptions) -> Result<HttpClient, BuildError> {
         let mut builder = hyper::Client::builder();
-        builder.http2_only(true);
-
-        if let Some(keep_alive_options) = options.http_keep_alive_options {
-            builder
-                .http2_keep_alive_timeout(keep_alive_options.timeout.into())
-                .http2_keep_alive_interval(Some(keep_alive_options.interval.into()));
-        }
+        builder
+            .http2_only(true)
+            .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
+            .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
 
         Ok(HttpClient::new(
             builder.build::<_, hyper::Body>(ProxyConnector::new(
-                options.http_proxy,
+                options.http_proxy.clone(),
                 hyper_rustls::HttpsConnectorBuilder::new()
                     .with_native_roots()
                     .https_or_http()
                     .enable_http2()
                     .build(),
             )),
-            options.request_identity_private_key_pem_file,
+            options.request_identity_private_key_pem_file.clone(),
         )?)
     }
 

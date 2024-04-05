@@ -14,6 +14,8 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_bifrost::Bifrost;
+use restate_types::arc_util::Updateable;
+use restate_types::config::AdminOptions;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
@@ -23,46 +25,32 @@ use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_impl::Schemas;
 
+use crate::Error;
 use crate::{rest_api, state, storage_query};
-use crate::{Error, Options};
 
 #[derive(Debug)]
 pub struct AdminService {
-    opts: Options,
     schemas: Schemas,
     meta_handle: MetaHandle,
     schema_reader: FileMetaReader,
 }
 
 impl AdminService {
-    pub fn new(
-        opts: Options,
-        schemas: Schemas,
-        meta_handle: MetaHandle,
-        schema_reader: FileMetaReader,
-    ) -> Self {
+    pub fn new(schemas: Schemas, meta_handle: MetaHandle, schema_reader: FileMetaReader) -> Self {
         Self {
-            opts,
             schemas,
             meta_handle,
             schema_reader,
         }
     }
 
-    pub fn from_options(
-        options: Options,
-        schemas: Schemas,
-        meta_handle: MetaHandle,
-        schema_reader: FileMetaReader,
-    ) -> Self {
-        Self::new(options, schemas, meta_handle, schema_reader)
-    }
-
     pub async fn run(
         self,
+        mut updateable_config: impl Updateable<AdminOptions> + Send + 'static,
         node_svc_client: NodeSvcClient<Channel>,
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {
+        let opts = updateable_config.load();
         let rest_state = state::AdminServiceState::new(
             self.meta_handle,
             self.schemas,
@@ -85,14 +73,14 @@ impl AdminService {
                     }))
                     .layer(tower::load_shed::LoadShedLayer::new())
                     .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                        self.opts.concurrent_api_requests_limit,
+                        opts.concurrent_api_requests_limit,
                     )),
             );
 
         // Bind and serve
-        let server = hyper::Server::try_bind(&self.opts.bind_address)
+        let server = hyper::Server::try_bind(&opts.bind_address)
             .map_err(|err| Error::Binding {
-                address: self.opts.bind_address,
+                address: opts.bind_address,
                 source: err,
             })?
             .serve(router.into_make_service());

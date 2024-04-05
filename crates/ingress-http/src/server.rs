@@ -19,9 +19,10 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
-use restate_ingress_dispatcher::DispatchIngressRequest;
+use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcher};
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::invocation_target::InvocationTargetResolver;
+use restate_types::config::IngressOptions;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -60,6 +61,27 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
+}
+
+impl<Schemas> HyperServerIngress<Schemas, IngressDispatcher>
+where
+    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+{
+    pub fn from_options(
+        ingress_options: &IngressOptions,
+        dispatcher: IngressDispatcher,
+        schemas: Schemas,
+    ) -> HyperServerIngress<Schemas, IngressDispatcher> {
+        crate::metric_definitions::describe_metrics();
+        let (hyper_ingress_server, _) = HyperServerIngress::new(
+            ingress_options.bind_address,
+            ingress_options.concurrent_api_requests_limit,
+            schemas,
+            dispatcher,
+        );
+
+        hyper_ingress_server
+    }
 }
 
 impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>

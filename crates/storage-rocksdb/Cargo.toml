@@ -13,7 +13,7 @@ options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-errors = { workspace = true }
-restate-storage-api = { workspace = true }
+restate-storage-api = { workspace = true, features = ["serde"] }
 restate-storage-proto = { workspace = true, features = ["conversion"] }
 restate-types = { workspace = true }
 

@@ -13,6 +13,8 @@ use bytestring::ByteString;
 use futures::Stream;
 use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::arc_util::Constant;
+use restate_types::config::WorkerOptions;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
@@ -20,7 +22,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::pin;
-use tempfile::tempdir;
 use tokio_stream::StreamExt;
 
 mod idempotency_table_test;
@@ -36,15 +37,8 @@ fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     //
     // create a rocksdb storage from options
     //
-    let temp_dir = tempdir().unwrap();
-    let path = temp_dir.into_path();
-
-    let opts = restate_storage_rocksdb::Options {
-        path,
-        ..Default::default()
-    };
-    let (rocksdb, writer) = opts
-        .build()
+    let worker_options = WorkerOptions::default();
+    let (rocksdb, writer) = RocksDBStorage::new(Constant::new(worker_options))
         .expect("RocksDB storage creation should succeed");
 
     let (signal, watch) = drain::channel();

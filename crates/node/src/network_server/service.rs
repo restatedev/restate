@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use axum::routing::get;
-use restate_core::options::CommonOptions;
 use tower_http::trace::TraceLayer;
 
 use restate_cluster_controller::ClusterControllerHandle;
@@ -25,6 +24,7 @@ use restate_node_services::node_svc::node_svc_server::NodeSvcServer;
 use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::config::CommonOptions;
 use restate_worker::SubscriptionControllerHandle;
 
 use crate::network_server::handler;
@@ -35,7 +35,6 @@ use crate::network_server::multiplex::MultiplexService;
 use crate::network_server::state::NodeCtrlHandlerStateBuilder;
 
 pub struct NetworkServer {
-    common_opts: CommonOptions,
     connection_manager: ConnectionManager,
     worker_deps: Option<WorkerDependencies>,
     admin_deps: Option<AdminDependencies>,
@@ -43,20 +42,18 @@ pub struct NetworkServer {
 
 impl NetworkServer {
     pub fn new(
-        common_opts: CommonOptions,
         connection_manager: ConnectionManager,
         worker_deps: Option<WorkerDependencies>,
         admin_deps: Option<AdminDependencies>,
     ) -> Self {
         Self {
-            common_opts,
             connection_manager,
             worker_deps,
             admin_deps,
         }
     }
 
-    pub async fn run(self) -> Result<(), anyhow::Error> {
+    pub async fn run(self, options: CommonOptions) -> Result<(), anyhow::Error> {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
 
@@ -64,9 +61,8 @@ impl NetworkServer {
             state_builder.rocksdb_storage(Some(rocksdb.clone()));
         }
 
-        if !*self.common_opts.disable_prometheus() {
-            state_builder
-                .prometheus_handle(Some(install_global_prometheus_recorder(&self.common_opts)));
+        if !options.disable_prometheus {
+            state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
         }
 
         let shared_state = state_builder.build().expect("should be infallible");
@@ -112,7 +108,7 @@ impl NetworkServer {
         let service = MultiplexService::new(router, server_builder.into_service());
 
         run_hyper_server(
-            self.common_opts.bind_address(),
+            &options.bind_address,
             service,
             cancellation_watcher(),
             "node-grpc",

@@ -40,7 +40,7 @@ pub use rocksdb::*;
 pub use worker::*;
 
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use once_cell::sync::Lazy;
@@ -51,11 +51,22 @@ use super::arc_util::{ArcSwapExt, Pinned, Updateable};
 use crate::errors::GenericError;
 use crate::nodes_config::Role;
 
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) fn default_arc_tmp() -> std::sync::Arc<tempfile::TempDir> {
+    std::sync::Arc::new(tempfile::TempDir::new().unwrap())
+}
+
 static CONFIGURATION: Lazy<Arc<ArcSwap<Configuration>>> = Lazy::new(Arc::default);
-static NODE_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(not(any(test, feature = "test-util")))]
+static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(any(test, feature = "test-util"))]
+static NODE_BASE_DIR: Lazy<std::sync::RwLock<tempfile::TempDir>> =
+    Lazy::new(|| std::sync::RwLock::new(tempfile::TempDir::new().unwrap()));
 
 pub type UpdateableConfiguration = Arc<ArcSwap<Configuration>>;
 
+#[cfg(not(any(test, feature = "test-util")))]
 fn data_dir(dir: &str) -> PathBuf {
     NODE_BASE_DIR
         .get()
@@ -63,12 +74,28 @@ fn data_dir(dir: &str) -> PathBuf {
         .join(dir)
 }
 
+#[cfg(any(test, feature = "test-util"))]
+pub fn data_dir(dir: &str) -> PathBuf {
+    let guard = NODE_BASE_DIR.read().unwrap();
+    guard.path().join(dir)
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub fn reset_base_temp_dir() -> PathBuf {
+    let mut guard = NODE_BASE_DIR.write().unwrap();
+    let new = tempfile::TempDir::new().unwrap();
+    *guard = new;
+    PathBuf::from(guard.path())
+}
+
 /// Set the current configuration, this is temporary until we have a dedicated configuration loader
 /// thread.
 pub fn set_current_config(config: Configuration) {
+    #[cfg(not(any(test, feature = "test-util")))]
     let proposed_cwd = config.common.base_dir.clone();
     // todo: potentially validate the config
     CONFIGURATION.store(Arc::new(config));
+    #[cfg(not(any(test, feature = "test-util")))]
     NODE_BASE_DIR.get_or_init(|| {
         if let Err(e) = std::env::set_current_dir(&proposed_cwd) {
             eprintln!("[WARN] Failed to set current working directory: {}", e);
@@ -173,7 +200,7 @@ impl Configuration {
     }
 
     pub fn node_name(&self) -> &str {
-        &self.common.node_name
+        self.common.node_name()
     }
 
     /// Dumps the configuration to a string
