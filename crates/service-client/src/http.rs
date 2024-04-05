@@ -144,13 +144,13 @@ impl HttpClient {
         let request_identity_key = if let Some(request_identity_private_key_pem_file) =
             request_identity_private_key_pem_file
         {
-            Arc::new(ArcSwapOption::from(Some(Arc::new(
+            Arc::new(ArcSwapOption::from_pointee(
                 crate::request_identity::v1::SigningKey::from_pem_file(
                     request_identity_private_key_pem_file,
                 )?,
-            ))))
+            ))
         } else {
-            Arc::new(ArcSwapOption::from(None))
+            Arc::new(ArcSwapOption::empty())
         };
 
         Ok(Self {

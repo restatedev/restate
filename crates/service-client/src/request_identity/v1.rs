@@ -29,7 +29,7 @@ impl SigningKey {
     pub(crate) fn from_pem_file(
         request_identity_private_key_pem_file: PathBuf,
     ) -> Result<Self, SigningPrivateKeyReadError> {
-        let pem_bytes = std::fs::read(request_identity_private_key_pem_file)?;
+        let pem_bytes = std::fs::read(request_identity_private_key_pem_file.as_path())?;
         let mut pems = pem::parse_many(pem_bytes)?;
         if pems.len() != 1 {
             return Err(SigningPrivateKeyReadError::OneKeyExpected(pems.len()));
@@ -44,7 +44,7 @@ impl SigningKey {
         );
         let key = jsonwebtoken::EncodingKey::from_ed_der(pem_bytes.as_slice());
 
-        info!(kid, "Loaded request identity key");
+        info!(kid, path = ?request_identity_private_key_pem_file, "Loaded request identity key");
 
         Ok(Self {
             header: jsonwebtoken::Header {
