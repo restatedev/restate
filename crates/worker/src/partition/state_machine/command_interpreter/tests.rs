@@ -9,6 +9,7 @@ use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::pb::protocol::SleepEntryMessage;
+use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
 use restate_storage_api::{Result as StorageResult, StorageError};
@@ -236,6 +237,15 @@ impl ReadOnlyJournalTable for StateReaderMock {
     }
 }
 
+impl ReadOnlyIdempotencyTable for StateReaderMock {
+    async fn get_idempotency_metadata(
+        &mut self,
+        _idempotency_id: &IdempotencyId,
+    ) -> StorageResult<Option<IdempotencyMetadata>> {
+        unimplemented!();
+    }
+}
+
 #[test(tokio::test)]
 async fn awakeable_with_success() {
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
@@ -421,6 +431,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
             span_context: Default::default(),
             headers: vec![],
             execution_time: None,
+            idempotency: None,
         }),
     );
 
@@ -501,9 +512,11 @@ async fn kill_call_tree() -> Result<(), Error> {
         effects,
         all!(
             contains(pat!(Effect::SendAbortInvocationToInvoker(eq(fid.clone())))),
-            contains(pat!(Effect::DropJournalAndPopInbox {
-                full_invocation_id: eq(fid.clone()),
+            contains(pat!(Effect::FreeInvocation(eq(InvocationId::from(&fid))))),
+            contains(pat!(Effect::DropJournal {
+                invocation_id: eq(InvocationId::from(&fid)),
             })),
+            contains(pat!(Effect::PopInbox(eq(fid.service_id.clone())))),
             contains(terminate_invocation_outbox_message_matcher(
                 call_fid,
                 TerminationFlavor::Kill

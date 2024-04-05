@@ -79,10 +79,7 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::new(
-            self.value.service_id().partition_key(),
-            self.timer_key.0.invocation_uuid,
-        )
+        InvocationId::new(self.value.partition_key(), self.timer_key.0.invocation_uuid)
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {

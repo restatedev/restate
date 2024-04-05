@@ -55,6 +55,7 @@ pub(crate) struct LeaderState {
     timer_service: Pin<Box<TimerService>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
     action_effect_handler: ActionEffectHandler,
+    actions_effects_tx: mpsc::Sender<ActionEffect>,
 }
 
 pub(crate) struct FollowerState<I> {
@@ -192,6 +193,9 @@ where
                 follower_state.bifrost.clone(),
             );
 
+            let (actions_effects_tx, actions_effects_rx) =
+                mpsc::channel(follower_state.channel_size);
+
             Ok((
                 LeadershipState::Leader {
                     follower_state,
@@ -202,9 +206,15 @@ where
                         timer_service,
                         action_effect_handler,
                         non_deterministic_service_invoker: service_invoker,
+                        actions_effects_tx,
                     },
                 },
-                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
+                ActionEffectStream::leader(
+                    invoker_rx,
+                    shuffle_rx,
+                    service_invoker_output_rx,
+                    actions_effects_rx,
+                ),
             ))
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -371,6 +381,7 @@ where
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
+                        &mut leader_state.actions_effects_tx,
                         &follower_state.networking,
                     )
                     .await?;
@@ -389,6 +400,7 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker,
+        actions_effects_tx: &mut mpsc::Sender<ActionEffect>,
         networking: &Networking,
     ) -> Result<(), Error> {
         match action {
@@ -509,6 +521,15 @@ where
                         invocation_id
                     );
                 }
+            }
+            Action::ScheduleInvocationStatusCleanup {
+                invocation_id,
+                retention,
+            } => {
+                // We can ignore this error. It means the PP is shutting down.
+                let _ = actions_effects_tx
+                    .send(ActionEffect::ScheduleCleanupTimer(invocation_id, retention))
+                    .await;
             }
         }
 

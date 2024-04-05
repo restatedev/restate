@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::timer_table::Timer::CompleteSleepEntry;
 use crate::Result;
 use futures_util::Stream;
-use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::cmp::Ordering;
@@ -44,13 +43,15 @@ impl Ord for TimerKey {
 pub enum Timer {
     CompleteSleepEntry(ServiceId),
     Invoke(ServiceInvocation),
+    CleanInvocationStatus(InvocationId),
 }
 
-impl Timer {
-    pub fn service_id(&self) -> &ServiceId {
+impl WithPartitionKey for Timer {
+    fn partition_key(&self) -> PartitionKey {
         match self {
-            CompleteSleepEntry(service_id) => service_id,
-            Timer::Invoke(service_invocation) => &service_invocation.fid.service_id,
+            Timer::CompleteSleepEntry(service_id) => service_id.partition_key(),
+            Timer::Invoke(service_invocation) => service_invocation.partition_key(),
+            Timer::CleanInvocationStatus(invocation_id) => invocation_id.partition_key(),
         }
     }
 }

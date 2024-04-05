@@ -17,6 +17,7 @@ use assert2::let_assert;
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
 use restate_invoker_api::InvokeInputJournal;
+use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -169,7 +170,9 @@ pub(crate) struct EffectInterpreter<Codec> {
 
 impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     pub(crate) async fn interpret_effects<
-        S: StateStorage + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable,
+        S: StateStorage
+            + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
+            + restate_storage_api::idempotency_table::IdempotencyTable,
     >(
         effects: &mut Effects,
         state_storage: &mut S,
@@ -183,7 +186,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     }
 
     async fn interpret_effect<
-        S: StateStorage + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable,
+        S: StateStorage
+            + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
+            + restate_storage_api::idempotency_table::IdempotencyTable,
     >(
         effect: Effect,
         state_storage: &mut S,
@@ -239,6 +244,22 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .store_invocation_status(&invocation_id, InvocationStatus::Inboxed(inboxed))
                     .await?;
             }
+            Effect::StoreCompletedInvocation {
+                invocation_id,
+                retention,
+                completed_invocation,
+            } => {
+                state_storage
+                    .store_invocation_status(
+                        &invocation_id,
+                        InvocationStatus::Completed(completed_invocation),
+                    )
+                    .await?;
+                collector.push(Action::ScheduleInvocationStatusCleanup {
+                    invocation_id,
+                    retention,
+                });
+            }
             Effect::FreeInvocation(invocation_id) => {
                 state_storage
                     .store_invocation_status(&invocation_id, InvocationStatus::Free)
@@ -253,6 +274,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .await?;
                 // need to store the next inbox sequence number
                 state_storage.store_inbox_seq_number(seq_number + 1).await?;
+            }
+            Effect::PopInbox(service_id) => {
+                Self::pop_from_inbox(state_storage, collector, service_id).await?;
             }
             Effect::DeleteInboxEntry {
                 service_id,
@@ -337,6 +361,15 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 )
                 .await?;
             }
+            Effect::DropJournal {
+                invocation_id,
+                journal_length,
+            } => {
+                // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
+                state_storage
+                    .drop_journal(&invocation_id, journal_length)
+                    .await?;
+            }
             Effect::TruncateOutbox(outbox_sequence_number) => {
                 state_storage
                     .truncate_outbox(outbox_sequence_number)
@@ -361,23 +394,31 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     completion,
                 });
             }
-            Effect::DropJournalAndPopInbox {
-                full_invocation_id,
-                journal_length,
+            Effect::AppendResponseSink {
+                invocation_id,
+                additional_response_sink,
+                mut previous_invocation_status,
             } => {
-                // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
+                previous_invocation_status
+                    .get_response_sinks_mut()
+                    .expect("No response sinks available")
+                    .insert(additional_response_sink);
                 state_storage
-                    .drop_journal(&InvocationId::from(&full_invocation_id), journal_length)
+                    .store_invocation_status(&invocation_id, previous_invocation_status)
                     .await?;
+            }
+            Effect::StoreIdempotencyId(idempotency_id, invocation_id) => {
                 state_storage
-                    .store_invocation_status(
-                        &InvocationId::from(&full_invocation_id),
-                        InvocationStatus::Free,
+                    .put_idempotency_metadata(
+                        &idempotency_id,
+                        IdempotencyMetadata { invocation_id },
                     )
-                    .await?;
-
-                Self::pop_from_inbox(state_storage, collector, &full_invocation_id.service_id)
-                    .await?;
+                    .await;
+            }
+            Effect::DeleteIdempotencyId(idempotency_id) => {
+                state_storage
+                    .delete_idempotency_metadata(&idempotency_id)
+                    .await;
             }
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
@@ -405,7 +446,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     async fn pop_from_inbox<S>(
         state_storage: &mut S,
         collector: &mut ActionCollector,
-        service_id: &ServiceId,
+        service_id: ServiceId,
     ) -> Result<(), Error>
     where
         S: StateStorage
@@ -413,7 +454,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     {
         // Pop until we find the first inbox entry.
         // Note: the inbox seq numbers can have gaps.
-        while let Some(inbox_entry) = state_storage.pop_inbox(service_id).await? {
+        while let Some(inbox_entry) = state_storage.pop_inbox(&service_id).await? {
             match inbox_entry.inbox_entry {
                 InboxEntry::Invocation(fid) => {
                     let invocation_id = InvocationId::from(fid);
@@ -446,7 +487,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
 
         state_storage
-            .store_service_status(service_id, VirtualObjectStatus::Unlocked)
+            .store_service_status(&service_id, VirtualObjectStatus::Unlocked)
             .await?;
 
         Ok(())
