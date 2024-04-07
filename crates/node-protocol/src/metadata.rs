@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
-pub use restate_schema::SchemaInformation;
+pub use restate_schema::{SchemaInformation, UpdatingSchemaInformation};
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;

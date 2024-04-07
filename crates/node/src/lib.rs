@@ -124,6 +124,7 @@ impl Node {
             MetadataManager::build(networking.clone(), metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let metadata = metadata_manager.metadata();
+        let updating_schema_information = metadata.schema_information_updating();
         let bifrost = BifrostService::new(metadata);
 
         let admin_role = if config.has_role(Role::Admin) {
@@ -143,6 +144,7 @@ impl Node {
                 networking.clone(),
                 bifrost.handle(),
                 metadata_store_client,
+                updating_schema_information,
             )?)
         } else {
             None

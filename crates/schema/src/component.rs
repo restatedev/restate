@@ -87,7 +87,7 @@ impl ComponentMetadataResolver for SchemaInformation {
     }
 }
 
-impl ComponentMetadataResolver for SchemaView {
+impl ComponentMetadataResolver for UpdatingSchemaInformation {
     fn resolve_latest_component(
         &self,
         component_name: impl AsRef<str>,

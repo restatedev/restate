@@ -5595,6 +5595,7 @@ version = "0.9.0"
 dependencies = [
  "arc-swap",
  "bytes",
+ "derive_more",
  "http 0.2.12",
  "restate-schema-api",
  "restate-test-util",

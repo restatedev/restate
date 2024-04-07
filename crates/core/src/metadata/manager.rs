@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -329,19 +329,20 @@ where
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
-        let maybe_new_version = Self::update_internal(&self.inner.nodes_config, config);
+        let maybe_new_version = Self::update_option_internal(&self.inner.nodes_config, config);
 
         self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
-        let maybe_new_version = Self::update_internal(&self.inner.partition_table, partition_table);
+        let maybe_new_version =
+            Self::update_option_internal(&self.inner.partition_table, partition_table);
 
         self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
     fn update_logs(&mut self, logs: Logs) {
-        let maybe_new_version = Self::update_internal(&self.inner.logs, logs);
+        let maybe_new_version = Self::update_option_internal(&self.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
@@ -353,7 +354,26 @@ where
         self.notify_watches(maybe_new_version, MetadataKind::Schemas);
     }
 
-    fn update_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
+    fn update_internal<T: Versioned>(container: &ArcSwap<T>, new_value: T) -> Version {
+        let current_value = container.load();
+        let mut maybe_new_version = new_value.version();
+
+        if new_value.version() > current_value.version() {
+            container.store(Arc::new(new_value));
+        } else {
+            /* Do nothing, current is already newer */
+            debug!(
+                "Ignoring update {} because we are at {}",
+                new_value.version(),
+                current_value.version(),
+            );
+            maybe_new_version = current_value.version();
+        }
+
+        maybe_new_version
+    }
+
+    fn update_option_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
         let current_value = container.load();
         let mut maybe_new_version = new_value.version();
         match current_value.as_deref() {

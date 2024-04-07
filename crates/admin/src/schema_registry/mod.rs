@@ -121,12 +121,7 @@ impl<V> SchemaRegistry<V> {
         };
 
         let (id, components) = if !apply_mode.should_apply() {
-            let mut updater = SchemaUpdater::from(
-                metadata()
-                    .schema_information()
-                    .map(|schema_information| schema_information.deref().clone())
-                    .unwrap_or_default(),
-            );
+            let mut updater = SchemaUpdater::from(metadata().schema_information().deref().clone());
 
             // suppress logging output in case of a dry run
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -278,16 +273,13 @@ impl<V> SchemaRegistry<V> {
     pub fn list_components(&self) -> Vec<ComponentMetadata> {
         metadata()
             .schema_information()
-            .map(|schema_information| schema_information.list_components())
-            .unwrap_or_default()
+            .list_components()
     }
 
     pub fn get_component(&self, component_name: impl AsRef<str>) -> Option<ComponentMetadata> {
         metadata()
             .schema_information()
-            .and_then(|schema_information| {
-                schema_information.resolve_latest_component(&component_name)
-            })
+            .resolve_latest_component(&component_name)
     }
 
     pub fn get_deployment(
@@ -296,16 +288,13 @@ impl<V> SchemaRegistry<V> {
     ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
         metadata()
             .schema_information()
-            .and_then(|schema_information| {
-                schema_information.get_deployment_and_components(&deployment_id)
-            })
+            .get_deployment_and_components(&deployment_id)
     }
 
     pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
         metadata()
             .schema_information()
-            .map(|schema_information| schema_information.get_deployments())
-            .unwrap_or_default()
+            .get_deployments()
     }
 
     pub fn list_component_handlers(
@@ -314,11 +303,8 @@ impl<V> SchemaRegistry<V> {
     ) -> Option<Vec<HandlerMetadata>> {
         metadata()
             .schema_information()
-            .and_then(|schema_information| {
-                schema_information
-                    .resolve_latest_component(&component_name)
-                    .map(|m| m.handlers)
-            })
+            .resolve_latest_component(&component_name)
+            .map(|m| m.handlers)
     }
 
     pub fn get_component_handler(
@@ -328,28 +314,24 @@ impl<V> SchemaRegistry<V> {
     ) -> Option<HandlerMetadata> {
         metadata()
             .schema_information()
-            .and_then(|schema_information| {
-                schema_information
-                    .resolve_latest_component(&component_name)
-                    .and_then(|m| {
-                        m.handlers
-                            .into_iter()
-                            .find(|handler| handler.name == handler_name.as_ref())
-                    })
+            .resolve_latest_component(&component_name)
+            .and_then(|m| {
+                m.handlers
+                    .into_iter()
+                    .find(|handler| handler.name == handler_name.as_ref())
             })
     }
 
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {
         metadata()
             .schema_information()
-            .and_then(|schema_information| schema_information.get_subscription(subscription_id))
+            .get_subscription(subscription_id)
     }
 
     pub fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
         metadata()
             .schema_information()
-            .map(|schema_information| schema_information.list_subscriptions(filters))
-            .unwrap_or_default()
+            .list_subscriptions(filters)
     }
 }
 

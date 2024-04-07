@@ -28,7 +28,7 @@ impl InvocationTargetResolver for SchemaInformation {
     }
 }
 
-impl InvocationTargetResolver for SchemaView {
+impl InvocationTargetResolver for UpdatingSchemaInformation {
     fn resolve_latest_invocation_target(
         &self,
         component_name: impl AsRef<str>,

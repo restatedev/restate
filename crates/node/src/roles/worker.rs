@@ -24,13 +24,13 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
-use restate_schema::SchemaView;
+use restate_schema::UpdatingSchemaInformation;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
-use restate_types::{Version, Versioned};
+use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::{SubscriptionControllerHandle, Worker};
 use tracing::info;
@@ -81,7 +81,6 @@ pub enum WorkerRoleBuildError {
 }
 
 pub struct WorkerRole {
-    schema_view: SchemaView,
     worker: Worker,
 }
 
@@ -92,21 +91,18 @@ impl WorkerRole {
         networking: Networking,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
+        updating_schema_information: UpdatingSchemaInformation,
     ) -> Result<Self, WorkerRoleBuildError> {
-        let schema_view = SchemaView::default();
         let worker = Worker::from_options(
             updateable_config,
             networking,
             bifrost,
             router_builder,
-            schema_view.clone(),
+            updating_schema_information,
             metadata_store_client,
         )?;
 
-        Ok(WorkerRole {
-            schema_view,
-            worker,
-        })
+        Ok(WorkerRole { worker })
     }
 
     pub fn rocksdb_storage(&self) -> &RocksDBStorage {
@@ -122,9 +118,6 @@ impl WorkerRole {
     }
 
     pub async fn start(self, bifrost: Bifrost) -> anyhow::Result<()> {
-        // todo: only run subscriptions on node 0 once being distributed
-        let subscription_controller = Some(self.worker.subscription_controller_handle());
-
         let admin_address = metadata()
             .nodes_config()
             .get_admin_node()
@@ -132,12 +125,12 @@ impl WorkerRole {
             .address
             .clone();
 
-        // todo: replace by watchdog
+        // todo: only run subscriptions on node 0 once being distributed
         task_center().spawn_child(
             TaskKind::MetadataBackgroundSync,
-            "schema-updater",
+            "subscription_controller",
             None,
-            Self::watch_schema_changes(subscription_controller, self.schema_view),
+            Self::watch_subscriptions(self.worker.subscription_controller_handle()),
         )?;
 
         task_center().spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
@@ -172,15 +165,13 @@ impl WorkerRole {
         Ok(())
     }
 
-    async fn watch_schema_changes<SC>(
-        subscription_controller: Option<SC>,
-        schema_view: SchemaView,
-    ) -> anyhow::Result<()>
+    async fn watch_subscriptions<SC>(subscription_controller: SC) -> anyhow::Result<()>
     where
         SC: SubscriptionController + Clone + Send + Sync,
     {
         let metadata = metadata();
-        let mut current_version = Version::MIN;
+        let schema_view = metadata.schema_information_updating();
+        let mut next_version = Version::MIN;
         let cancellation_watcher = cancellation_watcher();
         tokio::pin!(cancellation_watcher);
 
@@ -189,18 +180,16 @@ impl WorkerRole {
                 _ = &mut cancellation_watcher => {
                     break;
                 },
-                version = metadata.wait_for_version(MetadataKind::Schemas, current_version) => {
-                    version?;
-                    let schema_registry = metadata.schema_information().expect("new schema information must be present");
-                    current_version = schema_registry.version();
-                    schema_view.update(schema_registry);
+                version = metadata.wait_for_version(MetadataKind::Schemas, next_version) => {
+                    next_version = version?.next();
 
-                    if let Some(subscription_controller) = &subscription_controller {
-                        let subscriptions = schema_view.list_subscriptions(&[]);
-                        subscription_controller
-                            .update_subscriptions(subscriptions)
-                            .await?;
-                    }
+                    // This might return subscriptions belonging to a higher schema version. As a
+                    // result we might re-apply the same list of subscriptions. This is not a
+                    // problem, since update_subscriptions is idempotent.
+                    let subscriptions = schema_view.list_subscriptions(&[]);
+                    subscription_controller
+                        .update_subscriptions(subscriptions)
+                        .await?;
                 }
             }
         }

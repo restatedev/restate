@@ -25,19 +25,12 @@ use crate::component::ComponentSchemas;
 use crate::deployment::DeploymentSchemas;
 use restate_types::{Version, Versioned};
 
-/// Immutable view of the schema registry.
+/// Schema information which automatically loads the latest version when accessing it.
 ///
 /// Temporary bridge until users are migrated to directly using the metadata
-/// provided schema registry.
-#[derive(Debug, Default, Clone)]
-pub struct SchemaView(Arc<ArcSwap<SchemaInformation>>);
-
-impl SchemaView {
-    /// Update current view with new schema registry.
-    pub fn update(&self, schema_registry: Arc<SchemaInformation>) {
-        self.0.store(schema_registry);
-    }
-}
+/// provided schema information.
+#[derive(Debug, Default, Clone, derive_more::From)]
+pub struct UpdatingSchemaInformation(Arc<ArcSwap<SchemaInformation>>);
 
 /// The schema information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -17,6 +17,7 @@ restate-test-util = { workspace = true, optional = true }
 
 arc-swap = { workspace = true }
 bytes = { workspace = true }
+derive_more = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true }
 

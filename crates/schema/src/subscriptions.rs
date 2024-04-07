@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{SchemaInformation, SchemaView};
+use super::{SchemaInformation, UpdatingSchemaInformation};
 
 use restate_schema_api::subscription::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver,
@@ -36,7 +36,7 @@ impl SubscriptionResolver for SchemaInformation {
     }
 }
 
-impl SubscriptionResolver for SchemaView {
+impl SubscriptionResolver for UpdatingSchemaInformation {
     fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
         self.0.load().get_subscription(id)
     }
