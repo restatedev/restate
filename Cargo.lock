@@ -5611,6 +5611,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "http 0.2.12",
+ "humantime",
  "itertools 0.11.0",
  "restate-base64-util",
  "restate-serde-util",

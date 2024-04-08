@@ -46,7 +46,7 @@ impl ComponentSchemas {
             deployment_id: self.location.latest_deployment,
             revision: self.revision,
             public: self.location.public,
-            idempotency_retention: self.idempotency_retention,
+            idempotency_retention: self.idempotency_retention.into(),
         }
     }
 }

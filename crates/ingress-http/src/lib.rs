@@ -85,7 +85,7 @@ mod mocks {
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
-                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
             });
             self.1
                 .add(component_name, [(handler_name, invocation_target_metadata)]);

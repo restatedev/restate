@@ -294,7 +294,6 @@ pub mod deployment {
 #[cfg(feature = "component")]
 pub mod component {
     use restate_types::identifiers::{ComponentRevision, DeploymentId};
-    use std::time::Duration;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -360,7 +359,12 @@ pub mod component {
         /// # Idempotency retention
         ///
         /// The retention duration of idempotent requests for this component.
-        pub idempotency_retention: Duration,
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        pub idempotency_retention: humantime::Duration,
     }
 
     #[derive(Debug, Clone)]
@@ -455,7 +459,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
                 }
             }
 
@@ -478,7 +482,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
                 }
             }
         }
