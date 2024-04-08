@@ -85,6 +85,7 @@ impl DispatchIngressRequest for IngressDispatcher {
             request_mode,
             idempotency,
             headers,
+            execution_time,
         } = ingress_request;
 
         let invocation_id: InvocationId = fid.clone().into();
@@ -102,7 +103,7 @@ impl DispatchIngressRequest for IngressDispatcher {
             response_sink,
             span_context,
             headers,
-            execution_time: None,
+            execution_time,
             idempotency,
         };
 
