@@ -38,7 +38,7 @@ use restate_invoker_impl::{
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
-use restate_schema::UpdatingSchemaInformation;
+use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
@@ -55,7 +55,7 @@ use restate_types::Version;
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
 
-type ExternalClientIngress = HyperServerIngress<UpdatingSchemaInformation, IngressDispatcher>;
+type ExternalClientIngress = HyperServerIngress<UpdateableSchema, IngressDispatcher>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -104,8 +104,8 @@ pub struct Worker {
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
-        EntryEnricher<UpdatingSchemaInformation, ProtobufRawEntryCodec>,
-        UpdatingSchemaInformation,
+        EntryEnricher<UpdateableSchema, ProtobufRawEntryCodec>,
+        UpdateableSchema,
     >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
@@ -120,7 +120,7 @@ impl Worker {
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schema_view: UpdatingSchemaInformation,
+        schema_view: UpdateableSchema,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Worker, BuildError> {
         metric_definitions::describe_metrics();
@@ -139,7 +139,7 @@ impl Worker {
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schema_view: UpdatingSchemaInformation,
+        schema_view: UpdateableSchema,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         let ingress_dispatcher = IngressDispatcher::new(bifrost);

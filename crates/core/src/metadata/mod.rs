@@ -21,9 +21,7 @@ use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
 pub use restate_node_protocol::metadata::MetadataKind;
-use restate_node_protocol::metadata::{
-    MetadataContainer, SchemaInformation, UpdatingSchemaInformation,
-};
+use restate_node_protocol::metadata::{MetadataContainer, Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -117,16 +115,16 @@ impl Metadata {
         }
     }
 
-    pub fn schema_information(&self) -> Arc<SchemaInformation> {
-        self.inner.schema_information.load_full()
+    pub fn schema(&self) -> Arc<Schema> {
+        self.inner.schema.load_full()
     }
 
-    pub fn schema_information_version(&self) -> Version {
-        self.inner.schema_information.load().version()
+    pub fn schema_version(&self) -> Version {
+        self.inner.schema.load().version()
     }
 
-    pub fn schema_information_updating(&self) -> UpdatingSchemaInformation {
-        UpdatingSchemaInformation::from(Arc::clone(&self.inner.schema_information))
+    pub fn schema_updateable(&self) -> UpdateableSchema {
+        UpdateableSchema::from(Arc::clone(&self.inner.schema))
     }
 
     // Returns when the metadata kind is at the provided version (or newer)
@@ -166,7 +164,7 @@ struct MetadataInner {
     nodes_config: ArcSwapOption<NodesConfiguration>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
     logs: ArcSwapOption<Logs>,
-    schema_information: Arc<ArcSwap<SchemaInformation>>,
+    schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 

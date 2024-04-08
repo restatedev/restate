@@ -30,18 +30,18 @@ use restate_types::{Version, Versioned};
 /// Temporary bridge until users are migrated to directly using the metadata
 /// provided schema information.
 #[derive(Debug, Default, Clone, derive_more::From)]
-pub struct UpdatingSchemaInformation(Arc<ArcSwap<SchemaInformation>>);
+pub struct UpdateableSchema(Arc<ArcSwap<Schema>>);
 
 /// The schema information
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SchemaInformation {
+pub struct Schema {
     pub version: Version,
     pub components: HashMap<String, ComponentSchemas>,
     pub deployments: HashMap<DeploymentId, DeploymentSchemas>,
     pub subscriptions: HashMap<SubscriptionId, Subscription>,
 }
 
-impl Default for SchemaInformation {
+impl Default for Schema {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
@@ -52,7 +52,7 @@ impl Default for SchemaInformation {
     }
 }
 
-impl SchemaInformation {
+impl Schema {
     pub fn increment_version(&mut self) {
         self.version = self.version.next();
     }
@@ -87,7 +87,7 @@ impl SchemaInformation {
     }
 }
 
-impl Versioned for SchemaInformation {
+impl Versioned for Schema {
     fn version(&self) -> Version {
         self.version
     }
@@ -101,7 +101,7 @@ mod test_util {
     use restate_schema_api::invocation_target::InvocationTargetResolver;
     use restate_test_util::{assert, assert_eq};
 
-    impl SchemaInformation {
+    impl Schema {
         #[track_caller]
         pub fn assert_component_handler(&self, component_name: &str, handler_name: &str) {
             assert!(self

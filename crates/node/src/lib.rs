@@ -124,7 +124,7 @@ impl Node {
             MetadataManager::build(networking.clone(), metadata_store_client.clone());
         metadata_manager.register_in_message_router(&mut router_builder);
         let metadata = metadata_manager.metadata();
-        let updating_schema_information = metadata.schema_information_updating();
+        let updating_schema_information = metadata.schema_updateable();
         let bifrost = BifrostService::new(metadata);
 
         let admin_role = if config.has_role(Role::Admin) {
@@ -233,7 +233,7 @@ impl Node {
         metadata_writer.update(logs).await?;
 
         // fetch the latest schema information
-        metadata.sync(MetadataKind::Schemas).await?;
+        metadata.sync(MetadataKind::Schema).await?;
 
         let nodes_config = metadata.nodes_config();
 

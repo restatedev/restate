@@ -16,7 +16,7 @@ use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{metadata, MetadataWriter};
-use restate_schema::SchemaInformation;
+use restate_schema::Schema;
 use restate_schema_api::component::{
     ComponentMetadata, ComponentMetadataResolver, HandlerMetadata,
 };
@@ -121,7 +121,7 @@ impl<V> SchemaRegistry<V> {
         };
 
         let (id, components) = if !apply_mode.should_apply() {
-            let mut updater = SchemaUpdater::from(metadata().schema_information().deref().clone());
+            let mut updater = SchemaUpdater::from(metadata().schema().deref().clone());
 
             // suppress logging output in case of a dry run
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
@@ -145,7 +145,7 @@ impl<V> SchemaRegistry<V> {
                 .metadata_store_client
                 .read_modify_write(
                     SCHEMA_INFORMATION_KEY.clone(),
-                    |schema_information: Option<SchemaInformation>| {
+                    |schema_information: Option<Schema>| {
                         let mut updater =
                             SchemaUpdater::from(schema_information.unwrap_or_default());
 
@@ -181,8 +181,8 @@ impl<V> SchemaRegistry<V> {
             .metadata_store_client
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
-                |schema_registry: Option<SchemaInformation>| {
-                    let schema_information: SchemaInformation = schema_registry.unwrap_or_default();
+                |schema_registry: Option<Schema>| {
+                    let schema_information: Schema = schema_registry.unwrap_or_default();
 
                     if schema_information.get_deployment(&deployment_id).is_some() {
                         let mut updater = SchemaUpdater::from(schema_information);
@@ -210,7 +210,7 @@ impl<V> SchemaRegistry<V> {
             .metadata_store_client
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<SchemaInformation>| {
+                |schema_information: Option<Schema>| {
                     let schema_information = schema_information.unwrap_or_default();
 
                     if schema_information
@@ -246,7 +246,7 @@ impl<V> SchemaRegistry<V> {
             .metadata_store_client
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<SchemaInformation>| {
+                |schema_information: Option<Schema>| {
                     let schema_information = schema_information.unwrap_or_default();
 
                     if schema_information
@@ -271,14 +271,12 @@ impl<V> SchemaRegistry<V> {
     }
 
     pub fn list_components(&self) -> Vec<ComponentMetadata> {
-        metadata()
-            .schema_information()
-            .list_components()
+        metadata().schema().list_components()
     }
 
     pub fn get_component(&self, component_name: impl AsRef<str>) -> Option<ComponentMetadata> {
         metadata()
-            .schema_information()
+            .schema()
             .resolve_latest_component(&component_name)
     }
 
@@ -287,14 +285,12 @@ impl<V> SchemaRegistry<V> {
         deployment_id: DeploymentId,
     ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
         metadata()
-            .schema_information()
+            .schema()
             .get_deployment_and_components(&deployment_id)
     }
 
     pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
-        metadata()
-            .schema_information()
-            .get_deployments()
+        metadata().schema().get_deployments()
     }
 
     pub fn list_component_handlers(
@@ -302,7 +298,7 @@ impl<V> SchemaRegistry<V> {
         component_name: impl AsRef<str>,
     ) -> Option<Vec<HandlerMetadata>> {
         metadata()
-            .schema_information()
+            .schema()
             .resolve_latest_component(&component_name)
             .map(|m| m.handlers)
     }
@@ -313,7 +309,7 @@ impl<V> SchemaRegistry<V> {
         handler_name: impl AsRef<str>,
     ) -> Option<HandlerMetadata> {
         metadata()
-            .schema_information()
+            .schema()
             .resolve_latest_component(&component_name)
             .and_then(|m| {
                 m.handlers
@@ -323,15 +319,11 @@ impl<V> SchemaRegistry<V> {
     }
 
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {
-        metadata()
-            .schema_information()
-            .get_subscription(subscription_id)
+        metadata().schema().get_subscription(subscription_id)
     }
 
     pub fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        metadata()
-            .schema_information()
-            .list_subscriptions(filters)
+        metadata().schema().list_subscriptions(filters)
     }
 }
 
@@ -351,7 +343,7 @@ where
             .metadata_store_client
             .read_modify_write(
                 SCHEMA_INFORMATION_KEY.clone(),
-                |schema_information: Option<SchemaInformation>| {
+                |schema_information: Option<Schema>| {
                     let mut updater = SchemaUpdater::from(schema_information.unwrap_or_default());
                     subscription_id = Some(updater.add_subscription(
                         None,

@@ -15,7 +15,7 @@ use crate::schema_registry::{ComponentName, ModifyComponentChange};
 use http::{HeaderValue, Uri};
 use restate_schema::component::{ComponentLocation, ComponentSchemas, HandlerSchemas};
 use restate_schema::deployment::DeploymentSchemas;
-use restate_schema::SchemaInformation;
+use restate_schema::Schema;
 use restate_schema_api::component::{ComponentType, HandlerType};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
@@ -32,17 +32,17 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-/// Responsible for updating the provided [`SchemaInformation`] with new
+/// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
 /// is incremented on changes.
 #[derive(Debug, Default)]
 pub struct SchemaUpdater {
-    schema_information: SchemaInformation,
+    schema_information: Schema,
     modified: bool,
 }
 
-impl From<SchemaInformation> for SchemaUpdater {
-    fn from(schema_information: SchemaInformation) -> Self {
+impl From<Schema> for SchemaUpdater {
+    fn from(schema_information: Schema) -> Self {
         Self {
             schema_information,
             modified: false,
@@ -51,7 +51,7 @@ impl From<SchemaInformation> for SchemaUpdater {
 }
 
 impl SchemaUpdater {
-    pub fn into_inner(mut self) -> SchemaInformation {
+    pub fn into_inner(mut self) -> Schema {
         if self.modified {
             self.schema_information.increment_version()
         }
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn register_new_deployment() {
-        let schema_information = SchemaInformation::default();
+        let schema_information = Schema::default();
         let initial_version = schema_information.version();
         let mut updater = SchemaUpdater::from(schema_information);
 

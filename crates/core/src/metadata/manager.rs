@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, trace, warn};
 
-use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, SchemaInformation};
+use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, Schema};
 use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
@@ -275,7 +275,7 @@ where
             MetadataContainer::Logs(logs) => {
                 self.update_logs(logs);
             }
-            MetadataContainer::SchemaRegistry(schemas) => {
+            MetadataContainer::Schema(schemas) => {
                 self.update_schema_information(schemas);
             }
         }
@@ -314,10 +314,10 @@ where
                     self.update_logs(logs);
                 }
             }
-            MetadataKind::Schemas => {
+            MetadataKind::Schema => {
                 if let Some(schema_information) = self
                     .metadata_store_client
-                    .get::<SchemaInformation>(SCHEMA_INFORMATION_KEY.clone())
+                    .get::<Schema>(SCHEMA_INFORMATION_KEY.clone())
                     .await?
                 {
                     self.update_schema_information(schema_information)
@@ -347,11 +347,10 @@ where
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
-    fn update_schema_information(&mut self, schema_information: SchemaInformation) {
-        let maybe_new_version =
-            Self::update_internal(&self.inner.schema_information, schema_information);
+    fn update_schema_information(&mut self, schema_information: Schema) {
+        let maybe_new_version = Self::update_internal(&self.inner.schema, schema_information);
 
-        self.notify_watches(maybe_new_version, MetadataKind::Schemas);
+        self.notify_watches(maybe_new_version, MetadataKind::Schema);
     }
 
     fn update_internal<T: Versioned>(container: &ArcSwap<T>, new_value: T) -> Version {

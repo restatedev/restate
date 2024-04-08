@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
-pub use restate_schema::{SchemaInformation, UpdatingSchemaInformation};
+pub use restate_schema::{Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -70,7 +70,7 @@ impl WireSerde for MetadataMessage {
 )]
 pub enum MetadataKind {
     NodesConfiguration,
-    Schemas,
+    Schema,
     PartitionTable,
     Logs,
 }
@@ -80,7 +80,7 @@ pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
     Logs(Logs),
-    SchemaRegistry(SchemaInformation),
+    Schema(Schema),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +100,7 @@ impl MetadataContainer {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
-            MetadataContainer::SchemaRegistry(_) => MetadataKind::Schemas,
+            MetadataContainer::Schema(_) => MetadataKind::Schema,
         }
     }
 }

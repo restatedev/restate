@@ -57,7 +57,7 @@ pub struct ComponentLocation {
     pub public: bool,
 }
 
-impl ComponentMetadataResolver for SchemaInformation {
+impl ComponentMetadataResolver for Schema {
     fn resolve_latest_component(
         &self,
         component_name: impl AsRef<str>,
@@ -87,7 +87,7 @@ impl ComponentMetadataResolver for SchemaInformation {
     }
 }
 
-impl ComponentMetadataResolver for UpdatingSchemaInformation {
+impl ComponentMetadataResolver for UpdateableSchema {
     fn resolve_latest_component(
         &self,
         component_name: impl AsRef<str>,

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{SchemaInformation, UpdatingSchemaInformation};
+use super::{Schema, UpdateableSchema};
 use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{Deployment, DeploymentMetadata, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
@@ -22,7 +22,7 @@ pub struct DeploymentSchemas {
     pub components: Vec<ComponentMetadata>,
 }
 
-impl DeploymentResolver for SchemaInformation {
+impl DeploymentResolver for Schema {
     fn resolve_latest_deployment_for_component(
         &self,
         component_name: impl AsRef<str>,
@@ -80,7 +80,7 @@ impl DeploymentResolver for SchemaInformation {
     }
 }
 
-impl DeploymentResolver for UpdatingSchemaInformation {
+impl DeploymentResolver for UpdateableSchema {
     fn resolve_latest_deployment_for_component(
         &self,
         component_name: impl AsRef<str>,

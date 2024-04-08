@@ -24,7 +24,7 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
-use restate_schema::UpdatingSchemaInformation;
+use restate_schema::UpdateableSchema;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -91,7 +91,7 @@ impl WorkerRole {
         networking: Networking,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
-        updating_schema_information: UpdatingSchemaInformation,
+        updating_schema_information: UpdateableSchema,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::from_options(
             updateable_config,
@@ -170,7 +170,7 @@ impl WorkerRole {
         SC: SubscriptionController + Clone + Send + Sync,
     {
         let metadata = metadata();
-        let schema_view = metadata.schema_information_updating();
+        let schema_view = metadata.schema_updateable();
         let mut next_version = Version::MIN;
         let cancellation_watcher = cancellation_watcher();
         tokio::pin!(cancellation_watcher);
@@ -180,7 +180,7 @@ impl WorkerRole {
                 _ = &mut cancellation_watcher => {
                     break;
                 },
-                version = metadata.wait_for_version(MetadataKind::Schemas, next_version) => {
+                version = metadata.wait_for_version(MetadataKind::Schema, next_version) => {
                     next_version = version?.next();
 
                     // This might return subscriptions belonging to a higher schema version. As a

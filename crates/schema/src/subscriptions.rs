@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{SchemaInformation, UpdatingSchemaInformation};
+use super::{Schema, UpdateableSchema};
 
 use restate_schema_api::subscription::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 use restate_types::identifiers::SubscriptionId;
 
-impl SubscriptionResolver for SchemaInformation {
+impl SubscriptionResolver for Schema {
     fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
         self.subscriptions.get(&id).cloned()
     }
@@ -36,7 +36,7 @@ impl SubscriptionResolver for SchemaInformation {
     }
 }
 
-impl SubscriptionResolver for UpdatingSchemaInformation {
+impl SubscriptionResolver for UpdateableSchema {
     fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
         self.0.load().get_subscription(id)
     }
