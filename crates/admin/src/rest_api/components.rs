@@ -10,6 +10,7 @@
 
 use super::error::*;
 use super::{create_envelope_header, log_error};
+use crate::schema_registry::ModifyComponentChange;
 use crate::state::AdminServiceState;
 
 use axum::extract::{Path, State};
@@ -83,17 +84,33 @@ pub async fn get_component<V>(
 pub async fn modify_component<V>(
     State(state): State<AdminServiceState<V>>,
     Path(component_name): Path<String>,
-    #[request_body(required = true)] Json(ModifyComponentRequest { public }): Json<
-        ModifyComponentRequest,
-    >,
+    #[request_body(required = true)] Json(ModifyComponentRequest {
+        public,
+        idempotency_retention,
+    }): Json<ModifyComponentRequest>,
 ) -> Result<Json<ComponentMetadata>, MetaApiError> {
+    let mut modify_request = vec![];
+    if let Some(new_public_value) = public {
+        modify_request.push(ModifyComponentChange::Public(new_public_value));
+    }
+    if let Some(new_idempotency_retention) = idempotency_retention {
+        modify_request.push(ModifyComponentChange::IdempotencyRetention(
+            new_idempotency_retention.into(),
+        ));
+    }
+
+    if modify_request.is_empty() {
+        // No need to do anything
+        return get_component(State(state), Path(component_name)).await;
+    }
+
     let response = state
         .task_center
         .run_in_scope("modify-component", None, async {
             log_error(
                 state
                     .schema_registry
-                    .modify_component(component_name, public)
+                    .modify_component(component_name, modify_request)
                     .await,
             )
         })

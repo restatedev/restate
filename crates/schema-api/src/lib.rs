@@ -294,6 +294,7 @@ pub mod deployment {
 #[cfg(feature = "component")]
 pub mod component {
     use restate_types::identifiers::{ComponentRevision, DeploymentId};
+    use std::time::Duration;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -355,6 +356,11 @@ pub mod component {
         /// If true, the component can be invoked through the ingress.
         /// If false, the component can be invoked only from another Restate service.
         pub public: bool,
+
+        /// # Idempotency retention
+        ///
+        /// The retention duration of idempotent requests for this component.
+        pub idempotency_retention: Duration,
     }
 
     #[derive(Debug, Clone)]
@@ -396,6 +402,7 @@ pub mod component {
     pub mod mocks {
         use super::*;
 
+        use crate::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
         use std::collections::HashMap;
 
         #[derive(Debug, Default, Clone)]
@@ -448,6 +455,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 }
             }
 
@@ -470,6 +478,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 }
             }
         }

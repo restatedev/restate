@@ -11,7 +11,7 @@
 use crate::schema_registry::error::{
     ComponentError, DeploymentError, SchemaError, SubscriptionError,
 };
-use crate::schema_registry::ComponentName;
+use crate::schema_registry::{ComponentName, ModifyComponentChange};
 use http::{HeaderValue, Uri};
 use restate_schema::component::{ComponentLocation, ComponentSchemas, HandlerSchemas};
 use restate_schema::deployment::DeploymentSchemas;
@@ -20,6 +20,7 @@ use restate_schema_api::component::{ComponentType, HandlerType};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
+    DEFAULT_IDEMPOTENCY_RETENTION,
 };
 use restate_schema_api::subscription::{
     EventReceiverComponentType, Sink, Source, Subscription, SubscriptionValidator,
@@ -204,6 +205,7 @@ impl SchemaUpdater {
                         latest_deployment: deployment_id,
                         public: true,
                     },
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 }
             };
 
@@ -384,21 +386,27 @@ impl SchemaUpdater {
         }
     }
 
-    pub fn modify_component(&mut self, component_name: String, public: bool) {
-        if let Some(schemas) = self.schema_information.components.get_mut(&component_name) {
-            // Update the public field
-            if schemas.location.public != public {
-                schemas.location.public = public;
-                self.modified = true;
-            }
-
-            for h in schemas.handlers.values_mut() {
-                if h.target_meta.public != public {
-                    h.target_meta.public = public;
-                    self.modified = true;
+    pub fn modify_component(&mut self, name: String, changes: Vec<ModifyComponentChange>) {
+        if let Some(schemas) = self.schema_information.components.get_mut(&name) {
+            for command in changes {
+                match command {
+                    ModifyComponentChange::Public(new_public_value) => {
+                        schemas.location.public = new_public_value;
+                        for h in schemas.handlers.values_mut() {
+                            h.target_meta.public = new_public_value;
+                        }
+                    }
+                    ModifyComponentChange::IdempotencyRetention(new_idempotency_retention) => {
+                        schemas.idempotency_retention = new_idempotency_retention;
+                        for h in schemas.handlers.values_mut() {
+                            h.target_meta.idempotency_retention = new_idempotency_retention;
+                        }
+                    }
                 }
             }
         }
+
+        self.modified = true;
     }
 }
 
@@ -501,6 +509,7 @@ impl DiscoveredHandlerMetadata {
                     HandlerSchemas {
                         target_meta: InvocationTargetMetadata {
                             public: true,
+                            idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                             component_ty,
                             handler_ty: handler.ty,
                             input_rules: handler.input,
@@ -653,7 +662,10 @@ mod tests {
 
         let version_before_modification = schemas.version();
         updater = SchemaUpdater::from(schemas);
-        updater.modify_component(GREETER_SERVICE_NAME.to_owned(), false);
+        updater.modify_component(
+            GREETER_SERVICE_NAME.to_owned(),
+            vec![ModifyComponentChange::Public(false)],
+        );
         let schemas = updater.into_inner();
 
         assert!(version_before_modification < schemas.version());
