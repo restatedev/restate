@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::ResponseResult;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +52,7 @@ impl WireSerde for IngressMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationResponse {
-    pub id: InvocationId,
+    pub invocation_id: InvocationId,
+    pub idempotency_id: Option<IdempotencyId>,
     pub response: ResponseResult,
 }

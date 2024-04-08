@@ -15,19 +15,22 @@ use super::ConnectInfo;
 use super::Handler;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_core::TestCoreEnv;
 use restate_ingress_dispatcher::mocks::MockDispatcher;
-use restate_ingress_dispatcher::IdempotencyMode;
-use restate_ingress_dispatcher::IngressRequest;
+use restate_ingress_dispatcher::{IngressCorrelationId, IngressDispatcherRequest};
 use restate_schema_api::component::{ComponentType, HandlerType};
 use restate_schema_api::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
+use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::Header;
+use restate_types::invocation::{Idempotency, ResponseResult};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use tracing_test::traced_test;
@@ -69,11 +72,13 @@ async fn call_service() {
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -119,11 +124,13 @@ async fn call_service_with_get() {
 
             response_tx
                 .send(
-                    Ok(serde_json::to_vec(&GreetingResponse {
-                        greeting: "Igal".to_string(),
-                    })
-                    .unwrap()
-                    .into())
+                    ResponseResult::Success(
+                        serde_json::to_vec(&GreetingResponse {
+                            greeting: "Igal".to_string(),
+                        })
+                        .unwrap()
+                        .into(),
+                    )
                     .into(),
                 )
                 .unwrap();
@@ -166,11 +173,13 @@ async fn call_virtual_object() {
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -269,8 +278,10 @@ async fn idempotency_key_parsing() {
         .unwrap();
 
     let response = handle(req, |ingress_req| {
+        let correlation_id = ingress_req.correlation_id.clone();
+
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, idempotency_mode, response_tx, _) =
+        let (fid, method_name, argument, _, idempotency, response_tx, _) =
             ingress_req.expect_invocation();
         restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
         restate_test_util::assert_eq!(method_name, "greet");
@@ -279,17 +290,30 @@ async fn idempotency_key_parsing() {
         restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
 
         restate_test_util::assert_eq!(
-            idempotency_mode,
-            IdempotencyMode::key(Bytes::from_static(b"123456"), None)
+            correlation_id,
+            IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
+                fid.service_id.clone(),
+                ByteString::from_static("greet"),
+                ByteString::from_static("123456")
+            ))
+        );
+        restate_test_util::assert_eq!(
+            idempotency,
+            Some(Idempotency {
+                key: ByteString::from_static("123456"),
+                retention: Duration::from_secs(60 * 60 * 24)
+            })
         );
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -560,26 +584,28 @@ async fn health() {
     let _: HealthResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-fn request_handler_not_reached(_req: IngressRequest) {
+fn request_handler_not_reached(_req: IngressDispatcherRequest) {
     panic!("This code should not be reached in this test");
 }
 
-fn expect_invocation_and_reply_with_empty(req: IngressRequest) {
-    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
-    response_tx.send(Ok(Bytes::new()).into()).unwrap();
-}
-
-fn expect_invocation_and_reply_with_non_empty(req: IngressRequest) {
+fn expect_invocation_and_reply_with_empty(req: IngressDispatcherRequest) {
     let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
     response_tx
-        .send(Ok(Bytes::from_static(b"123")).into())
+        .send(ResponseResult::Success(Bytes::new()).into())
+        .unwrap();
+}
+
+fn expect_invocation_and_reply_with_non_empty(req: IngressDispatcherRequest) {
+    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
+    response_tx
+        .send(ResponseResult::Success(Bytes::from_static(b"123")).into())
         .unwrap();
 }
 
 pub async fn handle_with_schemas<B: http_body::Body + Send + 'static>(
     mut req: Request<B>,
     schemas: MockSchemas,
-    f: impl FnOnce(IngressRequest) + Send + 'static,
+    f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
 ) -> Response<Full<Bytes>>
 where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -609,7 +635,7 @@ where
 
 pub async fn handle<B: http_body::Body + Send + 'static>(
     req: Request<B>,
-    f: impl FnOnce(IngressRequest) + Send + 'static,
+    f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
 ) -> Response<Full<Bytes>>
 where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,

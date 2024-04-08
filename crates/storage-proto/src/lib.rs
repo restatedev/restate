@@ -55,7 +55,7 @@ pub mod storage {
             use bytestring::ByteString;
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
-            use restate_types::errors::IdDecodeError;
+            use restate_types::errors::{IdDecodeError, InvocationError};
             use restate_types::identifiers::InvocationUuid;
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
@@ -1832,9 +1832,11 @@ pub mod storage {
                         }
                         response_result::ResponseResult::ResponseFailure(failure) => {
                             restate_types::invocation::ResponseResult::Failure(
-                                failure.failure_code.into(),
-                                ByteString::try_from(failure.failure_message)
-                                    .map_err(ConversionError::invalid_data)?,
+                                InvocationError::new(
+                                    failure.failure_code,
+                                    ByteString::try_from(failure.failure_message)
+                                        .map_err(ConversionError::invalid_data)?,
+                                ),
                             )
                         }
                     };
@@ -1851,11 +1853,11 @@ pub mod storage {
                                 response_result::ResponseSuccess { value },
                             )
                         }
-                        restate_types::invocation::ResponseResult::Failure(error_code, error) => {
+                        restate_types::invocation::ResponseResult::Failure(err) => {
                             response_result::ResponseResult::ResponseFailure(
                                 response_result::ResponseFailure {
-                                    failure_code: error_code.into(),
-                                    failure_message: error.into_bytes(),
+                                    failure_code: err.code().into(),
+                                    failure_message: Bytes::copy_from_slice(err.message().as_ref()),
                                 },
                             )
                         }

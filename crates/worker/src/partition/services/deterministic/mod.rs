@@ -61,6 +61,7 @@ impl<'a> ServiceInvoker<'a> {
         if let Some(response_sink) = response_sink {
             match create_response_message(
                 &InvocationId::from(fid),
+                None,
                 response_sink.clone(),
                 res.into(),
             ) {

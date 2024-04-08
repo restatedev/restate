@@ -19,11 +19,11 @@ use http_body_util::BodyExt;
 use http_body_util::Full;
 use prost::Message;
 use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
+use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
-use restate_types::invocation::SpanRelation;
+use restate_types::invocation::{ResponseResult, SpanRelation};
 use tracing::{info, trace, warn, Instrument};
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -90,14 +90,15 @@ where
             };
 
             let invocation_id: InvocationId = fid.clone().into();
-            let (invocation, response_rx) = IngressRequest::invocation(
+            let (invocation, response_rx) = IngressDispatcherRequest::invocation(
                 fid,
                 handler_name,
                 payload,
                 SpanRelation::Linked(ingress_span_context),
-                IdempotencyMode::None,
+                None,
                 vec![],
             );
+            let ingress_correlation_id = invocation.correlation_id.clone();
             if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
                 warn!(
                     restate.invocation.id = %invocation_id,
@@ -111,17 +112,19 @@ where
             let response = if let Ok(response) = response_rx.await {
                 response
             } else {
-                dispatcher.evict_pending_response(&invocation_id);
+                dispatcher.evict_pending_response(&ingress_correlation_id);
                 warn!("Response channel was closed");
                 return Err(HandlerError::Unavailable);
             };
 
-            match response.into() {
-                Ok(_) => Ok(hyper::Response::builder()
+            match response.result {
+                ResponseResult::Success(_) => Ok(hyper::Response::builder()
                     .status(StatusCode::ACCEPTED)
                     .body(Full::default())
                     .unwrap()),
-                Err(error) => Ok(HandlerError::Invocation(error).into_response()),
+                ResponseResult::Failure(error) => {
+                    Ok(HandlerError::Invocation(error).into_response())
+                }
             }
         }
         .instrument(ingress_span)

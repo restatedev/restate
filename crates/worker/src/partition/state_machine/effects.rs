@@ -304,7 +304,7 @@ impl Effect {
                 seq_number,
                 message:
                     OutboxMessage::ServiceResponse(InvocationResponse {
-                        result: ResponseResult::Failure(failure_code, failure_msg),
+                        result: ResponseResult::Failure(e),
                         entry_index,
                         id,
                     }),
@@ -312,10 +312,9 @@ impl Effect {
                 is_leader,
                 restate.invocation.id = %id,
                 restate.outbox.seq = seq_number,
-                "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",
-                failure_code,
-                entry_index,
-                failure_msg
+                "Effect: Send failure '{}' response to another invocation, completing entry index {}",
+                e,
+                entry_index
             ),
             Effect::IngressResponse(IngressResponse {
                 response: ResponseResult::Success(_),
@@ -326,15 +325,14 @@ impl Effect {
                 restate.invocation.id = %invocation_id,
                 "Effect: Send response to ingress: Success"),
             Effect::IngressResponse(IngressResponse {
-                response: ResponseResult::Failure(error_code, error_msg),
+                response: ResponseResult::Failure(e),
                 invocation_id,
                 ..
             }) => debug_if_leader!(
                 is_leader,
                 restate.invocation.id = %invocation_id,
-                "Effect: Send response to ingress: Failure(code: {}, msg: {})",
-                error_code,
-                error_msg,
+                "Effect: Send response to ingress: Failure({})",
+                e
             ),
             Effect::DeleteInboxEntry {
                 service_id,

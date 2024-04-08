@@ -15,21 +15,22 @@ use super::{Handler, APPLICATION_JSON};
 
 use crate::metric_definitions::{INGRESS_REQUESTS, INGRESS_REQUEST_DURATION, REQUEST_COMPLETED};
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::{header, HeaderMap, HeaderName, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use metrics::{counter, histogram};
-use restate_ingress_dispatcher::{DispatchIngressRequest, IdempotencyMode, IngressRequest};
+use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
-use restate_types::invocation::{Header, SpanRelation};
+use restate_types::invocation::{Header, Idempotency, ResponseResult, SpanRelation};
 use serde::Serialize;
-use std::num::ParseIntError;
 use std::time::{Duration, Instant};
 use tracing::{info, trace, warn, Instrument};
 
+// TODO make this configurable!
+const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
+
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
-const IDEMPOTENCY_RETENTION_PERIOD: HeaderName =
-    HeaderName::from_static("idempotency-retention-period");
 const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 
 #[derive(Debug, Serialize)]
@@ -73,9 +74,20 @@ where
             return Err(HandlerError::NotFound);
         };
 
+        // Check if Idempotency-Key is available
+        let idempotency = parse_idempotency(req.headers())?;
+
         // Craft FullInvocationId
         let fid = if let TargetType::VirtualObject { key } = target {
             FullInvocationId::generate(ServiceId::new(component_name.clone(), key))
+        } else if let Some(ref idempotency) = idempotency {
+            // We need this to make sure the internal components will deliver correctly this idempotent invocation always
+            //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
+            //  https://github.com/restatedev/restate/issues/1329
+            FullInvocationId::generate(ServiceId::new(
+                component_name.clone(),
+                idempotency.key.clone().into_bytes(),
+            ))
         } else {
             FullInvocationId::generate(ServiceId::unkeyed(component_name.clone()))
         };
@@ -93,9 +105,6 @@ where
             if parts.method != Method::GET && parts.method != Method::POST {
                 return Err(HandlerError::MethodNotAllowed);
             }
-
-            // Check if Idempotency-Key is available
-            let idempotency_mode = parse_idempotency_key_and_retention_period(&parts.headers)?;
 
             // Collect body
             let body = body
@@ -127,7 +136,7 @@ where
                     Self::handle_component_call(
                         fid,
                         cloned_handler_name,
-                        idempotency_mode,
+                        idempotency,
                         body,
                         span_relation,
                         headers,
@@ -140,7 +149,7 @@ where
                     Self::handle_component_send(
                         fid,
                         cloned_handler_name,
-                        idempotency_mode,
+                        idempotency,
                         body,
                         span_relation,
                         headers,
@@ -176,7 +185,7 @@ where
     async fn handle_component_call(
         fid: FullInvocationId,
         handler: String,
-        idempotency_mode: IdempotencyMode,
+        idempotency: Option<Idempotency>,
         body: Bytes,
         span_relation: SpanRelation,
         headers: Vec<Header>,
@@ -184,14 +193,15 @@ where
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let invocation_id: InvocationId = fid.clone().into();
-        let (invocation, response_rx) = IngressRequest::invocation(
+        let (invocation, response_rx) = IngressDispatcherRequest::invocation(
             fid,
             handler,
             body,
             span_relation,
-            idempotency_mode,
+            idempotency,
             headers,
         );
+        let ingress_correlation_id = invocation.correlation_id.clone();
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
                 restate.invocation.id = %invocation_id,
@@ -205,7 +215,7 @@ where
         let response = if let Ok(response) = response_rx.await {
             response
         } else {
-            dispatcher.evict_pending_response(&invocation_id);
+            dispatcher.evict_pending_response(&ingress_correlation_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
@@ -214,12 +224,13 @@ where
         let mut response_builder = hyper::Response::builder();
 
         // Add idempotency expiry time if available
-        if let Some(expiry_time) = response.idempotency_expiry_time() {
-            response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
-        }
+        // TODO reintroduce this once available
+        // if let Some(expiry_time) = response.idempotency_expiry_time() {
+        //     response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
+        // }
 
-        match response.into() {
-            Ok(response_payload) => {
+        match response.result {
+            ResponseResult::Success(response_payload) => {
                 trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
 
                 // Write out the content-type, if any
@@ -237,7 +248,7 @@ where
 
                 Ok(response_builder.body(Full::new(response_payload)).unwrap())
             }
-            Err(error) => {
+            ResponseResult::Failure(error) => {
                 info!(rpc.response = ?error, "Complete external HTTP request with a failure");
                 Ok(HandlerError::Invocation(error).fill_builder(response_builder))
             }
@@ -247,22 +258,24 @@ where
     async fn handle_component_send(
         fid: FullInvocationId,
         handler: String,
-        idempotency_mode: IdempotencyMode,
+        idempotency: Option<Idempotency>,
         body: Bytes,
         span_relation: SpanRelation,
         headers: Vec<Header>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        if !matches!(idempotency_mode, IdempotencyMode::None) {
-            // TODO https://github.com/restatedev/restate/issues/1233
-            return Err(HandlerError::SendAndIdempotencyKey);
-        }
-
         let invocation_id = InvocationId::from(&fid);
 
         // Send the service invocation
-        let invocation =
-            IngressRequest::background_invocation(fid, handler, body, span_relation, None, headers);
+        let invocation = IngressDispatcherRequest::background_invocation(
+            fid,
+            handler,
+            body,
+            span_relation,
+            None,
+            idempotency,
+            headers,
+        );
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
                 restate.invocation.id = %invocation_id,
@@ -295,7 +308,6 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
                 && k != header::HOST
                 && k != IDEMPOTENCY_KEY
                 && k != IDEMPOTENCY_EXPIRES
-                && k != IDEMPOTENCY_RETENTION_PERIOD
         })
         .map(|(k, v)| {
             let value = v
@@ -306,28 +318,20 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
         .collect()
 }
 
-fn parse_idempotency_key_and_retention_period(
-    headers: &HeaderMap,
-) -> Result<IdempotencyMode, HandlerError> {
+fn parse_idempotency(headers: &HeaderMap) -> Result<Option<Idempotency>, HandlerError> {
     let idempotency_key = if let Some(idempotency_key) = headers.get(IDEMPOTENCY_KEY) {
-        Bytes::copy_from_slice(idempotency_key.as_bytes())
+        ByteString::from(
+            idempotency_key
+                .to_str()
+                .map_err(|e| HandlerError::BadHeader(IDEMPOTENCY_KEY, e))?,
+        )
     } else {
-        return Ok(IdempotencyMode::None);
+        return Ok(None);
     };
 
-    if let Some(retention_period_sec) = headers.get(IDEMPOTENCY_RETENTION_PERIOD) {
-        let retention_period = Duration::from_secs(
-            retention_period_sec
-                .to_str()
-                .map_err(|e| HandlerError::BadIdempotency(e.into()))?
-                .parse()
-                .map_err(|e: ParseIntError| HandlerError::BadIdempotency(e.into()))?,
-        );
-        Ok(IdempotencyMode::key(
-            idempotency_key,
-            Some(retention_period),
-        ))
-    } else {
-        Ok(IdempotencyMode::key(idempotency_key, None))
-    }
+    Ok(Some(Idempotency {
+        key: idempotency_key,
+        // TODO allow configure this on a service basis via admin api
+        retention: DEFAULT_IDEMPOTENCY_RETENTION,
+    }))
 }

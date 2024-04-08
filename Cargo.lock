@@ -5238,6 +5238,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "bytestring",
  "codederror",
  "derive_builder",
  "futures",

@@ -10,7 +10,7 @@
 
 //! This module contains all the core types representing a service invocation.
 
-use crate::errors::{InvocationError, InvocationErrorCode};
+use crate::errors::InvocationError;
 use crate::identifiers::{
     EntryIndex, FullInvocationId, InvocationId, PartitionKey, WithPartitionKey,
 };
@@ -155,14 +155,14 @@ pub struct InvocationResponse {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResponseResult {
     Success(Bytes),
-    Failure(InvocationErrorCode, ByteString),
+    Failure(InvocationError),
 }
 
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         match value {
             Ok(v) => ResponseResult::Success(v),
-            Err(e) => ResponseResult::from(e),
+            Err(e) => ResponseResult::Failure(e),
         }
     }
 }
@@ -171,22 +171,20 @@ impl From<ResponseResult> for Result<Bytes, InvocationError> {
     fn from(value: ResponseResult) -> Self {
         match value {
             ResponseResult::Success(bytes) => Ok(bytes),
-            ResponseResult::Failure(error_code, error_msg) => {
-                Err(InvocationError::new(error_code, error_msg))
-            }
+            ResponseResult::Failure(e) => Err(e),
         }
     }
 }
 
 impl From<InvocationError> for ResponseResult {
     fn from(e: InvocationError) -> Self {
-        ResponseResult::Failure(e.code(), e.message().into())
+        ResponseResult::Failure(e)
     }
 }
 
 impl From<&InvocationError> for ResponseResult {
     fn from(e: &InvocationError) -> Self {
-        ResponseResult::Failure(e.code(), e.message().into())
+        ResponseResult::Failure(e.clone())
     }
 }
 

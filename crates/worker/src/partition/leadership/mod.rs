@@ -494,7 +494,8 @@ where
                                     ingress_response.target_node.into(),
                                     &ingress::IngressMessage::InvocationResponse(
                                         ingress::InvocationResponse {
-                                            id: invocation_id.clone(),
+                                            invocation_id: invocation_id.clone(),
+                                            idempotency_id: ingress_response.idempotency_id,
                                             response: ingress_response.response,
                                         },
                                     ),

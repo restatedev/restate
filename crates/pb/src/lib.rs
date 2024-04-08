@@ -83,7 +83,7 @@ pub mod builtin_service {
         }
 
         pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
-            ResponseResult::Failure(err.code(), err.message().into())
+            ResponseResult::Failure(err)
         }
     }
 
@@ -99,7 +99,9 @@ pub mod builtin_service {
                 ) => Ok(ResponseResult::Success(s)),
                 Some(
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(e),
-                ) => Ok(ResponseResult::Failure(e.code.into(), e.message.into())),
+                ) => Ok(ResponseResult::Failure(InvocationError::new(
+                    e.code, e.message,
+                ))),
                 None => Err("response_result field must be set"),
             }
         }
@@ -112,11 +114,11 @@ pub mod builtin_service {
                     crate::restate::internal::service_invocation_sink_request::Response::Success(s)
                 }
 
-                ResponseResult::Failure(code, message) => {
+                ResponseResult::Failure(err) => {
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(
                         crate::restate::internal::InvocationFailure {
-                            code: code.into(),
-                            message: message.to_string(),
+                            code: err.code().into(),
+                            message: err.message().to_string(),
                         },
                     )
                 }
