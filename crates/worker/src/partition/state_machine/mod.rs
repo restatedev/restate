@@ -106,7 +106,6 @@ mod tests {
     use restate_test_util::matchers::*;
     use restate_types::arc_util::Constant;
     use restate_types::config::WorkerOptions;
-    use restate_types::errors::codes;
     use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,

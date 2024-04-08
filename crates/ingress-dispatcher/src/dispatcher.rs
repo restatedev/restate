@@ -225,24 +225,24 @@ mod tests {
             .run_in_scope("test", None, async {
                 bifrost_svc.start().await?;
 
-            // Ask for a response, then drop the receiver
-            let service_id = ServiceId::new("MySvc", "MyKey");
-            let fid = FullInvocationId::generate(service_id.clone());
-            let handler_name = ByteString::from_static("pippo");
-            let argument = Bytes::from_static(b"nbfjksdfs");
-            let idempotency_key = ByteString::from_static("123");
-            let (invocation, res) = IngressDispatcherRequest::invocation(
-                fid.clone(),
-                handler_name.clone(),
-                argument.clone(),
-                SpanRelation::None,
-                Some(Idempotency {
-                    key: idempotency_key.clone(),
-                    retention: Duration::from_secs(60),
-                }),
-                vec![],
-            );
-            dispatcher.dispatch_ingress_request(invocation).await?;
+                // Ask for a response, then drop the receiver
+                let service_id = ServiceId::new("MySvc", "MyKey");
+                let fid = FullInvocationId::generate(service_id.clone());
+                let handler_name = ByteString::from_static("pippo");
+                let argument = Bytes::from_static(b"nbfjksdfs");
+                let idempotency_key = ByteString::from_static("123");
+                let (invocation, res) = IngressDispatcherRequest::invocation(
+                    fid.clone(),
+                    handler_name.clone(),
+                    argument.clone(),
+                    SpanRelation::None,
+                    Some(Idempotency {
+                        key: idempotency_key.clone(),
+                        retention: Duration::from_secs(60),
+                    }),
+                    vec![],
+                );
+                dispatcher.dispatch_ingress_request(invocation).await?;
 
                 // Let's check we correct have generated a bifrost write
                 let partition_id = node_env
@@ -256,49 +256,49 @@ mod tests {
                 let output_message =
                     Envelope::decode_with_bincode(log_record.record.payload().unwrap().as_ref())?;
 
-            let_assert!(
-                Envelope {
-                    command: Command::Invoke(service_invocation),
-                    ..
-                } = output_message
-            );
-            assert_that!(
-                service_invocation,
-                pat!(ServiceInvocation {
-                    fid: eq(fid.clone()),
-                    method_name: eq(handler_name.clone()),
-                    argument: eq(argument.clone()),
-                    idempotency: some(eq(Idempotency {
-                        key: idempotency_key.clone(),
-                        retention: Duration::from_secs(60),
-                    }))
-                })
-            );
+                let_assert!(
+                    Envelope {
+                        command: Command::Invoke(service_invocation),
+                        ..
+                    } = output_message
+                );
+                assert_that!(
+                    service_invocation,
+                    pat!(ServiceInvocation {
+                        fid: eq(fid.clone()),
+                        method_name: eq(handler_name.clone()),
+                        argument: eq(argument.clone()),
+                        idempotency: some(eq(Idempotency {
+                            key: idempotency_key.clone(),
+                            retention: Duration::from_secs(60),
+                        }))
+                    })
+                );
 
-            // Now check we get the response is routed back to the handler correctly
-            let response = Bytes::from_static(b"vmoaifnuei");
-            node_env
-                .network_sender
-                .send(
-                    metadata().my_node_id().into(),
-                    &IngressMessage::InvocationResponse(InvocationResponse {
-                        invocation_id: service_invocation.fid.into(),
-                        idempotency_id: Some(IdempotencyId::combine(
-                            service_id.clone(),
-                            handler_name.clone(),
-                            idempotency_key.clone(),
-                        )),
-                        response: ResponseResult::Success(response.clone()),
-                    }),
-                )
-                .await?;
+                // Now check we get the response is routed back to the handler correctly
+                let response = Bytes::from_static(b"vmoaifnuei");
+                node_env
+                    .network_sender
+                    .send(
+                        metadata().my_node_id().into(),
+                        &IngressMessage::InvocationResponse(InvocationResponse {
+                            invocation_id: service_invocation.fid.into(),
+                            idempotency_id: Some(IdempotencyId::combine(
+                                service_id.clone(),
+                                handler_name.clone(),
+                                idempotency_key.clone(),
+                            )),
+                            response: ResponseResult::Success(response.clone()),
+                        }),
+                    )
+                    .await?;
 
-            assert_that!(
-                res.await?,
-                pat!(IngressDispatcherResponse {
-                    result: eq(ResponseResult::Success(response))
-                })
-            );
+                assert_that!(
+                    res.await?,
+                    pat!(IngressDispatcherResponse {
+                        result: eq(ResponseResult::Success(response))
+                    })
+                );
 
                 Ok(())
             })
