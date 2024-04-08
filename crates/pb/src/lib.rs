@@ -45,10 +45,6 @@ pub const AWAKEABLES_RESOLVE_HANDLER_NAME: &str = "Resolve";
 pub const AWAKEABLES_REJECT_HANDLER_NAME: &str = "Reject";
 pub const PROXY_SERVICE_NAME: &str = "restate_internal_pp_proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
-pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "restate_internal_idempotent_invoker";
-pub const IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME: &str = "Invoke";
-pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
-pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {

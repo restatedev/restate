@@ -29,7 +29,7 @@ use tracing::{debug, info, trace};
 
 /// Dispatches a request from ingress to bifrost
 pub trait DispatchIngressRequest {
-    fn evict_pending_response(&self, invocation_id: &IngressCorrelationId);
+    fn evict_pending_response(&self, correlation_id: &IngressCorrelationId);
     fn dispatch_ingress_request(
         &self,
         ingress_request: IngressDispatcherRequest,

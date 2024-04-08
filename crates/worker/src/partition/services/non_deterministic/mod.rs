@@ -13,23 +13,19 @@ use super::*;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::types::{create_response_message, ResponseMessage};
 use bytes::Bytes;
-use restate_pb::builtin_service::ManualResponseBuiltInService;
-use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{FullInvocationId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
 use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::sync::mpsc;
 use tracing::warn;
-
-mod idempotent_invoker;
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
 pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
@@ -65,14 +61,14 @@ impl ServiceInvoker {
     pub(crate) async fn invoke(
         &mut self,
         full_invocation_id: FullInvocationId,
-        method: &str,
+        _method: &str,
         span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
-        argument: Bytes,
+        _argument: Bytes,
     ) {
         let mut out_effects = vec![];
         let mut state_and_journal_transitions = StateTransitions::default();
-        let invocation_context = InvocationContext {
+        let _invocation_context = InvocationContext {
             full_invocation_id: &full_invocation_id,
             state_reader: &mut self.storage,
             response_sink: response_sink.as_ref(),
@@ -81,12 +77,9 @@ impl ServiceInvoker {
             span_context: &span_context,
         };
 
+        #[allow(clippy::match_single_binding)]
         let result = match full_invocation_id.service_id.service_name.deref() {
-            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME => {
-                IdempotentInvokerInvoker(invocation_context)
-                    .invoke_builtin(method, argument)
-                    .await
-            }
+            // Add here the built-in components
             _ => Err(InvocationError::component_not_found(
                 &full_invocation_id.service_id.service_name,
             )),
