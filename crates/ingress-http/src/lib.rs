@@ -45,7 +45,7 @@ mod mocks {
     };
     use restate_schema_api::invocation_target::mocks::MockInvocationTargetResolver;
     use restate_schema_api::invocation_target::{
-        InvocationTargetMetadata, InvocationTargetResolver,
+        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
     };
     use restate_types::identifiers::DeploymentId;
     use serde::{Deserialize, Serialize};
@@ -85,6 +85,7 @@ mod mocks {
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
             });
             self.1
                 .add(component_name, [(handler_name, invocation_target_metadata)]);

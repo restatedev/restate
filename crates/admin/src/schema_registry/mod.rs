@@ -33,6 +33,7 @@ use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
+use std::time::Duration;
 use tracing::subscriber::NoSubscriber;
 
 /// Whether to force the registration of an existing endpoint or not
@@ -60,6 +61,12 @@ impl ApplyMode {
     pub fn should_apply(&self) -> bool {
         *self == Self::Apply
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum ModifyComponentChange {
+    Public(bool),
+    IdempotencyRetention(Duration),
 }
 
 /// Responsible for updating the registered schema information. This includes the discovery of
@@ -202,7 +209,7 @@ impl<V> SchemaRegistry<V> {
     pub async fn modify_component(
         &self,
         component_name: String,
-        public: bool,
+        changes: Vec<ModifyComponentChange>,
     ) -> Result<ComponentMetadata, SchemaRegistryError> {
         let schema_information = self
             .metadata_store_client
@@ -216,7 +223,7 @@ impl<V> SchemaRegistry<V> {
                         .is_some()
                     {
                         let mut updater = SchemaUpdater::from(schema_information);
-                        updater.modify_component(component_name.clone(), public);
+                        updater.modify_component(component_name.clone(), changes.clone());
                         Ok(updater.into_inner())
                     } else {
                         Err(SchemaError::NotFound(format!(

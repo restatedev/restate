@@ -14,11 +14,15 @@ use bytestring::ByteString;
 use itertools::Itertools;
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
+
+pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationTargetMetadata {
     pub public: bool,
+    pub idempotency_retention: Duration,
     pub component_ty: ComponentType,
     pub handler_ty: HandlerType,
     pub input_rules: InputRules,
@@ -403,6 +407,7 @@ pub mod mocks {
         pub fn mock(component_ty: ComponentType, handler_ty: HandlerType) -> Self {
             Self {
                 public: true,
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 component_ty,
                 handler_ty,
                 input_rules: Default::default(),

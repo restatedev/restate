@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use std::time::Duration;
 
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::invocation_target::InvocationTargetMetadata;
@@ -24,6 +25,7 @@ pub struct ComponentSchemas {
     pub handlers: HashMap<String, HandlerSchemas>,
     pub ty: ComponentType,
     pub location: ComponentLocation,
+    pub idempotency_retention: Duration,
 }
 
 impl ComponentSchemas {
@@ -44,6 +46,7 @@ impl ComponentSchemas {
             deployment_id: self.location.latest_deployment,
             revision: self.revision,
             public: self.location.public,
+            idempotency_retention: self.idempotency_retention,
         }
     }
 }
