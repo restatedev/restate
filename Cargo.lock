@@ -4990,8 +4990,6 @@ dependencies = [
  "futures-util",
  "hyper 0.14.28",
  "pprof",
- "prost 0.12.3",
- "prost-build",
  "rand",
  "restate-core",
  "restate-node",
@@ -5000,8 +4998,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tonic 0.10.2",
- "tonic-build",
 ]
 
 [[package]]

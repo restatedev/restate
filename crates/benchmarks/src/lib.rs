@@ -28,10 +28,6 @@ use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
 use restate_node::Node;
 use restate_types::retries::RetryPolicy;
 
-pub mod counter {
-    include!(concat!(env!("OUT_DIR"), "/counter.rs"));
-}
-
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
@@ -57,6 +53,34 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     });
 
     assert!(discovery_result
+        .expect("Discovery must be successful")
+        .status()
+        .is_success(),);
+
+    // wait for ingress being available
+    // todo replace with node get_ident/status once it signals that the node is fully up and running
+    let health_response = current_thread_rt.block_on(async {
+        RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
+            .retry(|| {
+                hyper::Client::new()
+                    .request(
+                        hyper::Request::get("http://localhost:8080/restate/health")
+                            .body(Body::empty())
+                            .expect("building health request should not fail"),
+                    )
+                    .map_err(anyhow::Error::from)
+                    .and_then(|response| {
+                        if response.status().is_success() {
+                            future::ready(Ok(response))
+                        } else {
+                            future::ready(Err(anyhow::anyhow!("health request was unsuccessful.")))
+                        }
+                    })
+            })
+            .await
+    });
+
+    assert!(health_response
         .expect("Discovery must be successful")
         .status()
         .is_success(),);
