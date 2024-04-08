@@ -187,7 +187,7 @@ impl MetadataStoreClient {
         &self,
         key: ByteString,
         mut init: F,
-    ) -> Result<T, ReadModifyWriteError>
+    ) -> Result<T, ReadWriteError>
     where
         T: Versioned + Serialize + DeserializeOwned + Clone,
         F: FnMut() -> T,
@@ -250,7 +250,10 @@ impl MetadataStoreClient {
         let mut backoff_policy = Self::exponential_retry_policy(max_backoff);
 
         loop {
-            let old_value = self.get::<T>(key.clone()).await?;
+            let old_value = self
+                .get::<T>(key.clone())
+                .await
+                .map_err(ReadWriteError::from)?;
 
             let precondition = old_value
                 .as_ref()
@@ -271,7 +274,7 @@ impl MetadataStoreClient {
                             );
                             tokio::time::sleep(backoff).await;
                         }
-                        Err(err) => return Err(err.into()),
+                        Err(err) => return Err(ReadModifyWriteError::ReadWrite(err.into())),
                     }
                 }
                 Err(err) => return Err(ReadModifyWriteError::FailedOperation(err)),
@@ -281,36 +284,77 @@ impl MetadataStoreClient {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ReadModifyWriteError<E = String> {
+pub enum ReadWriteError {
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
     Internal(String),
     #[error("codec error: {0}")]
     Codec(GenericError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadModifyWriteError<E = String> {
+    #[error(transparent)]
+    ReadWrite(#[from] ReadWriteError),
     #[error("failed read-modify-write operation: {0}")]
     FailedOperation(E),
 }
 
-impl<E> From<ReadError> for ReadModifyWriteError<E> {
-    fn from(value: ReadError) -> Self {
-        match value {
-            ReadError::Network(err) => ReadModifyWriteError::Network(err),
-            ReadError::Internal(msg) => ReadModifyWriteError::Internal(msg),
-            ReadError::Codec(err) => ReadModifyWriteError::Codec(err),
+impl<E> ReadModifyWriteError<E>
+where
+    E: From<ReadWriteError>,
+{
+    pub fn transpose(self) -> E {
+        match self {
+            ReadModifyWriteError::ReadWrite(err) => err.into(),
+            ReadModifyWriteError::FailedOperation(err) => err,
         }
     }
 }
 
-impl<E> From<WriteError> for ReadModifyWriteError<E> {
+impl From<ReadError> for ReadWriteError {
+    fn from(value: ReadError) -> Self {
+        match value {
+            ReadError::Network(err) => ReadWriteError::Network(err),
+            ReadError::Internal(msg) => ReadWriteError::Internal(msg),
+            ReadError::Codec(err) => ReadWriteError::Codec(err),
+        }
+    }
+}
+
+impl From<WriteError> for ReadWriteError {
     fn from(value: WriteError) -> Self {
         match value {
             WriteError::FailedPrecondition(_) => {
                 unreachable!("failed preconditions should be treated separately")
             }
-            WriteError::Network(err) => ReadModifyWriteError::Network(err),
-            WriteError::Internal(msg) => ReadModifyWriteError::Internal(msg),
-            WriteError::Codec(err) => ReadModifyWriteError::Codec(err),
+            WriteError::Network(err) => ReadWriteError::Network(err),
+            WriteError::Internal(msg) => ReadWriteError::Internal(msg),
+            WriteError::Codec(err) => ReadWriteError::Codec(err),
+        }
+    }
+}
+
+pub trait MetadataStoreClientError {
+    fn is_network_error(&self) -> bool;
+}
+
+impl<E> MetadataStoreClientError for ReadModifyWriteError<E> {
+    fn is_network_error(&self) -> bool {
+        match self {
+            ReadModifyWriteError::ReadWrite(err) => err.is_network_error(),
+            ReadModifyWriteError::FailedOperation(_) => false,
+        }
+    }
+}
+
+impl MetadataStoreClientError for ReadWriteError {
+    fn is_network_error(&self) -> bool {
+        match self {
+            ReadWriteError::Network(_) => true,
+            ReadWriteError::Internal(_) => false,
+            ReadWriteError::Codec(_) => false,
         }
     }
 }

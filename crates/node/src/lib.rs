@@ -27,10 +27,11 @@ use codederror::CodedError;
 use tokio::time::Instant;
 use tracing::{error, info, trace};
 
+use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::{spawn_metadata_manager, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
+use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::{create_static_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
@@ -49,6 +50,17 @@ pub enum Error {
     #[error("node failed to start due to failed safety check: {0}")]
     #[code(unknown)]
     SafetyCheck(String),
+    #[error(
+        "missing nodes configuration; can only create it if '--allow-bootstrap true' is specified"
+    )]
+    #[code(unknown)]
+    MissingNodesConfiguration,
+    #[error("detected concurrent node registration for node '{0}'; stepping down")]
+    #[code(unknown)]
+    ConcurrentNodeRegistration(String),
+    #[error("could not read/write from/to metadata store: {0}")]
+    #[code(unknown)]
+    MetadataStore(#[from] ReadWriteError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -207,8 +219,6 @@ impl Node {
             config.common.metadata_store_address.clone(),
         );
 
-        let nodes_config = Self::upsert_node_config(&metadata_store_client, &config.common).await?;
-
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata();
         let is_set = tc.try_set_global_metadata(metadata.clone());
@@ -217,20 +227,32 @@ impl Node {
         // Start metadata manager
         spawn_metadata_manager(&tc, self.metadata_manager)?;
 
+        let nodes_config = Self::upsert_node_config(&metadata_store_client, &config.common).await?;
         metadata_writer.update(nodes_config).await?;
 
-        let (partition_table, logs) =
-            Self::fetch_or_insert_static_configuration(&metadata_store_client, &config).await?;
+        if config.common.allow_bootstrap {
+            // only try to insert static configuration if in bootstrap mode
+            let (partition_table, logs) =
+                Self::fetch_or_insert_static_configuration(&metadata_store_client, &config).await?;
 
-        // sanity check
-        if partition_table.num_partitions()
-            != u64::try_from(logs.logs.len()).expect("usize fits into u64")
-        {
-            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.logs.len())))?;
+            metadata_writer.update(partition_table).await?;
+            metadata_writer.update(logs).await?;
+        } else {
+            // otherwise, just sync the required metadata
+            metadata.sync(MetadataKind::PartitionTable).await?;
+            metadata.sync(MetadataKind::Logs).await?;
+
+            // safety check until we can tolerate missing partition table and logs configuration
+            if metadata.partition_table_version() == Version::INVALID
+                || metadata.logs_version() == Version::INVALID
+            {
+                return Err(Error::SafetyCheck(
+                    format!(
+                        "Missing partition table or logs configuration for cluster '{}'. This indicates that the cluster bootstrap is incomplete. Please re-run with '--allow-bootstrap true'.",
+                        config.common.cluster_name(),
+                    )))?;
+            }
         }
-
-        metadata_writer.update(partition_table).await?;
-        metadata_writer.update(logs).await?;
 
         // fetch the latest schema information
         metadata.sync(MetadataKind::Schema).await?;
@@ -310,7 +332,7 @@ impl Node {
     async fn fetch_or_insert_static_configuration(
         metadata_store_client: &MetadataStoreClient,
         options: &Configuration,
-    ) -> Result<(FixedPartitionTable, Logs), ReadModifyWriteError> {
+    ) -> Result<(FixedPartitionTable, Logs), Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
         let logs = Self::fetch_or_insert_logs_configuration(
@@ -320,113 +342,133 @@ impl Node {
         )
         .await?;
 
+        // sanity check
+        if partition_table.num_partitions()
+            != u64::try_from(logs.logs.len()).expect("usize fits into u64")
+        {
+            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.logs.len())))?;
+        }
+
         Ok((partition_table, logs))
     }
 
     async fn fetch_or_insert_partition_table(
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
-    ) -> Result<FixedPartitionTable, ReadModifyWriteError> {
+    ) -> Result<FixedPartitionTable, Error> {
         Self::retry_on_network_error(|| {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
                 FixedPartitionTable::new(Version::MIN, config.worker.bootstrap_num_partitions)
             })
         })
         .await
+        .map_err(Into::into)
     }
 
     async fn fetch_or_insert_logs_configuration(
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
         num_partitions: u64,
-    ) -> Result<Logs, ReadModifyWriteError> {
+    ) -> Result<Logs, Error> {
         Self::retry_on_network_error(|| {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                 create_static_metadata(config.bifrost.default_provider, num_partitions)
             })
         })
         .await
+        .map_err(Into::into)
     }
 
     async fn upsert_node_config(
         metadata_store_client: &MetadataStoreClient,
         common_opts: &CommonOptions,
-    ) -> Result<NodesConfiguration, ReadModifyWriteError> {
+    ) -> Result<NodesConfiguration, Error> {
         Self::retry_on_network_error(|| {
-                    let mut previous_node_generation = None;
-                    metadata_store_client.read_modify_write(
-                        NODES_CONFIG_KEY.clone(),
-                        move |nodes_config| {
-                            let mut nodes_config = nodes_config.unwrap_or_else(|| {
-                                NodesConfiguration::new(
-                                    Version::INVALID,
-                                    common_opts.cluster_name().to_owned(),
-                                )
-                            });
+            let mut previous_node_generation = None;
+            metadata_store_client.read_modify_write(NODES_CONFIG_KEY.clone(), move |nodes_config| {
+                let mut nodes_config = if common_opts.allow_bootstrap {
+                    nodes_config.unwrap_or_else(|| {
+                        NodesConfiguration::new(
+                            Version::INVALID,
+                            common_opts.cluster_name().to_owned(),
+                        )
+                    })
+                } else {
+                    nodes_config.ok_or(Error::MissingNodesConfiguration)?
+                };
 
-                            // check whether we have registered before
-                            let node_config =
-                                nodes_config.find_node_by_name(common_opts.node_name()).cloned();
+                // check whether we have registered before
+                let node_config = nodes_config
+                    .find_node_by_name(common_opts.node_name())
+                    .cloned();
 
-                            let my_node_config = if let Some(mut node_config) = node_config {
-                                assert_eq!(
-                                    common_opts.node_name(), node_config.name,
-                                    "node name must match"
-                                );
+                let my_node_config = if let Some(mut node_config) = node_config {
+                    assert_eq!(
+                        common_opts.node_name(),
+                        node_config.name,
+                        "node name must match"
+                    );
 
-                                if let Some(previous_node_generation) = previous_node_generation {
-                                    if node_config.current_generation.is_newer_than(previous_node_generation) {
-                                        // detected a concurrent registration of the same node
-                                        return Err(format!("detected concurrent modification of the node_config for node '{}'; stepping down", common_opts.node_name()));
-                                    }
-                                } else {
-                                    // remember the previous node generation to detect concurrent modifications
-                                    previous_node_generation = Some(node_config.current_generation);
-                                }
+                    if let Some(previous_node_generation) = previous_node_generation {
+                        if node_config
+                            .current_generation
+                            .is_newer_than(previous_node_generation)
+                        {
+                            // detected a concurrent registration of the same node
+                            return Err(Error::ConcurrentNodeRegistration(
+                                common_opts.node_name().to_owned(),
+                            ));
+                        }
+                    } else {
+                        // remember the previous node generation to detect concurrent modifications
+                        previous_node_generation = Some(node_config.current_generation);
+                    }
 
-                                // update node_config
-                                node_config.roles = common_opts.roles;
-                                node_config.address = common_opts.advertised_address.clone();
-                                node_config.current_generation.bump_generation();
+                    // update node_config
+                    node_config.roles = common_opts.roles;
+                    node_config.address = common_opts.advertised_address.clone();
+                    node_config.current_generation.bump_generation();
 
-                                node_config
-                            } else {
-                                let plain_node_id = common_opts.force_node_id.unwrap_or_else(|| {
-                                    nodes_config
-                                        .max_plain_node_id()
-                                        .map(|n| n.next())
-                                        .unwrap_or_default()
-                                });
+                    node_config
+                } else {
+                    let plain_node_id = common_opts.force_node_id.unwrap_or_else(|| {
+                        nodes_config
+                            .max_plain_node_id()
+                            .map(|n| n.next())
+                            .unwrap_or_default()
+                    });
 
-                                assert!(
-                                    nodes_config.find_node_by_id(plain_node_id).is_err(),
-                                    "duplicate plain node id '{}'",
-                                    plain_node_id
-                                );
+                    assert!(
+                        nodes_config.find_node_by_id(plain_node_id).is_err(),
+                        "duplicate plain node id '{}'",
+                        plain_node_id
+                    );
 
-                                let my_node_id = plain_node_id.with_generation(1);
+                    let my_node_id = plain_node_id.with_generation(1);
 
-                                NodeConfig::new(
-                                    common_opts.node_name().to_owned(),
-                                    my_node_id,
-                                    common_opts.advertised_address.clone(),
-                                    common_opts.roles,
-                                )
-                            };
-
-                            nodes_config.upsert_node(my_node_config);
-                            nodes_config.increment_version();
-
-                            Ok(nodes_config)
-                        },
+                    NodeConfig::new(
+                        common_opts.node_name().to_owned(),
+                        my_node_id,
+                        common_opts.advertised_address.clone(),
+                        common_opts.roles,
                     )
-                }).await
+                };
+
+                nodes_config.upsert_node(my_node_config);
+                nodes_config.increment_version();
+
+                Ok(nodes_config)
+            })
+        })
+        .await
+        .map_err(|err| err.transpose())
     }
 
-    async fn retry_on_network_error<Fn, Fut, T>(action: Fn) -> Result<T, ReadModifyWriteError>
+    async fn retry_on_network_error<Fn, Fut, T, E>(action: Fn) -> Result<T, E>
     where
         Fn: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, ReadModifyWriteError>>,
+        Fut: Future<Output = Result<T, E>>,
+        E: MetadataStoreClientError + std::fmt::Display,
     {
         // todo: Make upsert timeout configurable
         let retry_policy = RetryPolicy::exponential(
@@ -438,16 +480,17 @@ impl Node {
         let upsert_start = Instant::now();
 
         retry_policy
-            .retry_if(action, |err: &ReadModifyWriteError| match err {
-                ReadModifyWriteError::Network(err) => {
+            .retry_if(action, |err: &E| {
+                if err.is_network_error() {
                     if upsert_start.elapsed() < Duration::from_secs(5) {
                         trace!("could not connect to metadata store: {err}; retrying");
                     } else {
                         info!("could not connect to metadata store: {err}; retrying");
                     }
                     true
+                } else {
+                    false
                 }
-                _ => false,
             })
             .await
     }

@@ -52,7 +52,7 @@ pub struct CommonOptions {
     /// have the same.
     cluster_name: String,
 
-    /// If true, then a new cluster is bootstrapped. This node *must* be has an admin
+    /// If true, then a new cluster is bootstrapped. This node *must* have an admin
     /// role and a new nodes configuration will be created that includes this node.
     pub allow_bootstrap: bool,
 
