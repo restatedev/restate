@@ -38,7 +38,9 @@ pub mod schema {
     impl From<ComponentType> for restate_schema_api::component::ComponentType {
         fn from(value: ComponentType) -> Self {
             match value {
-                ComponentType::VirtualObject => restate_schema_api::component::ComponentType::VirtualObject,
+                ComponentType::VirtualObject => {
+                    restate_schema_api::component::ComponentType::VirtualObject
+                }
                 ComponentType::Service => restate_schema_api::component::ComponentType::Service,
             }
         }

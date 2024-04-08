@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::schema_registry::ComponentName;
 use http::header::InvalidHeaderValue;
 use http::Uri;
 use restate_core::metadata_store::ReadModifyWriteError;
@@ -76,10 +77,10 @@ pub enum ComponentError {
     ReservedName(String),
     #[error("detected a new component '{0}' revision with a component type different from the previous revision. Component type cannot be changed across revisions")]
     #[code(restate_errors::META0006)]
-    DifferentType(String),
+    DifferentType(ComponentName),
     #[error("the component '{0}' already exists but the new revision removed the handlers {1:?}")]
     #[code(restate_errors::META0006)]
-    RemovedHandlers(String, Vec<String>),
+    RemovedHandlers(ComponentName, Vec<String>),
     #[error("the handler '{0}' input content-type is not valid: {1}")]
     #[code(unknown)]
     BadInputContentType(String, BadInputContentType),

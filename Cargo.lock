@@ -4937,6 +4937,7 @@ dependencies = [
  "codederror",
  "datafusion",
  "derive_builder",
+ "derive_more",
  "drain",
  "futures",
  "http 0.2.12",

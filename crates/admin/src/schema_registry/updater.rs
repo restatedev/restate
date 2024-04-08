@@ -11,6 +11,7 @@
 use crate::schema_registry::error::{
     ComponentError, DeploymentError, SchemaError, SubscriptionError,
 };
+use crate::schema_registry::ComponentName;
 use http::{HeaderValue, Uri};
 use restate_schema::component::{ComponentLocation, ComponentSchemas, HandlerSchemas};
 use restate_schema::deployment::DeploymentSchemas;
@@ -68,8 +69,11 @@ impl SchemaUpdater {
 
         let proposed_components: HashMap<_, _> = components
             .into_iter()
-            .map(|c| (c.fully_qualified_component_name.to_string(), c))
-            .collect();
+            .map(|c| {
+                ComponentName::try_from(c.fully_qualified_component_name.to_string())
+                    .map(|name| (name, c))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Did we find an existing deployment with same id or with a conflicting endpoint url?
         let found_existing_deployment = requested_deployment_id
@@ -123,7 +127,6 @@ impl SchemaUpdater {
 
         // Compute component schemas
         for (component_name, component) in proposed_components {
-            check_reserved_name(&component_name)?;
             let component_type = ComponentType::from(component.component_type);
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
                 component_type,
@@ -135,8 +138,10 @@ impl SchemaUpdater {
             );
 
             // For the time being when updating we overwrite existing data
-            let component_schema = if let Some(existing_component) =
-                self.schema_information.components.get(&component_name)
+            let component_schema = if let Some(existing_component) = self
+                .schema_information
+                .components
+                .get(component_name.as_ref())
             {
                 let removed_handlers: Vec<String> = existing_component
                     .handlers
@@ -180,7 +185,7 @@ impl SchemaUpdater {
                 }
 
                 info!(
-                    rpc.service = component_name,
+                    rpc.service = %component_name,
                     "Overwriting existing component schemas"
                 );
                 let mut component_schemas = existing_component.clone();
@@ -214,8 +219,10 @@ impl SchemaUpdater {
         let components_metadata = components_to_add
             .into_iter()
             .map(|(name, schema)| {
-                let metadata = schema.as_component_metadata(name.clone());
-                self.schema_information.components.insert(name, schema);
+                let metadata = schema.as_component_metadata(name.clone().into_inner());
+                self.schema_information
+                    .components
+                    .insert(name.into_inner(), schema);
                 metadata
             })
             .collect();
@@ -393,15 +400,6 @@ impl SchemaUpdater {
             }
         }
     }
-}
-
-fn check_reserved_name(name: &str) -> Result<(), ComponentError> {
-    if name.to_lowercase().starts_with("restate")
-        || name.to_lowercase().eq_ignore_ascii_case("openapi")
-    {
-        return Err(ComponentError::ReservedName(name.to_string()));
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -924,7 +922,7 @@ mod tests {
                 SchemaError::Component(ComponentError::RemovedHandlers(service, missing_methods)) =
                     rejection
             );
-            check!(service == GREETER_SERVICE_NAME);
+            check!(service.as_ref() == GREETER_SERVICE_NAME);
             check!(missing_methods == &["doSomething"]);
         }
     }

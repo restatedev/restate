@@ -11,7 +11,7 @@
 pub mod error;
 mod updater;
 
-use crate::schema_registry::error::{SchemaError, SchemaRegistryError};
+use crate::schema_registry::error::{ComponentError, SchemaError, SchemaRegistryError};
 use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
 use restate_core::metadata_store::MetadataStoreClient;
@@ -30,6 +30,7 @@ use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::{ComponentDiscovery, DiscoverEndpoint};
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use tracing::subscriber::NoSubscriber;
@@ -382,5 +383,42 @@ where
         self.metadata_writer.update(schema_information).await?;
 
         Ok(subscription)
+    }
+}
+
+/// Newtype for component names
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
+#[display(fmt = "{}", _0)]
+pub struct ComponentName(String);
+
+impl TryFrom<String> for ComponentName {
+    type Error = ComponentError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.to_lowercase().starts_with("restate")
+            || value.to_lowercase().eq_ignore_ascii_case("openapi")
+        {
+            Err(ComponentError::ReservedName(value))
+        } else {
+            Ok(ComponentName(value))
+        }
+    }
+}
+
+impl AsRef<str> for ComponentName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl ComponentName {
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl Borrow<String> for ComponentName {
+    fn borrow(&self) -> &String {
+        &self.0
     }
 }
