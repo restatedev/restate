@@ -124,7 +124,7 @@ impl SchemaUpdater {
         // Compute component schemas
         for (component_name, component) in proposed_components {
             check_reserved_name(&component_name)?;
-            let component_type = to_component_type(component.component_type);
+            let component_type = ComponentType::from(component.component_type);
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
                 component_type,
                 component
@@ -402,13 +402,6 @@ fn check_reserved_name(name: &str) -> Result<(), ComponentError> {
         return Err(ComponentError::ReservedName(name.to_string()));
     }
     Ok(())
-}
-
-fn to_component_type(ty: schema::ComponentType) -> ComponentType {
-    match ty {
-        schema::ComponentType::VirtualObject => ComponentType::VirtualObject,
-        schema::ComponentType::Service => ComponentType::Service,
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
