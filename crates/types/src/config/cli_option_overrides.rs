@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use humantime::Duration;
 use serde::Serialize;
-use serde_with::serde_as;
+use serde_with::{serde_as, skip_serializing_none};
 
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
@@ -21,6 +21,7 @@ use crate::PlainNodeId;
 use super::LogFormat;
 
 #[serde_as]
+#[skip_serializing_none]
 #[derive(Debug, Clone, clap::Parser, Serialize, Default)]
 /// A subset of CommonOptions that can be parsed via the CLI. This **must** remain
 /// parse-compatible with CommonOptions.
@@ -29,57 +30,47 @@ pub struct CommonOptionCliOverride {
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.
     #[clap(long, alias = "role")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     roles: Option<Vec<Role>>,
 
     /// Unique name for this node in the cluster. The node must not change unless
     /// it's started with empty local store. It defaults to the node hostname.
     #[clap(long, env = "RESTATE_NODE_NAME")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     node_name: Option<String>,
 
     /// If set, the node insists on acquiring this node ID.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     force_node_id: Option<PlainNodeId>,
 
     /// A unique identifier for the cluster. All nodes in the same cluster should
     /// have the same.
     #[clap(long, env = "RESTATE_CLUSTER_NAME")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     cluster_name: Option<String>,
 
     /// If true, then a new cluster is bootstrapped. This node *must* have an admin
     /// role and a new nodes configuration will be created that includes this node.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     allow_bootstrap: Option<bool>,
 
     /// The working directory which this Restate node should use for relative paths. The default is
     /// `restate-data` under the current working directory.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     base_dir: Option<PathBuf>,
 
     /// Address of the metadata store server to bootstrap the node from.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     metadata_store_address: Option<AdvertisedAddress>,
 
     /// Address to bind for the Node server. e.g. `0.0.0.0:5122`
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     bind_address: Option<BindAddress>,
 
     /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
     /// unset. e.g. `http://127.0.0.1:5122/`
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     advertise_address: Option<AdvertisedAddress>,
 
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[clap(long)]
     shutdown_timeout: Option<Duration>,
 
@@ -89,7 +80,6 @@ pub struct CommonOptionCliOverride {
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     #[clap(long, env = "RESTATE_TRACING_ENDPOINT")]
-    #[serde(skip_serializing_if = "Option::is_none")]
     tracing_endpoint: Option<String>,
 
     /// # Distributed Tracing JSON Export Path
@@ -103,7 +93,6 @@ pub struct CommonOptionCliOverride {
     ///
     /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     tracing_json_path: Option<PathBuf>,
 
     /// # Tracing Filter
@@ -111,7 +100,6 @@ pub struct CommonOptionCliOverride {
     /// Distributed tracing exporter filter.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     tracing_filter: Option<String>,
 
     /// # Logging Filter
@@ -119,20 +107,17 @@ pub struct CommonOptionCliOverride {
     /// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     log_filter: Option<String>,
 
     /// # Logging format
     ///
     /// Format to use when logging.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     log_format: Option<LogFormat>,
 
     /// # Disable ANSI in log output
     ///
     /// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support processing ANSI terminal codes.
     #[clap(long)]
-    #[serde(skip_serializing_if = "Option::is_none")]
     log_disable_ansi_codes: Option<bool>,
 }
