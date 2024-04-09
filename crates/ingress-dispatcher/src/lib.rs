@@ -25,12 +25,14 @@ use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::fmt::Display;
+use std::time::SystemTime;
 use tokio::sync::oneshot;
 
 mod dispatcher;
 pub mod error;
 
 pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
+use restate_types::time::MillisSinceEpoch;
 
 // -- Types used by the ingress to interact with the dispatcher
 pub type IngressResponseSender = oneshot::Sender<IngressDispatcherResponse>;
@@ -54,6 +56,7 @@ pub struct IngressDispatcherRequest {
     request_mode: IngressRequestMode,
     idempotency: Option<Idempotency>,
     headers: Vec<restate_types::invocation::Header>,
+    execution_time: Option<MillisSinceEpoch>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,11 +112,13 @@ impl IngressDispatcherRequest {
                 span_context,
                 idempotency,
                 headers,
+                execution_time: None,
             },
             result_rx,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn background_invocation(
         fid: FullInvocationId,
         handler_name: impl Into<ByteString>,
@@ -122,6 +127,7 @@ impl IngressDispatcherRequest {
         ingress_deduplication_id: Option<IngressDeduplicationId>,
         idempotency: Option<Idempotency>,
         headers: Vec<restate_types::invocation::Header>,
+        execution_time: Option<SystemTime>,
     ) -> Self {
         let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
 
@@ -140,6 +146,7 @@ impl IngressDispatcherRequest {
             },
             idempotency,
             headers,
+            execution_time: execution_time.map(Into::into),
         }
     }
 
@@ -217,6 +224,7 @@ impl IngressDispatcherRequest {
                 request_mode,
                 idempotency: None,
                 headers,
+                execution_time: None,
             }
         } else {
             IngressDispatcherRequest {
@@ -228,6 +236,7 @@ impl IngressDispatcherRequest {
                 request_mode,
                 idempotency: None,
                 headers,
+                execution_time: None,
             }
         })
     }
@@ -341,6 +350,7 @@ pub mod mocks {
             ByteString,
             Bytes,
             ServiceInvocationSpanContext,
+            Option<MillisSinceEpoch>,
         ) {
             let_assert!(
                 IngressDispatcherRequest {
@@ -349,10 +359,11 @@ pub mod mocks {
                     argument,
                     span_context,
                     request_mode: IngressRequestMode::FireAndForget,
+                    execution_time,
                     ..
                 } = self
             );
-            (fid, handler_name, argument, span_context)
+            (fid, handler_name, argument, span_context, execution_time)
         }
 
         pub fn expect_dedupable_background_invocation(

@@ -24,17 +24,25 @@ use restate_schema_api::invocation_target::{InvocationTargetMetadata, Invocation
 use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
 use restate_types::invocation::{Header, Idempotency, ResponseResult, SpanRelation};
 use serde::Serialize;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, trace, warn, Instrument};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
+const DELAY_QUERY_PARAM: &str = "delay";
+const DELAYSEC_QUERY_PARAM: &str = "delaysec";
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SendResponse {
     invocation_id: InvocationId,
+    #[serde(
+        with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    execution_time: Option<humantime::Timestamp>,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -128,9 +136,15 @@ where
             // Get headers
             let headers = parse_headers(parts.headers)?;
 
+            // Parse delay query parameter
+            let delay = parse_delay(parts.uri.query())?;
+
             let span_relation = SpanRelation::Parent(ingress_span_context);
             match invoke_ty {
                 InvokeType::Call => {
+                    if delay.is_some() {
+                        return Err(HandlerError::UnsupportedDelay);
+                    }
                     Self::handle_component_call(
                         fid,
                         cloned_handler_name,
@@ -151,6 +165,7 @@ where
                         body,
                         span_relation,
                         headers,
+                        delay,
                         self.dispatcher,
                     )
                     .await
@@ -253,6 +268,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_component_send(
         fid: FullInvocationId,
         handler: String,
@@ -260,9 +276,13 @@ where
         body: Bytes,
         span_relation: SpanRelation,
         headers: Vec<Header>,
+        delay: Option<Duration>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         let invocation_id = InvocationId::from(&fid);
+
+        // Establish execution_time
+        let execution_time = delay.map(|d| SystemTime::now() + d);
 
         // Send the service invocation
         let invocation = IngressDispatcherRequest::background_invocation(
@@ -273,6 +293,7 @@ where
             None,
             idempotency,
             headers,
+            execution_time,
         );
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
@@ -288,9 +309,12 @@ where
             .status(StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, APPLICATION_JSON)
             .body(Full::new(
-                serde_json::to_vec(&SendResponse { invocation_id })
-                    .unwrap()
-                    .into(),
+                serde_json::to_vec(&SendResponse {
+                    invocation_id,
+                    execution_time: execution_time.map(Into::into),
+                })
+                .unwrap()
+                .into(),
             ))
             .unwrap())
     }
@@ -314,6 +338,29 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
             Ok(Header::new(k.as_str(), value))
         })
         .collect()
+}
+
+fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
+    if query.is_none() {
+        return Ok(None);
+    }
+
+    for (k, v) in url::form_urlencoded::parse(query.unwrap().as_bytes()) {
+        if k.eq_ignore_ascii_case(DELAY_QUERY_PARAM) {
+            return Ok(Some(
+                iso8601::duration(v.as_ref())
+                    .map_err(HandlerError::BadDelayDuration)?
+                    .into(),
+            ));
+        }
+        if k.eq_ignore_ascii_case(DELAYSEC_QUERY_PARAM) {
+            return Ok(Some(Duration::from_secs(
+                k.parse().map_err(HandlerError::BadDelaySecDuration)?,
+            )));
+        }
+    }
+
+    Ok(None)
 }
 
 fn parse_idempotency(

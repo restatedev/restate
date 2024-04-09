@@ -38,6 +38,7 @@ restate-futures-util = { workspace = true }
 hyper = { version = "1", features = ["server"] }
 tokio = { workspace = true }
 http = "1.0"
+url = "2.5.0"
 http-body = "1.0"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
@@ -62,6 +63,8 @@ schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 urlencoding = "2.1"
 pin-project-lite = "0.2.13"
+iso8601 = "0.6.1"
+humantime = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
