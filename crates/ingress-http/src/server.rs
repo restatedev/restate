@@ -239,8 +239,9 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_ingress_dispatcher::mocks::MockDispatcher;
-    use restate_ingress_dispatcher::IngressRequest;
+    use restate_ingress_dispatcher::IngressDispatcherRequest;
     use restate_test_util::assert_eq;
+    use restate_types::invocation::ResponseResult;
     use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
     use tokio::sync::{mpsc, Semaphore};
@@ -273,11 +274,13 @@ mod tests {
 
             response_tx
                 .send(
-                    Ok(serde_json::to_vec(&GreetingResponse {
-                        greeting: "Igal".to_string(),
-                    })
-                    .unwrap()
-                    .into())
+                    ResponseResult::Success(
+                        serde_json::to_vec(&GreetingResponse {
+                            greeting: "Igal".to_string(),
+                        })
+                        .unwrap()
+                        .into(),
+                    )
                     .into(),
                 )
                 .unwrap();
@@ -316,7 +319,11 @@ mod tests {
         handle.close().await;
     }
 
-    async fn bootstrap_test() -> (SocketAddr, JoinHandle<Option<IngressRequest>>, TestHandle) {
+    async fn bootstrap_test() -> (
+        SocketAddr,
+        JoinHandle<Option<IngressDispatcherRequest>>,
+        TestHandle,
+    ) {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let (ingress_request_tx, mut ingress_request_rx) = mpsc::unbounded_channel();
 

@@ -1102,6 +1102,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytesize"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e368af43e418a04d52505cf3dbc23dda4e3407ae2fa99fd0e4f308ce546acc"
+
+[[package]]
 name = "bytestring"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3117,6 +3123,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "iso8601"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924e5d73ea28f59011fec52a0d12185d496a9b075d360657aed2a5707f701153"
+dependencies = [
+ "nom",
+]
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4937,6 +4952,7 @@ dependencies = [
  "codederror",
  "datafusion",
  "derive_builder",
+ "derive_more",
  "drain",
  "futures",
  "http 0.2.12",
@@ -4947,12 +4963,11 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-futures-util",
- "restate-meta",
  "restate-meta-rest-model",
  "restate-node-services",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -5238,6 +5253,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "bytestring",
  "codederror",
  "derive_builder",
  "futures",
@@ -5245,8 +5261,10 @@ dependencies = [
  "http 1.1.0",
  "http-body 1.0.0",
  "http-body-util",
+ "humantime",
  "hyper 1.2.0",
  "hyper-util",
+ "iso8601",
  "metrics",
  "opentelemetry",
  "pin-project-lite",
@@ -5271,6 +5289,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
+ "url",
  "urlencoding",
 ]
 
@@ -5291,8 +5310,8 @@ dependencies = [
  "restate-futures-util",
  "restate-ingress-dispatcher",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
@@ -5363,43 +5382,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "restate-meta"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "bincode",
- "bytestring",
- "codederror",
- "derive_builder",
- "drain",
- "futures",
- "googletest",
- "http 0.2.12",
- "restate-core",
- "restate-errors",
- "restate-fs-util",
- "restate-futures-util",
- "restate-meta-rest-model",
- "restate-schema-api",
- "restate-schema-impl",
- "restate-serde-util",
- "restate-service-client",
- "restate-service-protocol",
- "restate-test-util",
- "restate-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_with",
- "tempfile",
- "test-log",
- "thiserror",
- "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -5529,15 +5511,16 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-grpc-util",
- "restate-meta",
  "restate-metadata-store",
  "restate-network",
  "restate-node-protocol",
  "restate-node-services",
+ "restate-rocksdb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
+ "restate-service-client",
+ "restate-service-protocol",
  "restate-storage-query-datafusion",
- "restate-storage-rocksdb",
  "restate-test-util",
  "restate-types",
  "restate-worker",
@@ -5575,6 +5558,7 @@ dependencies = [
  "prost 0.12.3",
  "prost-build",
  "prost-types",
+ "restate-schema",
  "restate-types",
  "serde",
  "strum 0.26.2",
@@ -5624,6 +5608,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-rocksdb"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "bytesize",
+ "bytestring",
+ "codederror",
+ "dashmap",
+ "derive_more",
+ "futures",
+ "futures-util",
+ "once_cell",
+ "restate-core",
+ "restate-errors",
+ "restate-test-util",
+ "restate-types",
+ "rocksdb",
+ "static_assertions",
+ "strum 0.26.2",
+ "strum_macros 0.26.2",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "restate-schema"
+version = "0.9.0"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "derive_more",
+ "http 0.2.12",
+ "restate-schema-api",
+ "restate-test-util",
+ "restate-types",
+ "serde",
+]
+
+[[package]]
 name = "restate-schema-api"
 version = "0.9.0"
 dependencies = [
@@ -5632,6 +5657,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "http 0.2.12",
+ "humantime",
  "itertools 0.11.0",
  "restate-base64-util",
  "restate-serde-util",
@@ -5641,31 +5667,6 @@ dependencies = [
  "serde_with",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "restate-schema-impl"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "bytes",
- "codederror",
- "googletest",
- "http 0.2.12",
- "restate-errors",
- "restate-pb",
- "restate-schema-api",
- "restate-serde-util",
- "restate-service-protocol",
- "restate-test-util",
- "restate-types",
- "serde",
- "serde_json",
- "test-log",
- "thiserror",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -5703,8 +5704,8 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-fs-util",
- "restate-meta",
  "restate-node",
+ "restate-rocksdb",
  "restate-storage-rocksdb",
  "restate-tracing-instrumentation",
  "restate-types",
@@ -6101,8 +6102,8 @@ dependencies = [
  "restate-network",
  "restate-node-protocol",
  "restate-pb",
+ "restate-schema",
  "restate-schema-api",
- "restate-schema-impl",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -8085,12 +8086,13 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-core",
- "restate-meta",
  "restate-metadata-store",
  "restate-node",
  "restate-node-services",
  "restate-schema-api",
  "restate-server",
+ "restate-service-client",
+ "restate-service-protocol",
  "restate-types",
  "restate-worker",
  "schemars",

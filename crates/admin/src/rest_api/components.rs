@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use super::{create_envelope_header, notify_node_about_schema_changes};
+use super::{create_envelope_header, log_error};
+use crate::schema_registry::ModifyComponentChange;
 use crate::state::AdminServiceState;
 
 use axum::extract::{Path, State};
@@ -19,7 +20,6 @@ use http::StatusCode;
 use okapi_operation::*;
 use restate_meta_rest_model::components::ListComponentsResponse;
 use restate_meta_rest_model::components::*;
-use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
@@ -32,13 +32,16 @@ use tracing::warn;
     operation_id = "list_components",
     tags = "component"
 )]
-pub async fn list_components(
-    State(state): State<AdminServiceState>,
+pub async fn list_components<V>(
+    State(state): State<AdminServiceState<V>>,
 ) -> Result<Json<ListComponentsResponse>, MetaApiError> {
-    Ok(ListComponentsResponse {
-        components: state.schemas().list_components(),
-    }
-    .into())
+    let components = state
+        .task_center
+        .run_in_scope_sync("list-components", None, || {
+            state.schema_registry.list_components()
+        });
+
+    Ok(ListComponentsResponse { components }.into())
 }
 
 /// Get a component
@@ -53,13 +56,15 @@ pub async fn list_components(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_component(
-    State(state): State<AdminServiceState>,
+pub async fn get_component<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(component_name): Path<String>,
 ) -> Result<Json<ComponentMetadata>, MetaApiError> {
     state
-        .schemas()
-        .resolve_latest_component(&component_name)
+        .task_center
+        .run_in_scope_sync("get-component", None, || {
+            state.schema_registry.get_component(&component_name)
+        })
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ComponentNotFound(component_name))
 }
@@ -76,25 +81,42 @@ pub async fn get_component(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_component(
-    State(state): State<AdminServiceState>,
+pub async fn modify_component<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(component_name): Path<String>,
-    #[request_body(required = true)] Json(ModifyComponentRequest { public }): Json<
-        ModifyComponentRequest,
-    >,
+    #[request_body(required = true)] Json(ModifyComponentRequest {
+        public,
+        idempotency_retention,
+    }): Json<ModifyComponentRequest>,
 ) -> Result<Json<ComponentMetadata>, MetaApiError> {
-    state
-        .meta_handle()
-        .modify_component(component_name.clone(), public)
+    let mut modify_request = vec![];
+    if let Some(new_public_value) = public {
+        modify_request.push(ModifyComponentChange::Public(new_public_value));
+    }
+    if let Some(new_idempotency_retention) = idempotency_retention {
+        modify_request.push(ModifyComponentChange::IdempotencyRetention(
+            new_idempotency_retention.into(),
+        ));
+    }
+
+    if modify_request.is_empty() {
+        // No need to do anything
+        return get_component(State(state), Path(component_name)).await;
+    }
+
+    let response = state
+        .task_center
+        .run_in_scope("modify-component", None, async {
+            log_error(
+                state
+                    .schema_registry
+                    .modify_component(component_name, modify_request)
+                    .await,
+            )
+        })
         .await?;
 
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
-
-    state
-        .schemas()
-        .resolve_latest_component(&component_name)
-        .map(Into::into)
-        .ok_or_else(|| MetaApiError::ComponentNotFound(component_name))
+    Ok(response.into())
 }
 
 /// Modify a component state
@@ -118,8 +140,8 @@ pub async fn modify_component(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_component_state(
-    State(mut state): State<AdminServiceState>,
+pub async fn modify_component_state<V>(
+    State(mut state): State<AdminServiceState<V>>,
     Path(component_name): Path<String>,
     #[request_body(required = true)] Json(ModifyComponentStateRequest {
         version,

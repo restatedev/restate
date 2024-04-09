@@ -355,6 +355,16 @@ pub mod component {
         /// If true, the component can be invoked through the ingress.
         /// If false, the component can be invoked only from another Restate service.
         pub public: bool,
+
+        /// # Idempotency retention
+        ///
+        /// The retention duration of idempotent requests for this component.
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        pub idempotency_retention: humantime::Duration,
     }
 
     #[derive(Debug, Clone)]
@@ -396,6 +406,7 @@ pub mod component {
     pub mod mocks {
         use super::*;
 
+        use crate::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
         use std::collections::HashMap;
 
         #[derive(Debug, Default, Clone)]
@@ -448,6 +459,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
                 }
             }
 
@@ -470,6 +482,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
+                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
                 }
             }
         }
@@ -478,6 +491,7 @@ pub mod component {
 
 #[cfg(feature = "subscription")]
 pub mod subscription {
+    use restate_types::errors::GenericError;
     use std::collections::HashMap;
     use std::fmt;
 
@@ -627,7 +641,7 @@ pub mod subscription {
     }
 
     pub trait SubscriptionValidator {
-        type Error: Into<anyhow::Error>;
+        type Error: Into<GenericError>;
 
         fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error>;
     }

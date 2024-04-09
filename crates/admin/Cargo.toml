@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["restate-service-client/options_schema", "restate-meta/options_schema"]
+options_schema = ["restate-service-client/options_schema"]
 
 [dependencies]
 restate-bifrost = { workspace = true }
@@ -17,12 +17,11 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-meta = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
 restate-node-services = { workspace = true, features = ["servers", "clients"] }
 restate-pb = { workspace = true }
+restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = ["deployment", "serde", "serde_schema"] }
-restate-schema-impl = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["schemars"] }
@@ -37,6 +36,7 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
+derive_more = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -54,6 +54,7 @@ tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+restate-schema = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
 

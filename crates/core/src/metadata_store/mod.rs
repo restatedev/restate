@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
-use restate_types::retries::RetryPolicy;
+use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::{Version, Versioned};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -179,38 +179,90 @@ impl MetadataStoreClient {
         self.inner.delete(key, precondition).await
     }
 
-    pub async fn read_modify_write<T, F>(
+    /// Gets the value under the specified key or inserts a new value if it is not present into the
+    /// metadata store.
+    ///
+    /// This method won't overwrite an existing value that is stored in the metadata store.
+    pub async fn get_or_insert<T, F>(
         &self,
         key: ByteString,
-        mut modify: F,
+        mut init: F,
     ) -> Result<T, ReadModifyWriteError>
     where
         T: Versioned + Serialize + DeserializeOwned + Clone,
-        F: FnMut(Option<T>) -> Operation<T>,
+        F: FnMut() -> T,
     {
         let max_backoff = Duration::from_millis(100);
-        let mut backoff_policy = RetryPolicy::exponential(
+        let mut backoff_policy = Self::exponential_retry_policy(max_backoff);
+
+        loop {
+            let value = self.get::<T>(key.clone()).await?;
+
+            if let Some(value) = value {
+                return Ok(value);
+            } else {
+                let init_value = init();
+                let precondition = Precondition::DoesNotExist;
+
+                match self
+                    .put(key.clone(), init_value.clone(), precondition)
+                    .await
+                {
+                    Ok(()) => return Ok(init_value),
+                    Err(WriteError::FailedPrecondition(msg)) => {
+                        let backoff = backoff_policy.next().unwrap_or(max_backoff);
+                        debug!(
+                            "concurrent value update: {msg}; retrying in '{}'",
+                            humantime::format_duration(backoff)
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            }
+        }
+    }
+
+    fn exponential_retry_policy(max_backoff: Duration) -> RetryIter {
+        RetryPolicy::exponential(
             Duration::from_millis(10),
             2.0,
             usize::MAX,
             Some(max_backoff),
         )
-        .into_iter();
+        .into_iter()
+    }
+
+    /// Reads the value under the given key from the metadata store, then modifies it and writes
+    /// the result back to the metadata store. The write only succeeds if the stored value has not
+    /// been modified in the meantime. If this should happen, then the read-modify-write cycle is
+    /// retried.
+    pub async fn read_modify_write<T, F, E>(
+        &self,
+        key: ByteString,
+        mut modify: F,
+    ) -> Result<T, ReadModifyWriteError<E>>
+    where
+        T: Versioned + Serialize + DeserializeOwned + Clone,
+        F: FnMut(Option<T>) -> Result<T, E>,
+    {
+        let max_backoff = Duration::from_millis(100);
+        let mut backoff_policy = Self::exponential_retry_policy(max_backoff);
 
         loop {
-            let value = self.get::<T>(key.clone()).await?;
+            let old_value = self.get::<T>(key.clone()).await?;
 
-            let precondition = value
+            let precondition = old_value
                 .as_ref()
                 .map(|c| Precondition::MatchesVersion(c.version()))
                 .unwrap_or(Precondition::DoesNotExist);
 
-            let result = modify(value);
+            let result = modify(old_value);
 
             match result {
-                Operation::Upsert(value) => {
-                    match self.put(key.clone(), value.clone(), precondition).await {
-                        Ok(()) => return Ok(value),
+                Ok(new_value) => {
+                    match self.put(key.clone(), new_value.clone(), precondition).await {
+                        Ok(()) => return Ok(new_value),
                         Err(WriteError::FailedPrecondition(msg)) => {
                             let backoff = backoff_policy.next().unwrap_or(max_backoff);
                             debug!(
@@ -222,24 +274,14 @@ impl MetadataStoreClient {
                         Err(err) => return Err(err.into()),
                     }
                 }
-                Operation::Return(value) => return Ok(value),
-                Operation::Fail(msg) => return Err(ReadModifyWriteError::FailedOperation(msg)),
+                Err(err) => return Err(ReadModifyWriteError::FailedOperation(err)),
             }
         }
     }
 }
 
-pub enum Operation<T> {
-    /// Upsert the provided value and return if successful.
-    Upsert(T),
-    /// Return the provided value w/o upserting it.
-    Return(T),
-    /// Fail the read modify write call.
-    Fail(String),
-}
-
 #[derive(Debug, thiserror::Error)]
-pub enum ReadModifyWriteError {
+pub enum ReadModifyWriteError<E = String> {
     #[error("network error: {0}")]
     Network(GenericError),
     #[error("internal error: {0}")]
@@ -247,10 +289,10 @@ pub enum ReadModifyWriteError {
     #[error("codec error: {0}")]
     Codec(GenericError),
     #[error("failed read-modify-write operation: {0}")]
-    FailedOperation(String),
+    FailedOperation(E),
 }
 
-impl From<ReadError> for ReadModifyWriteError {
+impl<E> From<ReadError> for ReadModifyWriteError<E> {
     fn from(value: ReadError) -> Self {
         match value {
             ReadError::Network(err) => ReadModifyWriteError::Network(err),
@@ -260,7 +302,7 @@ impl From<ReadError> for ReadModifyWriteError {
     }
 }
 
-impl From<WriteError> for ReadModifyWriteError {
+impl<E> From<WriteError> for ReadModifyWriteError<E> {
     fn from(value: WriteError) -> Self {
         match value {
             WriteError::FailedPrecondition(_) => {

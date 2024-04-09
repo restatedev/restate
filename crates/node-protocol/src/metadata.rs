@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
+pub use restate_schema::{Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -79,6 +80,7 @@ pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
     Logs(Logs),
+    Schema(Schema),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +100,7 @@ impl MetadataContainer {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
             MetadataContainer::Logs(_) => MetadataKind::Logs,
+            MetadataContainer::Schema(_) => MetadataKind::Schema,
         }
     }
 }

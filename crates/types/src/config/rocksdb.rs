@@ -28,9 +28,8 @@ pub struct RocksDbOptions {
 
     /// # Write Buffer size
     ///
-    /// The size of a single memtable. Once memtable exceeds this size, it is marked immutable and a new one is created.
-    /// The default is set such that 3 column families per table will use a total of 50% of the global memory limit
-    /// (`MEMORY_LIMIT`), which defaults to 3GiB, leading to a value of 64MiB with 8 tables.
+    /// The size of a single memtable. Once memtable exceeds this size, it is marked
+    /// immutable and a new one is created. Default is 256MB per memtable.
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_write_buffer_size: Option<usize>,
 
@@ -58,13 +57,6 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_batch_wal_flushes: Option<bool>,
 
-    // todo: Move to common_opts as cache will be shared
-    /// # Maximum cache size
-    ///
-    /// The memory size used for rocksdb caches. Default is 1GB.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_cache_size: Option<usize>,
-
     /// Disable rocksdb statistics collection
     ///
     /// Default: False (statistics enabled)
@@ -87,9 +79,6 @@ impl RocksDbOptions {
         if self.rocksdb_disable_wal.is_none() {
             self.rocksdb_disable_wal = Some(common.rocksdb_disable_wal());
         }
-        if self.rocksdb_cache_size.is_none() {
-            self.rocksdb_cache_size = Some(common.rocksdb_cache_size());
-        }
         if self.rocksdb_disable_statistics.is_none() {
             self.rocksdb_disable_statistics = Some(common.rocksdb_disable_statistics());
         }
@@ -100,7 +89,7 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_write_buffer_size(&self) -> usize {
-        self.rocksdb_write_buffer_size.unwrap_or(0)
+        self.rocksdb_write_buffer_size.unwrap_or(256_000_000) // 256MB
     }
 
     pub fn rocksdb_max_total_wal_size(&self) -> u64 {
@@ -109,10 +98,6 @@ impl RocksDbOptions {
 
     pub fn rocksdb_disable_wal(&self) -> bool {
         self.rocksdb_disable_wal.unwrap_or(true)
-    }
-
-    pub fn rocksdb_cache_size(&self) -> usize {
-        self.rocksdb_cache_size.unwrap_or(1 << 30)
     }
 
     pub fn rocksdb_disable_statistics(&self) -> bool {

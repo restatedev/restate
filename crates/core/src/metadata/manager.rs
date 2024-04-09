@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -16,11 +16,11 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, trace, warn};
 
-use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate};
+use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, Schema};
 use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
 };
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
@@ -275,6 +275,9 @@ where
             MetadataContainer::Logs(logs) => {
                 self.update_logs(logs);
             }
+            MetadataContainer::Schema(schemas) => {
+                self.update_schema_information(schemas);
+            }
         }
 
         if let Some(callback) = callback {
@@ -311,31 +314,65 @@ where
                     self.update_logs(logs);
                 }
             }
-            MetadataKind::Schema => {}
+            MetadataKind::Schema => {
+                if let Some(schema_information) = self
+                    .metadata_store_client
+                    .get::<Schema>(SCHEMA_INFORMATION_KEY.clone())
+                    .await?
+                {
+                    self.update_schema_information(schema_information)
+                }
+            }
         }
 
         Ok(())
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
-        let maybe_new_version = Self::update_internal(&self.inner.nodes_config, config);
+        let maybe_new_version = Self::update_option_internal(&self.inner.nodes_config, config);
 
         self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
-        let maybe_new_version = Self::update_internal(&self.inner.partition_table, partition_table);
+        let maybe_new_version =
+            Self::update_option_internal(&self.inner.partition_table, partition_table);
 
         self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
     fn update_logs(&mut self, logs: Logs) {
-        let maybe_new_version = Self::update_internal(&self.inner.logs, logs);
+        let maybe_new_version = Self::update_option_internal(&self.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
-    fn update_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
+    fn update_schema_information(&mut self, schema_information: Schema) {
+        let maybe_new_version = Self::update_internal(&self.inner.schema, schema_information);
+
+        self.notify_watches(maybe_new_version, MetadataKind::Schema);
+    }
+
+    fn update_internal<T: Versioned>(container: &ArcSwap<T>, new_value: T) -> Version {
+        let current_value = container.load();
+        let mut maybe_new_version = new_value.version();
+
+        if new_value.version() > current_value.version() {
+            container.store(Arc::new(new_value));
+        } else {
+            /* Do nothing, current is already newer */
+            debug!(
+                "Ignoring update {} because we are at {}",
+                new_value.version(),
+                current_value.version(),
+            );
+            maybe_new_version = current_value.version();
+        }
+
+        maybe_new_version
+    }
+
+    fn update_option_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
         let current_value = container.load();
         let mut maybe_new_version = new_value.version();
         match current_value.as_deref() {

@@ -220,11 +220,8 @@ where
 
         // If an idempotency key is set, handle idempotency
         if let Some(idempotency) = &service_invocation.idempotency {
-            let idempotency_id = IdempotencyId::new(
-                service_invocation.fid.service_id.service_name.clone(),
-                // The service_id.key will always be the idempotency key now,
-                // until we get rid of that field for regular services with https://github.com/restatedev/restate/issues/1329
-                Some(service_invocation.fid.service_id.key.clone()),
+            let idempotency_id = IdempotencyId::combine(
+                service_invocation.fid.service_id.clone(),
                 service_invocation.method_name.clone(),
                 idempotency.key.clone(),
             );
@@ -346,6 +343,7 @@ where
                     self.send_response_to_sinks(
                         effects,
                         caller_id,
+                        Some(idempotency_id.clone()),
                         response_sink.cloned(),
                         completed.response_result,
                     );
@@ -353,6 +351,7 @@ where
                 InvocationStatus::Free => self.send_response_to_sinks(
                     effects,
                     caller_id,
+                    Some(idempotency_id.clone()),
                     response_sink.cloned(),
                     GONE_INVOCATION_ERROR,
                 ),
@@ -629,7 +628,21 @@ where
         let parent_span = span_context.as_parent();
 
         // Reply back to callers with error, and publish end trace
-        self.send_response_to_sinks(effects, &InvocationId::from(&fid), response_sinks, &error);
+        let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
+            IdempotencyId::combine(
+                fid.service_id.clone(),
+                handler_name.clone(),
+                idempotency.key,
+            )
+        });
+
+        self.send_response_to_sinks(
+            effects,
+            &InvocationId::from(&fid),
+            idempotency_id,
+            response_sinks,
+            &error,
+        );
         self.notify_invocation_result(
             &fid,
             handler_name,
@@ -872,11 +885,8 @@ where
                     }) => {
                         effects.free_invocation(invocation_id);
                         // Also cleanup the associated idempotency key
-                        effects.delete_idempotency_id(IdempotencyId::new(
-                            service_id.service_name,
-                            // The service_id.key will always be the idempotency key now,
-                            // until we get rid of that field for regular services with https://github.com/restatedev/restate/issues/1329
-                            Some(service_id.key),
+                        effects.delete_idempotency_id(IdempotencyId::combine(
+                            service_id,
                             handler,
                             idempotency_key,
                         ));
@@ -1047,10 +1057,23 @@ where
                 return Ok(());
             };
 
+            let idempotency_id =
+                invocation_metadata
+                    .idempotency_key
+                    .as_ref()
+                    .map(|idempotency_key| {
+                        IdempotencyId::combine(
+                            invocation_metadata.service_id.clone(),
+                            invocation_metadata.method.clone(),
+                            idempotency_key.clone(),
+                        )
+                    });
+
             // Send responses out
             self.send_response_to_sinks(
                 effects,
                 &invocation_id,
+                idempotency_id,
                 invocation_metadata.response_sinks.clone(),
                 result.clone(),
             );
@@ -1129,10 +1152,22 @@ where
 
         let response_result = ResponseResult::from(error);
 
+        let idempotency_id = invocation_metadata
+            .idempotency_key
+            .as_ref()
+            .map(|idempotency_key| {
+                IdempotencyId::combine(
+                    invocation_metadata.service_id.clone(),
+                    invocation_metadata.method.clone(),
+                    idempotency_key.clone(),
+                )
+            });
+
         // Send responses out
         self.send_response_to_sinks(
             effects,
             &invocation_id,
+            idempotency_id,
             invocation_metadata.response_sinks.clone(),
             response_result.clone(),
         );
@@ -1163,13 +1198,18 @@ where
         &mut self,
         effects: &mut Effects,
         invocation_id: &InvocationId,
+        idempotency_id: Option<IdempotencyId>,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
     ) {
         let result = res.into();
         for response_sink in response_sinks {
-            let response_message =
-                create_response_message(invocation_id, response_sink, result.clone());
+            let response_message = create_response_message(
+                invocation_id,
+                idempotency_id.clone(),
+                response_sink,
+                result.clone(),
+            );
             match response_message {
                 ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
                 ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),

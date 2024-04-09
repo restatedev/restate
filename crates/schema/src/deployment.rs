@@ -8,20 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Schemas;
+use super::{Schema, UpdateableSchema};
 use restate_schema_api::component::ComponentMetadata;
-use restate_schema_api::deployment::{Deployment, DeploymentResolver};
+use restate_schema_api::deployment::{Deployment, DeploymentMetadata, DeploymentResolver};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 
-impl DeploymentResolver for Schemas {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeploymentSchemas {
+    pub metadata: DeploymentMetadata,
+
+    // We need to store ComponentMetadata here only for queries
+    // We could optimize the memory impact of this by reading these info from disk
+    pub components: Vec<ComponentMetadata>,
+}
+
+impl DeploymentResolver for Schema {
     fn resolve_latest_deployment_for_component(
         &self,
         component_name: impl AsRef<str>,
     ) -> Option<Deployment> {
-        let schemas = self.0.load();
-        let component = schemas.components.get(component_name.as_ref())?;
-        schemas
-            .deployments
+        let component = self.components.get(component_name.as_ref())?;
+        self.deployments
             .get(&component.location.latest_deployment)
             .map(|schemas| Deployment {
                 id: component.location.latest_deployment,
@@ -30,9 +37,7 @@ impl DeploymentResolver for Schemas {
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        let schemas = self.0.load();
-        schemas
-            .deployments
+        self.deployments
             .get(deployment_id)
             .map(|schemas| Deployment {
                 id: *deployment_id,
@@ -44,8 +49,7 @@ impl DeploymentResolver for Schemas {
         &self,
         deployment_id: &DeploymentId,
     ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
-        let schemas = self.0.load();
-        schemas.deployments.get(deployment_id).map(|schemas| {
+        self.deployments.get(deployment_id).map(|schemas| {
             (
                 Deployment {
                     id: *deployment_id,
@@ -57,9 +61,7 @@ impl DeploymentResolver for Schemas {
     }
 
     fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
-        let schemas = self.0.load();
-        schemas
-            .deployments
+        self.deployments
             .iter()
             .map(|(deployment_id, schemas)| {
                 (
@@ -75,5 +77,31 @@ impl DeploymentResolver for Schemas {
                 )
             })
             .collect()
+    }
+}
+
+impl DeploymentResolver for UpdateableSchema {
+    fn resolve_latest_deployment_for_component(
+        &self,
+        component_name: impl AsRef<str>,
+    ) -> Option<Deployment> {
+        self.0
+            .load()
+            .resolve_latest_deployment_for_component(component_name)
+    }
+
+    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
+        self.0.load().get_deployment(deployment_id)
+    }
+
+    fn get_deployment_and_components(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
+        self.0.load().get_deployment_and_components(deployment_id)
+    }
+
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+        self.0.load().get_deployments()
     }
 }

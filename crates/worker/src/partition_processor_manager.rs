@@ -13,7 +13,7 @@ use anyhow::Context;
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::ChannelServiceHandle;
-use restate_metadata_store::{MetadataStoreClient, Operation, ReadModifyWriteError};
+use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::ArcSwapExt;
@@ -186,7 +186,7 @@ impl PartitionProcessorManager {
                     .map(|epoch: EpochMetadata| epoch.claim_leadership(node_id, partition_id))
                     .unwrap_or_else(|| EpochMetadata::new(node_id, partition_id));
 
-                Operation::Upsert(next_epoch)
+                Ok(next_epoch)
             })
             .await?;
         Ok(epoch.epoch())

@@ -1,0 +1,25 @@
+[package]
+name = "restate-schema"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+test-util = ["dep:restate-test-util"]
+
+[dependencies]
+restate-schema-api = { workspace = true, features = ["component", "deployment", "subscription", "invocation_target", "serde"] }
+restate-types = { workspace = true }
+restate-test-util = { workspace = true, optional = true }
+
+arc-swap = { workspace = true }
+bytes = { workspace = true }
+derive_more = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+

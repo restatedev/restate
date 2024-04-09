@@ -4,13 +4,11 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use hyper::header::{HeaderName, HeaderValue};
-use hyper::{Body, Request};
+use hyper::HeaderMap;
 
 use ring::signature::{Ed25519KeyPair, KeyPair};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::info;
-
-use crate::http::{HttpError, SigningPrivateKeyReadError};
 
 pub(crate) struct SigningKey {
     header: jsonwebtoken::Header,
@@ -58,14 +56,26 @@ impl SigningKey {
     }
 }
 
-pub struct Signer<'key> {
-    claims: Claims,
+#[derive(Debug, thiserror::Error)]
+pub enum SigningPrivateKeyReadError {
+    #[error("Only one private key in PEM format is expected, found {0}")]
+    OneKeyExpected(usize),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Pem(#[from] pem::PemError),
+    #[error("Key was rejected by ring: {0}")]
+    KeyRejected(ring::error::KeyRejected),
+}
+
+pub struct Signer<'key, 'aud> {
+    claims: Claims<'aud>,
     signing_key: &'key SigningKey,
 }
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Claims {
-    aud: String,
+#[derive(Serialize)]
+pub(crate) struct Claims<'aud> {
+    aud: &'aud str,
     exp: u64,
     iat: u64,
     nbf: u64,
@@ -76,16 +86,16 @@ const JWT_HEADER: HeaderName = HeaderName::from_static("x-restate-jwt-v1");
 /// The time to add and subtract from the current time to determine expiry and not-before times
 const LEEWAY_SECONDS: u64 = 60;
 
-impl<'key> Signer<'key> {
+impl<'key, 'aud> Signer<'key, 'aud> {
     const SCHEME: HeaderValue = HeaderValue::from_static("v1");
 
-    pub(crate) fn new(path: String, signing_key: &'key SigningKey) -> Result<Self, HttpError> {
+    pub(crate) fn new(path: &'aud str, signing_key: &'key SigningKey) -> Self {
         let unix_seconds = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("duration since Unix epoch should be well-defined")
             .as_secs();
 
-        Ok(Self {
+        Self {
             claims: Claims {
                 aud: path,
                 nbf: unix_seconds.saturating_sub(LEEWAY_SECONDS),
@@ -93,20 +103,20 @@ impl<'key> Signer<'key> {
                 exp: unix_seconds.saturating_add(LEEWAY_SECONDS),
             },
             signing_key,
-        })
+        }
     }
 }
 
-impl<'key> super::SignRequest for Signer<'key> {
+impl<'key, 'aud> super::SignRequest for Signer<'key, 'aud> {
     type Error = jsonwebtoken::errors::Error;
-    fn sign_request(self, mut request: Request<Body>) -> Result<Request<Body>, Self::Error> {
+    fn insert_identity(self, mut headers: HeaderMap) -> Result<HeaderMap, Self::Error> {
         let jwt = jsonwebtoken::encode(
             &self.signing_key.header,
             &self.claims,
             &self.signing_key.key,
         )?;
 
-        request.headers_mut().extend([
+        headers.extend([
             (super::SCHEME_HEADER, Self::SCHEME),
             (
                 JWT_HEADER,
@@ -115,13 +125,14 @@ impl<'key> super::SignRequest for Signer<'key> {
             ),
         ]);
 
-        Ok(request)
+        Ok(headers)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::request_identity::SignRequest;
 
     use std::collections::HashSet;
@@ -147,28 +158,32 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         )
     }
 
+    #[derive(serde::Deserialize)]
+    struct Claims {
+        aud: String,
+        exp: u64,
+        iat: u64,
+        nbf: u64,
+    }
+
     #[test]
     fn test_sign() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
         pemfile.write_all(PRIVATE_KEY).unwrap();
 
         let key = SigningKey::from_pem_file(pemfile.path().to_path_buf()).unwrap();
-        let signer = Signer::new("/invoke/foo".into(), &key).unwrap();
+        let signer = Signer::new("/invoke/foo", &key);
 
-        let request = Request::new(Body::empty());
-
-        let request = signer.sign_request(request).unwrap();
+        let headers = signer.insert_identity(HeaderMap::new()).unwrap();
 
         assert_eq!(
-            request
-                .headers()
+            headers
                 .get("x-restate-signature-scheme")
                 .expect("signature scheme header must be present"),
             &Signer::SCHEME
         );
 
-        let jwt = request
-            .headers()
+        let jwt = headers
             .get("x-restate-jwt-v1")
             .expect("jwt must be present");
 
@@ -193,5 +208,8 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         );
         assert_eq!(decoded.header.typ.unwrap(), "JWT");
         assert_eq!(decoded.header.alg, jsonwebtoken::Algorithm::EdDSA);
+        assert_eq!(decoded.claims.aud, "/invoke/foo");
+        assert!(decoded.claims.exp - decoded.claims.iat == 60);
+        assert!(decoded.claims.iat - decoded.claims.nbf == 60);
     }
 }

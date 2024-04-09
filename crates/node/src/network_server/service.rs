@@ -14,16 +14,13 @@ use tower_http::trace::TraceLayer;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{cancellation_watcher, task_center};
 use restate_grpc_util::run_hyper_server;
-use restate_meta::FileMetaReader;
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::ConnectionManager;
 use restate_node_protocol::{common, node};
 use restate_node_services::cluster_ctrl;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_node_services::node_svc::node_svc_server::NodeSvcServer;
-use restate_schema_impl::Schemas;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::config::CommonOptions;
 use restate_worker::SubscriptionControllerHandle;
 
@@ -57,10 +54,6 @@ impl NetworkServer {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
 
-        if let Some(WorkerDependencies { rocksdb, .. }) = self.worker_deps.as_ref() {
-            state_builder.rocksdb_storage(Some(rocksdb.clone()));
-        }
-
         if !options.disable_prometheus {
             state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
         }
@@ -75,7 +68,6 @@ impl NetworkServer {
         // -- HTTP service (for prometheus et al.)
         let router = axum::Router::new()
             .route("/metrics", get(handler::render_metrics))
-            .route("/rocksdb-stats", get(handler::rocksdb_stats))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
@@ -90,9 +82,11 @@ impl NetworkServer {
                 .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
         }
 
-        let cluster_controller_service = self
-            .admin_deps
-            .map(|admin_deps| ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps)));
+        let cluster_controller_service = if self.admin_deps.is_some() {
+            Some(ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new()))
+        } else {
+            None
+        };
 
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
@@ -128,23 +122,17 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 }
 
 pub struct WorkerDependencies {
-    pub rocksdb: RocksDBStorage,
     pub query_context: QueryContext,
-    pub schemas: Schemas,
     pub subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerDependencies {
     pub fn new(
-        rocksdb: RocksDBStorage,
         query_context: QueryContext,
-        schemas: Schemas,
         subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         WorkerDependencies {
-            rocksdb,
             query_context,
-            schemas,
             subscription_controller,
         }
     }
@@ -152,19 +140,16 @@ impl WorkerDependencies {
 
 pub struct AdminDependencies {
     pub _cluster_controller_handle: ClusterControllerHandle,
-    pub schema_reader: FileMetaReader,
     pub metadata_store_client: MetadataStoreClient,
 }
 
 impl AdminDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
-        schema_reader: FileMetaReader,
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
         AdminDependencies {
             _cluster_controller_handle: cluster_controller_handle,
-            schema_reader,
             metadata_store_client,
         }
     }

@@ -17,16 +17,12 @@ use restate_network::error::ProtocolError;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::network_server::WorkerDependencies;
 use restate_network::ConnectionManager;
 use restate_node_protocol::node::Message;
 use restate_node_services::node_svc::node_svc_server::NodeSvc;
 use restate_node_services::node_svc::{IdentResponse, NodeStatus};
-use restate_node_services::node_svc::{
-    StorageQueryRequest, StorageQueryResponse, UpdateSchemaRequest,
-};
-use restate_schema_impl::SchemasUpdateCommand;
-
-use crate::network_server::WorkerDependencies;
+use restate_node_services::node_svc::{StorageQueryRequest, StorageQueryResponse};
 
 pub struct NodeSvcHandler {
     task_center: TaskCenter,
@@ -94,38 +90,6 @@ impl NodeSvc for NodeSvcHandler {
                 })
                 .map_err(Status::from);
         Ok(Response::new(Box::pin(response_stream)))
-    }
-
-    async fn update_schemas(
-        &self,
-        request: Request<UpdateSchemaRequest>,
-    ) -> Result<Response<()>, Status> {
-        let Some(ref worker) = self.worker else {
-            return Err(Status::failed_precondition("Not a worker node"));
-        };
-
-        let (schema_updates, _) =
-            bincode::serde::decode_from_slice::<Vec<SchemasUpdateCommand>, _>(
-                &request.into_inner().schema_bin,
-                bincode::config::standard(),
-            )
-            .map_err(|err| Status::invalid_argument(err.to_string()))?;
-
-        self.task_center
-            .run_in_scope("update-schema", None, async move {
-                crate::roles::update_schemas(
-                    &worker.schemas,
-                    worker.subscription_controller.as_ref(),
-                    schema_updates,
-                )
-                .await
-                .map_err(|err| {
-                    Status::internal(format!("failed updating the schema information: {err}"))
-                })
-            })
-            .await?;
-
-        Ok(Response::new(()))
     }
 
     type CreateConnectionStream = BoxStream<'static, Result<Message, Status>>;

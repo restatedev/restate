@@ -12,4 +12,4 @@ mod admin;
 mod worker;
 
 pub use admin::{AdminRole, AdminRoleBuildError};
-pub use worker::{update_schemas, WorkerRole, WorkerRoleBuildError};
+pub use worker::{WorkerRole, WorkerRoleBuildError};

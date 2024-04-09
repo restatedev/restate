@@ -31,7 +31,20 @@ pub mod schema {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
+
+    use crate::discovery::schema;
     include!(concat!(env!("OUT_DIR"), "/deployment.rs"));
+
+    impl From<ComponentType> for restate_schema_api::component::ComponentType {
+        fn from(value: ComponentType) -> Self {
+            match value {
+                ComponentType::VirtualObject => {
+                    restate_schema_api::component::ComponentType::VirtualObject
+                }
+                ComponentType::Service => restate_schema_api::component::ComponentType::Service,
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -106,7 +119,7 @@ impl DiscoveryError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ComponentDiscovery {
     retry_policy: RetryPolicy,
     client: ServiceClient,

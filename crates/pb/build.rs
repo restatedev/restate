@@ -38,6 +38,7 @@ mod multi_service_generator {
             self
         }
 
+        #[allow(dead_code)]
         pub fn with_fallback(mut self, svc_gen: Box<dyn ServiceGenerator>) -> Self {
             self.fallback = Some(svc_gen);
             self
@@ -309,24 +310,6 @@ fn main() -> std::io::Result<()> {
                                 "()",
                             ),
                     ),
-                )
-                .with_svc(
-                    "dev.restate.internal.IdempotentInvoker",
-                    Box::new(
-                        ManualResponseRestateBuiltInServiceGen::default()
-                            .with_additional_method(
-                                "InternalOnResponse",
-                                "crate::restate::internal::ServiceInvocationSinkRequest",
-                                "()",
-                            )
-                            .with_additional_method("InternalOnTimer", "()", "()"),
-                    ),
-                )
-                .with_fallback(
-                    tonic_build::configure()
-                        .build_client(false)
-                        .build_transport(false)
-                        .service_generator(),
                 ),
         ))
         // allow older protobuf compiler to be used

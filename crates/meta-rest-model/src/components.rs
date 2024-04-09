@@ -30,7 +30,14 @@ pub struct ModifyComponentRequest {
     ///
     /// If true, the component can be invoked through the ingress.
     /// If false, the component can be invoked only from another Restate service.
-    pub public: bool,
+    #[serde(default)]
+    pub public: Option<bool>,
+    /// # Idempotency retention
+    ///
+    /// Modify the retention of idempotent requests for this component.
+    #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub idempotency_retention: Option<humantime::Duration>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

@@ -128,9 +128,7 @@ impl From<ResponseResult> for CompletionResult {
     fn from(value: ResponseResult) -> Self {
         match value {
             ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
-            ResponseResult::Failure(error_code, error_msg) => {
-                CompletionResult::Failure(error_code, error_msg)
-            }
+            ResponseResult::Failure(e) => CompletionResult::Failure(e.code(), e.message().into()),
         }
     }
 }
@@ -174,7 +172,9 @@ impl From<EntryResult> for ResponseResult {
     fn from(value: EntryResult) -> Self {
         match value {
             EntryResult::Success(bytes) => ResponseResult::Success(bytes),
-            EntryResult::Failure(code, error_msg) => ResponseResult::Failure(code, error_msg),
+            EntryResult::Failure(code, error_msg) => {
+                ResponseResult::Failure(InvocationError::new(code, error_msg))
+            }
         }
     }
 }

@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
@@ -20,27 +19,41 @@ use tonic::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
 
-use restate_core::{cancellation_watcher, task_center};
-use restate_meta::{FileMetaReader, MetaHandle};
+use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::{cancellation_watcher, task_center, MetadataWriter};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_impl::Schemas;
+use restate_schema_api::subscription::SubscriptionValidator;
+use restate_service_protocol::discovery::ComponentDiscovery;
 
+use crate::schema_registry::SchemaRegistry;
 use crate::Error;
 use crate::{rest_api, state, storage_query};
 
-#[derive(Debug)]
-pub struct AdminService {
-    schemas: Schemas,
-    meta_handle: MetaHandle,
-    schema_reader: FileMetaReader,
+#[derive(Debug, thiserror::Error)]
+#[error("could not create the service client: {0}")]
+pub struct BuildError(#[from] restate_service_client::BuildError);
+
+pub struct AdminService<V> {
+    schema_registry: SchemaRegistry<V>,
 }
 
-impl AdminService {
-    pub fn new(schemas: Schemas, meta_handle: MetaHandle, schema_reader: FileMetaReader) -> Self {
+impl<V> AdminService<V>
+where
+    V: SubscriptionValidator + Send + Sync + Clone + 'static,
+{
+    pub fn new(
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
+        subscription_validator: V,
+        component_discovery: ComponentDiscovery,
+    ) -> Self {
         Self {
-            schemas,
-            meta_handle,
-            schema_reader,
+            schema_registry: SchemaRegistry::new(
+                metadata_store_client,
+                metadata_writer,
+                component_discovery,
+                subscription_validator,
+            ),
         }
     }
 
@@ -51,14 +64,9 @@ impl AdminService {
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.load();
-        let rest_state = state::AdminServiceState::new(
-            self.meta_handle,
-            self.schemas,
-            node_svc_client.clone(),
-            self.schema_reader,
-            bifrost,
-            task_center(),
-        );
+
+        let rest_state =
+            state::AdminServiceState::new(self.schema_registry, bifrost, task_center());
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));
