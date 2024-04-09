@@ -48,11 +48,8 @@ impl RocksDbLogStore {
         let options = &updateable_options.load();
         let rock_opts = &options.rocksdb;
         // todo: get shared rocksdb cache
-        let cache = if rock_opts.rocksdb_cache_size() > 0 {
-            Some(Cache::new_lru_cache(rock_opts.rocksdb_cache_size()))
-        } else {
-            None
-        };
+        // temporary
+        let cache = Some(Cache::new_lru_cache(0));
 
         let mut metadata_cf_options = cf_common_options(rock_opts, cache.clone());
         metadata_cf_options.set_min_write_buffer_number_to_merge(10);

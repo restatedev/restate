@@ -13,6 +13,7 @@ use codederror::CodedError;
 use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
+use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
@@ -185,11 +186,16 @@ fn main() {
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
                 Configuration::pinned().dump().unwrap()
             );
+
+            // Initialize rocksdb manager
+            RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+
             // start config watcher
             config_loader.start();
 
             {
                 let config = Configuration::pinned();
+
                 WipeMode::wipe(
                     cli_args.wipe.as_ref(),
                     config.worker.data_dir(),
@@ -212,7 +218,7 @@ fn main() {
             let task_center_watch = tc.shutdown_token();
             tokio::pin!(task_center_watch);
 
-            let config_update_watcher = restate_types::config::config_watcher();
+            let config_update_watcher = Configuration::watcher();
             tokio::pin!(config_update_watcher);
             let mut shutdown = false;
             while !shutdown {

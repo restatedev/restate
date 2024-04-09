@@ -11,11 +11,7 @@
 use once_cell::sync::Lazy;
 use tokio::sync::watch;
 
-static CONFIG_UPDATE: Lazy<watch::Sender<()>> = Lazy::new(|| watch::Sender::new(()));
-
-pub fn config_watcher() -> ConfigWatch {
-    ConfigWatch::new(CONFIG_UPDATE.subscribe())
-}
+pub(crate) static CONFIG_UPDATE: Lazy<watch::Sender<()>> = Lazy::new(|| watch::Sender::new(()));
 
 #[derive(Clone)]
 pub struct ConfigWatch {
@@ -37,7 +33,7 @@ impl ConfigWatch {
 
 /// Inform the watch that the offset has changed. This should be used from the configuration loader
 /// thread, or it can be used in tests to simulate updates.
-pub fn notify_config_update() {
+pub(crate) fn notify_config_update() {
     CONFIG_UPDATE.send_modify(|v| {
         *v = ();
     });

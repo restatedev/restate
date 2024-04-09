@@ -154,7 +154,6 @@ impl Node {
             networking.connection_manager(),
             worker_role.as_ref().map(|worker| {
                 WorkerDependencies::new(
-                    worker.rocksdb_storage().clone(),
                     worker.storage_query_context().clone(),
                     worker.subscription_controller(),
                 )
