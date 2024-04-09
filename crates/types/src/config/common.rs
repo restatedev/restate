@@ -222,11 +222,23 @@ impl Default for CommonOptions {
 )]
 #[builder(default)]
 #[derive(Default)]
+#[serde(rename_all = "kebab-case")]
 pub struct ServiceClientOptions {
     #[serde(flatten)]
     pub http: HttpOptions,
     #[serde(flatten)]
     pub lambda: AwsOptions,
+
+    /// # Request identity private key PEM file
+    ///
+    /// A path to a file, such as "/var/secrets/key.pem", which contains exactly one ed25519 private
+    /// key in PEM format. Such a file can be generated with `openssl genpkey -algorithm ed25519`.
+    /// If provided, this key will be used to attach JWTs to requests from this client which
+    /// SDKs may optionally verify, proving that the caller is a particular Restate instance.
+    ///
+    /// This file is currently only read on client creation, but this may change in future.
+    /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
+    pub request_identity_private_key_pem_file: Option<PathBuf>,
 }
 
 /// # Log format
