@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
@@ -8,7 +7,7 @@ use hyper::header::{HeaderName, HeaderValue};
 use hyper::HeaderMap;
 
 use ring::signature::{Ed25519KeyPair, KeyPair};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::info;
 
 pub(crate) struct SigningKey {
@@ -74,9 +73,9 @@ pub struct Signer<'key, 'aud> {
     signing_key: &'key SigningKey,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub(crate) struct Claims<'aud> {
-    aud: Cow<'aud, str>,
+    aud: &'aud str,
     exp: u64,
     iat: u64,
     nbf: u64,
@@ -98,7 +97,7 @@ impl<'key, 'aud> Signer<'key, 'aud> {
 
         Self {
             claims: Claims {
-                aud: Cow::Borrowed(path),
+                aud: path,
                 nbf: unix_seconds.saturating_sub(LEEWAY_SECONDS),
                 iat: unix_seconds,
                 exp: unix_seconds.saturating_add(LEEWAY_SECONDS),
@@ -159,6 +158,14 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         )
     }
 
+    #[derive(serde::Deserialize)]
+    struct Claims {
+        aud: String,
+        exp: u64,
+        iat: u64,
+        nbf: u64,
+    }
+
     #[test]
     fn test_sign() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
@@ -201,5 +208,8 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         );
         assert_eq!(decoded.header.typ.unwrap(), "JWT");
         assert_eq!(decoded.header.alg, jsonwebtoken::Algorithm::EdDSA);
+        assert_eq!(decoded.claims.aud, "/invoke/foo");
+        assert!(decoded.claims.exp - decoded.claims.iat == 60);
+        assert!(decoded.claims.iat - decoded.claims.nbf == 60);
     }
 }
