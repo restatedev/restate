@@ -213,7 +213,7 @@ pub mod deployment {
             }
         }
 
-        #[derive(Default, Clone)]
+        #[derive(Default, Clone, Debug)]
         pub struct MockDeploymentMetadataRegistry {
             pub deployments: HashMap<DeploymentId, DeploymentMetadata>,
             pub latest_deployment: HashMap<String, DeploymentId>,
@@ -406,7 +406,6 @@ pub mod component {
     pub mod mocks {
         use super::*;
 
-        use crate::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
         use std::collections::HashMap;
 
         #[derive(Debug, Default, Clone)]
@@ -459,7 +458,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
+                    idempotency_retention: std::time::Duration::from_secs(60).into(),
                 }
             }
 
@@ -482,7 +481,7 @@ pub mod component {
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
-                    idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
+                    idempotency_retention: std::time::Duration::from_secs(60).into(),
                 }
             }
         }

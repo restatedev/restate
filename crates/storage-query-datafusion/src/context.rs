@@ -67,14 +67,15 @@ impl QueryContext {
         crate::state::register_self(&ctx, rocksdb.clone())?;
         crate::journal::register_self(&ctx, rocksdb.clone())?;
         crate::invocation_state::register_self(&ctx, status)?;
-        crate::inbox::register_self(&ctx, rocksdb)?;
+        crate::inbox::register_self(&ctx, rocksdb.clone())?;
         crate::deployment::register_self(&ctx, schemas.clone())?;
         crate::component::register_self(&ctx, schemas)?;
+        crate::idempotency::register_self(&ctx, rocksdb)?;
 
         Ok(ctx)
     }
 
-    pub fn new(
+    fn new(
         memory_limit: Option<usize>,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
