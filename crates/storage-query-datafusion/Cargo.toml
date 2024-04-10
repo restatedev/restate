@@ -37,3 +37,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+restate-types = { workspace = true, features = ["test-util"] }
+restate-invoker-api = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["mocks"] }
+drain = { workspace = true }
+googletest = { workspace = true }

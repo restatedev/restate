@@ -630,6 +630,13 @@ where
     ) -> impl Future<Output = StorageResult<Option<IdempotencyMetadata>>> + Send {
         self.inner.get_idempotency_metadata(idempotency_id)
     }
+
+    fn all_idempotency_metadata(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        self.inner.all_idempotency_metadata(range)
+    }
 }
 
 // Workaround until https://github.com/restatedev/restate/issues/276 is sorted out

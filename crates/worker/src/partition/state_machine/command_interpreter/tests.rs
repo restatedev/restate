@@ -244,6 +244,17 @@ impl ReadOnlyIdempotencyTable for StateReaderMock {
     ) -> StorageResult<Option<IdempotencyMetadata>> {
         unimplemented!();
     }
+
+    fn all_idempotency_metadata(
+        &mut self,
+        _range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        unimplemented!();
+
+        // I need this for type inference to work
+        #[allow(unreachable_code)]
+        futures::stream::iter(vec![])
+    }
 }
 
 #[test(tokio::test)]
