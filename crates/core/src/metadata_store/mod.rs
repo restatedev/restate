@@ -13,13 +13,12 @@ mod test_util;
 #[cfg(any(test, feature = "test-util"))]
 use crate::metadata_store::test_util::InMemoryMetadataStore;
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
 use restate_types::retries::{RetryIter, RetryPolicy};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::{Version, Versioned};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
@@ -117,19 +116,15 @@ impl MetadataStoreClient {
         MetadataStoreClient::new(InMemoryMetadataStore::default())
     }
 
-    pub async fn get<T: Versioned + DeserializeOwned>(
+    pub async fn get<T: Versioned + StorageDecode>(
         &self,
         key: ByteString,
     ) -> Result<Option<T>, ReadError> {
         let value = self.inner.get(key).await?;
 
         if let Some(versioned_value) = value {
-            // todo add proper format version
-            let (value, _) = bincode::serde::decode_from_slice::<T, _>(
-                versioned_value.value.as_ref(),
-                bincode::config::standard(),
-            )
-            .map_err(|err| ReadError::Codec(err.into()))?;
+            let value = StorageCodec::decode::<T>(versioned_value.value.as_ref())
+                .map_err(|err| ReadError::Codec(err.into()))?;
 
             assert_eq!(
                 versioned_value.version,
@@ -154,18 +149,17 @@ impl MetadataStoreClient {
         precondition: Precondition,
     ) -> Result<(), WriteError>
     where
-        T: Versioned + Serialize,
+        T: Versioned + StorageEncode,
     {
         let version = value.version();
 
-        // todo add proper format version
-        let value = bincode::serde::encode_to_vec(value, bincode::config::standard())
-            .map_err(|err| WriteError::Codec(err.into()))?;
+        let mut buf = BytesMut::default();
+        StorageCodec::encode(&value, &mut buf).map_err(|err| WriteError::Codec(err.into()))?;
 
         self.inner
             .put(
                 key,
-                VersionedValue::new(version, value.into()),
+                VersionedValue::new(version, buf.freeze()),
                 precondition,
             )
             .await
@@ -189,7 +183,7 @@ impl MetadataStoreClient {
         mut init: F,
     ) -> Result<T, ReadWriteError>
     where
-        T: Versioned + Serialize + DeserializeOwned + Clone,
+        T: Versioned + Clone + StorageEncode + StorageDecode,
         F: FnMut() -> T,
     {
         let max_backoff = Duration::from_millis(100);
@@ -243,7 +237,7 @@ impl MetadataStoreClient {
         mut modify: F,
     ) -> Result<T, ReadModifyWriteError<E>>
     where
-        T: Versioned + Serialize + DeserializeOwned + Clone,
+        T: Versioned + Clone + StorageEncode + StorageDecode,
         F: FnMut(Option<T>) -> Result<T, E>,
     {
         let max_backoff = Duration::from_millis(100);

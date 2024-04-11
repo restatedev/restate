@@ -369,8 +369,7 @@ impl LogReader {
     fn deserialize_record(record: Record) -> anyhow::Result<Envelope> {
         match record {
             Record::Data(payload) => {
-                // todo: Replace bincode with protobuf or something similar
-                let envelope = Envelope::decode_with_bincode(payload.as_ref())?;
+                let envelope = Envelope::from_bytes(payload.as_ref())?;
                 Ok(envelope)
             }
             Record::TrimGap(_) => {

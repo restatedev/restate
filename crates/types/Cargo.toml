@@ -25,6 +25,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
+flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }

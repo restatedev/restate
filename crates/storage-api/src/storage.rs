@@ -13,13 +13,30 @@ pub mod v1 {
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
 
-    use crate::StorageError;
     include!(concat!(
         env!("OUT_DIR"),
         "/dev.restate.storage.domain.v1.rs"
     ));
 
     pub mod pb_conversion {
+        use std::collections::HashSet;
+        use std::str::FromStr;
+
+        use anyhow::anyhow;
+        use bytes::{Buf, BufMut, Bytes};
+        use bytestring::ByteString;
+        use opentelemetry::trace::TraceState;
+        use prost::Message;
+
+        use restate_types::errors::{IdDecodeError, InvocationError};
+        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
+        use restate_types::journal::enriched::AwakeableEnrichmentResult;
+        use restate_types::storage::{
+            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+        };
+        use restate_types::time::MillisSinceEpoch;
+        use restate_types::GenerationalNodeId;
+
         use crate::storage::v1::dedup_sequence_number::Variant;
         use crate::storage::v1::enriched_entry_header::{
             Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
@@ -29,8 +46,7 @@ pub mod v1 {
         use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
         use crate::storage::v1::journal_entry::{completion_result, CompletionResult, Entry, Kind};
         use crate::storage::v1::outbox_message::{
-            OutboxCancel, OutboxIngressResponse, OutboxKill, OutboxServiceInvocation,
-            OutboxServiceInvocationResponse,
+            OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
         };
         use crate::storage::v1::service_invocation_response_sink::{
             Ingress, NewInvocation, PartitionProcessor, ResponseSink,
@@ -46,17 +62,6 @@ pub mod v1 {
             ServiceStatus, Source, SpanContext, SpanRelation, StateMutation, Timer,
         };
         use crate::StorageError;
-        use anyhow::anyhow;
-        use bytes::{Buf, Bytes};
-        use bytestring::ByteString;
-        use opentelemetry::trace::TraceState;
-        use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
-        use restate_types::journal::enriched::AwakeableEnrichmentResult;
-        use restate_types::time::MillisSinceEpoch;
-        use restate_types::GenerationalNodeId;
-        use std::collections::HashSet;
-        use std::str::FromStr;
 
         /// Error type for conversion related problems (e.g. Rust <-> Protobuf)
         #[derive(Debug, thiserror::Error)]
@@ -207,6 +212,47 @@ pub mod v1 {
 
                 InvocationStatus {
                     status: Some(status),
+                }
+            }
+        }
+
+        #[derive(derive_more::From)]
+        pub struct InvocationStatusStorageSerde(
+            pub crate::invocation_status_table::InvocationStatus,
+        );
+
+        impl InvocationStatusStorageSerde {
+            pub fn into_inner(self) -> crate::invocation_status_table::InvocationStatus {
+                self.0
+            }
+        }
+
+        impl StorageEncode for InvocationStatusStorageSerde {
+            const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::Protobuf;
+
+            fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+                InvocationStatus::from(self.0.clone())
+                    .encode(buf)
+                    .map_err(|err| StorageEncodeError::EncodeValue(err.into()))
+            }
+        }
+
+        impl StorageDecode for InvocationStatusStorageSerde {
+            fn decode(buf: &[u8], kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+            where
+                Self: Sized,
+            {
+                match kind {
+                    StorageCodecKind::Protobuf => {
+                        let invocation_status = InvocationStatus::decode(buf)
+                            .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+                        crate::invocation_status_table::InvocationStatus::try_from(
+                            invocation_status,
+                        )
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))
+                        .map(|value| InvocationStatusStorageSerde(value))
+                    }
+                    codec => Err(StorageDecodeError::UnsupportedCodecKind(codec)),
                 }
             }
         }

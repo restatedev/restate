@@ -16,6 +16,7 @@ use prost::Message;
 use restate_storage_api::StorageError;
 use restate_types::dedup::ProducerId;
 use restate_types::identifiers::InvocationUuid;
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
 pub trait Codec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -118,6 +119,33 @@ impl<'a> Codec for &'a [u8] {
 
     fn serialized_length(&self) -> usize {
         self.len()
+    }
+}
+
+pub struct StorageSerdeValue<V>(pub V);
+
+impl<V> StorageSerdeValue<V> {
+    pub fn into_inner(self) -> V {
+        self.0
+    }
+}
+
+impl<V> Codec for StorageSerdeValue<V>
+where
+    V: StorageEncode + StorageDecode,
+{
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        StorageCodec::encode(&self.0, target).expect("unable to serialize value");
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        StorageCodec::decode::<V>(source.chunk())
+            .map_err(|err| StorageError::Generic(err.into()))
+            .map(|value| StorageSerdeValue(value))
+    }
+
+    fn serialized_length(&self) -> usize {
+        0
     }
 }
 

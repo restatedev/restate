@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::{Version, Versioned};
+use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use enum_map::Enum;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -135,6 +135,8 @@ impl Versioned for Logs {
         self.version
     }
 }
+
+flexbuffers_storage_encode_decode!(Logs);
 
 impl Chain {
     /// Creates a new chain starting from Lsn(1) with a given loglet config.

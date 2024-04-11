@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::{Version, Versioned};
+use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::borrow::Borrow;
 use std::ops::RangeInclusive;
 
@@ -120,6 +120,8 @@ impl Versioned for FixedPartitionTable {
         self.version()
     }
 }
+
+flexbuffers_storage_encode_decode!(FixedPartitionTable);
 
 impl<T> FindPartition for T
 where

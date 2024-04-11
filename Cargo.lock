@@ -2433,6 +2433,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "flexbuffers"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15d14128f06405808ce75bfebe11e9b0f9da18719ede6d7bdb1702d6bfe0f7e8"
+dependencies = [
+ "bitflags 1.3.2",
+ "byteorder",
+ "num_enum",
+ "serde",
+ "serde_derive",
+]
+
+[[package]]
 name = "fluent-uri"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5089,6 +5102,7 @@ dependencies = [
  "metrics",
  "rand",
  "restate-node-protocol",
+ "restate-schema",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -5353,6 +5367,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_builder",
+ "flexbuffers",
  "futures",
  "googletest",
  "humantime",
@@ -5582,11 +5597,13 @@ dependencies = [
  "arc-swap",
  "bytes",
  "derive_more",
+ "flexbuffers",
  "http 0.2.12",
  "restate-schema-api",
  "restate-test-util",
  "restate-types",
  "serde",
+ "strum_macros 0.26.2",
 ]
 
 [[package]]
@@ -5742,6 +5759,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "bytestring",
+ "derive_more",
  "futures-util",
  "opentelemetry",
  "prost",
@@ -5749,6 +5767,7 @@ dependencies = [
  "prost-types",
  "restate-types",
  "serde",
+ "strum_macros 0.26.2",
  "thiserror",
 ]
 
@@ -5937,6 +5956,7 @@ dependencies = [
  "derive_more",
  "enum-map",
  "enumset",
+ "flexbuffers",
  "googletest",
  "hostname",
  "http 0.2.12",
@@ -5981,6 +6001,7 @@ dependencies = [
  "derive_more",
  "drain",
  "enum-map",
+ "flexbuffers",
  "googletest",
  "once_cell",
  "restate-bifrost",

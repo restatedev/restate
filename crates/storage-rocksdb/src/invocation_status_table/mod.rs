@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
+use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
@@ -20,9 +20,11 @@ use prost::Message;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
 };
+use restate_storage_api::storage::v1::pb_conversion::InvocationStatusStorageSerde;
 use restate_storage_api::{storage, Result, StorageError};
 use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -62,8 +64,7 @@ fn put_invocation_status<S: StorageAccess>(
     if status == InvocationStatus::Free {
         storage.delete_key(&key);
     } else {
-        let value = ProtoValue(storage::v1::InvocationStatus::from(status));
-        storage.put_kv(key, value);
+        storage.put_kv(key, StorageSerdeValue(InvocationStatusStorageSerde(status)));
     }
 }
 
@@ -78,9 +79,9 @@ fn get_invocation_status<S: StorageAccess>(
             return Ok(InvocationStatus::Free);
         }
         let v = v.unwrap();
-        let proto = storage::v1::InvocationStatus::decode(v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
-        InvocationStatus::try_from(proto).map_err(StorageError::from)
+        StorageCodec::decode::<InvocationStatusStorageSerde>(v)
+            .map_err(|err| StorageError::Generic(err.into()))
+            .map(|value| value.into_inner())
     })
 }
 

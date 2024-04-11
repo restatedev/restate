@@ -34,6 +34,7 @@ pub mod nodes_config;
 pub mod partition_table;
 pub mod retries;
 pub mod state_mut;
+pub mod storage;
 pub mod subscription;
 pub mod time;
 pub mod timer;

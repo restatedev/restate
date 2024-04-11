@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, ShutdownError};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::Version;
+use restate_types::{flexbuffers_storage_encode_decode, Version};
 
 use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
@@ -23,6 +23,7 @@ use crate::timer::TimerValue;
 use restate_types::dedup::DedupInformation;
 use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
+use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub mod control;
@@ -42,17 +43,18 @@ impl Envelope {
         Self { header, command }
     }
 
-    pub fn encode_with_bincode(&self) -> Result<Bytes, bincode::error::EncodeError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard()).map(Into::into)
+    pub fn to_bytes(&self) -> Result<Bytes, StorageEncodeError> {
+        let mut buf = BytesMut::default();
+        StorageCodec::encode(self, &mut buf)?;
+        Ok(buf.freeze())
     }
 
-    pub fn decode_with_bincode(
-        bytes: impl AsRef<[u8]>,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
-            .map(|(envelope, _)| envelope)
+    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, StorageDecodeError> {
+        StorageCodec::decode::<Self>(bytes.as_ref())
     }
 }
+
+flexbuffers_storage_encode_decode!(Envelope);
 
 /// Header is set on every message
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +159,7 @@ pub enum Error {
     #[error("partition not found: {0}")]
     PartitionNotFound(#[from] PartitionTableError),
     #[error("failed encoding envelope: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
+    Encode(#[from] StorageEncodeError),
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
     #[error(transparent)]
@@ -178,7 +180,7 @@ pub async fn append_envelope_to_bifrost(
     let partition_id = partition_table.find_partition_id(envelope.partition_key())?;
 
     let log_id = LogId::from(partition_id);
-    let payload = Payload::from(envelope.encode_with_bincode()?);
+    let payload = Payload::from(envelope.to_bytes()?);
     let lsn = bifrost.append(log_id, payload).await?;
 
     Ok((log_id, lsn))

@@ -93,6 +93,13 @@ impl Versioned for Schema {
     }
 }
 
+pub mod storage {
+    use crate::Schema;
+    use restate_types::flexbuffers_storage_encode_decode;
+
+    flexbuffers_storage_encode_decode!(Schema);
+}
+
 #[cfg(feature = "test-util")]
 mod test_util {
     use super::*;

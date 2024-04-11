@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use enumset::{EnumSet, EnumSetType};
 
 use crate::net::AdvertisedAddress;
-use crate::{GenerationalNodeId, NodeId, PlainNodeId};
+use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
@@ -184,6 +184,8 @@ impl Versioned for NodesConfiguration {
         self.version()
     }
 }
+
+flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {

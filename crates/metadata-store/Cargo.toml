@@ -47,6 +47,7 @@ tracing = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 
 anyhow = { workspace = true }
+flexbuffers = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }

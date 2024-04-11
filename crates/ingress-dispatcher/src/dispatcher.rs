@@ -263,7 +263,7 @@ mod tests {
                 let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
 
                 let output_message =
-                    Envelope::decode_with_bincode(log_record.record.payload().unwrap().as_ref())?;
+                    Envelope::from_bytes(log_record.record.payload().unwrap().as_ref())?;
 
                 let_assert!(
                     Envelope {

@@ -17,11 +17,13 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+derive_more = { workspace = true }
 futures-util = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 serde = { workspace = true, optional = true }
+strum_macros = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
