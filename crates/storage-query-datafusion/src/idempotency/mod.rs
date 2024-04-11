@@ -8,23 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
-mod component;
-pub mod context;
-mod deployment;
-mod generic_table;
-mod idempotency;
-mod inbox;
-mod invocation_state;
-mod invocation_status;
-mod journal;
-mod physical_optimizer;
-mod state;
-mod table_macro;
-mod table_util;
-mod virtual_object_status;
+mod row;
+mod schema;
+mod table;
 
-pub use context::BuildError;
+pub(crate) use table::register_self;
 
 #[cfg(test)]
-pub(crate) mod mocks;
+mod tests;

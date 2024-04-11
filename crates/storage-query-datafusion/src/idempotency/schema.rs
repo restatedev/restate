@@ -8,23 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
-mod component;
-pub mod context;
-mod deployment;
-mod generic_table;
-mod idempotency;
-mod inbox;
-mod invocation_state;
-mod invocation_status;
-mod journal;
-mod physical_optimizer;
-mod state;
-mod table_macro;
-mod table_util;
-mod virtual_object_status;
+#![allow(dead_code)]
 
-pub use context::BuildError;
+use crate::table_macro::*;
 
-#[cfg(test)]
-pub(crate) mod mocks;
+use datafusion::arrow::datatypes::DataType;
+
+define_table!(idempotency(
+    partition_key: DataType::UInt64,
+
+    component_name: DataType::LargeUtf8,
+    component_key: DataType::LargeUtf8,
+    component_handler: DataType::LargeUtf8,
+    idempotency_key: DataType::LargeUtf8,
+
+    invocation_id: DataType::LargeUtf8
+));

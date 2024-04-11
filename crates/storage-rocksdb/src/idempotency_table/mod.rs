@@ -9,11 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use crate::codec::ProtoValue;
-use crate::keys::define_table_key;
+use crate::keys::{define_table_key, TableKey};
+use crate::owned_iter::OwnedIterator;
+use crate::scan::TableScan;
 use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
+use futures::Stream;
+use futures_util::stream;
 use prost::Message;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
@@ -21,6 +25,7 @@ use restate_storage_api::idempotency_table::{
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
+use std::ops::RangeInclusive;
 
 define_table_key!(
     TableKind::Idempotency,
@@ -65,6 +70,28 @@ fn get_idempotency_metadata<S: StorageAccess>(
     })
 }
 
+fn all_idempotency_metadata<S: StorageAccess>(
+    storage: &mut S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_ {
+    let iter = storage.iterator_from(TableScan::PartitionKeyRange::<IdempotencyKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut k, v)| {
+        let key = IdempotencyKey::deserialize_from(&mut k)?;
+        let proto = storage::v1::IdempotencyMetadata::decode(v)
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        Ok((
+            IdempotencyId::new(
+                key.component_name_ok_or()?.clone(),
+                key.component_key.clone(),
+                key.component_handler_ok_or()?.clone(),
+                key.idempotency_key_ok_or()?.clone(),
+            ),
+            IdempotencyMetadata::try_from(proto).map_err(StorageError::from)?,
+        ))
+    }))
+}
+
 fn put_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
@@ -88,6 +115,13 @@ impl ReadOnlyIdempotencyTable for RocksDBStorage {
     ) -> Result<Option<IdempotencyMetadata>> {
         get_idempotency_metadata(self, idempotency_id)
     }
+
+    fn all_idempotency_metadata(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        all_idempotency_metadata(self, range)
+    }
 }
 
 impl<'a> ReadOnlyIdempotencyTable for RocksDBTransaction<'a> {
@@ -96,6 +130,13 @@ impl<'a> ReadOnlyIdempotencyTable for RocksDBTransaction<'a> {
         idempotency_id: &IdempotencyId,
     ) -> Result<Option<IdempotencyMetadata>> {
         get_idempotency_metadata(self, idempotency_id)
+    }
+
+    fn all_idempotency_metadata(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        all_idempotency_metadata(self, range)
     }
 }
 

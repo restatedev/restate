@@ -42,7 +42,7 @@ impl Default for InvocationStatusReportInner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InvocationStatusReport(
     FullInvocationId,
     PartitionLeaderEpoch,
@@ -134,4 +134,20 @@ pub trait StatusHandle {
         &self,
         keys: RangeInclusive<PartitionKey>,
     ) -> impl Future<Output = Self::Iterator> + Send;
+}
+
+#[cfg(any(test, feature = "mocks"))]
+pub mod mocks {
+    use super::*;
+
+    #[derive(Debug, Clone, Default)]
+    pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+
+    impl StatusHandle for MockStatusHandle {
+        type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+
+        async fn read_status(&self, _keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+            self.0.clone().into_iter()
+        }
+    }
 }
