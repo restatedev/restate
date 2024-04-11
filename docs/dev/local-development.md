@@ -70,6 +70,20 @@ In order to build the `restate-cli` binary run:
 just build --bin restate-cli [--release]
 ```
 
+### Running the unit tests
+We recommend cargo-nextest https://nexte.st/ to run our unit tests
+
+```shell
+just test
+```
+
+or directly with cargo:
+
+```shell
+cargo nextest run --workspace
+```
+
+
 ## Speeding builds up via sccache
 
 In order to speed up the build process, one can install the [sccache](https://github.com/mozilla/sccache) which caches build artifacts of `rustc`.
