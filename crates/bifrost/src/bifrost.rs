@@ -188,7 +188,7 @@ impl BifrostInner {
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
         self.metadata
-            .sync(MetadataKind::Logs)
+            .sync(&MetadataKind::Logs)
             .await
             .map_err(Arc::new)?;
         Ok(())

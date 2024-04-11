@@ -219,7 +219,7 @@ fn main() {
             let task_center_watch = tc.shutdown_token();
             tokio::pin!(task_center_watch);
 
-            let config_update_watcher = Configuration::watcher();
+    let config_update_watcher = Configuration::watcher();
             tokio::pin!(config_update_watcher);
             let mut shutdown = false;
             while !shutdown {
