@@ -81,6 +81,8 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
     LogletProvider,
+    #[strum(props(OnCancel = "abort"))]
+    Watchdog,
 }
 
 impl TaskKind {
