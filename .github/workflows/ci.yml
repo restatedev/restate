@@ -9,9 +9,53 @@ on:
       - main
 
 jobs:
-  lint-build-and-test:
-    name: Lint, build and test (${{ matrix.os }})
+  rustfmt:
+    name: RustFmt Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          rustflags: ""
+
+      - name: Check license headers
+        run: ./tools/scripts/check-license-headers
+
+      - name: Rustfmt Check
+        uses: actions-rust-lang/rustfmt@v1
+
+  clippy:
+    name: Clippy Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/clean-runner
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          rustflags: ""
+
+      - name: Setup just
+        uses: extractions/setup-just@v2
+
+      - name: Install protoc
+        uses: ./.github/actions/install-protoc
+
+      - name: Clippy Check
+        run: just clippy
+
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: clippy
     permissions:
       contents: read
       packages: read
@@ -23,18 +67,15 @@ jobs:
         os: [ubuntu-22.04]
     env:
       RUST_BACKTRACE: full
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
-          toolchain: stable
+          rustflags: ""
 
       - name: Install protoc
         uses: ./.github/actions/install-protoc
@@ -43,30 +84,16 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Setup just
-        uses: extractions/setup-just@v1
+        uses: extractions/setup-just@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.3
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check license headers
-        run: just check-license-headers
-
-      - name: Run fmt
-        run: just check-fmt
-
-      - name: Run clippy
-        run: just clippy
 
       - name: Run tests
         run: just test
 
   docker:
     name: Create docker image
+    needs: clippy
     uses: ./.github/workflows/docker.yml
     with:
       uploadImageAsTarball: true
