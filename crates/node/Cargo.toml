@@ -27,12 +27,12 @@ restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-node-services = { workspace = true, features = ["servers"] }
+restate-rocksdb = { workspace = true }
 restate-schema = { workspace = true }
 restate-schema-api = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
-restate-storage-rocksdb = { workspace = true }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }
 

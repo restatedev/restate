@@ -49,7 +49,6 @@ impl<T: Serialize> Serialize for Pinned<T> {
     }
 }
 
-/// This trait is not object-safe.
 pub trait Updateable<T> {
     fn load(&mut self) -> &T;
 }
