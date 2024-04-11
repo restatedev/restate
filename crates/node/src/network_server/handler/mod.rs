@@ -137,8 +137,25 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     let manager = RocksDbManager::get();
     let all_dbs = manager.get_all_dbs();
 
+    // Overall write buffer manager stats
+    format_rocksdb_property_for_prometheus(
+        &mut out,
+        &[],
+        MetricUnit::Bytes,
+        "rocksdb.memory.write_buffer_manager_capacity",
+        manager.get_total_write_buffer_capacity(),
+    );
+
+    format_rocksdb_property_for_prometheus(
+        &mut out,
+        &[],
+        MetricUnit::Bytes,
+        "rocksdb.memory.write_buffer_manager_usage",
+        manager.get_total_write_buffer_usage(),
+    );
+
     for db in &all_dbs {
-        let mut labels = vec![
+        let labels = vec![
             format!("db=\"{}\"", formatting::sanitize_label_value(&db.name)),
             format!(
                 "owner=\"{}\"",
@@ -201,11 +218,13 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
         // For properties, we need to get them for each column family.
         for cf in db.cfs() {
             let sanitized_cf_name = formatting::sanitize_label_value(cf);
-            labels.push(format!("cf=\"{}\"", sanitized_cf_name));
+            let mut cf_labels = Vec::with_capacity(labels.len() + 1);
+            labels.clone_into(&mut cf_labels);
+            cf_labels.push(format!("cf=\"{}\"", sanitized_cf_name));
             for (property, unit) in ROCKSDB_PROPERTIES {
                 format_rocksdb_property_for_prometheus(
                     &mut out,
-                    &labels,
+                    &cf_labels,
                     *unit,
                     property,
                     db.get_property_int_cf(cf, property)

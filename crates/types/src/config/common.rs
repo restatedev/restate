@@ -148,7 +148,7 @@ pub struct CommonOptions {
     /// # Total memory limit for rocksdb caches and memtables. This includes memory
     /// for uncompressed block cache and all memtables by all open databases.
     ///
-    /// The memory size used for rocksdb caches. Default is 4GB.
+    /// The memory size used for rocksdb caches. Default is 4GB if set to zero.
     pub rocksdb_total_memory_limit: u64,
 
     /// # Rocksdb total memtable size limit
