@@ -45,7 +45,7 @@ pub struct RocksDbManager {
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
     write_buffer_manager: WriteBufferManager,
     dbs: DashMap<(Owner, DbName), Arc<RocksDb>>,
-    watchdog_tx: mpsc::Sender<WatchdogCommand>,
+    watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     shutting_down: AtomicBool,
 }
 
@@ -73,7 +73,8 @@ impl RocksDbManager {
         );
         let dbs = DashMap::default();
 
-        let (watchdog_tx, watchdog_rx) = mpsc::channel(10);
+        // unbounded channel since commands are rare and we don't want to block
+        let (watchdog_tx, watchdog_rx) = mpsc::unbounded_channel();
 
         let manager = Self {
             cache,
@@ -136,14 +137,14 @@ impl RocksDbManager {
 
         self.dbs.insert((owner, name.clone()), wrapper);
 
-        if let Err(e) =
-            self.watchdog_tx
-                .blocking_send(WatchdogCommand::Register(ConfigSubscription {
-                    owner,
-                    name: name.clone(),
-                    updateable_rocksdb_opts: Box::new(updateable_opts),
-                    last_applied_opts: options,
-                }))
+        if let Err(e) = self
+            .watchdog_tx
+            .send(WatchdogCommand::Register(ConfigSubscription {
+                owner,
+                name: name.clone(),
+                updateable_rocksdb_opts: Box::new(updateable_opts),
+                last_applied_opts: options,
+            }))
         {
             warn!(
                 db = %name,
@@ -160,9 +161,16 @@ impl RocksDbManager {
     pub async fn reset(&self) -> anyhow::Result<()> {
         self.watchdog_tx
             .send(WatchdogCommand::ResetAll)
-            .await
             .map_err(|_| RocksError::Shutdown(ShutdownError))?;
         Ok(())
+    }
+
+    pub fn get_total_write_buffer_capacity(&self) -> u64 {
+        self.write_buffer_manager.get_buffer_size() as u64
+    }
+
+    pub fn get_total_write_buffer_usage(&self) -> u64 {
+        self.write_buffer_manager.get_usage() as u64
     }
 
     /// Returns aggregated memory usage for all databases if filter is empty
@@ -204,7 +212,7 @@ struct ConfigSubscription {
 struct DbWatchdog {
     manager: &'static RocksDbManager,
     cache: Cache,
-    watchdog_rx: tokio::sync::mpsc::Receiver<WatchdogCommand>,
+    watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
     updateable_common_opts: Box<dyn Updateable<CommonOptions> + Send>,
     current_common_opts: CommonOptions,
     subscriptions: Vec<ConfigSubscription>,
@@ -213,7 +221,7 @@ struct DbWatchdog {
 impl DbWatchdog {
     pub async fn run(
         manager: &'static RocksDbManager,
-        watchdog_rx: tokio::sync::mpsc::Receiver<WatchdogCommand>,
+        watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
         mut updateable_common_opts: impl Updateable<CommonOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let prev_opts = updateable_common_opts.load().clone();

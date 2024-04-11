@@ -14,6 +14,7 @@ test-util = []
 [dependencies]
 restate-core = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

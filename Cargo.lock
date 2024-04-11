@@ -5023,6 +5023,7 @@ dependencies = [
  "once_cell",
  "restate-core",
  "restate-metadata-store",
+ "restate-rocksdb",
  "restate-test-util",
  "restate-types",
  "rocksdb",
