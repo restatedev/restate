@@ -199,6 +199,54 @@ impl RocksDbManager {
     pub fn get_all_dbs(&self) -> Vec<Arc<RocksDb>> {
         self.dbs.iter().map(|k| k.clone()).collect()
     }
+
+    pub async fn shutdown(&'static self) {
+        // Ask all databases to shutdown cleanly.
+        let start = Instant::now();
+        let mut tasks = tokio::task::JoinSet::new();
+        for v in &self.dbs {
+            tasks.spawn_blocking(move || {
+                info!(
+                    db = %v.name,
+                    owner = %v.owner,
+                    "Shutting down rocksdb database"
+                );
+                if let Err(e) = v.db.flush_wal(true) {
+                    warn!(
+                        db = %v.name,
+                        owner = %v.owner,
+                        "Failed to flush local loglet rocksdb WAL: {}",
+                        e
+                    );
+                }
+                if let Err(e) = v.db.flush_memtables(v.cfs().as_slice(), true) {
+                    warn!(
+                        db = %v.name,
+                        owner = %v.owner,
+                        "Failed to flush memtables: {}",
+                        e
+                    );
+                }
+                v.db.cancel_all_background_work(true);
+                (v.name.clone(), v.owner)
+            });
+        }
+        // wait for all tasks to complete
+        while let Some(res) = tasks.join_next().await {
+            match res {
+                Ok((name, owner)) => {
+                    info!(
+                        db = %name,
+                        owner = %owner,
+                        "Rocksdb database shutdown completed, {} remaining", tasks.len());
+                }
+                Err(e) => {
+                    warn!("Failed to shutdown db: {}", e);
+                }
+            }
+        }
+        info!("Rocksdb shutdown took {:?}", start.elapsed());
+    }
 }
 
 #[allow(dead_code)]
@@ -245,10 +293,13 @@ impl DbWatchdog {
                 biased;
                 _ = &mut shutdown_watch => {
                     // Shutdown requested.
+                    manager
+                        .shutting_down
+                        .store(true, std::sync::atomic::Ordering::Release);
                     break;
                 }
                 Some(cmd) = watchdog.watchdog_rx.recv() => {
-                    watchdog.handle_command(cmd)
+                    watchdog.handle_command(cmd).await;
                 }
                 _ = config_watch.changed() => {
                     watchdog.on_config_update();
@@ -256,48 +307,17 @@ impl DbWatchdog {
             }
         }
 
-        watchdog.shutdown();
         Ok(())
     }
 
-    fn shutdown(&mut self) {
-        self.manager
-            .shutting_down
-            .store(true, std::sync::atomic::Ordering::Release);
-        // Ask all databases to shutdown cleanly.
-        let start = Instant::now();
-        for v in &self.manager.dbs {
-            info!(
-                db = %v.name,
-                owner = %v.owner,
-                "Shutting down rocksdb database"
-            );
-            if let Err(e) = v.db.flush_wal(true) {
-                warn!(
-                    db = %v.name,
-                    owner = %v.owner,
-                    "Failed to flush local loglet rocksdb WAL: {}",
-                    e
-                );
-            }
-            if let Err(e) = v.db.flush_memtables(v.cfs().as_slice(), true) {
-                warn!(
-                    db = %v.name,
-                    owner = %v.owner,
-                    "Failed to flush memtables: {}",
-                    e
-                );
-            }
-            v.db.cancel_all_background_work(true);
-        }
-        info!("Clean rocksdb shutdown took {:?}", start.elapsed());
-    }
-
-    fn handle_command(&mut self, cmd: WatchdogCommand) {
+    async fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
             #[cfg(any(test, feature = "test-util"))]
             WatchdogCommand::ResetAll => {
-                self.shutdown();
+                self.manager
+                    .shutting_down
+                    .store(true, std::sync::atomic::Ordering::Release);
+                self.manager.shutdown().await;
                 self.manager.dbs.clear();
                 self.subscriptions.clear();
                 self.manager
