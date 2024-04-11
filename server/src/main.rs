@@ -188,7 +188,8 @@ fn main() {
             );
 
             // Initialize rocksdb manager
-            RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
+            let rocksdb_manager =
+                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
 
             // start config watcher
             config_loader.start();
@@ -231,7 +232,10 @@ fn main() {
 
                         let shutdown_with_timeout = tokio::time::timeout(
                             Configuration::pinned().common.shutdown_grace_period(),
-                            tc.shutdown_node(&signal_reason, 0)
+                            async {
+                                tc.shutdown_node(&signal_reason, 0).await;
+                                rocksdb_manager.shutdown().await;
+                            }
                         );
 
                         // ignore the result because we are shutting down
