@@ -119,7 +119,7 @@ run *flags: (_target-installed target)
     cargo run {{ _target-option }} {{ flags }}
 
 test: (_target-installed target)
-    cargo test {{ _target-option }} --all-features
+    cargo nextest run {{ _target-option }} --all-features
 
 # Runs lints and tests
 verify: lint test
