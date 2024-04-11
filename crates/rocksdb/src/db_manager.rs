@@ -32,7 +32,7 @@ static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 enum WatchdogCommand {
     Register(ConfigSubscription),
     #[cfg(any(test, feature = "test-util"))]
-    ResetAll,
+    ResetAll(tokio::sync::oneshot::Sender<()>),
 }
 
 /// Tracks rocksdb databases created by various components, memory budgeting, monitoring, and
@@ -60,10 +60,15 @@ impl RocksDbManager {
         DB_MANAGER.get().expect("DBManager not initialized")
     }
 
-    /// Create a new instance of the database manager
+    /// Create a new instance of the database manager. This should not be executed concurrently,
+    /// only run it once on program startup.
     ///
     /// Must run in task_center scope.
     pub fn init(mut base_opts: impl Updateable<CommonOptions> + Send + 'static) -> &'static Self {
+        // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
+        if let Some(manager) = DB_MANAGER.get() {
+            return manager;
+        }
         let opts = base_opts.load();
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_limit as usize);
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
@@ -154,14 +159,22 @@ impl RocksDbManager {
                 e
             );
         }
+        info!(
+            db = %name,
+            owner = %owner,
+            "Opened rocksdb database"
+        );
         Ok(db)
     }
 
     #[cfg(any(test, feature = "test-util"))]
     pub async fn reset(&self) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
         self.watchdog_tx
-            .send(WatchdogCommand::ResetAll)
+            .send(WatchdogCommand::ResetAll(tx))
             .map_err(|_| RocksError::Shutdown(ShutdownError))?;
+        // safe to unwrap since we use this only in tests
+        rx.await.unwrap();
         Ok(())
     }
 
@@ -313,7 +326,7 @@ impl DbWatchdog {
     async fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
             #[cfg(any(test, feature = "test-util"))]
-            WatchdogCommand::ResetAll => {
+            WatchdogCommand::ResetAll(response) => {
                 self.manager
                     .shutting_down
                     .store(true, std::sync::atomic::Ordering::Release);
@@ -323,6 +336,8 @@ impl DbWatchdog {
                 self.manager
                     .shutting_down
                     .store(false, std::sync::atomic::Ordering::Release);
+                // safe to unwrap since we use this only in tests
+                response.send(()).unwrap();
             }
             WatchdogCommand::Register(sub) => self.subscriptions.push(sub),
         }

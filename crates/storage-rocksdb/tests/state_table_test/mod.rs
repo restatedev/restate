@@ -112,7 +112,7 @@ pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
 
 #[tokio::test]
 async fn test_delete_all() {
-    let (mut rocksdb, close) = storage_test_environment();
+    let (mut rocksdb, close) = storage_test_environment().await;
 
     let mut txn = rocksdb.transaction();
 

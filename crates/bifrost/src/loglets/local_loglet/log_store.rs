@@ -20,7 +20,9 @@ use super::keys::{MetadataKey, MetadataKind};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
 
-pub(crate) const DB_NAME: &str = "local_loglet";
+// matches the default directory name
+pub(crate) const DB_NAME: &str = "local-loglet";
+
 pub(crate) const DATA_CF: &str = "logstore_data";
 pub(crate) const METADATA_CF: &str = "logstore_metadata";
 
