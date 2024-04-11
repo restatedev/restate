@@ -12,7 +12,9 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true, features = ["serde"] }
 restate-storage-proto = { workspace = true, features = ["conversion"] }
 restate-types = { workspace = true }
@@ -38,6 +40,8 @@ once_cell = "1.18.0"
 log = "0.4.20"
 
 [dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 

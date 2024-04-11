@@ -92,7 +92,9 @@ mod tests {
     use futures::{StreamExt, TryStreamExt};
     use googletest::matcher::Matcher;
     use googletest::{all, assert_that, pat, property};
+    use restate_core::{task_center, TaskCenterBuilder};
     use restate_invoker_api::InvokeInputJournal;
+    use restate_rocksdb::RocksDbManager;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
@@ -105,7 +107,7 @@ mod tests {
     use restate_storage_rocksdb::RocksDBStorage;
     use restate_test_util::matchers::*;
     use restate_types::arc_util::Constant;
-    use restate_types::config::WorkerOptions;
+    use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{
         FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
@@ -135,34 +137,34 @@ mod tests {
         writer_join_handle: restate_storage_rocksdb::RocksDBWriterJoinHandle,
     }
 
-    impl Default for MockStateMachine {
-        fn default() -> Self {
-            MockStateMachine::new(0, 0)
-        }
-    }
-
     impl MockStateMachine {
         pub fn partition_id(&self) -> PartitionId {
             0
         }
 
-        pub fn new(inbox_seq_number: MessageIndex, outbox_seq_number: MessageIndex) -> Self {
+        pub async fn create() -> Self {
+            task_center().run_in_scope_sync("db-manager-init", None, || {
+                RocksDbManager::init(Constant::new(CommonOptions::default()))
+            });
             let worker_options = WorkerOptions::default();
             info!(
                 "Using RocksDB temp directory {}",
                 worker_options.data_dir().display()
             );
-            let (rocksdb_storage, writer) =
-                restate_storage_rocksdb::RocksDBStorage::new(Constant::new(worker_options))
-                    .unwrap();
+            let (rocksdb_storage, writer) = restate_storage_rocksdb::RocksDBStorage::open(
+                worker_options.data_dir(),
+                Constant::new(worker_options.rocksdb),
+            )
+            .await
+            .unwrap();
 
             let (signal, watch) = drain::channel();
             let writer_join_handle = writer.run(watch);
 
             Self {
                 state_machine: StateMachine::new(
-                    inbox_seq_number,
-                    outbox_seq_number,
+                    0, /* inbox_seq_number */
+                    0, /* outbox_seq_number */
                     PartitionKey::MIN..=PartitionKey::MAX,
                 ),
                 rocksdb_storage,
@@ -223,7 +225,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn start_invocation() -> TestResult {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let fid = mock_start_invocation(&mut state_machine).await;
 
         let invocation_status = state_machine
@@ -246,7 +254,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn awakeable_completion_received_before_entry() -> TestResult {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let fid = mock_start_invocation(&mut state_machine).await;
 
         // Send completion first
@@ -331,7 +345,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
 
         let fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
         let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
@@ -417,7 +437,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn mutate_state() -> anyhow::Result<()> {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let fid = mock_start_invocation(&mut state_machine).await;
 
         let first_state_mutation: HashMap<Bytes, Bytes> = [
@@ -479,9 +505,14 @@ mod tests {
 
     #[test(tokio::test)]
     async fn clear_all_user_states() -> anyhow::Result<()> {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let service_id = ServiceId::new("MySvc", "my-key");
-
-        let mut state_machine = MockStateMachine::default();
 
         // Fill with some state the service K/V store
         let mut txn = state_machine.rocksdb_storage.transaction();
@@ -516,7 +547,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn get_state_keys() -> TestResult {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let fid = mock_start_invocation(&mut state_machine).await;
 
         // Mock some state
@@ -557,7 +594,13 @@ mod tests {
 
     #[test(tokio::test)]
     async fn send_ingress_response_to_multiple_targets() -> TestResult {
-        let mut state_machine = MockStateMachine::default();
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
         let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
         let invocation_id = InvocationId::from(&fid);
 
@@ -652,7 +695,13 @@ mod tests {
 
         #[test(tokio::test)]
         async fn start_idempotent_invocation() {
-            let mut state_machine = MockStateMachine::default();
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
             let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
             let handler_name = ByteString::from_static("handler");
             let invocation_id = InvocationId::from(&fid);
@@ -754,7 +803,13 @@ mod tests {
 
         #[test(tokio::test)]
         async fn complete_already_completed_invocation() {
-            let mut state_machine = MockStateMachine::default();
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
             let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
             let handler_name = ByteString::from_static("handler");
             let invocation_id = InvocationId::from(&original_request_fid);
@@ -827,7 +882,13 @@ mod tests {
 
         #[test(tokio::test)]
         async fn known_invocation_id_but_missing_completion() {
-            let mut state_machine = MockStateMachine::default();
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
             let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
             let handler_name = ByteString::from_static("handler");
             let invocation_id = InvocationId::from(&original_request_fid);
@@ -889,7 +950,13 @@ mod tests {
 
         #[test(tokio::test)]
         async fn latch_invocation_while_executing() {
-            let mut state_machine = MockStateMachine::default();
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
             let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
             let handler_name = ByteString::from_static("handler");
             let idempotency = Idempotency {
@@ -979,7 +1046,13 @@ mod tests {
 
         #[test(tokio::test)]
         async fn timer_cleanup() {
-            let mut state_machine = MockStateMachine::default();
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
             let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
             let handler_name = ByteString::from_static("handler");
             let invocation_id = InvocationId::from(&original_request_fid);
