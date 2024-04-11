@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use restate_types::arc_util::Updateable;
-use restate_types::config::{Configuration, LocalLogletOptions};
+use restate_types::config::{Configuration, RocksDbOptions};
 use restate_types::logs::metadata::LogletParams;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
@@ -35,9 +36,11 @@ pub struct LocalLogletProvider {
 
 impl LocalLogletProvider {
     pub fn new(
-        updateable_options: impl Updateable<LocalLogletOptions> + Send + 'static,
+        data_dir: PathBuf,
+        updateable_rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> Result<Arc<Self>, ProviderError> {
-        let log_store = RocksDbLogStore::new(updateable_options).context("RockDb LogStore")?;
+        let log_store = RocksDbLogStore::new(data_dir, updateable_rocksdb_options)
+            .context("RockDb LogStore")?;
 
         Ok(Arc::new(Self {
             log_store,
@@ -102,8 +105,6 @@ impl LogletProvider for LocalLogletProvider {
     }
 
     async fn shutdown(&self) -> Result<(), ProviderError> {
-        debug!("Shutting down local loglet provider");
-        self.log_store.shutdown();
         Ok(())
     }
 }

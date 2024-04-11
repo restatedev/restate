@@ -223,8 +223,8 @@ impl Default for CommonOptions {
             log_format: Default::default(),
             log_disable_ansi_codes: false,
             default_thread_pool_size: None,
-            rocksdb_total_memtables_size_limit: 4_000_000_000, // 4GB
-            rocksdb_total_memory_limit: 0,
+            rocksdb_total_memtables_size_limit: 0,
+            rocksdb_total_memory_limit: 4_000_000_000, // 4GB
             rocksdb: Default::default(),
         }
     }
