@@ -70,21 +70,21 @@ impl ConfigLoader {
                     .map(|k| k.as_str().replace('_', "-").into()),
             )
             // Override tracing.log with RUST_LOG, if present
-            .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log_filter".into()))
+            .merge(Env::raw().only(&["RUST_LOG"]).map(|_| "log-filter".into()))
             .merge(
                 Env::raw()
                     .only(&["HTTP_PROXY"])
-                    .map(|_| "http_proxy".into()),
+                    .map(|_| "http-proxy".into()),
             )
             .merge(
                 Env::raw()
                     .only(&["AWS_EXTERNAL_ID"])
-                    .map(|_| "aws_assume_role_external_id".into()),
+                    .map(|_| "aws-assume-role-external-id".into()),
             )
             .merge(
                 Env::raw()
                     .only(&["MEMORY_LIMIT"])
-                    .map(|_| "rocksdb_total_memory_limit".into()),
+                    .map(|_| "rocksdb-total-memory-limit".into()),
             )
     }
 
