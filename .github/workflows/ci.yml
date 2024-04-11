@@ -31,10 +31,9 @@ jobs:
       - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
-          toolchain: stable
+          components: rustfmt,clippy
 
       - name: Install protoc
         uses: ./.github/actions/install-protoc
@@ -43,12 +42,12 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Setup just
-        uses: extractions/setup-just@v1
+        uses: extractions/setup-just@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.3
+        uses: mozilla-actions/sccache-action@v0.0.4
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
