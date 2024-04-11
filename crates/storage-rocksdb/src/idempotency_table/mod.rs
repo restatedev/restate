@@ -10,8 +10,9 @@
 
 use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
+use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
-use crate::{RocksDBStorage, TableKind, TableScanIterationDecision};
+use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -24,7 +25,6 @@ use restate_storage_api::idempotency_table::{
 use restate_storage_api::{Result, StorageError};
 use restate_storage_proto::storage;
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
-use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -70,36 +70,26 @@ fn get_idempotency_metadata<S: StorageAccess>(
     })
 }
 
-fn decode_idempotency_key_value(
-    k: &[u8],
-    v: &[u8],
-) -> Result<(IdempotencyId, IdempotencyMetadata)> {
-    let key = IdempotencyKey::deserialize_from(&mut Cursor::new(k))?;
-    let proto = storage::v1::IdempotencyMetadata::decode(v)
-        .map_err(|err| StorageError::Generic(err.into()))?;
-
-    Ok((
-        IdempotencyId::new(
-            key.component_name_ok_or()?.clone(),
-            key.component_key.clone(),
-            key.component_handler_ok_or()?.clone(),
-            key.idempotency_key_ok_or()?.clone(),
-        ),
-        IdempotencyMetadata::try_from(proto).map_err(StorageError::from)?,
-    ))
-}
-
 fn all_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     range: RangeInclusive<PartitionKey>,
-) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
-    stream::iter(storage.for_each_key_value_in_place(
-        TableScan::PartitionKeyRange::<IdempotencyKey>(range),
-        |k, v| {
-            let inbox_entry = decode_idempotency_key_value(k, v);
-            TableScanIterationDecision::Emit(inbox_entry)
-        },
-    ))
+) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_ {
+    let iter = storage.iterator_from(TableScan::PartitionKeyRange::<IdempotencyKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut k, v)| {
+        let key = IdempotencyKey::deserialize_from(&mut k)?;
+        let proto = storage::v1::IdempotencyMetadata::decode(v)
+            .map_err(|err| StorageError::Generic(err.into()))?;
+
+        Ok((
+            IdempotencyId::new(
+                key.component_name_ok_or()?.clone(),
+                key.component_key.clone(),
+                key.component_handler_ok_or()?.clone(),
+                key.idempotency_key_ok_or()?.clone(),
+            ),
+            IdempotencyMetadata::try_from(proto).map_err(StorageError::from)?,
+        ))
+    }))
 }
 
 fn put_idempotency_metadata<S: StorageAccess>(
