@@ -51,6 +51,7 @@ restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }
+restate-rocksdb = { path = "crates/rocksdb" }
 restate-schema = { path = "crates/schema" }
 restate-schema-api = { path = "crates/schema-api" }
 restate-serde-util = { path = "crates/serde-util" }
@@ -84,6 +85,7 @@ base64 = "0.21"
 bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde", ] }
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
+bytesize = { version = "1.3.0" }
 bytestring = { version = "1.2", features = ["serde"] }
 clap = { version = "4", default-features = false }
 chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
@@ -101,6 +103,7 @@ futures = "0.3.25"
 futures-sink = "0.3.25"
 futures-util = "0.3.25"
 googletest = "0.10"
+hostname = { version = "0.4.0" }
 http = "0.2.9"
 humantime = "2.1.0"
 hyper = { version = "0.14.24", default-features = false }

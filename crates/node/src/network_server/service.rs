@@ -21,7 +21,6 @@ use restate_node_services::cluster_ctrl;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_node_services::node_svc::node_svc_server::NodeSvcServer;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::config::CommonOptions;
 use restate_worker::SubscriptionControllerHandle;
 
@@ -55,10 +54,6 @@ impl NetworkServer {
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
 
-        if let Some(WorkerDependencies { rocksdb, .. }) = self.worker_deps.as_ref() {
-            state_builder.rocksdb_storage(Some(rocksdb.clone()));
-        }
-
         if !options.disable_prometheus {
             state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
         }
@@ -73,7 +68,6 @@ impl NetworkServer {
         // -- HTTP service (for prometheus et al.)
         let router = axum::Router::new()
             .route("/metrics", get(handler::render_metrics))
-            .route("/rocksdb-stats", get(handler::rocksdb_stats))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
             .fallback(handler_404);
@@ -128,19 +122,16 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 }
 
 pub struct WorkerDependencies {
-    pub rocksdb: RocksDBStorage,
     pub query_context: QueryContext,
     pub subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerDependencies {
     pub fn new(
-        rocksdb: RocksDBStorage,
         query_context: QueryContext,
         subscription_controller: Option<SubscriptionControllerHandle>,
     ) -> Self {
         WorkerDependencies {
-            rocksdb,
             query_context,
             subscription_controller,
         }

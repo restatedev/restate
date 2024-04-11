@@ -180,6 +180,10 @@ impl Configuration {
         Configuration::current().map_as_updateable(f)
     }
 
+    pub fn watcher() -> ConfigWatch {
+        ConfigWatch::new(CONFIG_UPDATE.subscribe())
+    }
+
     pub fn apply_rocksdb_common(mut self) -> Self {
         self.worker.rocksdb.apply_common(&self.common.rocksdb);
         self.bifrost

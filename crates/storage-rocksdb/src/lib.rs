@@ -337,7 +337,8 @@ impl RocksDBStorage {
         let rock_opts = &options.rocksdb;
 
         // todo: move to global cache
-        let cache = Cache::new_lru_cache(rock_opts.rocksdb_cache_size());
+        // temporary
+        let cache = Cache::new_lru_cache(0);
 
         let tables = vec![
             //

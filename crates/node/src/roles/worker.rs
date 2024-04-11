@@ -27,7 +27,6 @@ use restate_node_services::cluster_ctrl::AttachmentRequest;
 use restate_schema::UpdateableSchema;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
@@ -103,10 +102,6 @@ impl WorkerRole {
         )?;
 
         Ok(WorkerRole { worker })
-    }
-
-    pub fn rocksdb_storage(&self) -> &RocksDBStorage {
-        self.worker.rocksdb_storage()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {

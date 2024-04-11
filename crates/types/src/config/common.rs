@@ -145,7 +145,23 @@ pub struct CommonOptions {
     /// Disable prometheus metric recording and reporting. Default is `false`.
     pub disable_prometheus: bool,
 
-    /// RocksDb general settings and memory limits
+    /// # Total memory limit for rocksdb caches and memtables. This includes memory
+    /// for uncompressed block cache and all memtables by all open databases.
+    ///
+    /// The memory size used for rocksdb caches. Default is 4GB.
+    pub rocksdb_total_memory_limit: u64,
+
+    /// # Rocksdb total memtable size limit
+    ///
+    /// The memory size used across all memtables. This limits how much memory
+    /// memtables can eat up from the value in rocksdb_total_memory_limit. When
+    /// set to 0, memtables can take all available memory up to the value specified
+    /// in rocksdb_total_memory_limit.
+    ///
+    /// Default is 0
+    pub rocksdb_total_memtables_size_limit: u64,
+
+    /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 }
@@ -207,6 +223,8 @@ impl Default for CommonOptions {
             log_format: Default::default(),
             log_disable_ansi_codes: false,
             default_thread_pool_size: None,
+            rocksdb_total_memtables_size_limit: 4_000_000_000, // 4GB
+            rocksdb_total_memory_limit: 0,
             rocksdb: Default::default(),
         }
     }

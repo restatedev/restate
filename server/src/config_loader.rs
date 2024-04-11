@@ -81,6 +81,11 @@ impl ConfigLoader {
                     .only(&["AWS_EXTERNAL_ID"])
                     .map(|_| "aws_assume_role_external_id".into()),
             )
+            .merge(
+                Env::raw()
+                    .only(&["MEMORY_LIMIT"])
+                    .map(|_| "rocksdb_total_memory_limit".into()),
+            )
     }
 
     pub fn start(self) {

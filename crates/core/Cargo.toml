@@ -28,7 +28,7 @@ derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
-hostname = { version = "0.3" }
+hostname = { workspace = true }
 humantime = { workspace = true }
 metrics = { workspace = true }
 rand = { workspace = true, optional = true }

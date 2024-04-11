@@ -25,7 +25,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
-hostname = { version = "0.4" }
+hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
