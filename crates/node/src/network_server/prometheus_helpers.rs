@@ -11,6 +11,7 @@
 use std::fmt::Write;
 
 use metrics_exporter_prometheus::formatting;
+use restate_rocksdb::RocksDb;
 use rocksdb::statistics::{HistogramData, Ticker};
 
 static PREFIX: &str = "restate";
@@ -44,7 +45,8 @@ impl MetricUnit {
 
 pub fn format_rocksdb_stat_ticker_for_prometheus(
     out: &mut String,
-    options: &rocksdb::Options,
+    db: &RocksDb,
+    labels: &[String],
     ticker: Ticker,
 ) {
     let sanitized_name = format!(
@@ -57,9 +59,9 @@ pub fn format_rocksdb_stat_ticker_for_prometheus(
         out,
         &sanitized_name,
         None,
-        &[],
+        labels,
         None,
-        options.get_ticker_count(ticker),
+        db.get_ticker_count(ticker),
     );
     let _ = writeln!(out);
 }
@@ -105,6 +107,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
     name: &str,
     data: HistogramData,
     unit: MetricUnit,
+    labels: &[String],
 ) {
     let base_sanitized_name = format!(
         "{}_{}_{}",
@@ -118,7 +121,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         None,
-        &[],
+        labels,
         Some(("quantile", "0.5")),
         unit.normalize_value(data.median()),
     );
@@ -126,7 +129,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         None,
-        &[],
+        labels,
         Some(("quantile", "0.95")),
         unit.normalize_value(data.p95()),
     );
@@ -134,7 +137,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         None,
-        &[],
+        labels,
         Some(("quantile", "0.99")),
         unit.normalize_value(data.p99()),
     );
@@ -142,7 +145,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         None,
-        &[],
+        labels,
         Some(("quantile", "1.0")),
         unit.normalize_value(data.max()),
     );
@@ -150,7 +153,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         Some("sum"),
-        &[],
+        labels,
         None,
         unit.normalize_value(data.sum() as f64),
     );
@@ -158,7 +161,7 @@ pub fn format_rocksdb_histogram_for_prometheus(
         out,
         &base_sanitized_name,
         Some("count"),
-        &[],
+        labels,
         None,
         data.count(),
     );
