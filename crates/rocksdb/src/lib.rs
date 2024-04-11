@@ -40,10 +40,11 @@ use rocksdb::Cache;
     PartialEq,
     Hash,
 )]
+#[strum(serialize_all = "kebab-case")]
 pub enum Owner {
     PartitionProcessor,
-    BifrostLocalLogStore,
-    MetadataLocalStore,
+    Bifrost,
+    MetadataStore,
 }
 
 #[derive(
@@ -63,7 +64,7 @@ pub enum Owner {
 pub struct DbName(String);
 impl DbName {
     pub fn new(name: &str) -> Self {
-        Self(name.to_string())
+        Self(name.to_owned())
     }
 }
 
@@ -84,7 +85,7 @@ impl DbName {
 pub struct CfName(String);
 impl CfName {
     pub fn new(name: &str) -> Self {
-        Self(name.to_string())
+        Self(name.to_owned())
     }
 }
 
@@ -101,6 +102,25 @@ pub struct DbSpec<T> {
     /// Overriding per-column family options from config file is not supported [yet].
     pub column_families: Vec<(CfName, rocksdb::Options)>,
     _phantom: std::marker::PhantomData<T>,
+}
+
+impl DbSpec<rocksdb::DB> {
+    pub fn new_db(
+        name: DbName,
+        owner: Owner,
+        path: PathBuf,
+        db_options: rocksdb::Options,
+        column_families: Vec<(CfName, rocksdb::Options)>,
+    ) -> DbSpec<rocksdb::DB> {
+        Self {
+            name,
+            owner,
+            path,
+            db_options,
+            column_families,
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 #[derive(derive_more::Display, Clone)]
@@ -200,15 +220,6 @@ pub(crate) fn amend_db_options(db_options: &mut rocksdb::Options, opts: &RocksDb
     // at most we have 512 threads.
     //
     db_options.set_table_cache_num_shard_bits(9);
-    //
-    // no need to retain 1000 log files by default.
-    //
-    db_options.set_keep_log_file_num(1);
-    //
-    // Allow mmap read and write.
-    //
-    db_options.set_allow_mmap_reads(true);
-    db_options.set_allow_mmap_writes(true);
 }
 
 pub(crate) fn amend_cf_options(
@@ -219,11 +230,6 @@ pub(crate) fn amend_cf_options(
     // write buffer
     //
     cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size());
-    //
-    // Most of the changes are highly temporal, we try to delay flushing
-    // As much as we can to increase the chances to observe a deletion.
-    //
-    cf_options.set_max_write_buffer_number(3);
     //
     // bloom filters and block cache.
     //

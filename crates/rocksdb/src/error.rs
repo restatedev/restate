@@ -13,7 +13,7 @@ use restate_core::ShutdownError;
 
 use crate::CfName;
 
-#[derive(Debug, thiserror::Error, CodedError)]
+#[derive(Debug, Clone, thiserror::Error, CodedError)]
 pub enum RocksError {
     #[error("db is locked: {0}")]
     #[code(restate_errors::RT0005)]

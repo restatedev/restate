@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use restate_rocksdb::{CfName, DbName, DbSpec, Owner, RocksDbManager, RocksError};
 use restate_types::arc_util::Updateable;
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use rocksdb::{BlockBasedOptions, Cache, DBCompactionStyle, DBCompressionType, DB};
+use restate_types::config::RocksDbOptions;
+use rocksdb::{DBCompressionType, DB};
 use tracing::{debug, warn};
 
 use super::keys::{MetadataKey, MetadataKind};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
 
+pub(crate) static DB_NAME: &str = "local-loglet";
 pub(crate) static DATA_CF: &str = "logstore_data";
 pub(crate) static METADATA_CF: &str = "logstore_metadata";
 
@@ -33,6 +36,8 @@ pub enum LogStoreError {
     Decode(#[from] Arc<bincode::error::DecodeError>),
     #[error(transparent)]
     Rocksdb(#[from] rocksdb::Error),
+    #[error(transparent)]
+    RocksDbManager(#[from] RocksError),
 }
 
 #[derive(Debug, Clone)]
@@ -42,37 +47,27 @@ pub struct RocksDbLogStore {
 
 impl RocksDbLogStore {
     pub fn new(
-        mut updateable_options: impl Updateable<LocalLogletOptions> + Send + 'static,
+        data_dir: PathBuf,
+        updateable_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> Result<Self, LogStoreError> {
-        // todo start a task that updates rocksdb options
-        let options = &updateable_options.load();
-        let rock_opts = &options.rocksdb;
-        // todo: get shared rocksdb cache
-        // temporary
-        let cache = Some(Cache::new_lru_cache(0));
+        let db_manager = RocksDbManager::get();
 
-        let mut metadata_cf_options = cf_common_options(rock_opts, cache.clone());
-        metadata_cf_options.set_min_write_buffer_number_to_merge(10);
-        metadata_cf_options.set_max_successive_merges(10);
-        // Merge operator for log state updates
-        metadata_cf_options.set_merge_operator(
-            "LogStateMerge",
-            log_state_full_merge,
-            log_state_partial_merge,
+        let cfs = vec![
+            (CfName::new(DATA_CF), cf_data_options()),
+            (CfName::new(METADATA_CF), cf_metadata_options()),
+        ];
+
+        let db_spec = DbSpec::new_db(
+            DbName::new(DB_NAME),
+            Owner::Bifrost,
+            data_dir,
+            db_options(),
+            cfs,
         );
 
-        let cfs = [
-            rocksdb::ColumnFamilyDescriptor::new(
-                DATA_CF,
-                cf_common_options(rock_opts, cache.clone()),
-            ),
-            rocksdb::ColumnFamilyDescriptor::new(METADATA_CF, metadata_cf_options),
-        ];
-        let db_options = db_options(rock_opts);
-
-        let db = DB::open_cf_descriptors(&db_options, options.data_dir(), cfs)?;
-
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self {
+            db: db_manager.open_db(updateable_options, db_spec)?,
+        })
     }
 
     pub fn data_cf(&self) -> &rocksdb::ColumnFamily {
@@ -118,101 +113,62 @@ impl RocksDbLogStore {
     }
 }
 
-fn db_options(opts: &RocksDbOptions) -> rocksdb::Options {
-    let mut db_options = rocksdb::Options::default();
-    db_options.create_if_missing(true);
-    db_options.create_missing_column_families(true);
-    if opts.rocksdb_num_threads() > 0 {
-        db_options.increase_parallelism(opts.rocksdb_num_threads() as i32);
-        db_options.set_max_background_jobs(opts.rocksdb_num_threads() as i32);
-    }
-
-    // todo: integrate with node-ctrl monitoring
-    if !opts.rocksdb_disable_statistics() {
-        db_options.enable_statistics();
-        // Reasonable default, but we might expose this as a config in the future.
-        db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
-    }
-
-    // Disable WAL archiving.
-    // the following two options has to be both 0 to disable WAL log archive.
-    //
-    db_options.set_wal_size_limit_mb(0);
-    db_options.set_wal_ttl_seconds(0);
-    //
-    // Disable automatic WAL flushing if flush_wal_on_commit is enabled
-    // We will call flush manually, when we commit a storage transaction.
-    if !opts.rocksdb_disable_wal() {
-        db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
-        //
-        // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk
-        // We set this value to 10GB by default, to make sure that we don't flush
-        // memtables prematurely.
-        db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
-    }
-    //
-    // write buffer
-    //
-    // we disable the total write buffer size, since in restate the column family
-    // number is static.
-    //
-    db_options.set_db_write_buffer_size(0);
-    //
-    // Let rocksdb decide for level sizes.
-    //
-    db_options.set_level_compaction_dynamic_level_bytes(true);
-    db_options.set_compaction_readahead_size(1 << 21);
-    //
-    // We use Tokio's background threads to access rocksdb, and
-    // at most we have 512 threads.
-    //
-    db_options.set_table_cache_num_shard_bits(9);
+fn db_options() -> rocksdb::Options {
+    let mut opts = rocksdb::Options::default();
     //
     // no need to retain 1000 log files by default.
     //
-    db_options.set_keep_log_file_num(10);
-    //
-    // Allow mmap read and write.
-    //
-    db_options.set_allow_mmap_reads(true);
-    db_options.set_allow_mmap_writes(true);
-
-    db_options
+    opts.set_keep_log_file_num(10);
+    // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
+    opts.set_use_direct_reads(true);
+    opts
 }
 
-fn cf_common_options(opts: &RocksDbOptions, cache: Option<Cache>) -> rocksdb::Options {
-    let mut cf_options = rocksdb::Options::default();
-    //
-    //
-    // write buffer
-    //
-    if opts.rocksdb_write_buffer_size() > 0 {
-        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size())
-    }
-
-    cf_options.set_compaction_style(DBCompactionStyle::Universal);
-    //
-    // bloom filters and block cache.
-    //
-    let mut block_opts = BlockBasedOptions::default();
-    block_opts.set_bloom_filter(10.0, true);
-    // use the latest Rocksdb table format.
-    // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
-    block_opts.set_format_version(5);
-    if let Some(cache) = cache {
-        block_opts.set_cache_index_and_filter_blocks(true);
-        block_opts.set_block_cache(&cache);
-    }
-    cf_options.set_block_based_table_factory(&block_opts);
+// todo: optimize
+fn cf_data_options() -> rocksdb::Options {
+    let mut opts = rocksdb::Options::default();
     //
     // Set compactions per level
     //
-    cf_options.set_num_levels(3);
-    cf_options.set_compression_per_level(&[
+    opts.set_num_levels(7);
+    opts.set_compression_per_level(&[
+        DBCompressionType::None,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Snappy,
+        DBCompressionType::Zstd,
+    ]);
+    // most reads are sequential
+    opts.set_advise_random_on_open(false);
+    //
+    opts
+}
+
+// todo: optimize
+fn cf_metadata_options() -> rocksdb::Options {
+    let mut opts = rocksdb::Options::default();
+    //
+    // Set compactions per level
+    //
+    opts.set_num_levels(3);
+    opts.set_compression_per_level(&[
         DBCompressionType::None,
         DBCompressionType::None,
         DBCompressionType::Zstd,
     ]);
-
-    cf_options
+    //
+    // Most of the changes are highly temporal, we try to delay flushing
+    // to merge metadata updates into fewer L0 files.
+    opts.set_max_write_buffer_number(3);
+    opts.set_min_write_buffer_number_to_merge(3);
+    opts.set_max_successive_merges(10);
+    // Merge operator for log state updates
+    opts.set_merge_operator(
+        "LogStateMerge",
+        log_state_full_merge,
+        log_state_partial_merge,
+    );
+    opts
 }
