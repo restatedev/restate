@@ -69,9 +69,9 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
             .iter(|| writing_to_rocksdb(worker_options.clone()));
     });
 
-    rt.block_on(RocksDbManager::get().shutdown());
     group.finish();
     rt.block_on(tc.shutdown_node("completed", 0));
+    rt.block_on(RocksDbManager::get().shutdown());
 }
 
 criterion_group!(benches, basic_writing_reading_benchmark);

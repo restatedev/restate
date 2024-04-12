@@ -17,7 +17,9 @@ use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
+use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_types::arc_util::Constant;
 use restate_types::config::{
     CommonOptionsBuilder, Configuration, ConfigurationBuilder, UpdateableConfiguration,
     WorkerOptionsBuilder,
@@ -92,7 +94,12 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
         .build()
         .expect("task_center builds");
     let cloned_tc = tc.clone();
-    let updateable_config = UpdateableConfiguration::new(ArcSwap::from_pointee(config));
+    restate_types::config::set_current_config(config.clone());
+    let updateable_config = UpdateableConfiguration::new(ArcSwap::from_pointee(config.clone()));
+
+    tc.run_in_scope_sync("db-manager-init", None, || {
+        RocksDbManager::init(Constant::new(config.common))
+    });
     tc.spawn(TaskKind::TestRunner, "benchmark", None, async move {
         let node = Node::new(updateable_config).expect("Restate node must build");
         cloned_tc.run_in_scope("startup", None, node.start()).await

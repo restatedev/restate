@@ -19,6 +19,7 @@ use hyper::{Body, Uri};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
+use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
@@ -53,7 +54,9 @@ fn throughput_benchmark(criterion: &mut Criterion) {
             })
         });
 
+    group.finish();
     current_thread_rt.block_on(tc.shutdown_node("completed", 0));
+    current_thread_rt.block_on(RocksDbManager::get().shutdown());
 }
 
 async fn send_parallel_counter_requests(
