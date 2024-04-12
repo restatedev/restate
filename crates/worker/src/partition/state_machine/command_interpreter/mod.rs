@@ -36,12 +36,12 @@ use restate_types::errors::{
     KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, InvocationUuid, PartitionKey,
-    ServiceId, WithPartitionKey,
+    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, PartitionKey, ServiceId,
+    WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+    InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
     SpanRelationCause, TerminationFlavor,
 };
@@ -691,14 +691,9 @@ where
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
-                        let target_fid = FullInvocationId::new(
-                            enrichment_result.service_name,
-                            enrichment_result.service_key,
-                            enrichment_result.invocation_uuid,
-                        );
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::kill(
-                                InvocationId::from(target_fid),
+                                enrichment_result.invocation_id,
                             )),
                             effects,
                         );
@@ -739,15 +734,9 @@ where
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
-                        let target_fid = FullInvocationId::new(
-                            enrichment_result.service_name,
-                            enrichment_result.service_key,
-                            enrichment_result.invocation_uuid,
-                        );
-
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::cancel(
-                                InvocationId::from(target_fid),
+                                enrichment_result.invocation_id,
                             )),
                             effects,
                         );
@@ -1300,8 +1289,9 @@ where
             } => {
                 if let Some(InvokeEnrichmentResult {
                     service_key,
-                    invocation_uuid,
                     span_context,
+                    invocation_id,
+                    invocation_target,
                     ..
                 }) = enrichment_result
                 {
@@ -1311,11 +1301,12 @@ where
                     );
 
                     let service_invocation = Self::create_service_invocation(
-                        *invocation_uuid,
                         service_key.clone(),
+                        *invocation_id,
+                        invocation_target.clone(),
                         request,
                         Source::Service(full_invocation_id.clone()),
-                        Some((invocation_id, entry_index)),
+                        Some((*invocation_id, entry_index)),
                         span_context.clone(),
                         None,
                     );
@@ -1332,7 +1323,8 @@ where
             } => {
                 let InvokeEnrichmentResult {
                     service_key,
-                    invocation_uuid: invocation_id,
+                    invocation_id,
+                    invocation_target,
                     span_context,
                     ..
                 } = enrichment_result;
@@ -1354,8 +1346,9 @@ where
                 };
 
                 let service_invocation = Self::create_service_invocation(
-                    *invocation_id,
                     service_key.clone(),
+                    *invocation_id,
+                    invocation_target.clone(),
                     request,
                     Source::Service(full_invocation_id.clone()),
                     None,
@@ -1606,9 +1599,11 @@ where
         effects.send_ingress_response(ingress_response);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_service_invocation(
-        invocation_id: InvocationUuid,
         invocation_key: Bytes,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         invoke_request: InvokeRequest,
         source: Source,
         response_target: Option<(InvocationId, EntryIndex)>,
@@ -1632,7 +1627,13 @@ where
         };
 
         ServiceInvocation {
-            fid: FullInvocationId::new(service_name, invocation_key, invocation_id),
+            invocation_id,
+            invocation_target,
+            fid: FullInvocationId::new(
+                service_name,
+                invocation_key,
+                invocation_id.invocation_uuid(),
+            ),
             method_name,
             argument: parameter,
             source,

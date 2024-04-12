@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use bytestring::ByteString;
 
 use restate_pb::restate::internal::*;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::invocation::{ServiceInvocation, Source};
+use restate_types::invocation::{HandlerType, InvocationTarget, ServiceInvocation, Source};
 use tracing::{instrument, trace};
 
 impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
@@ -26,7 +27,16 @@ impl ProxyBuiltInService for &mut ServiceInvoker<'_> {
         );
         trace!(restate.invocation.id = %target_fid, "Proxying");
 
+        let invocation_target = InvocationTarget::VirtualObject {
+            name: target_fid.service_id.service_name.clone(),
+            key: ByteString::try_from(target_fid.service_id.key.clone())
+                .expect("Key should be UTF-8. This should have been checked before"),
+            handler: req.target_method.clone().into(),
+            handler_ty: HandlerType::Exclusive,
+        };
         self.outbox_message(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+            InvocationId::from(&target_fid),
+            invocation_target,
             target_fid,
             req.target_method,
             req.input,

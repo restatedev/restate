@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::ArcSwap;
-use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
+use restate_schema_api::component::{ComponentMetadata, HandlerMetadata};
 use restate_schema_api::deployment::DeploymentType;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};

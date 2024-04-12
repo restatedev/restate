@@ -14,6 +14,7 @@ use super::Handler;
 use super::HandlerError;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
@@ -23,7 +24,7 @@ use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::{FullInvocationId, ServiceId};
-use restate_types::invocation::{ResponseResult, SpanRelation};
+use restate_types::invocation::{InvocationTarget, ResponseResult, SpanRelation};
 use tracing::{info, trace, warn, Instrument};
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -92,7 +93,10 @@ where
             let invocation_id: InvocationId = fid.clone().into();
             let (invocation, response_rx) = IngressDispatcherRequest::invocation(
                 fid,
-                handler_name,
+                InvocationTarget::Service {
+                    name: ByteString::from_static(restate_pb::AWAKEABLES_SERVICE_NAME),
+                    handler: ByteString::from_static(handler_name),
+                },
                 payload,
                 SpanRelation::Linked(ingress_span_context),
                 None,

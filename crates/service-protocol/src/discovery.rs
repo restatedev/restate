@@ -32,16 +32,15 @@ pub mod schema {
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
 
-    use crate::discovery::schema;
     include!(concat!(env!("OUT_DIR"), "/deployment.rs"));
 
-    impl From<ComponentType> for restate_schema_api::component::ComponentType {
+    impl From<ComponentType> for restate_types::invocation::ComponentType {
         fn from(value: ComponentType) -> Self {
             match value {
                 ComponentType::VirtualObject => {
-                    restate_schema_api::component::ComponentType::VirtualObject
+                    restate_types::invocation::ComponentType::VirtualObject
                 }
-                ComponentType::Service => restate_schema_api::component::ComponentType::Service,
+                ComponentType::Service => restate_types::invocation::ComponentType::Service,
             }
         }
     }

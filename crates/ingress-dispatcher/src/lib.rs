@@ -19,7 +19,8 @@ use restate_types::identifiers::{
     FullInvocationId, IdempotencyId, InvocationId, ServiceId, WithPartitionKey,
 };
 use restate_types::invocation::{
-    Idempotency, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext, SpanRelation,
+    HandlerType, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
@@ -50,7 +51,7 @@ pub enum IngressCorrelationId {
 pub struct IngressDispatcherRequest {
     pub correlation_id: IngressCorrelationId,
     fid: FullInvocationId,
-    handler_name: ByteString,
+    invocation_target: InvocationTarget,
     argument: Bytes,
     span_context: ServiceInvocationSpanContext,
     request_mode: IngressRequestMode,
@@ -90,29 +91,30 @@ pub trait DeduplicationId: Display {
 impl IngressDispatcherRequest {
     pub fn invocation(
         fid: FullInvocationId,
-        handler_name: impl Into<ByteString>,
+        invocation_target: InvocationTarget,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         idempotency: Option<Idempotency>,
         headers: Vec<restate_types::invocation::Header>,
     ) -> (Self, IngressResponseReceiver) {
-        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
+        let invocation_id = InvocationId::from(&fid);
+        let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
         let (result_tx, result_rx) = oneshot::channel();
 
-        let handler_name = handler_name.into();
-        let correlation_id = ingress_correlation_id(&fid, &handler_name, idempotency.as_ref());
+        let correlation_id =
+            ingress_correlation_id(&fid, invocation_target.handler_name(), idempotency.as_ref());
 
         (
             IngressDispatcherRequest {
                 correlation_id,
                 fid,
-                handler_name,
                 argument: argument.into(),
                 request_mode: IngressRequestMode::RequestResponse(result_tx),
                 span_context,
                 idempotency,
                 headers,
                 execution_time: None,
+                invocation_target,
             },
             result_rx,
         )
@@ -121,7 +123,7 @@ impl IngressDispatcherRequest {
     #[allow(clippy::too_many_arguments)]
     pub fn background_invocation(
         fid: FullInvocationId,
-        handler_name: impl Into<ByteString>,
+        invocation_target: InvocationTarget,
         argument: impl Into<Bytes>,
         related_span: SpanRelation,
         ingress_deduplication_id: Option<IngressDeduplicationId>,
@@ -129,15 +131,16 @@ impl IngressDispatcherRequest {
         headers: Vec<restate_types::invocation::Header>,
         execution_time: Option<SystemTime>,
     ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
+        let invocation_id = InvocationId::from(&fid);
+        let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
 
-        let handler_name = handler_name.into();
-        let correlation_id = ingress_correlation_id(&fid, &handler_name, idempotency.as_ref());
+        let correlation_id =
+            ingress_correlation_id(&fid, invocation_target.handler_name(), idempotency.as_ref());
 
         IngressDispatcherRequest {
             correlation_id,
             fid,
-            handler_name,
+            invocation_target,
             argument: argument.into(),
             span_context,
             request_mode: match ingress_deduplication_id {
@@ -198,7 +201,8 @@ impl IngressDispatcherRequest {
         };
 
         // Generate span context
-        let span_context = ServiceInvocationSpanContext::start(&target_fid, related_span);
+        let invocation_id = InvocationId::from(&target_fid);
+        let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
 
         Ok(if let Some(proxying_key) = proxying_key {
             // For keyed events, we dispatch them through the Proxy service, to avoid scattering the offset info throughout all the partitions
@@ -210,7 +214,6 @@ impl IngressDispatcherRequest {
             IngressDispatcherRequest {
                 correlation_id: IngressCorrelationId::InvocationId(InvocationId::from(&proxy_fid)),
                 fid: proxy_fid,
-                handler_name: ByteString::from_static(restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME),
                 argument: restate_pb::restate::internal::ProxyThroughRequest {
                     target_service: target_fid.service_id.service_name.to_string(),
                     target_method: handler.to_owned(),
@@ -225,12 +228,22 @@ impl IngressDispatcherRequest {
                 idempotency: None,
                 headers,
                 execution_time: None,
+                invocation_target: InvocationTarget::Service {
+                    name: ByteString::from_static(restate_pb::PROXY_SERVICE_NAME),
+                    handler: ByteString::from_static(restate_pb::PROXY_PROXY_THROUGH_METHOD_NAME),
+                },
             }
         } else {
             IngressDispatcherRequest {
                 correlation_id: IngressCorrelationId::InvocationId(InvocationId::from(&target_fid)),
+                invocation_target: InvocationTarget::VirtualObject {
+                    name: target_fid.service_id.service_name.clone(),
+                    key: ByteString::try_from(target_fid.service_id.key.clone())
+                        .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?,
+                    handler: ByteString::from(handler.clone()),
+                    handler_ty: HandlerType::Exclusive,
+                },
                 fid: target_fid,
-                handler_name: ByteString::from(&**handler),
                 argument,
                 span_context,
                 request_mode,
@@ -312,8 +325,8 @@ pub mod mocks {
         pub fn expect_invocation(
             self,
         ) -> (
-            FullInvocationId,
-            ByteString,
+            InvocationId,
+            InvocationTarget,
             Bytes,
             ServiceInvocationSpanContext,
             Option<Idempotency>,
@@ -323,7 +336,7 @@ pub mod mocks {
             let_assert!(
                 IngressDispatcherRequest {
                     fid,
-                    handler_name,
+                    invocation_target,
                     argument,
                     span_context,
                     request_mode: IngressRequestMode::RequestResponse(ingress_response_sender),
@@ -333,8 +346,8 @@ pub mod mocks {
                 } = self
             );
             (
-                fid,
-                handler_name,
+                InvocationId::from(fid),
+                invocation_target,
                 argument,
                 span_context,
                 idempotency,
@@ -346,8 +359,8 @@ pub mod mocks {
         pub fn expect_background_invocation(
             self,
         ) -> (
-            FullInvocationId,
-            ByteString,
+            InvocationId,
+            InvocationTarget,
             Bytes,
             ServiceInvocationSpanContext,
             Option<MillisSinceEpoch>,
@@ -355,7 +368,7 @@ pub mod mocks {
             let_assert!(
                 IngressDispatcherRequest {
                     fid,
-                    handler_name,
+                    invocation_target,
                     argument,
                     span_context,
                     request_mode: IngressRequestMode::FireAndForget,
@@ -363,14 +376,20 @@ pub mod mocks {
                     ..
                 } = self
             );
-            (fid, handler_name, argument, span_context, execution_time)
+            (
+                InvocationId::from(fid),
+                invocation_target,
+                argument,
+                span_context,
+                execution_time,
+            )
         }
 
         pub fn expect_dedupable_background_invocation(
             self,
         ) -> (
-            FullInvocationId,
-            ByteString,
+            InvocationId,
+            InvocationTarget,
             Bytes,
             ServiceInvocationSpanContext,
             IngressDeduplicationId,
@@ -378,14 +397,20 @@ pub mod mocks {
             let_assert!(
                 IngressDispatcherRequest {
                     fid,
-                    handler_name,
+                    invocation_target,
                     argument,
                     span_context,
                     request_mode: IngressRequestMode::DedupFireAndForget(dedup_id),
                     ..
                 } = self
             );
-            (fid, handler_name, argument, span_context, dedup_id)
+            (
+                InvocationId::from(fid),
+                invocation_target,
+                argument,
+                span_context,
+                dedup_id,
+            )
         }
     }
 }

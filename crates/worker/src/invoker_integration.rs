@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::anyhow;
 use assert2::let_assert;
 use bytes::Bytes;
-use restate_schema_api::component::ComponentType;
+use bytestring::ByteString;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::{FullInvocationId, InvocationUuid, ServiceId};
-use restate_types::invocation::{ServiceInvocationSpanContext, SpanRelation};
+use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId, WithPartitionKey};
+use restate_types::invocation::{
+    ComponentType, InvocationTarget, ServiceInvocationSpanContext, SpanRelation,
+};
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
 };
@@ -56,15 +59,28 @@ where
             .map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
-        let service_id = match self
+        let (service_id, invocation_target) = match self
             .schemas
             .resolve_latest_invocation_target(&request.service_name, &request.method_name)
         {
             Some(meta) => match meta.component_ty {
-                ComponentType::Service => ServiceId::unkeyed(request.service_name.clone()),
-                ComponentType::VirtualObject => {
-                    ServiceId::new(request.service_name.clone(), request.key.into_bytes())
-                }
+                ComponentType::Service => (
+                    ServiceId::unkeyed(request.service_name.clone()),
+                    InvocationTarget::service(request.service_name, request.method_name),
+                ),
+                ComponentType::VirtualObject => (
+                    ServiceId::new(request.service_name.clone(), request.key.as_bytes().clone()),
+                    InvocationTarget::virtual_object(
+                        request.service_name.clone(),
+                        ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
+                            InvocationError::from(anyhow!(
+                                "The request key is not a valid UTF-8 string: {e}"
+                            ))
+                        })?,
+                        request.method_name,
+                        meta.handler_ty,
+                    ),
+                ),
             },
             None => {
                 return Err(InvocationError::component_handler_not_found(
@@ -74,20 +90,16 @@ where
             }
         };
 
-        let invocation_id = InvocationUuid::new();
+        let invocation_uuid = InvocationUuid::new();
+        let invocation_id = InvocationId::from_parts(service_id.partition_key(), invocation_uuid);
 
         // Create the span context
-        let span_context = ServiceInvocationSpanContext::start(
-            &FullInvocationId::new(
-                service_id.service_name.clone(),
-                service_id.key.clone(),
-                invocation_id,
-            ),
-            span_relation,
-        );
+        let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);
 
         Ok(InvokeEnrichmentResult {
-            invocation_uuid: invocation_id,
+            invocation_id,
+            invocation_target,
+            invocation_uuid,
             service_key: service_id.key,
             service_name: service_id.service_name,
             span_context,
