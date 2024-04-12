@@ -114,8 +114,8 @@ mod tests {
     };
     use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
-        InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
-        ServiceInvocation, ServiceInvocationResponseSink, Source,
+        InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+        ServiceInvocationResponseSink, Source,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
@@ -356,6 +356,7 @@ mod tests {
 
         let fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
         let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
+        let inboxed_invocation_id = InvocationId::from(&inboxed_fid);
         let caller_fid = FullInvocationId::mock_random();
         let caller_invocation_id = InvocationId::from(&caller_fid);
 
@@ -388,14 +389,14 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::TerminateInvocation(InvocationTermination::kill(
-                MaybeFullInvocationId::from(inboxed_fid.clone()),
+                inboxed_invocation_id,
             )))
             .await;
 
         let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&InvocationId::from(&inboxed_fid))
+            .get_invocation_status(&inboxed_invocation_id)
             .await?;
 
         // assert that invocation status was removed

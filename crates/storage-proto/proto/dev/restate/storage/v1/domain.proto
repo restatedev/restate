@@ -19,13 +19,6 @@ message FullInvocationId {
     bytes invocation_uuid = 3;
 }
 
-message MaybeFullInvocationId {
-    oneof kind {
-        FullInvocationId full_invocation_id = 1;
-        bytes invocation_id = 2;
-    }
-}
-
 message GenerationalNodeId {
     uint32 id = 1;
     uint32 generation = 2;
@@ -395,11 +388,11 @@ message OutboxMessage {
     }
 
     message OutboxKill {
-        MaybeFullInvocationId maybe_full_invocation_id = 1;
+        bytes invocation_id = 1;
     }
 
     message OutboxCancel {
-        MaybeFullInvocationId maybe_full_invocation_id = 1;
+        bytes invocation_id = 1;
     }
 
     oneof outbox_message {

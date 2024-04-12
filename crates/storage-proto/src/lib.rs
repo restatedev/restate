@@ -41,14 +41,14 @@ pub mod storage {
             };
             use crate::storage::v1::{
                 enriched_entry_header, inbox_entry, invocation_resolution_result,
-                invocation_status, maybe_full_invocation_id, outbox_message, response_result,
-                service_status, source, span_relation, timer, BackgroundCallResolutionResult,
-                DedupSequenceNumber, Duration, EnrichedEntryHeader, EpochSequenceNumber,
-                FullInvocationId, Header, IdempotencyMetadata, IdempotentRequestMetadata,
-                InboxEntry, InvocationResolutionResult, InvocationStatus, JournalEntry,
-                JournalMeta, KvPair, MaybeFullInvocationId, OutboxMessage, ResponseResult,
-                ServiceId, ServiceInvocation, ServiceInvocationResponseSink, ServiceStatus, Source,
-                SpanContext, SpanRelation, StateMutation, Timer,
+                invocation_status, outbox_message, response_result, service_status, source,
+                span_relation, timer, BackgroundCallResolutionResult, DedupSequenceNumber,
+                Duration, EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId, Header,
+                IdempotencyMetadata, IdempotentRequestMetadata, InboxEntry,
+                InvocationResolutionResult, InvocationStatus, JournalEntry, JournalMeta, KvPair,
+                OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
+                ServiceInvocationResponseSink, ServiceStatus, Source, SpanContext, SpanRelation,
+                StateMutation, Timer,
             };
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
@@ -56,7 +56,6 @@ pub mod storage {
             use opentelemetry_api::trace::TraceState;
             use restate_storage_api::StorageError;
             use restate_types::errors::{IdDecodeError, InvocationError};
-            use restate_types::identifiers::InvocationUuid;
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
             use restate_types::journal::enriched::AwakeableEnrichmentResult;
             use restate_types::time::MillisSinceEpoch;
@@ -95,7 +94,7 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<ServiceStatus> for InvocationUuid {
+            impl TryFrom<ServiceStatus> for restate_types::identifiers::InvocationUuid {
                 type Error = ConversionError;
 
                 fn try_from(value: ServiceStatus) -> Result<Self, Self::Error> {
@@ -992,49 +991,6 @@ pub mod storage {
                 }
             }
 
-            impl TryFrom<MaybeFullInvocationId> for restate_types::invocation::MaybeFullInvocationId {
-                type Error = ConversionError;
-
-                fn try_from(value: MaybeFullInvocationId) -> Result<Self, Self::Error> {
-                    match value.kind.ok_or(ConversionError::missing_field("kind"))? {
-                        maybe_full_invocation_id::Kind::FullInvocationId(fid) => {
-                            Ok(restate_types::invocation::MaybeFullInvocationId::Full(
-                                restate_types::identifiers::FullInvocationId::try_from(fid)?,
-                            ))
-                        }
-                        maybe_full_invocation_id::Kind::InvocationId(invocation_id) => {
-                            Ok(restate_types::invocation::MaybeFullInvocationId::Partial(
-                                restate_types::identifiers::InvocationId::from_slice(
-                                    &invocation_id,
-                                )
-                                .map_err(|e| ConversionError::invalid_data(e))?,
-                            ))
-                        }
-                    }
-                }
-            }
-
-            impl From<restate_types::invocation::MaybeFullInvocationId> for MaybeFullInvocationId {
-                fn from(value: restate_types::invocation::MaybeFullInvocationId) -> Self {
-                    match value {
-                        restate_types::invocation::MaybeFullInvocationId::Full(fid) => {
-                            MaybeFullInvocationId {
-                                kind: Some(maybe_full_invocation_id::Kind::FullInvocationId(
-                                    FullInvocationId::from(fid),
-                                )),
-                            }
-                        }
-                        restate_types::invocation::MaybeFullInvocationId::Partial(
-                            invocation_id,
-                        ) => MaybeFullInvocationId {
-                            kind: Some(maybe_full_invocation_id::Kind::InvocationId(
-                                Bytes::copy_from_slice(&invocation_id.to_bytes()),
-                            )),
-                        },
-                    }
-                }
-            }
-
             fn try_bytes_into_invocation_uuid(
                 bytes: Bytes,
             ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
@@ -1733,25 +1689,19 @@ pub mod storage {
                             },
                         ),
                         outbox_message::OutboxMessage::Kill(outbox_kill) => {
-                            let maybe_fid = outbox_kill.maybe_full_invocation_id.ok_or(
-                                ConversionError::missing_field("maybe_full_invocation_id"),
-                            )?;
                             restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
                                 InvocationTermination::kill(
-                                    restate_types::invocation::MaybeFullInvocationId::try_from(
-                                        maybe_fid,
+                                    restate_types::identifiers::InvocationId::from_slice(
+                                        &outbox_kill.invocation_id,
                                     )?,
                                 ),
                             )
                         }
                         outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
-                            let maybe_fid = outbox_cancel.maybe_full_invocation_id.ok_or(
-                                ConversionError::missing_field("maybe_full_invocation_id"),
-                            )?;
                             restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(
                                 InvocationTermination::cancel(
-                                    restate_types::invocation::MaybeFullInvocationId::try_from(
-                                        maybe_fid,
+                                    restate_types::identifiers::InvocationId::from_slice(
+                                        &outbox_cancel.invocation_id,
                                     )?,
                                 ),
                             )
@@ -1792,16 +1742,16 @@ pub mod storage {
                         ) => match invocation_termination.flavor {
                             TerminationFlavor::Kill => {
                                 outbox_message::OutboxMessage::Kill(OutboxKill {
-                                    maybe_full_invocation_id: Some(MaybeFullInvocationId::from(
-                                        invocation_termination.maybe_fid,
-                                    )),
+                                    invocation_id: Bytes::copy_from_slice(
+                                        &invocation_termination.invocation_id.to_bytes(),
+                                    ),
                                 })
                             }
                             TerminationFlavor::Cancel => {
                                 outbox_message::OutboxMessage::Cancel(OutboxCancel {
-                                    maybe_full_invocation_id: Some(MaybeFullInvocationId::from(
-                                        invocation_termination.maybe_fid,
-                                    )),
+                                    invocation_id: Bytes::copy_from_slice(
+                                        &invocation_termination.invocation_id.to_bytes(),
+                                    ),
                                 })
                             }
                         },

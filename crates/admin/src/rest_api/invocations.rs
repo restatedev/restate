@@ -81,7 +81,7 @@ pub async fn delete_invocation<V>(
         TerminationMode::Kill => InvocationTermination::kill(invocation_id),
     };
 
-    let partition_key = invocation_termination.maybe_fid.partition_key();
+    let partition_key = invocation_termination.invocation_id.partition_key();
 
     let result = state
         .task_center

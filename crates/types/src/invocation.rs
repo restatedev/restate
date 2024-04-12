@@ -98,51 +98,6 @@ pub struct InvocationInput {
     pub headers: Vec<Header>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MaybeFullInvocationId {
-    Partial(InvocationId),
-    Full(FullInvocationId),
-}
-
-impl From<MaybeFullInvocationId> for InvocationId {
-    fn from(value: MaybeFullInvocationId) -> Self {
-        match value {
-            MaybeFullInvocationId::Partial(iid) => iid,
-            MaybeFullInvocationId::Full(fid) => InvocationId::from(fid),
-        }
-    }
-}
-
-impl From<InvocationId> for MaybeFullInvocationId {
-    fn from(value: InvocationId) -> Self {
-        MaybeFullInvocationId::Partial(value)
-    }
-}
-
-impl From<FullInvocationId> for MaybeFullInvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        MaybeFullInvocationId::Full(value)
-    }
-}
-
-impl WithPartitionKey for MaybeFullInvocationId {
-    fn partition_key(&self) -> PartitionKey {
-        match self {
-            MaybeFullInvocationId::Partial(iid) => iid.partition_key(),
-            MaybeFullInvocationId::Full(fid) => fid.partition_key(),
-        }
-    }
-}
-
-impl fmt::Display for MaybeFullInvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MaybeFullInvocationId::Partial(iid) => fmt::Display::fmt(iid, f),
-            MaybeFullInvocationId::Full(fid) => fmt::Display::fmt(fid, f),
-        }
-    }
-}
-
 /// Representing a response for a caller
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationResponse {
@@ -464,21 +419,21 @@ impl SpanRelation {
 /// Message to terminate an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationTermination {
-    pub maybe_fid: MaybeFullInvocationId,
+    pub invocation_id: InvocationId,
     pub flavor: TerminationFlavor,
 }
 
 impl InvocationTermination {
-    pub fn kill(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+    pub const fn kill(invocation_id: InvocationId) -> Self {
         Self {
-            maybe_fid: maybe_fid.into(),
+            invocation_id,
             flavor: TerminationFlavor::Kill,
         }
     }
 
-    pub fn cancel(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+    pub const fn cancel(invocation_id: InvocationId) -> Self {
         Self {
-            maybe_fid: maybe_fid.into(),
+            invocation_id,
             flavor: TerminationFlavor::Cancel,
         }
     }

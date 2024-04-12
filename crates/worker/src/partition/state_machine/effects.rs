@@ -294,7 +294,7 @@ impl Effect {
                 message: OutboxMessage::InvocationTermination(invocation_termination),
             } => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %invocation_termination.maybe_fid,
+                restate.invocation.id = %invocation_termination.invocation_id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send invocation termination command '{:?}' to partition processor",
                 invocation_termination.flavor
