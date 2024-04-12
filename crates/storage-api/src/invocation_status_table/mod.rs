@@ -16,7 +16,7 @@ use restate_types::identifiers::{
     DeploymentId, EntryIndex, FullInvocationId, InvocationId, PartitionKey, ServiceId,
 };
 use restate_types::invocation::{
-    Header, Idempotency, InvocationInput, ResponseResult, ServiceInvocation,
+    Header, Idempotency, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::time::MillisSinceEpoch;
@@ -210,6 +210,7 @@ pub struct InboxedInvocation {
     // This field and handler_name will be part of a single id with https://github.com/restatedev/restate/issues/1329
     pub service_id: ServiceId,
     pub handler_name: ByteString,
+    pub invocation_target: InvocationTarget,
 
     // Could be split out of ServiceInvocation, e.g. InvocationContent or similar.
     pub argument: Bytes,
@@ -232,6 +233,7 @@ impl InboxedInvocation {
             timestamps: StatusTimestamps::now(),
             service_id: service_invocation.fid.service_id,
             handler_name: service_invocation.method_name,
+            invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
             span_context: service_invocation.span_context,
@@ -249,6 +251,7 @@ impl InboxedInvocation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InFlightInvocationMetadata {
     pub service_id: ServiceId,
+    pub invocation_target: InvocationTarget,
     pub journal_metadata: JournalMetadata,
     pub deployment_id: Option<DeploymentId>,
     pub method: ByteString,
@@ -271,6 +274,7 @@ impl InFlightInvocationMetadata {
         (
             Self {
                 service_id: service_invocation.fid.service_id,
+                invocation_target: service_invocation.invocation_target,
                 journal_metadata: JournalMetadata::initialize(service_invocation.span_context),
                 deployment_id: None,
                 method: service_invocation.method_name,
@@ -298,6 +302,7 @@ impl InFlightInvocationMetadata {
         (
             Self {
                 service_id: inboxed_invocation.service_id,
+                invocation_target: inboxed_invocation.invocation_target,
                 journal_metadata: JournalMetadata::initialize(inboxed_invocation.span_context),
                 deployment_id: None,
                 method: inboxed_invocation.handler_name,
@@ -317,6 +322,7 @@ impl InFlightInvocationMetadata {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
+    pub invocation_target: InvocationTarget,
     pub service_id: ServiceId,
     pub handler: ByteString,
     pub idempotency_key: Option<ByteString>,
@@ -330,6 +336,7 @@ impl CompletedInvocation {
     ) -> (Self, Duration) {
         (
             Self {
+                invocation_target: in_flight_invocation_metadata.invocation_target,
                 service_id: in_flight_invocation_metadata.service_id,
                 handler: in_flight_invocation_metadata.method,
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
@@ -369,10 +376,18 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
 mod mocks {
     use super::*;
 
+    use restate_types::invocation::HandlerType;
+
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {
             InFlightInvocationMetadata {
                 service_id: ServiceId::new("MyService", "MyKey"),
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyService",
+                    "MyKey",
+                    "mock",
+                    HandlerType::Exclusive,
+                ),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 deployment_id: None,
                 method: ByteString::from("mock"),
