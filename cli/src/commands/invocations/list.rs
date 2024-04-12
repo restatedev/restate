@@ -13,9 +13,7 @@ use std::time::Instant;
 
 use crate::c_eprintln;
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{
-    find_active_invocations, find_inbox_invocations, InvocationState,
-};
+use crate::clients::datafusion_helpers::{find_active_invocations, InvocationState};
 use crate::ui::console::Styled;
 use crate::ui::invocations::render_invocation_compact;
 use crate::ui::stylesheet::Style;
@@ -68,11 +66,9 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
-    let mut total: usize = 0;
     let statuses: HashSet<InvocationState> = HashSet::from_iter(opts.status.clone());
     // Prepare filters
-    let mut inbox_filters: Vec<String> = vec![]; // "WHERE 1 = 1\n".to_string();
-    let mut active_filters: Vec<String> = vec![];
+    let mut active_filters: Vec<String> = vec![]; // "WHERE 1 = 1\n".to_string();
     let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
@@ -81,21 +77,8 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         "ORDER BY ss.created_at DESC"
     };
 
-    // query inbox?
-    let should_query_inbox = (statuses.is_empty()
-        || opts.status.contains(&InvocationState::Pending)
-        || opts.status.contains(&InvocationState::Unknown))
-        // Don't query inbox if deployment is set
-        && (opts.deployment.is_empty())
-        && !opts.zombie;
-
-    // query active?
-    let should_query_active = statuses.is_empty()
-        || opts.status.contains(&InvocationState::Unknown)
-        || !(opts.status.contains(&InvocationState::Pending) && statuses.len() == 1);
-
     if !opts.component.is_empty() {
-        inbox_filters.push(format!(
+        active_filters.push(format!(
             "ss.component IN ({})",
             opts.component
                 .iter()
@@ -105,21 +88,21 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     if !opts.handler.is_empty() {
-        inbox_filters.push(format!(
+        active_filters.push(format!(
             "ss.handler IN ({})",
             opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
-        inbox_filters.push(format!(
+        active_filters.push(format!(
             "ss.component_key IN ({})",
             opts.key.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if opts.virtual_objects_only {
-        inbox_filters.push("comp.ty = 'virtual_object'".to_owned());
+        active_filters.push("comp.ty = 'virtual_object'".to_owned());
     }
 
     if opts.zombie {
@@ -143,19 +126,10 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         ));
     }
 
-    let inbox_filter_str = if !inbox_filters.is_empty() {
-        format!("WHERE {}", inbox_filters.join(" AND "))
+    let active_filter_str = if !active_filters.is_empty() {
+        format!("WHERE {}", active_filters.join(" AND "))
     } else {
         String::new()
-    };
-
-    let active_filter_str = if !active_filters.is_empty() {
-        format!(
-            "WHERE {}",
-            itertools::chain(inbox_filters, active_filters).join(" AND ")
-        )
-    } else {
-        inbox_filter_str.clone()
     };
 
     let post_filter_str = if !post_filters.is_empty() {
@@ -172,52 +146,14 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
     progress.set_message("Finding invocations...");
 
-    let mut results = vec![];
-    // - Inbox invocations are always newer than active ones.
-    if opts.oldest_first {
-        // query active first
-        if should_query_active {
-            let (res, full_count) = find_active_invocations(
-                &sql_client,
-                &active_filter_str,
-                &post_filter_str,
-                order_by,
-                opts.limit,
-            )
-            .await?;
-            total += full_count;
-            results.extend(res);
-        }
-        if should_query_inbox {
-            let (res, full_count) =
-                find_inbox_invocations(&sql_client, &inbox_filter_str, order_by, opts.limit)
-                    .await?;
-            total += full_count;
-            results.extend(res);
-        }
-    } else {
-        // query inbox first
-        if should_query_inbox {
-            let (res, full_count) =
-                find_inbox_invocations(&sql_client, &inbox_filter_str, order_by, opts.limit)
-                    .await?;
-            total += full_count;
-            results.extend(res);
-        }
-        if should_query_active {
-            let (res, full_count) = find_active_invocations(
-                &sql_client,
-                &active_filter_str,
-                &post_filter_str,
-                order_by,
-                opts.limit,
-            )
-            .await?;
-
-            results.extend(res);
-            total += full_count;
-        }
-    }
+    let (mut results, total) = find_active_invocations(
+        &sql_client,
+        &active_filter_str,
+        &post_filter_str,
+        order_by,
+        opts.limit,
+    )
+    .await?;
 
     // Render Output UI
     progress.finish_and_clear();

@@ -45,13 +45,9 @@ pub async fn run_detailed_status(
 
     // Print summary table first.
     let status_map = get_components_status(&sql_client, vec![component_name]).await?;
-    let (inbox, active) = get_component_invocations(
-        &sql_client,
-        component_name,
-        opts.sample_invocations_limit,
-        opts.sample_invocations_limit,
-    )
-    .await?;
+    let active =
+        get_component_invocations(&sql_client, component_name, opts.sample_invocations_limit)
+            .await?;
     progress.finish_and_clear();
 
     // Render Summary
@@ -68,15 +64,8 @@ pub async fn run_detailed_status(
 
     // Sample of active invocations
     if !active.is_empty() {
-        c_title!("🚂", "Recent Active Invocations");
+        c_title!("🚂", "Recent Invocations");
         for inv in active {
-            render_invocation_compact(env, &inv);
-        }
-    }
-    // Sample of inbox...
-    if !inbox.is_empty() {
-        c_title!("🧘", "Recent Pending Invocations");
-        for inv in inbox {
             render_invocation_compact(env, &inv);
         }
     }

@@ -120,6 +120,7 @@ pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
     Unknown,
+    Inboxed,
     Pending,
     Ready,
     Running,
@@ -131,6 +132,7 @@ impl FromStr for InvocationState {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
+            "inboxed" => Self::Inboxed,
             "pending" => Self::Pending,
             "ready" => Self::Ready,
             "running" => Self::Running,
@@ -150,6 +152,7 @@ impl Display for InvocationState {
             InvocationState::Running => write!(f, "running"),
             InvocationState::Suspended => write!(f, "suspended"),
             InvocationState::BackingOff => write!(f, "backing-off"),
+            InvocationState::Inboxed => write!(f, "inboxed"),
         }
     }
 }
@@ -434,7 +437,7 @@ pub async fn get_components_status(
                 COUNT(id),
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
-             FROM sys_inbox WHERE component IN {}
+             FROM sys_invocation_status WHERE status == 'inboxed' AND component IN {}
              GROUP BY component, handler",
             query_filter
         );
@@ -473,6 +476,7 @@ pub async fn get_components_status(
                 ss.component,
                 ss.handler,
                 CASE
+                 WHEN ss.status = 'inboxed' THEN 'inboxed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -485,7 +489,7 @@ pub async fn get_components_status(
             WHERE ss.component IN {}
             )
             SELECT component, handler, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
-            FROM enriched_invokes GROUP BY component, handler, combined_status ORDER BY method",
+            FROM enriched_invokes GROUP BY component, handler, combined_status ORDER BY handler",
             query_filter
         );
         let resp = client.run_query(query).await?;
@@ -613,6 +617,7 @@ pub async fn get_locked_keys_status(
                 ss.handler,
                 ss.component_key,
                 CASE
+                 WHEN ss.status = 'inboxed' THEN 'inboxed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -629,7 +634,7 @@ pub async fn get_locked_keys_status(
                 sis.last_start_at
             FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.service IN {}
+            WHERE ss.status != 'inboxed' AND ss.component IN {}
             )
             SELECT
                 component,
@@ -718,6 +723,7 @@ pub async fn find_active_invocations(
             ss.handler,
             ss.component_key,
             CASE
+             WHEN ss.status = 'inboxed' THEN 'inboxed'
              WHEN ss.status = 'suspended' THEN 'suspended'
              WHEN sis.in_flight THEN 'running'
              WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -827,87 +833,13 @@ pub async fn find_active_invocations(
     Ok((active, full_count))
 }
 
-pub async fn find_inbox_invocations(
-    client: &DataFusionHttpClient,
-    filter: &str,
-    order: &str,
-    limit: usize,
-) -> Result<(Vec<Invocation>, usize)> {
-    let mut inbox: Vec<Invocation> = Vec::new();
-    // Inbox...
-    let mut full_count = 0;
-    {
-        let query = format!(
-            "WITH inbox_table AS
-            (SELECT
-                ss.component,
-                ss.handler,
-                ss.id,
-                ss.created_at,
-                ss.invoked_by_id,
-                ss.invoked_by_component,
-                ss.component_key,
-                comp.ty,
-                ss.trace_id
-             FROM sys_inbox ss
-             LEFT JOIN sys_component comp ON comp.name = ss.component
-             {}
-             {}
-            )
-            SELECT *, COUNT(*) OVER() AS full_count FROM inbox_table
-            LIMIT {}",
-            filter, order, limit
-        );
-        let resp = client.run_query(query).await?;
-        for batch in resp.batches {
-            for i in 0..batch.num_rows() {
-                if full_count == 0 {
-                    full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
-                }
-                let component_type = parse_component_type(&value_as_string(&batch, 7, i));
-                let key = if component_type == ComponentType::VirtualObject {
-                    value_as_string_opt(&batch, 6, i)
-                } else {
-                    None
-                };
-
-                let invocation = Invocation {
-                    status: InvocationState::Pending,
-                    component: value_as_string(&batch, 0, i),
-                    handler: value_as_string(&batch, 1, i),
-                    id: value_as_string(&batch, 2, i),
-                    created_at: value_as_dt_opt(&batch, 3, i).expect("Missing created_at"),
-                    key,
-                    invoked_by_id: value_as_string_opt(&batch, 4, i),
-                    invoked_by_component: value_as_string_opt(&batch, 5, i),
-                    trace_id: value_as_string_opt(&batch, 8, i),
-                    ..Default::default()
-                };
-                inbox.push(invocation);
-            }
-        }
-    }
-    Ok((inbox, full_count))
-}
-
 pub async fn get_component_invocations(
     client: &DataFusionHttpClient,
     component: &str,
-    limit_inbox: usize,
     limit_active: usize,
-) -> Result<(Vec<Invocation>, Vec<Invocation>)> {
-    // Inbox...
-    let inbox: Vec<Invocation> = find_inbox_invocations(
-        client,
-        &format!("WHERE ss.component = '{}'", component),
-        "ORDER BY ss.created_at DESC",
-        limit_inbox,
-    )
-    .await?
-    .0;
-
+) -> Result<Vec<Invocation>> {
     // Active invocations analysis
-    let active: Vec<Invocation> = find_active_invocations(
+    Ok(find_active_invocations(
         client,
         &format!("WHERE ss.component = '{}'", component),
         "",
@@ -915,9 +847,7 @@ pub async fn get_component_invocations(
         limit_active,
     )
     .await?
-    .0;
-
-    Ok((inbox, active))
+    .0)
 }
 
 fn parse_component_type(s: &str) -> ComponentType {
@@ -932,28 +862,16 @@ pub async fn get_invocation(
     client: &DataFusionHttpClient,
     invocation_id: &str,
 ) -> Result<Option<Invocation>> {
-    // Is it in inbox?
-    let result =
-        find_inbox_invocations(client, &format!("WHERE ss.id = '{}'", invocation_id), "", 1)
-            .await?
-            .0
-            .pop();
-
-    if result.is_none() {
-        // Maybe it's active
-        return Ok(find_active_invocations(
-            client,
-            &format!("WHERE ss.id = '{}'", invocation_id),
-            "",
-            "",
-            1,
-        )
-        .await?
-        .0
-        .pop());
-    }
-
-    Ok(result)
+    Ok(find_active_invocations(
+        client,
+        &format!("WHERE ss.id = '{}'", invocation_id),
+        "",
+        "",
+        1,
+    )
+    .await?
+    .0
+    .pop())
 }
 
 pub async fn get_invocation_journal(
