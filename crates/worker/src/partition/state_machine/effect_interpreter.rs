@@ -386,11 +386,11 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 Self::store_completion(state_storage, &invocation_id, entry_index, result).await?;
             }
             Effect::ForwardCompletion {
-                full_invocation_id,
+                invocation_id,
                 completion,
             } => {
                 collector.push(Action::ForwardCompletion {
-                    full_invocation_id,
+                    invocation_id,
                     completion,
                 });
             }
@@ -423,12 +423,12 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
             }
-            Effect::SendAbortInvocationToInvoker(full_invocation_id) => {
-                collector.push(Action::AbortInvocation(full_invocation_id))
+            Effect::SendAbortInvocationToInvoker(invocation_id) => {
+                collector.push(Action::AbortInvocation(invocation_id))
             }
-            Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
+            Effect::SendStoredEntryAckToInvoker(invocation_id, entry_index) => {
                 collector.push(Action::AckStoredEntry {
-                    full_invocation_id,
+                    invocation_id,
                     entry_index,
                 });
             }
@@ -543,7 +543,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     ) -> Result<(), Error> {
         let full_invocation_id = FullInvocationId::combine(
             in_flight_invocation_metadata.service_id.clone(),
-            invocation_id.clone(),
+            invocation_id,
         );
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
@@ -552,7 +552,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_storage
             .store_service_status(
                 &in_flight_invocation_metadata.service_id,
-                VirtualObjectStatus::Locked(invocation_id.clone()),
+                VirtualObjectStatus::Locked(invocation_id),
             )
             .await?;
         state_storage

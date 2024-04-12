@@ -13,7 +13,7 @@ use restate_invoker_api::{
     Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, StatusHandle,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, PartitionKey, PartitionLeaderEpoch,
+    EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
 };
 use restate_types::journal::Completion;
 use std::ops::RangeInclusive;
@@ -24,7 +24,8 @@ use tokio::sync::mpsc;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
-    pub(super) full_invocation_id: FullInvocationId,
+    pub(super) invocation_id: InvocationId,
+    pub(super) service_id: ServiceId,
     #[serde(skip)]
     pub(super) journal: InvokeInputJournal,
 }
@@ -34,19 +35,19 @@ pub(crate) enum InputCommand {
     Invoke(InvokeCommand),
     Completion {
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     },
     StoredEntryAck {
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     },
 
     /// Abort specific invocation id
     Abort {
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     },
 
     /// Command used to clean up internal state when a partition leader is going away
@@ -75,31 +76,16 @@ impl ServiceHandle for ChannelServiceHandle {
     fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
+        service_id: ServiceId,
         journal: InvokeInputJournal,
     ) -> Self::Future {
         futures::future::ready(
             self.input
                 .send(InputCommand::Invoke(InvokeCommand {
                     partition,
-                    full_invocation_id,
-                    journal,
-                }))
-                .map_err(|_| NotRunningError),
-        )
-    }
-
-    fn resume(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
-        journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::Invoke(InvokeCommand {
-                    partition,
-                    full_invocation_id,
+                    invocation_id,
+                    service_id,
                     journal,
                 }))
                 .map_err(|_| NotRunningError),
@@ -109,14 +95,14 @@ impl ServiceHandle for ChannelServiceHandle {
     fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     ) -> Self::Future {
         futures::future::ready(
             self.input
                 .send(InputCommand::Completion {
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                     completion,
                 })
                 .map_err(|_| NotRunningError),
@@ -126,14 +112,14 @@ impl ServiceHandle for ChannelServiceHandle {
     fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) -> Self::Future {
         futures::future::ready(
             self.input
                 .send(InputCommand::StoredEntryAck {
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                     entry_index,
                 })
                 .map_err(|_| NotRunningError),
@@ -151,13 +137,13 @@ impl ServiceHandle for ChannelServiceHandle {
     fn abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     ) -> Self::Future {
         futures::future::ready(
             self.input
                 .send(InputCommand::Abort {
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                 })
                 .map_err(|_| NotRunningError),
         )

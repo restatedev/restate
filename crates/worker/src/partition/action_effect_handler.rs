@@ -49,7 +49,7 @@ impl ActionEffectHandler {
     pub(super) async fn handle(&mut self, actuator_output: ActionEffect) -> anyhow::Result<()> {
         match actuator_output {
             ActionEffect::Invoker(invoker_output) => {
-                let header = self.create_header(invoker_output.full_invocation_id.partition_key());
+                let header = self.create_header(invoker_output.invocation_id.partition_key());
                 append_envelope_to_bifrost(
                     &mut self.bifrost,
                     Envelope::new(header, Command::InvokerEffect(invoker_output)),

@@ -251,7 +251,8 @@ where
                     invoker_handle
                         .invoke(
                             partition_leader_epoch,
-                            full_invocation_id,
+                            InvocationId::from(&full_invocation_id),
+                            full_invocation_id.service_id,
                             InvokeInputJournal::NoCachedJournal,
                         )
                         .await
@@ -410,7 +411,8 @@ where
             } => invoker_tx
                 .invoke(
                     partition_leader_epoch,
-                    full_invocation_id,
+                    InvocationId::from(&full_invocation_id),
+                    full_invocation_id.service_id,
                     invoke_input_journal,
                 )
                 .await
@@ -424,27 +426,23 @@ where
                 timer_service.as_mut().remove_timer(timer_key.into())
             }
             Action::AckStoredEntry {
-                full_invocation_id,
+                invocation_id,
                 entry_index,
             } => {
                 invoker_tx
-                    .notify_stored_entry_ack(
-                        partition_leader_epoch,
-                        full_invocation_id,
-                        entry_index,
-                    )
+                    .notify_stored_entry_ack(partition_leader_epoch, invocation_id, entry_index)
                     .await
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
-                full_invocation_id,
+                invocation_id,
                 completion,
             } => invoker_tx
-                .notify_completion(partition_leader_epoch, full_invocation_id, completion)
+                .notify_completion(partition_leader_epoch, invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation(full_invocation_id) => invoker_tx
-                .abort_invocation(partition_leader_epoch, full_invocation_id)
+            Action::AbortInvocation(invocation_id) => invoker_tx
+                .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
             Action::InvokeBuiltInService {
@@ -487,14 +485,13 @@ where
                     current_task_partition_id(),
                     {
                         let networking = networking.clone();
-                        let invocation_id = invocation_id.clone();
                         async move {
                             if let Err(e) = networking
                                 .send(
                                     ingress_response.target_node.into(),
                                     &ingress::IngressMessage::InvocationResponse(
                                         ingress::InvocationResponse {
-                                            invocation_id: invocation_id.clone(),
+                                            invocation_id,
                                             idempotency_id: ingress_response.idempotency_id,
                                             response: ingress_response.response,
                                         },

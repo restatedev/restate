@@ -33,7 +33,7 @@ use restate_service_protocol::message::{
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, PartitionLeaderEpoch,
+    DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId,
 };
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -160,7 +160,7 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
-    pub(super) full_invocation_id: FullInvocationId,
+    pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
@@ -195,7 +195,8 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
 
     // Connection params
     partition: PartitionLeaderEpoch,
-    full_invocation_id: FullInvocationId,
+    invocation_id: InvocationId,
+    service_id: ServiceId,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -258,7 +259,8 @@ where
     pub fn new(
         client: ServiceClient,
         partition: PartitionLeaderEpoch,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
+        service_id: ServiceId,
         protocol_version: u16,
         inactivity_timeout: Duration,
         abort_timeout: Duration,
@@ -275,7 +277,8 @@ where
         Self {
             client,
             partition,
-            full_invocation_id: fid,
+            invocation_id,
+            service_id,
             inactivity_timeout,
             abort_timeout,
             disable_eager_state,
@@ -292,7 +295,7 @@ where
     }
 
     /// Loop opening the request to deployment and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.full_invocation_id.service_id.service_name, restate.invocation.id = %self.full_invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_id.service_name, restate.invocation.id = %self.invocation_id), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;
@@ -317,7 +320,7 @@ where
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
-            full_invocation_id: self.full_invocation_id,
+            invocation_id: self.invocation_id,
             inner,
         });
     }
@@ -329,7 +332,7 @@ where
                 InvokeInputJournal::NoCachedJournal => {
                     let (journal_meta, journal_stream) = self
                         .journal_reader
-                        .read_journal(&self.full_invocation_id)
+                        .read_journal(&self.invocation_id)
                         .await
                         .map_err(|e| InvocationTaskError::JournalReader(e.into()))?;
                     (journal_meta, future::Either::Left(journal_stream))
@@ -346,7 +349,7 @@ where
                 Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
             } else {
                 self.state_reader
-                    .read_state(&self.full_invocation_id.service_id)
+                    .read_state(&self.service_id)
                     .await
                     .map_err(|e| InvocationTaskError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
@@ -372,16 +375,14 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
-                    .resolve_latest_deployment_for_component(
-                        &self.full_invocation_id.service_id.service_name
-                    )
+                    .resolve_latest_deployment_for_component(&self.service_id.service_name)
                     .ok_or(InvocationTaskError::NoDeploymentForComponent));
                 (deployment, /* has_changed= */ true)
             };
 
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
-            full_invocation_id: self.full_invocation_id.clone(),
+            invocation_id: self.invocation_id,
             inner: InvocationTaskOutputInner::SelectedDeployment(deployment.id, deployment_changed),
         });
 
@@ -399,11 +400,7 @@ where
 
         let path: PathAndQuery = format!(
             "/invoke/{}/{}",
-            self.full_invocation_id
-                .service_id
-                .service_name
-                .chars()
-                .as_str(),
+            self.service_id.service_name.chars().as_str(),
             &journal_metadata.method
         )
         .try_into()
@@ -597,9 +594,9 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                Bytes::copy_from_slice(&self.full_invocation_id.to_invocation_id_bytes()),
-                self.full_invocation_id.to_string(),
-                Some(self.full_invocation_id.service_id.key.clone()),
+                Bytes::copy_from_slice(&self.invocation_id.to_bytes()),
+                self.invocation_id.to_string(),
+                Some(self.service_id.key.clone()),
                 journal_size,
                 is_partial,
                 state_entries,
@@ -690,7 +687,7 @@ where
                     )));
                 let _ = self.invoker_tx.send(InvocationTaskOutput {
                     partition: self.partition,
-                    full_invocation_id: self.full_invocation_id.clone(),
+                    invocation_id: self.invocation_id,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry,

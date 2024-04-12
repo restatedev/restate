@@ -16,8 +16,6 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(state(
     partition_key: DataType::UInt64,
-    component: DataType::LargeUtf8,
-    component_key: DataType::LargeUtf8,
     id: DataType::LargeUtf8,
     in_flight: DataType::Boolean,
     retry_count: DataType::UInt64,

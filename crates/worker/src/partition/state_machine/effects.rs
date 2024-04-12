@@ -132,8 +132,7 @@ pub(crate) enum Effect {
         completion: Completion,
     },
     ForwardCompletion {
-        // TODO this can be invocation_id once the invoker uses only InvocationId
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     },
     DropJournal {
@@ -157,8 +156,8 @@ pub(crate) enum Effect {
     },
 
     // Invoker commands
-    SendAbortInvocationToInvoker(FullInvocationId),
-    SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
+    SendAbortInvocationToInvoker(InvocationId),
+    SendStoredEntryAckToInvoker(InvocationId, EntryIndex),
 
     // State mutations
     MutateState(ExternalStateMutation),
@@ -873,11 +872,11 @@ impl Effects {
 
     pub(crate) fn forward_completion(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     ) {
         self.effects.push(Effect::ForwardCompletion {
-            full_invocation_id,
+            invocation_id,
             completion,
         });
     }
@@ -921,9 +920,9 @@ impl Effects {
         })
     }
 
-    pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
+    pub(crate) fn abort_invocation(&mut self, invocation_id: InvocationId) {
         self.effects
-            .push(Effect::SendAbortInvocationToInvoker(full_invocation_id));
+            .push(Effect::SendAbortInvocationToInvoker(invocation_id));
     }
 
     pub(crate) fn store_idempotency_id(
@@ -942,11 +941,11 @@ impl Effects {
 
     pub(crate) fn send_stored_ack_to_invoker(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::SendStoredEntryAckToInvoker(
-            full_invocation_id,
+            invocation_id,
             entry_index,
         ));
     }

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::FullInvocationId;
+use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::{DeploymentId, EntryIndex};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
-    pub full_invocation_id: FullInvocationId,
+    pub invocation_id: InvocationId,
     pub kind: EffectKind,
 }
 

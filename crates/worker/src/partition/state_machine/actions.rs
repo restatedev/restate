@@ -45,14 +45,14 @@ pub enum Action {
         timer_key: TimerKey,
     },
     AckStoredEntry {
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     },
     ForwardCompletion {
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     },
-    AbortInvocation(FullInvocationId),
+    AbortInvocation(InvocationId),
     IngressResponse(IngressResponse),
     ScheduleInvocationStatusCleanup {
         invocation_id: InvocationId,

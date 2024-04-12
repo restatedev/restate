@@ -328,6 +328,7 @@ impl WithPartitionKey for ServiceId {
     Hash,
     PartialEq,
     Clone,
+    Copy,
     Debug,
     PartialOrd,
     Ord,
