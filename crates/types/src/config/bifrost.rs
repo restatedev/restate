@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -60,10 +59,10 @@ pub struct LocalLogletOptions {
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     ///
     /// Supports hot-reloading.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub writer_commit_time_interval: humantime::Duration,
-    /// The maximum number of write commands that can be queued.
+    pub writer_commit_time_interval: Option<humantime::Duration>,
+    /// The maximum number of write commands that can be queued. Use 0 for no batching
     pub writer_queue_len: usize,
 
     #[cfg(any(test, feature = "test-util"))]
@@ -91,8 +90,8 @@ impl Default for LocalLogletOptions {
             .unwrap();
         Self {
             rocksdb,
-            writer_commit_batch_size_threshold: 200,
-            writer_commit_time_interval: Duration::from_millis(13).into(),
+            writer_commit_batch_size_threshold: 0,
+            writer_commit_time_interval: None,
             writer_queue_len: 200,
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),

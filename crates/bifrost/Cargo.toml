@@ -28,6 +28,7 @@ derive_more = { workspace = true }
 drain = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 humantime = { workspace = true }
+metrics = { workspace = true }
 once_cell = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
