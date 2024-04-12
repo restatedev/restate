@@ -12,12 +12,14 @@ mod keys;
 mod log_state;
 mod log_store;
 mod log_store_writer;
+mod metric_definitions;
 mod provider;
 mod utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 pub use log_store::LogStoreError;
+use metrics::{counter, histogram};
 pub use provider::LocalLogletProvider;
 use restate_core::ShutdownError;
 use restate_types::logs::{Payload, SequenceNumber};
@@ -32,6 +34,7 @@ use crate::{Error, LogRecord, SealReason};
 use self::keys::RecordKey;
 use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
+use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::utils::OffsetWatch;
 
 #[derive(Debug)]
@@ -144,6 +147,8 @@ impl LocalLoglet {
 impl LogletBase for LocalLoglet {
     type Offset = LogletOffset;
     async fn append(&self, payload: Payload) -> Result<LogletOffset, Error> {
+        counter!(BIFROST_LOCAL_APPEND).increment(1);
+        let start_time = std::time::Instant::now();
         // We hold the lock to ensure that offsets are enqueued in the order of
         // their offsets in the logstore writer. This means that acknowledgements
         // that an offset N from the writer imply that all previous offsets have
@@ -174,6 +179,7 @@ impl LogletBase for LocalLoglet {
         self.last_committed_offset
             .fetch_max(offset.into(), Ordering::Relaxed);
         self.notify_readers();
+        histogram!(BIFROST_LOCAL_APPEND_DURATION).record(start_time.elapsed());
         Ok(offset)
     }
 
