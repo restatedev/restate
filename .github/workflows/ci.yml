@@ -13,6 +13,8 @@ jobs:
     name: RustFmt Check
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      checks: write
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +36,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      checks: write
     timeout-minutes: 45
     strategy:
       fail-fast: false
