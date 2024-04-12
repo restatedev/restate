@@ -161,11 +161,17 @@ impl Worker {
                 ingress_kafka.create_command_sender(),
             );
 
-        let (rocksdb_storage, rocksdb_writer) = RocksDBStorage::new(
+        // todo: Fix me
+        // a really ugly hack (I'm ashamed) until we can decouple opening database(s)
+        // from worker creation, or we make worker creation async. This is a stop gap
+        // to avoid unraveling the entire worker creation process to be async in this change.
+        let (rocksdb_storage, rocksdb_writer) = futures::executor::block_on(RocksDBStorage::open(
+            config.worker.data_dir(),
             updateable_config
                 .clone()
-                .map_as_updateable_owned(|c| &c.worker),
-        )?;
+                .map_as_updateable_owned(|c| &c.worker.rocksdb),
+        ))
+        .expect("RocksDB storage creation succeeds");
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = InvokerService::from_options(

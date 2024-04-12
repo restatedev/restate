@@ -123,6 +123,25 @@ impl DbSpec<rocksdb::DB> {
     }
 }
 
+impl DbSpec<rocksdb::OptimisticTransactionDB> {
+    pub fn new_optimistic_db(
+        name: DbName,
+        owner: Owner,
+        path: PathBuf,
+        db_options: rocksdb::Options,
+        column_families: Vec<(CfName, rocksdb::Options)>,
+    ) -> DbSpec<rocksdb::OptimisticTransactionDB> {
+        Self {
+            name,
+            owner,
+            path,
+            db_options,
+            column_families,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 #[derive(derive_more::Display, Clone)]
 #[display(fmt = "{}::{}", owner, name)]
 pub struct RocksDb {
