@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::component::{ComponentType, HandlerType};
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
+use restate_types::invocation::{ComponentType, HandlerType};
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;

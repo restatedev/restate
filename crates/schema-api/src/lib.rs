@@ -294,37 +294,7 @@ pub mod deployment {
 #[cfg(feature = "component")]
 pub mod component {
     use restate_types::identifiers::{ComponentRevision, DeploymentId};
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum ComponentType {
-        Service,
-        VirtualObject,
-    }
-
-    impl ComponentType {
-        pub fn requires_key(&self) -> bool {
-            matches!(self, ComponentType::VirtualObject)
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum HandlerType {
-        Exclusive,
-        Shared,
-    }
-
-    impl HandlerType {
-        pub fn default_for_component_type(component_type: ComponentType) -> Self {
-            match component_type {
-                ComponentType::Service => HandlerType::Shared,
-                ComponentType::VirtualObject => HandlerType::Exclusive,
-            }
-        }
-    }
+    use restate_types::invocation::{ComponentType, HandlerType};
 
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
