@@ -410,6 +410,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
     let mut state_mock = StateReaderMock::default();
 
     let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
+    let inboxed_invocation_id = InvocationId::from(&inboxed_fid);
     let caller_fid = FullInvocationId::mock_random();
     let caller_invocation_id = InvocationId::from(&caller_fid);
 
@@ -443,9 +444,7 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
 
     command_interpreter
         .on_apply(
-            Command::TerminateInvocation(InvocationTermination::kill(MaybeFullInvocationId::from(
-                inboxed_fid.clone(),
-            ))),
+            Command::TerminateInvocation(InvocationTermination::kill(inboxed_invocation_id)),
             &mut effects,
             &mut state_mock,
         )
@@ -486,9 +485,13 @@ async fn kill_call_tree() -> Result<(), Error> {
     let mut effects = Effects::default();
 
     let fid = FullInvocationId::mock_random();
+    let invocation_id = InvocationId::from(&fid);
     let call_fid = FullInvocationId::mock_random();
+    let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
+    let background_invocation_id = InvocationId::from(&background_fid);
     let finished_call_fid = FullInvocationId::mock_random();
+    let finished_call_invocation_id = InvocationId::from(&finished_call_fid);
 
     state_reader.register_invoked_status_and_locked(
         fid.clone(),
@@ -501,9 +504,7 @@ async fn kill_call_tree() -> Result<(), Error> {
 
     command_interpreter
         .on_apply(
-            Command::TerminateInvocation(InvocationTermination::kill(MaybeFullInvocationId::from(
-                fid.clone(),
-            ))),
+            Command::TerminateInvocation(InvocationTermination::kill(invocation_id)),
             &mut effects,
             &mut state_reader,
         )
@@ -515,24 +516,24 @@ async fn kill_call_tree() -> Result<(), Error> {
         effects,
         all!(
             contains(pat!(Effect::SendAbortInvocationToInvoker(eq(
-                InvocationId::from(&fid)
+                invocation_id
             )))),
-            contains(pat!(Effect::FreeInvocation(eq(InvocationId::from(&fid))))),
+            contains(pat!(Effect::FreeInvocation(eq(invocation_id)))),
             contains(pat!(Effect::DropJournal {
-                invocation_id: eq(InvocationId::from(&fid)),
+                invocation_id: eq(invocation_id),
             })),
             contains(pat!(Effect::PopInbox(eq(fid.service_id.clone())))),
             contains(terminate_invocation_outbox_message_matcher(
-                call_fid,
+                call_invocation_id,
                 TerminationFlavor::Kill
             )),
             not(contains(pat!(Effect::EnqueueIntoOutbox {
                 message: pat!(
                     restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(pat!(
                         InvocationTermination {
-                            maybe_fid: any!(
-                                eq(MaybeFullInvocationId::from(background_fid)),
-                                eq(MaybeFullInvocationId::from(finished_call_fid))
+                            invocation_id: any!(
+                                eq(background_invocation_id),
+                                eq(finished_call_invocation_id)
                             )
                         }
                     ))
@@ -599,7 +600,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let mut effects = Effects::default();
 
     let fid = FullInvocationId::mock_random();
+    let invocation_id = InvocationId::from(&fid);
     let call_fid = FullInvocationId::mock_random();
+    let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
     let finished_call_fid = FullInvocationId::mock_random();
 
@@ -614,9 +617,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
     command_interpreter
         .on_apply(
-            Command::TerminateInvocation(InvocationTermination::cancel(
-                MaybeFullInvocationId::from(fid.clone()),
-            )),
+            Command::TerminateInvocation(InvocationTermination::cancel(invocation_id)),
             &mut effects,
             &mut state_reader,
         )
@@ -627,7 +628,10 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     assert_that!(
         effects,
         unordered_elements_are![
-            terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
+            terminate_invocation_outbox_message_matcher(
+                call_invocation_id,
+                TerminationFlavor::Cancel
+            ),
             store_canceled_completion_matcher(4),
             store_canceled_completion_matcher(5),
             store_canceled_completion_matcher(6),
@@ -653,6 +657,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     let fid = FullInvocationId::mock_random();
     let call_fid = FullInvocationId::mock_random();
+    let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
     let finished_call_fid = FullInvocationId::mock_random();
 
@@ -665,9 +670,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
     command_interpreter
         .on_apply(
-            Command::TerminateInvocation(InvocationTermination::cancel(
-                MaybeFullInvocationId::from(fid.clone()),
-            )),
+            Command::TerminateInvocation(InvocationTermination::cancel(InvocationId::from(&fid))),
             &mut effects,
             &mut state_reader,
         )
@@ -678,7 +681,10 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     assert_that!(
         effects,
         unordered_elements_are![
-            terminate_invocation_outbox_message_matcher(call_fid, TerminationFlavor::Cancel),
+            terminate_invocation_outbox_message_matcher(
+                call_invocation_id,
+                TerminationFlavor::Cancel
+            ),
             store_canceled_completion_matcher(4),
             store_canceled_completion_matcher(5),
             store_canceled_completion_matcher(6),
@@ -761,14 +767,14 @@ fn delete_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Effect> {
 }
 
 fn terminate_invocation_outbox_message_matcher(
-    target_fid: impl Into<MaybeFullInvocationId>,
+    target_invocation_id: InvocationId,
     termination_flavor: TerminationFlavor,
 ) -> impl Matcher<ActualT = Effect> {
     pat!(Effect::EnqueueIntoOutbox {
         message: pat!(
             restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(pat!(
                 InvocationTermination {
-                    maybe_fid: eq(target_fid.into()),
+                    invocation_id: eq(target_invocation_id),
                     flavor: eq(termination_flavor)
                 }
             ))

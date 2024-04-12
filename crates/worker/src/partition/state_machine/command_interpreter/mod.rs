@@ -41,9 +41,9 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, InvocationTermination, MaybeFullInvocationId, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SpanRelation, SpanRelationCause, TerminationFlavor,
+    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
+    SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -473,27 +473,30 @@ where
     async fn try_terminate_invocation<State: StateReader>(
         &mut self,
         InvocationTermination {
-            maybe_fid,
+            invocation_id,
             flavor: termination_flavor,
         }: InvocationTermination,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
         match termination_flavor {
-            TerminationFlavor::Kill => self.try_kill_invocation(maybe_fid, state, effects).await,
+            TerminationFlavor::Kill => {
+                self.try_kill_invocation(invocation_id, state, effects)
+                    .await
+            }
             TerminationFlavor::Cancel => {
-                self.try_cancel_invocation(maybe_fid, state, effects).await
+                self.try_cancel_invocation(invocation_id, state, effects)
+                    .await
             }
         }
     }
 
     async fn try_kill_invocation<State: StateReader>(
         &mut self,
-        maybe_fid: MaybeFullInvocationId,
+        invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let invocation_id: InvocationId = maybe_fid.clone().into();
         let status = state.get_invocation_status(&invocation_id).await?;
 
         match status {
@@ -513,7 +516,7 @@ where
                 effects,
             ),
             _ => {
-                trace!("Received kill command for unknown invocation with id '{maybe_fid}'.");
+                trace!("Received kill command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
                 // but some message was still between the invoker/PP queues.
@@ -522,22 +525,17 @@ where
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 effects.abort_invocation(invocation_id);
 
-                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
-                    Ok((Some(fid), SpanRelation::None))
-                } else {
-                    Ok((None, SpanRelation::None))
-                }
+                Ok((None, SpanRelation::None))
             }
         }
     }
 
     async fn try_cancel_invocation<State: StateReader>(
         &mut self,
-        maybe_fid: MaybeFullInvocationId,
+        invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let invocation_id: InvocationId = maybe_fid.clone().into();
         let status = state.get_invocation_status(&invocation_id).await?;
 
         match status {
@@ -585,7 +583,7 @@ where
                 effects,
             ),
             _ => {
-                trace!("Received cancel command for unknown invocation with id '{maybe_fid}'.");
+                trace!("Received cancel command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
                 // as it might be the case that previously the user sent an abort signal
                 // but some message was still between the invoker/PP queues.
@@ -594,11 +592,7 @@ where
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 effects.abort_invocation(invocation_id);
 
-                if let MaybeFullInvocationId::Full(fid) = maybe_fid {
-                    Ok((Some(fid), SpanRelation::None))
-                } else {
-                    Ok((None, SpanRelation::None))
-                }
+                Ok((None, SpanRelation::None))
             }
         }
     }
@@ -704,7 +698,7 @@ where
                         );
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::kill(
-                                target_fid,
+                                InvocationId::from(target_fid),
                             )),
                             effects,
                         );
@@ -753,7 +747,7 @@ where
 
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::cancel(
-                                target_fid,
+                                InvocationId::from(target_fid),
                             )),
                             effects,
                         );
