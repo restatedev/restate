@@ -121,6 +121,9 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     cargo nextest run {{ _target-option }} --all-features
 
+ci-test: (_target-installed target)
+    cargo nextest run {{ _target-option }} --all-features --profile=ci
+
 # Runs lints and tests
 verify: lint test
 
