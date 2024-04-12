@@ -15,6 +15,7 @@ use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use hyper::client::HttpConnector;
 use hyper::{Body, Uri};
 use pprof::criterion::{Output, PProfProfiler};
+use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
@@ -42,8 +43,9 @@ fn throughput_benchmark(criterion: &mut Criterion) {
                 .to_async(&current_thread_rt)
                 .iter(|| send_sequential_counter_requests(&client, num_requests))
         });
-
+    group.finish();
     current_thread_rt.block_on(tc.shutdown_node("completed", 0));
+    current_thread_rt.block_on(RocksDbManager::get().shutdown());
 }
 
 async fn send_sequential_counter_requests(

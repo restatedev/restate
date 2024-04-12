@@ -12,8 +12,9 @@ default = []
 frame-pointer = ["pprof/frame-pointer"]
 
 [dependencies]
-restate-core = { workspace = true }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-node = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-server = { workspace = true }
 restate-types = { workspace = true, features = ["clap"] }
 
@@ -23,7 +24,7 @@ drain = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
-pprof = { version = "0.12", features = ["criterion", "flamegraph"] }
+pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
