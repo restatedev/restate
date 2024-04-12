@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -56,15 +55,15 @@ pub struct LocalLogletOptions {
     /// write batch on every command.
     ///
     /// Supports hot-reloading.
-    pub writer_commit_batch_size_threshold: usize,
+    pub writer_batch_commit_count: usize,
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     ///
     /// Supports hot-reloading.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub writer_commit_time_interval: humantime::Duration,
-    /// The maximum number of write commands that can be queued.
-    pub writer_queue_len: usize,
+    pub writer_batch_commit_duration: Option<humantime::Duration>,
+    /// The maximum number of write commands that can be queued. Use 0 for no batching
+    pub writer_queue_length: usize,
 
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
@@ -91,9 +90,9 @@ impl Default for LocalLogletOptions {
             .unwrap();
         Self {
             rocksdb,
-            writer_commit_batch_size_threshold: 200,
-            writer_commit_time_interval: Duration::from_millis(13).into(),
-            writer_queue_len: 200,
+            writer_batch_commit_count: 0,
+            writer_batch_commit_duration: None,
+            writer_queue_length: 200,
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
         }
