@@ -14,14 +14,16 @@ use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
+use restate_core::task_center;
 use restate_invoker_api::status_handle::mocks::MockStatusHandle;
+use restate_rocksdb::RocksDbManager;
 use restate_schema_api::component::mocks::MockComponentMetadataResolver;
 use restate_schema_api::component::{ComponentMetadata, ComponentMetadataResolver, ComponentType};
 use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
-use restate_types::config::{QueryEngineOptions, WorkerOptions};
+use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::identifiers::{ComponentRevision, DeploymentId};
 use std::fmt::Debug;
 use std::future::Future;
@@ -81,18 +83,18 @@ impl DeploymentResolver for MockSchemas {
 pub(crate) struct MockQueryEngine(RocksDBStorage, QueryContext);
 
 impl MockQueryEngine {
-    pub fn default() -> (Self, impl Future<Output = ()>) {
-        Self::new(MockSchemas::default(), MockStatusHandle::default())
-    }
-
-    pub fn new(
-        mock_schemas: MockSchemas,
-        mock_status: MockStatusHandle,
-    ) -> (Self, impl Future<Output = ()>) {
+    pub async fn create() -> (Self, impl Future<Output = ()>) {
         // Prepare Rocksdb
+        task_center().run_in_scope_sync("db-manager-init", None, || {
+            RocksDbManager::init(Constant::new(CommonOptions::default()))
+        });
         let worker_options = WorkerOptions::default();
-        let (rocksdb, writer) = RocksDBStorage::new(Constant::new(worker_options))
-            .expect("RocksDB storage creation should succeed");
+        let (rocksdb, writer) = RocksDBStorage::open(
+            worker_options.data_dir(),
+            Constant::new(worker_options.rocksdb),
+        )
+        .await
+        .expect("RocksDB storage creation should succeed");
         let (signal, watch) = drain::channel();
         let writer_join_handle = writer.run(watch);
 
@@ -101,8 +103,8 @@ impl MockQueryEngine {
             QueryContext::from_options(
                 &QueryEngineOptions::default(),
                 rocksdb,
-                mock_status,
-                mock_schemas,
+                MockStatusHandle::default(),
+                MockSchemas::default(),
             )
             .unwrap(),
         );

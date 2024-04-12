@@ -11,10 +11,12 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use restate_core::TaskCenterBuilder;
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
-use restate_types::config::WorkerOptions;
+use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
@@ -33,13 +35,24 @@ mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
-fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
+async fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
     //
     // create a rocksdb storage from options
     //
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    tc.run_in_scope_sync("db-manager-init", None, || {
+        RocksDbManager::init(Constant::new(CommonOptions::default()))
+    });
     let worker_options = WorkerOptions::default();
-    let (rocksdb, writer) = RocksDBStorage::new(Constant::new(worker_options))
-        .expect("RocksDB storage creation should succeed");
+    let (rocksdb, writer) = RocksDBStorage::open(
+        worker_options.data_dir(),
+        Constant::new(worker_options.rocksdb),
+    )
+    .await
+    .expect("RocksDB storage creation should succeed");
 
     let (signal, watch) = drain::channel();
     let writer_join_handle = writer.run(watch);
@@ -52,7 +65,7 @@ fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
 
 #[tokio::test]
 async fn test_read_write() {
-    let (rocksdb, close) = storage_test_environment();
+    let (rocksdb, close) = storage_test_environment().await;
 
     //
     // run the tests

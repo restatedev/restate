@@ -39,8 +39,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-restate-types = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-invoker-api = { workspace = true, features = ["mocks"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
+
 drain = { workspace = true }
 googletest = { workspace = true }
