@@ -22,7 +22,7 @@ use tracing::debug;
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
-use super::LocalLoglet;
+use super::{metric_definitions, LocalLoglet};
 use crate::loglet::{Loglet, LogletOffset, LogletProvider};
 use crate::Error;
 use crate::ProviderError;
@@ -42,6 +42,7 @@ impl LocalLogletProvider {
         let log_store = RocksDbLogStore::new(data_dir, updateable_rocksdb_options)
             .context("RocksDb LogStore")?;
 
+        metric_definitions::describe_metrics();
         Ok(Arc::new(Self {
             log_store,
             active_loglets: Default::default(),

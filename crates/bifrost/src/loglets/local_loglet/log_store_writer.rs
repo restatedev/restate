@@ -62,7 +62,7 @@ impl LogStoreWriter {
         mut self,
         mut updateable: impl Updateable<LocalLogletOptions> + Send + 'static,
     ) -> Result<RocksDbLogWriterHandle, ShutdownError> {
-        let (sender, mut receiver) = mpsc::channel(updateable.load().writer_queue_len);
+        let (sender, mut receiver) = mpsc::channel(updateable.load().writer_queue_length);
 
         task_center().spawn_child(
             TaskKind::LogletProvider,
@@ -70,15 +70,13 @@ impl LogStoreWriter {
             None,
             async move {
                 loop {
-                    let writer_commit_time = updateable.load().writer_commit_time_interval.into();
+                    let batch_duration = updateable.load().writer_batch_commit_duration;
                     tokio::select! {
                         biased;
                         _ = cancellation_watcher() => {
                             break;
                         }
-                        // freeze block. change this to be a timer that gets reset on every
-                        // iteratoion
-                        _ = tokio::time::sleep(writer_commit_time) => {
+                        _ = self.delay_commit(batch_duration) => {
                             if !self.current_batch.is_empty() {
                                 let opts = updateable.load();
                                 trace!("Triggering local loglet write batch commit due to max latency");
@@ -104,6 +102,14 @@ impl LogStoreWriter {
         Ok(RocksDbLogWriterHandle { sender })
     }
 
+    async fn delay_commit(&mut self, batch_duration: Option<humantime::Duration>) {
+        if !self.current_batch.is_empty() && batch_duration.is_some_and(|d| !d.is_zero()) {
+            tokio::time::sleep(batch_duration.unwrap().into()).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
+
     fn handle_command(&mut self, opts: &LocalLogletOptions, command: LogStoreWriteCommand) {
         if let Some(data_command) = command.data_update {
             match data_command {
@@ -121,7 +127,9 @@ impl LogStoreWriter {
             self.current_batch_acks.push(ack);
         }
 
-        if self.current_batch.len() >= opts.writer_commit_batch_size_threshold {
+        if !self.current_batch.is_empty()
+            && self.current_batch.len() >= opts.writer_batch_commit_count
+        {
             trace!("Local loglet write batch is full, committing");
             self.commit(opts);
         }
