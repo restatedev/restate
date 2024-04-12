@@ -68,7 +68,15 @@ jobs:
         run: just clippy
 
       - name: Run tests
-        run: just test
+        run: just ci-test
+
+      - name: Test Reporter
+        uses: dorny/test-reporter@v1.9.0
+        if: success() || failure()    # run this step even if previous step failed
+        with:
+          name: Test Results                   # Name of the check run which will be created
+          path: target/nextest/ci/junit.xml    # Path to test results
+          reporter: java-junit                 # Nextest generates JUnit XML
 
   docker:
     name: Create docker image
