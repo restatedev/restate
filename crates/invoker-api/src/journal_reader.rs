@@ -10,7 +10,7 @@
 
 use bytestring::ByteString;
 use futures::Stream;
-use restate_types::identifiers::{DeploymentId, FullInvocationId};
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
@@ -21,6 +21,7 @@ use std::future::Future;
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
+    // TODO could be removed once we introduce InvocationTarget with https://github.com/restatedev/restate/issues/1329
     pub method: ByteString,
     pub deployment_id: Option<DeploymentId>,
 }
@@ -47,7 +48,7 @@ pub trait JournalReader {
 
     fn read_journal<'a>(
         &'a mut self,
-        fid: &'a FullInvocationId,
+        fid: &'a InvocationId,
     ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 }
 
@@ -66,7 +67,7 @@ pub mod mocks {
 
         async fn read_journal<'a>(
             &'a mut self,
-            _sid: &'a FullInvocationId,
+            _sid: &'a InvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
                 JournalMetadata::new(

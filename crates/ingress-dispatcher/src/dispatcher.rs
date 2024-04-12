@@ -154,9 +154,7 @@ impl MessageHandler for IngressDispatcher {
                         IngressCorrelationId::IdempotencyId(idempotency_id.clone())
                     })
                     .unwrap_or_else(|| {
-                        IngressCorrelationId::InvocationId(
-                            invocation_response.invocation_id.clone(),
-                        )
+                        IngressCorrelationId::InvocationId(invocation_response.invocation_id)
                     });
                 if let Some((_, sender)) = self.state.waiting_responses.remove(&correlation_id) {
                     let dispatcher_response = IngressDispatcherResponse {

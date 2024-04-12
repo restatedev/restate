@@ -151,7 +151,7 @@ message ServiceStatus {
 message ServiceInvocationResponseSink {
 
     message PartitionProcessor {
-        FullInvocationId caller = 1;
+        bytes caller = 1;
         uint32 entry_index = 2;
     }
 
@@ -383,7 +383,7 @@ message OutboxMessage {
     }
 
     message OutboxServiceInvocationResponse {
-        MaybeFullInvocationId maybe_fid = 1;
+        bytes invocation_id = 1;
         uint32 entry_index = 2;
         ResponseResult response_result = 3;
     }

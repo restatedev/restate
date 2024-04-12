@@ -102,8 +102,8 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
     let stream = txn.invoked_invocations(0..=u64::MAX);
 
     let expected = vec![
-        FullInvocationId::combine(SERVICE_ID_1.clone(), INVOCATION_ID_1.clone()),
-        FullInvocationId::combine(SERVICE_ID_2.clone(), INVOCATION_ID_2.clone()),
+        FullInvocationId::combine(SERVICE_ID_1.clone(), *INVOCATION_ID_1),
+        FullInvocationId::combine(SERVICE_ID_2.clone(), *INVOCATION_ID_2),
     ];
 
     assert_stream_eq(stream, expected).await;

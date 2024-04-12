@@ -13,8 +13,8 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, Source, SpanRelation,
+    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, Source,
+    SpanRelation,
 };
 use restate_wal_protocol::Command;
 
@@ -41,7 +41,7 @@ impl OutboxMessageExt for OutboxMessage {
         OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result,
-            id: MaybeFullInvocationId::Partial(invocation_id),
+            id: invocation_id,
         })
     }
 
@@ -65,14 +65,14 @@ pub fn create_response_message(
             entry_index,
             caller,
         } => ResponseMessage::Outbox(OutboxMessage::ServiceResponse(InvocationResponse {
-            id: MaybeFullInvocationId::Full(caller),
+            id: caller,
             entry_index,
             result,
         })),
         ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
             ResponseMessage::Ingress(IngressResponse {
                 target_node: ingress_dispatcher_id,
-                invocation_id: callee.clone(),
+                invocation_id: *callee,
                 idempotency_id,
                 response: result,
             })

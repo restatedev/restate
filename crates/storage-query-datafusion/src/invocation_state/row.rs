@@ -11,7 +11,7 @@
 use crate::invocation_state::schema::StateBuilder;
 use crate::table_util::format_using;
 use restate_invoker_api::InvocationStatusReport;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::time::MillisSinceEpoch;
 
 #[inline]
@@ -22,15 +22,11 @@ pub(crate) fn append_state_row(
 ) {
     let mut row = builder.row();
 
-    let invocation_id = status_row.full_invocation_id();
+    let invocation_id = status_row.invocation_id();
 
-    row.partition_key(invocation_id.service_id.partition_key());
-    row.component(&invocation_id.service_id.service_name);
-    row.component_key(
-        std::str::from_utf8(&invocation_id.service_id.key).expect("The key must be a string!"),
-    );
+    row.partition_key(invocation_id.partition_key());
     if row.is_id_defined() {
-        row.id(format_using(output, &InvocationId::from(invocation_id)));
+        row.id(format_using(output, &invocation_id));
     }
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
