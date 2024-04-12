@@ -12,10 +12,10 @@
 //! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use hyper::Uri;
+use hyper::client::HttpConnector;
+use hyper::{Body, Uri};
 use pprof::criterion::{Output, PProfProfiler};
-use restate_benchmarks::counter::counter_client::CounterClient;
-use restate_benchmarks::counter::CounterAddRequest;
+use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
 
 fn throughput_benchmark(criterion: &mut Criterion) {
@@ -32,11 +32,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         Uri::from_static("http://localhost:9080"),
     );
 
-    let counter_client = current_thread_rt.block_on(async {
-        CounterClient::connect("http://localhost:8080")
-            .await
-            .expect("should be able to connect to Restate gRPC ingress")
-    });
+    let client = hyper::Client::new();
 
     let num_requests = 1;
     let mut group = criterion.benchmark_group("throughput");
@@ -45,24 +41,29 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         .bench_function("sequential", |bencher| {
             bencher
                 .to_async(&current_thread_rt)
-                .iter(|| send_sequential_counter_requests(counter_client.clone(), num_requests))
+                .iter(|| send_sequential_counter_requests(&client, num_requests))
         });
-
+    group.finish();
     current_thread_rt.block_on(tc.shutdown_node("completed", 0));
+    current_thread_rt.block_on(RocksDbManager::get().shutdown());
 }
 
 async fn send_sequential_counter_requests(
-    mut counter_client: CounterClient<tonic::transport::Channel>,
+    client: &hyper::Client<HttpConnector>,
     num_requests: u64,
 ) {
     for _ in 0..num_requests {
-        counter_client
-            .get_and_add(CounterAddRequest {
-                counter_name: "single".into(),
-                value: 10,
-            })
+        let response = client
+            .request(
+                hyper::Request::post("http://localhost:8080/Counter/1/getAndAdd")
+                    .header(hyper::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("10"))
+                    .expect("building discovery request should not fail"),
+            )
             .await
-            .expect("counter.Counter::get_and_add should not fail");
+            .expect("Counter/1/getAndAdd should not fail");
+
+        assert!(response.status().is_success());
     }
 }
 

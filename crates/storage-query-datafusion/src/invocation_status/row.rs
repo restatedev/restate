@@ -50,35 +50,31 @@ pub(crate) fn append_invocation_status_row(
     }
 
     // Additional invocation metadata
-    let metadata = match status_row.invocation_status {
-        InvocationStatus::Inboxed(_) => {
+    match status_row.invocation_status {
+        InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
-            None
+            row.handler(inboxed.handler_name);
+            fill_invoked_by(&mut row, output, inboxed.source);
         }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
-            Some(metadata)
+            fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
         InvocationStatus::Suspended { metadata, .. } => {
             row.status("suspended");
-            Some(metadata)
+            fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
         InvocationStatus::Free => {
             row.status("free");
-            None
         }
-        InvocationStatus::Completed { .. } => {
+        InvocationStatus::Completed(completed_invocation) => {
             row.status("completed");
-            None
+            row.handler(completed_invocation.handler);
         }
     };
-    if let Some(metadata) = metadata {
-        fill_invocation_metadata(&mut row, output, metadata);
-    }
 }
 
-#[inline]
-fn fill_invocation_metadata(
+fn fill_in_flight_invocation_metadata(
     row: &mut InvocationStatusRowBuilder,
     output: &mut String,
     meta: InFlightInvocationMetadata,
@@ -88,7 +84,12 @@ fn fill_invocation_metadata(
     if let Some(deployment_id) = meta.deployment_id {
         row.pinned_deployment_id(deployment_id.to_string());
     }
-    match meta.source {
+    fill_invoked_by(row, output, meta.source)
+}
+
+#[inline]
+fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, source: Source) {
+    match source {
         Source::Service(caller) => {
             row.invoked_by("component");
             row.invoked_by_component(&caller.service_id.service_name);

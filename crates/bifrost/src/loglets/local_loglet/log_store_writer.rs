@@ -70,6 +70,8 @@ impl LogStoreWriter {
             None,
             async move {
                 loop {
+                    // todo: rewrite the batch timer, this is a very inefficient mechanism at the
+                    // moment.
                     let writer_commit_time = updateable.load().writer_commit_time_interval.into();
                     tokio::select! {
                         biased;
@@ -77,8 +79,8 @@ impl LogStoreWriter {
                             break;
                         }
                         // freeze block. change this to be a timer that gets reset on every
-                        // iteratoion
-                        _ = tokio::time::sleep(writer_commit_time) => {
+                        // iteration
+                        _ = self.delay_commit(writer_commit_time) => {
                             if !self.current_batch.is_empty() {
                                 let opts = updateable.load();
                                 trace!("Triggering local loglet write batch commit due to max latency");
@@ -102,6 +104,14 @@ impl LogStoreWriter {
             },
         )?;
         Ok(RocksDbLogWriterHandle { sender })
+    }
+
+    async fn delay_commit(&mut self, writer_commit_time: Option<humantime::Duration>) {
+        if writer_commit_time.is_some_and(|d| d.as_millis() > 0) {
+            tokio::time::sleep(writer_commit_time.unwrap().into()).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
     }
 
     fn handle_command(&mut self, opts: &LocalLogletOptions, command: LogStoreWriteCommand) {
@@ -189,6 +199,7 @@ impl RocksDbLogWriterHandle {
         data: Bytes,
         release_immediately: bool,
     ) -> Result<AckRecv, ShutdownError> {
+        let start = std::time::Instant::now();
         let (ack, receiver) = oneshot::channel();
         let data_update = Some(DataUpdate::PutRecord { offset, data });
         let log_state_updates = if release_immediately {
@@ -213,6 +224,8 @@ impl RocksDbLogWriterHandle {
             return Err(ShutdownError);
         }
 
+        let elapsed = start.elapsed();
+        trace!("Enqueued local loglet write command in {:?}", elapsed);
         Ok(receiver)
     }
 }

@@ -4469,9 +4469,9 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "pprof"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978385d59daf9269189d052ca8a84c1acfd0715c0599a5d5188d4acc078ca46a"
+checksum = "ef5c97c51bd34c7e742402e216abdeb44d415fbe6ae41d56b114723e953711cb"
 dependencies = [
  "backtrace",
  "cfg-if",
@@ -4990,18 +4990,15 @@ dependencies = [
  "futures-util",
  "hyper 0.14.28",
  "pprof",
- "prost 0.12.3",
- "prost-build",
  "rand",
  "restate-core",
  "restate-node",
+ "restate-rocksdb",
  "restate-server",
  "restate-types",
  "serde_json",
  "tempfile",
  "tokio",
- "tonic 0.10.2",
- "tonic-build",
 ]
 
 [[package]]
@@ -5020,6 +5017,7 @@ dependencies = [
  "enum-map",
  "googletest",
  "humantime",
+ "metrics",
  "once_cell",
  "restate-core",
  "restate-metadata-store",
