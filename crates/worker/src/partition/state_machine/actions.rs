@@ -15,7 +15,9 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId};
 use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{ServiceInvocationResponseSink, ServiceInvocationSpanContext};
+use restate_types::invocation::{
+    InvocationTarget, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+};
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerValue;
@@ -24,7 +26,8 @@ use std::time::Duration;
 #[derive(Debug)]
 pub enum Action {
     Invoke {
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         invoke_input_journal: InvokeInputJournal,
     },
     InvokeBuiltInService {

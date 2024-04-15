@@ -32,10 +32,8 @@ use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{
-    DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId,
-};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
@@ -202,7 +200,7 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     // Connection params
     partition: PartitionLeaderEpoch,
     invocation_id: InvocationId,
-    service_id: ServiceId,
+    invocation_target: InvocationTarget,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -266,7 +264,7 @@ where
         client: ServiceClient,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         protocol_version: u16,
         inactivity_timeout: Duration,
         abort_timeout: Duration,
@@ -284,7 +282,7 @@ where
             client,
             partition,
             invocation_id,
-            service_id,
+            invocation_target,
             inactivity_timeout,
             abort_timeout,
             disable_eager_state,
@@ -301,7 +299,7 @@ where
     }
 
     /// Loop opening the request to deployment and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.service_id.service_name, restate.invocation.id = %self.invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.invocation_target.service_name(), restate.invocation.id = %self.invocation_id, restate.invocation.target = %self.invocation_target), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;
@@ -347,11 +345,12 @@ where
         };
         // Read eager state
         let read_state_future = async {
-            if self.disable_eager_state {
+            let keyed_service_id = self.invocation_target.as_keyed_service_id();
+            if self.disable_eager_state || keyed_service_id.is_none() {
                 Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
             } else {
                 self.state_reader
-                    .read_state(&self.service_id)
+                    .read_state(&keyed_service_id.unwrap())
                     .await
                     .map_err(|e| InvocationTaskError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
@@ -377,7 +376,7 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
-                    .resolve_latest_deployment_for_component(&self.service_id.service_name)
+                    .resolve_latest_deployment_for_component(self.invocation_target.service_name())
                     .ok_or(InvocationTaskError::NoDeploymentForComponent));
                 (deployment, /* has_changed= */ true)
             };
@@ -401,8 +400,8 @@ where
 
         let path: PathAndQuery = format!(
             "/invoke/{}/{}",
-            self.service_id.service_name.chars().as_str(),
-            &journal_metadata.method
+            self.invocation_target.service_name(),
+            &self.invocation_target.handler_name()
         )
         .try_into()
         .expect("must be able to build a valid invocation path");
@@ -600,7 +599,7 @@ where
             ProtocolMessage::new_start_message(
                 Bytes::copy_from_slice(&self.invocation_id.to_bytes()),
                 self.invocation_id.to_string(),
-                Some(self.service_id.key.clone()),
+                self.invocation_target.key().map(|bs| bs.as_bytes().clone()),
                 journal_size,
                 is_partial,
                 state_entries,

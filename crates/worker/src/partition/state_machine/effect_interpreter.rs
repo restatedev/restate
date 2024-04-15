@@ -213,13 +213,14 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 mut metadata,
             } => {
                 metadata.timestamps.update();
-                let service_id = metadata.service_id.clone();
+                let invocation_target = metadata.invocation_target.clone();
                 state_storage
                     .store_invocation_status(&invocation_id, InvocationStatus::Invoked(metadata))
                     .await?;
 
                 collector.push(Action::Invoke {
-                    full_invocation_id: FullInvocationId::combine(service_id, invocation_id),
+                    invocation_id,
+                    invocation_target,
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
             }
@@ -601,7 +602,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             let (entry_header, serialized_entry) = input_entry.into_inner();
 
             collector.push(Action::Invoke {
-                full_invocation_id,
+                invocation_id,
+                invocation_target: in_flight_invocation_metadata.invocation_target,
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
                     restate_invoker_api::JournalMetadata::new(
                         in_flight_invocation_metadata.journal_metadata.length,

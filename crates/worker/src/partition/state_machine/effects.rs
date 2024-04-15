@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::types::InvocationIdAndTarget;
 use bytes::Bytes;
-use bytestring::ByteString;
 use opentelemetry::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::{
@@ -20,12 +20,12 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, IdempotencyId, InvocationId, ServiceId,
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, ServiceId,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, SpanRelation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
@@ -142,15 +142,13 @@ pub(crate) enum Effect {
 
     // Effects used only for tracing purposes
     TraceBackgroundInvoke {
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id_and_target: InvocationIdAndTarget,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     },
     TraceInvocationResult {
-        full_invocation_id: FullInvocationId,
+        invocation_id_and_target: InvocationIdAndTarget,
         creation_time: MillisSinceEpoch,
-        service_method: ByteString,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
     },
@@ -516,8 +514,7 @@ impl Effect {
                 CompletionResultFmt(result)
             ),
             Effect::TraceBackgroundInvoke {
-                full_invocation_id,
-                service_method,
+                invocation_id_and_target: (invocation_id, invocation_target),
                 span_context,
                 pointer_span_id,
             } => {
@@ -532,10 +529,11 @@ impl Effect {
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "background_invoke",
-                        otel.name = format!("background_invoke {service_method}"),
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = %service_method,
-                        restate.invocation.id = %full_invocation_id,
+                        otel.name = format!("background_invoke {invocation_target}"),
+                        rpc.service = %invocation_target.service_name(),
+                        rpc.method = %invocation_target.handler_name(),
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %invocation_target,
                         restate.internal.span_id = %pointer_span_id,
                     );
                 } else {
@@ -544,17 +542,17 @@ impl Effect {
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "background_invoke",
-                        otel.name = format!("background_invoke {service_method}"),
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = %service_method,
-                        restate.invocation.id = %full_invocation_id,
+                        otel.name = format!("background_invoke {invocation_target}"),
+                        rpc.service = %invocation_target.service_name(),
+                        rpc.method = %invocation_target.handler_name(),
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %invocation_target,
                     );
                 }
             }
             Effect::TraceInvocationResult {
-                full_invocation_id,
+                invocation_id_and_target: (invocation_id, invocation_target),
                 creation_time,
-                service_method,
                 span_context,
                 result,
             } => {
@@ -568,10 +566,11 @@ impl Effect {
                     span_context.is_sampled(),
                     span_context.causing_span_relation(),
                     "invoke",
-                    otel.name = format!("invoke {service_method}"),
-                    rpc.service = %full_invocation_id.service_id.service_name,
-                    rpc.method = %service_method,
-                    restate.invocation.id = %full_invocation_id,
+                    otel.name = format!("invoke {invocation_target}"),
+                    rpc.service = %invocation_target.service_name(),
+                    rpc.method = %invocation_target.handler_name(),
+                    restate.invocation.id = %invocation_id,
+                    restate.invocation.target = %invocation_target,
                     restate.invocation.result = result,
                     error = error, // jaeger uses this tag to show an error icon
                     // without converting to i64 this field will encode as a string
@@ -655,12 +654,40 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 
 #[derive(Debug, Default)]
 pub struct Effects {
+    related_invocation_id: Option<InvocationId>,
+    related_invocation_target: Option<InvocationTarget>,
+    related_span: SpanRelation,
     effects: Vec<Effect>,
 }
 
 impl Effects {
     pub(crate) fn clear(&mut self) {
-        self.effects.clear()
+        self.related_invocation_id = None;
+        self.related_invocation_target = None;
+        self.related_span = SpanRelation::None;
+        self.effects.clear();
+    }
+
+    pub(crate) fn set_related_invocation_id(&mut self, related_invocation_id: &InvocationId) {
+        self.related_invocation_id = Some(*related_invocation_id);
+    }
+
+    pub(crate) fn set_related_invocation_target(
+        &mut self,
+        related_invocation_target: &InvocationTarget,
+    ) {
+        self.related_invocation_target = Some(related_invocation_target.clone());
+    }
+
+    pub(crate) fn set_related_span(&mut self, related_span: SpanRelation) {
+        self.related_span = related_span;
+    }
+
+    pub(crate) fn set_parent_span_context(
+        &mut self,
+        service_invocation_span_context: &ServiceInvocationSpanContext,
+    ) {
+        self.set_related_span(service_invocation_span_context.as_parent())
     }
 
     pub(crate) fn drain(&mut self) -> Drain<'_, Effect> {
@@ -889,14 +916,13 @@ impl Effects {
 
     pub(crate) fn trace_background_invoke(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     ) {
         self.effects.push(Effect::TraceBackgroundInvoke {
-            full_invocation_id,
-            service_method,
+            invocation_id_and_target: (invocation_id, invocation_target),
             span_context,
             pointer_span_id,
         })
@@ -904,16 +930,15 @@ impl Effects {
 
     pub(crate) fn trace_invocation_result(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         self.effects.push(Effect::TraceInvocationResult {
-            full_invocation_id,
+            invocation_id_and_target: (invocation_id, invocation_target),
             creation_time,
-            service_method,
             span_context,
             result,
         })
@@ -955,12 +980,7 @@ impl Effects {
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,
     /// or if the span level is INFO and we're the leader.
-    pub(crate) fn log(
-        &self,
-        is_leader: bool,
-        full_invocation_id: Option<FullInvocationId>,
-        related_span: SpanRelation,
-    ) {
+    pub(crate) fn log(&self, is_leader: bool) {
         // Skip this method altogether if logging is disabled
         if !(((event_enabled!(Level::DEBUG) || span_enabled!(Level::INFO)) && is_leader)
             || event_enabled!(Level::TRACE))
@@ -968,23 +988,36 @@ impl Effects {
             return;
         }
 
-        let span = match (is_leader, full_invocation_id) {
-            (true, Some(full_invocation_id)) => debug_span!(
-                "state_machine_effects",
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-            ),
-            (false, Some(full_invocation_id)) => trace_span!(
-                "state_machine_effects",
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-            ),
-            (true, None) => debug_span!("state_machine_effects"),
-            (false, None) => trace_span!("state_machine_effects"),
+        let span = if is_leader {
+            debug_span!("state_machine_effects")
+        } else {
+            trace_span!("state_machine_effects")
         };
 
+        if let Some(invocation_id) = &self.related_invocation_id {
+            span.record(
+                "restate.invocation.id",
+                tracing::field::display(invocation_id),
+            );
+        }
+
+        if let Some(invocation_target) = &self.related_invocation_target {
+            span.record(
+                "rpc.service",
+                tracing::field::display(invocation_target.service_name()),
+            );
+            span.record(
+                "rpc.method",
+                tracing::field::display(invocation_target.handler_name()),
+            );
+            span.record(
+                "restate.invocation.target",
+                tracing::field::display(invocation_target),
+            );
+        }
+
         // Create span and enter it
-        related_span.attach_to_span(&span);
+        self.related_span.clone().attach_to_span(&span);
         let _enter = span.enter();
 
         // Log all the effects

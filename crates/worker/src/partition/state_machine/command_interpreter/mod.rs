@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use super::Error;
-use std::collections::HashSet;
 
 use crate::partition::services::deterministic;
 use crate::partition::state_machine::effects::Effects;
@@ -18,7 +17,6 @@ use crate::partition::types::{
 };
 use assert2::let_assert;
 use bytes::Bytes;
-use bytestring::ByteString;
 use futures::{Stream, StreamExt};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
@@ -43,7 +41,7 @@ use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
     ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SpanRelation, SpanRelationCause, TerminationFlavor,
+    SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -57,6 +55,7 @@ use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::Command;
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
@@ -156,7 +155,7 @@ where
         command: Command,
         effects: &mut Effects,
         state: &mut State,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         match command {
             Command::Invoke(service_invocation) => {
                 self.handle_invoke(effects, state, service_invocation).await
@@ -176,7 +175,7 @@ where
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
                 effects.truncate_outbox(index);
-                Ok((None, SpanRelation::None))
+                Ok(())
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::TerminateInvocation(invocation_termination) => {
@@ -193,11 +192,11 @@ where
             }
             Command::AnnounceLeader(_) => {
                 // no-op :-)
-                Ok((None, SpanRelation::None))
+                Ok(())
             }
             Command::ScheduleTimer(timer) => {
                 effects.register_timer(timer, Default::default());
-                Ok((None, SpanRelation::None))
+                Ok(())
             }
         }
     }
@@ -207,12 +206,16 @@ where
         effects: &mut Effects,
         state: &mut State,
         service_invocation: ServiceInvocation,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         debug_assert!(
             self.partition_key_range.contains(&service_invocation.partition_key()),
-                "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
-                service_invocation.partition_key(),
-                self.partition_key_range);
+            "Service invocation with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
+            service_invocation.partition_key(),
+            self.partition_key_range);
+
+        effects.set_related_invocation_id(&service_invocation.invocation_id);
+        effects.set_related_invocation_target(&service_invocation.invocation_target);
+        effects.set_parent_span_context(&service_invocation.span_context);
 
         // If an idempotency key is set, handle idempotency
         if let Some(idempotency) = &service_invocation.idempotency {
@@ -232,10 +235,7 @@ where
                 .await?
             {
                 // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
-                return Ok((
-                    Some(service_invocation.fid),
-                    service_invocation.span_context.as_parent(),
-                ));
+                return Ok(());
             }
             // Idempotent invocation needs to be processed for the first time, let's roll!
             effects
@@ -256,11 +256,8 @@ where
                 span_context,
             );
             // The span will be created later on invocation
-            return Ok((None, SpanRelation::None));
+            return Ok(());
         }
-
-        let fid = service_invocation.fid.clone();
-        let span_relation = service_invocation.span_context.as_parent();
 
         // If deterministic built-in service, just go and execute it
         if deterministic::ServiceInvoker::is_supported(
@@ -268,7 +265,7 @@ where
         ) {
             self.handle_deterministic_built_in_service_invocation(service_invocation, effects)
                 .await;
-            return Ok((Some(fid), span_relation));
+            return Ok(());
         }
 
         // If it's exclusive, we need to acquire the exclusive lock
@@ -293,13 +290,13 @@ where
                         inbox_seq_number,
                     ),
                 );
-                return Ok((Some(fid), span_relation));
+                return Ok(());
             }
         }
 
         // We're ready to invoke the service!
         effects.invoke_service(service_invocation);
-        Ok((Some(fid), span_relation))
+        Ok(())
     }
 
     fn enqueue_into_inbox(
@@ -381,7 +378,7 @@ where
         mutation: ExternalStateMutation,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         let service_status = state
             .get_virtual_object_status(&mutation.component_id)
             .await?;
@@ -393,7 +390,7 @@ where
             VirtualObjectStatus::Unlocked => effects.apply_state_mutation(mutation),
         }
 
-        Ok((None, SpanRelation::None))
+        Ok(())
     }
 
     async fn try_built_in_invoker_effect<State: StateReader>(
@@ -401,19 +398,17 @@ where
         effects: &mut Effects,
         state: &mut State,
         nbis_effects: BuiltinServiceEffects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         let (full_invocation_id, nbis_effects) = nbis_effects.into_inner();
-        let invocation_status = state
-            .get_invocation_status(&InvocationId::from(&full_invocation_id))
-            .await?;
+        let invocation_status = Self::get_invocation_status_and_trace(
+            state,
+            &InvocationId::from(&full_invocation_id),
+            effects,
+        )
+        .await?;
 
         match invocation_status {
             InvocationStatus::Invoked(invocation_metadata) => {
-                let span_relation = invocation_metadata
-                    .journal_metadata
-                    .span_context
-                    .as_parent();
-
                 for nbis_effect in nbis_effects {
                     self.on_built_in_invoker_effect(
                         effects,
@@ -423,14 +418,14 @@ where
                     )
                     .await?
                 }
-                Ok((Some(full_invocation_id), span_relation))
+                Ok(())
             }
             _ => {
                 trace!(
                     "Received built in invoker effect for unknown invocation {}. Ignoring it.",
                     full_invocation_id
                 );
-                Ok((Some(full_invocation_id), SpanRelation::None))
+                Ok(())
             }
         }
     }
@@ -496,7 +491,7 @@ where
         }: InvocationTermination,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         match termination_flavor {
             TerminationFlavor::Kill => {
                 self.try_kill_invocation(invocation_id, state, effects)
@@ -514,25 +509,20 @@ where
         invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let status = state.get_invocation_status(&invocation_id).await?;
+    ) -> Result<(), Error> {
+        let status = Self::get_invocation_status_and_trace(state, &invocation_id, effects).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
-                let related_span = metadata.journal_metadata.span_context.as_parent();
-                let fid = FullInvocationId::combine(metadata.service_id.clone(), invocation_id);
-
                 self.kill_invocation(invocation_id, metadata, state, effects)
                     .await?;
-
-                Ok((Some(fid), related_span))
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Kill,
                 invocation_id,
                 inboxed,
                 effects,
-            ),
+            )?,
             _ => {
                 trace!("Received kill command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
@@ -542,10 +532,10 @@ where
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 effects.abort_invocation(invocation_id);
-
-                Ok((None, SpanRelation::None))
             }
-        }
+        };
+
+        Ok(())
     }
 
     async fn try_cancel_invocation<State: StateReader>(
@@ -553,14 +543,11 @@ where
         invocation_id: InvocationId,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let status = state.get_invocation_status(&invocation_id).await?;
+    ) -> Result<(), Error> {
+        let status = Self::get_invocation_status_and_trace(state, &invocation_id, effects).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) => {
-                let related_span = metadata.journal_metadata.span_context.as_parent();
-                let fid = FullInvocationId::combine(metadata.service_id.clone(), invocation_id);
-
                 self.cancel_journal_leaves(
                     invocation_id,
                     InvocationStatusProjection::Invoked,
@@ -569,16 +556,11 @@ where
                     effects,
                 )
                 .await?;
-
-                Ok((Some(fid), related_span))
             }
             InvocationStatus::Suspended {
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                let related_span = metadata.journal_metadata.span_context.as_parent();
-                let fid = FullInvocationId::combine(metadata.service_id.clone(), invocation_id);
-
                 if self
                     .cancel_journal_leaves(
                         invocation_id,
@@ -591,15 +573,13 @@ where
                 {
                     effects.resume_service(invocation_id, metadata);
                 }
-
-                Ok((Some(fid), related_span))
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Cancel,
                 invocation_id,
                 inboxed,
                 effects,
-            ),
+            )?,
             _ => {
                 trace!("Received cancel command for unknown invocation with id '{invocation_id}'.");
                 // We still try to send the abort signal to the invoker,
@@ -609,10 +589,10 @@ where
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
                 effects.abort_invocation(invocation_id);
-
-                Ok((None, SpanRelation::None))
             }
-        }
+        };
+
+        Ok(())
     }
 
     fn terminate_inboxed_invocation(
@@ -621,7 +601,7 @@ where
         invocation_id: InvocationId,
         inboxed_invocation: InboxedInvocation,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
             TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
@@ -630,17 +610,14 @@ where
         let InboxedInvocation {
             inbox_sequence_number,
             response_sinks,
-            handler_name,
             span_context,
-            service_id,
+            invocation_target,
             ..
         } = inboxed_invocation;
 
-        let parent_span = span_context.as_parent();
-
         // Reply back to callers with error, and publish end trace
         let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::combine(service_id.clone(), handler_name.clone(), idempotency.key)
+            IdempotencyId::new_combine(invocation_id, &invocation_target, idempotency.key)
         });
 
         self.send_response_to_sinks(
@@ -651,21 +628,25 @@ where
             &error,
         );
 
-        let fid = FullInvocationId::combine(service_id.clone(), invocation_id);
+        // Delete inbox entry and invocation status.
+        effects.delete_inbox_entry(
+            invocation_target
+                .as_keyed_service_id()
+                .expect("Because the invocation is inboxed, it must have a keyed service id"),
+            inbox_sequence_number,
+        );
+        effects.free_invocation(invocation_id);
+
         self.notify_invocation_result(
-            &fid,
-            handler_name,
+            invocation_id,
+            invocation_target,
             span_context,
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
             effects,
         );
 
-        // Delete inbox entry and invocation status.
-        effects.delete_inbox_entry(service_id.clone(), inbox_sequence_number);
-        effects.free_invocation(invocation_id);
-
-        Ok((Some(fid), parent_span))
+        Ok(())
     }
 
     async fn kill_invocation<State: StateReader>(
@@ -836,7 +817,7 @@ where
         timer_value: TimerValue,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
+    ) -> Result<(), Error> {
         let (key, value) = timer_value.into_inner();
         let invocation_uuid = key.invocation_uuid;
         let entry_index = key.journal_index;
@@ -865,7 +846,7 @@ where
                 self.handle_invoke(effects, state, service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                match state.get_invocation_status(&invocation_id).await? {
+                match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
                     InvocationStatus::Completed(CompletedInvocation {
                         service_id,
                         handler,
@@ -892,7 +873,7 @@ where
                     }
                 };
 
-                Ok((None, SpanRelation::None))
+                Ok(())
             }
         }
     }
@@ -902,22 +883,23 @@ where
         effects: &mut Effects,
         state: &mut State,
         invoker_effect: InvokerEffect,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let status = state
-            .get_invocation_status(&invoker_effect.invocation_id)
-            .await?;
+    ) -> Result<(), Error> {
+        let status =
+            Self::get_invocation_status_and_trace(state, &invoker_effect.invocation_id, effects)
+                .await?;
 
         match status {
             InvocationStatus::Invoked(invocation_metadata) => {
                 self.on_invoker_effect(effects, state, invoker_effect, invocation_metadata)
-                    .await
+                    .await?
             }
             _ => {
                 trace!("Received invoker effect for unknown service invocation. Ignoring the effect and aborting.");
                 effects.abort_invocation(invoker_effect.invocation_id);
-                Ok((None, SpanRelation::None))
             }
-        }
+        };
+
+        Ok(())
     }
 
     async fn on_invoker_effect<State: StateReader + ReadOnlyJournalTable>(
@@ -929,14 +911,7 @@ where
             kind,
         }: InvokerEffect,
         invocation_metadata: InFlightInvocationMetadata,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let related_fid =
-            FullInvocationId::combine(invocation_metadata.service_id.clone(), invocation_id);
-        let span_relation = invocation_metadata
-            .journal_metadata
-            .span_context
-            .as_parent();
-
+    ) -> Result<(), Error> {
         match kind {
             InvokerEffectKind::SelectedDeployment(deployment_id) => {
                 effects.store_chosen_deployment(invocation_id, deployment_id, invocation_metadata);
@@ -993,7 +968,7 @@ where
             }
         }
 
-        Ok((Some(related_fid), span_relation))
+        Ok(())
     }
 
     async fn end_invocation<State: StateReader + ReadOnlyJournalTable>(
@@ -1007,8 +982,8 @@ where
         let completion_retention_time = invocation_metadata.completion_retention_time;
 
         self.notify_invocation_result(
-            &FullInvocationId::combine(invocation_metadata.service_id.clone(), invocation_id),
-            invocation_metadata.method.clone(),
+            invocation_id,
+            invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
             invocation_metadata.timestamps.creation_time(),
             Ok(()),
@@ -1087,8 +1062,8 @@ where
         let invocation_id = InvocationId::from(&full_invocation_id);
 
         self.notify_invocation_result(
-            &full_invocation_id,
-            invocation_metadata.method,
+            invocation_id,
+            invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context,
             invocation_metadata.timestamps.creation_time(),
             Ok(()),
@@ -1112,8 +1087,8 @@ where
         let journal_length = invocation_metadata.journal_metadata.length;
 
         self.notify_invocation_result(
-            &FullInvocationId::combine(invocation_metadata.service_id.clone(), invocation_id),
-            invocation_metadata.method.clone(),
+            invocation_id,
+            invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
             invocation_metadata.timestamps.creation_time(),
             Err((error.code(), error.to_string())),
@@ -1358,8 +1333,6 @@ where
                     }) = journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
-                let service_method = request.method_name.clone();
-
                 // 0 is equal to not set, meaning execute now
                 let delay = if invoke_time == 0 {
                     None
@@ -1384,8 +1357,8 @@ where
                 };
 
                 effects.trace_background_invoke(
-                    service_invocation.fid.clone(),
-                    service_method,
+                    *invocation_id,
+                    invocation_target.clone(),
                     invocation_metadata.journal_metadata.span_context.clone(),
                     pointer_span_id,
                 );
@@ -1455,31 +1428,17 @@ where
         completion: Completion,
         state: &mut State,
         effects: &mut Effects,
-    ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
-        let status = state.get_invocation_status(&invocation_id).await?;
-        let mut related_fid = None;
-        let mut span_relation = SpanRelation::None;
+    ) -> Result<(), Error> {
+        let status = Self::get_invocation_status_and_trace(state, &invocation_id, effects).await?;
 
         match status {
-            InvocationStatus::Invoked(metadata) => {
-                related_fid = Some(FullInvocationId::combine(
-                    metadata.service_id,
-                    invocation_id,
-                ));
-                span_relation = metadata.journal_metadata.span_context.as_parent();
-
+            InvocationStatus::Invoked(_) => {
                 Self::handle_completion_for_invoked(invocation_id, completion, effects);
             }
             InvocationStatus::Suspended {
                 metadata,
                 waiting_for_completed_entries,
             } => {
-                related_fid = Some(FullInvocationId::combine(
-                    metadata.service_id.clone(),
-                    invocation_id,
-                ));
-                span_relation = metadata.journal_metadata.span_context.as_parent();
-
                 if Self::handle_completion_for_suspended(
                     invocation_id,
                     completion,
@@ -1498,7 +1457,7 @@ where
             }
         }
 
-        Ok((related_fid, span_relation))
+        Ok(())
     }
 
     fn handle_completion_for_suspended(
@@ -1579,16 +1538,16 @@ where
 
     fn notify_invocation_result(
         &mut self,
-        full_invocation_id: &FullInvocationId,
-        service_method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
         effects: &mut Effects,
     ) {
         effects.trace_invocation_result(
-            full_invocation_id.clone(),
-            service_method,
+            invocation_id,
+            invocation_target,
             span_context,
             creation_time,
             result,
@@ -1614,6 +1573,23 @@ where
 
     fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {
         effects.send_ingress_response(ingress_response);
+    }
+
+    // Gets the invocation status from storage and also adds tracing info to effects
+    async fn get_invocation_status_and_trace<State: StateReader>(
+        state: &mut State,
+        invocation_id: &InvocationId,
+        effects: &mut Effects,
+    ) -> Result<InvocationStatus, Error> {
+        effects.set_related_invocation_id(invocation_id);
+        let status = state.get_invocation_status(invocation_id).await?;
+        if let Some(invocation_target) = status.invocation_target() {
+            effects.set_related_invocation_target(invocation_target);
+        }
+        if let Some(journal_metadata) = status.get_journal_metadata() {
+            effects.set_parent_span_context(&journal_metadata.span_context)
+        }
+        Ok(status)
     }
 
     #[allow(clippy::too_many_arguments)]

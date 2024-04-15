@@ -524,7 +524,7 @@ pub enum SpanRelationCause {
     ),
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub enum SpanRelation {
     #[default]
     None,

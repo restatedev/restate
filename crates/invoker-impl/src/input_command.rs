@@ -12,9 +12,8 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::{
     Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, StatusHandle,
 };
-use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
-};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -25,7 +24,7 @@ use tokio::sync::mpsc;
 pub(crate) struct InvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
-    pub(super) service_id: ServiceId,
+    pub(super) invocation_target: InvocationTarget,
     #[serde(skip)]
     pub(super) journal: InvokeInputJournal,
 }
@@ -77,7 +76,7 @@ impl ServiceHandle for ChannelServiceHandle {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> Self::Future {
         futures::future::ready(
@@ -85,7 +84,7 @@ impl ServiceHandle for ChannelServiceHandle {
                 .send(InputCommand::Invoke(InvokeCommand {
                     partition,
                     invocation_id,
-                    service_id,
+                    invocation_target,
                     journal,
                 }))
                 .map_err(|_| NotRunningError),

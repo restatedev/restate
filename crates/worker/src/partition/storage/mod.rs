@@ -33,9 +33,9 @@ use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, PartitionId, PartitionKey,
-    ServiceId, WithPartitionKey,
+    EntryIndex, IdempotencyId, InvocationId, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
 };
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::logs::Lsn;
@@ -138,7 +138,8 @@ where
 
     pub fn scan_invoked_invocations(
         &mut self,
-    ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget), StorageError>> + Send + '_
+    {
         self.storage
             .invoked_invocations(self.partition_key_range.clone())
     }
@@ -608,7 +609,7 @@ where
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = StorageResult<FullInvocationId>> + Send {
+    ) -> impl Stream<Item = StorageResult<(InvocationId, InvocationTarget)>> + Send {
         self.inner.invoked_invocations(partition_key_range)
     }
 }
