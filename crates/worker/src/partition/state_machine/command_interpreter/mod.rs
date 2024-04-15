@@ -544,7 +544,7 @@ where
                 let fid = FullInvocationId::combine(metadata.service_id.clone(), invocation_id);
 
                 self.cancel_journal_leaves(
-                    fid.clone(),
+                    invocation_id,
                     InvocationStatusProjection::Invoked,
                     metadata.journal_metadata.length,
                     state,
@@ -563,7 +563,7 @@ where
 
                 if self
                     .cancel_journal_leaves(
-                        fid.clone(),
+                        invocation_id,
                         InvocationStatusProjection::Suspended(waiting_for_completed_entries),
                         metadata.journal_metadata.length,
                         state,
@@ -710,13 +710,12 @@ where
 
     async fn cancel_journal_leaves<State: StateReader>(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_status: InvocationStatusProjection,
         journal_length: EntryIndex,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<bool, Error> {
-        let invocation_id = InvocationId::from(&full_invocation_id);
         let mut journal = pin!(state.get_journal(&invocation_id, journal_length));
 
         let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
@@ -768,7 +767,7 @@ where
                         );
 
                         let timer_key = TimerKey {
-                            invocation_uuid: full_invocation_id.invocation_uuid,
+                            invocation_uuid: invocation_id.invocation_uuid(),
                             journal_index,
                             timestamp: wake_up_time,
                         };
