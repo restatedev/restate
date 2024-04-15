@@ -826,9 +826,9 @@ where
         effects.delete_timer(key);
 
         match value {
-            Timer::CompleteSleepEntry(service_id) => {
+            Timer::CompleteSleepEntry(partition_key) => {
                 Self::handle_completion(
-                    InvocationId::new(service_id.partition_key(), invocation_uuid),
+                    InvocationId::from_parts(partition_key, invocation_uuid),
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,
@@ -1272,10 +1272,7 @@ where
                 );
                 effects.register_timer(
                     TimerValue::new_sleep(
-                        // Registering a timer generates multiple effects: timer registration and
-                        // journal append which each generate actuator messages for the timer service
-                        // and the invoker --> Cloning required
-                        full_invocation_id.clone(),
+                        invocation_id,
                         MillisSinceEpoch::new(wake_up_time),
                         entry_index,
                     ),

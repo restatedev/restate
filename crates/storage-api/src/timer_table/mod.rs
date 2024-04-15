@@ -10,8 +10,9 @@
 
 use crate::Result;
 use futures_util::Stream;
-use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::identifiers::{InvocationUuid, ServiceId};
+use restate_types::identifiers::{
+    InvocationId, InvocationUuid, PartitionId, PartitionKey, WithPartitionKey,
+};
 use restate_types::invocation::ServiceInvocation;
 use std::cmp::Ordering;
 use std::future::Future;
@@ -41,7 +42,7 @@ impl Ord for TimerKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Timer {
-    CompleteSleepEntry(ServiceId),
+    CompleteSleepEntry(PartitionKey),
     Invoke(ServiceInvocation),
     CleanInvocationStatus(InvocationId),
 }
@@ -49,7 +50,7 @@ pub enum Timer {
 impl WithPartitionKey for Timer {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            Timer::CompleteSleepEntry(service_id) => service_id.partition_key(),
+            Timer::CompleteSleepEntry(partition_key) => *partition_key,
             Timer::Invoke(service_invocation) => service_invocation.partition_key(),
             Timer::CleanInvocationStatus(invocation_id) => invocation_id.partition_key(),
         }
