@@ -186,6 +186,12 @@ impl ServiceInvocation {
         execution_time: Option<MillisSinceEpoch>,
         idempotency: Option<Idempotency>,
     ) -> Self {
+        debug_assert_eq!(
+            invocation_id,
+            InvocationId::from(&fid),
+            "InvocationId and FullInvocationId must match"
+        );
+
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
         Self {
             invocation_id,

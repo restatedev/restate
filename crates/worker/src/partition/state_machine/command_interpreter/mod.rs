@@ -1626,14 +1626,21 @@ where
             None
         };
 
+        let fid = FullInvocationId::new(
+            service_name,
+            invocation_key,
+            invocation_id.invocation_uuid(),
+        );
+        debug_assert_eq!(
+            invocation_id,
+            InvocationId::from(&fid),
+            "InvocationId and FullInvocationId must match"
+        );
+
         ServiceInvocation {
             invocation_id,
             invocation_target,
-            fid: FullInvocationId::new(
-                service_name,
-                invocation_key,
-                invocation_id.invocation_uuid(),
-            ),
+            fid,
             method_name,
             argument: parameter,
             source,
