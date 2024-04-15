@@ -1272,7 +1272,7 @@ pub mod storage {
                         ResponseSink::PartitionProcessor(partition_processor) => {
                             Some(
                                 restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor {
-                                    caller: restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller).map_err(ConversionError::invalid_data)?,
+                                    caller: restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller)?,
                                     entry_index: partition_processor.entry_index,
                                 },
                             )
@@ -1323,7 +1323,7 @@ pub mod storage {
                             },
                         ) => ResponseSink::PartitionProcessor(PartitionProcessor {
                             entry_index,
-                            caller: Bytes::copy_from_slice(&caller.to_bytes()),
+                            caller: caller.into(),
                         }),
                         Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress(node_id)) => {
                             ResponseSink::Ingress(Ingress {
@@ -1881,9 +1881,7 @@ pub mod storage {
                         ) => outbox_message::OutboxMessage::ServiceInvocationResponse(
                             OutboxServiceInvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                invocation_id: Bytes::copy_from_slice(
-                                    &invocation_response.id.to_bytes(),
-                                ),
+                                invocation_id: invocation_response.id.into(),
                                 response_result: Some(ResponseResult::from(
                                     invocation_response.result,
                                 )),
@@ -1894,16 +1892,12 @@ pub mod storage {
                         ) => match invocation_termination.flavor {
                             TerminationFlavor::Kill => {
                                 outbox_message::OutboxMessage::Kill(OutboxKill {
-                                    invocation_id: Bytes::copy_from_slice(
-                                        &invocation_termination.invocation_id.to_bytes(),
-                                    ),
+                                    invocation_id: invocation_termination.invocation_id.into(),
                                 })
                             }
                             TerminationFlavor::Cancel => {
                                 outbox_message::OutboxMessage::Cancel(OutboxCancel {
-                                    invocation_id: Bytes::copy_from_slice(
-                                        &invocation_termination.invocation_id.to_bytes(),
-                                    ),
+                                    invocation_id: invocation_termination.invocation_id.into(),
                                 })
                             }
                         },

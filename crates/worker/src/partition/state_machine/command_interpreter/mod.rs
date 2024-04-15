@@ -277,7 +277,7 @@ where
                 InboxEntry::Invocation(service_invocation.fid.clone()),
             );
             effects.store_inboxed_invocation(
-                InvocationId::from(&service_invocation.fid),
+                service_invocation.invocation_id,
                 InboxedInvocation::from_service_invocation(service_invocation, inbox_seq_number),
             );
         }
@@ -1288,7 +1288,7 @@ where
                 if let Some(InvokeEnrichmentResult {
                     service_key,
                     span_context,
-                    invocation_id,
+                    invocation_id: callee_invocation_id,
                     invocation_target,
                     ..
                 }) = enrichment_result
@@ -1300,11 +1300,11 @@ where
 
                     let service_invocation = Self::create_service_invocation(
                         service_key.clone(),
-                        *invocation_id,
+                        *callee_invocation_id,
                         invocation_target.clone(),
                         request,
                         Source::Service(full_invocation_id.clone()),
-                        Some((*invocation_id, entry_index)),
+                        Some((invocation_id, entry_index)),
                         span_context.clone(),
                         None,
                     );

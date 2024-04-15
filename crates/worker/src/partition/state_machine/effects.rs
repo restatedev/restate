@@ -583,8 +583,8 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::SendAbortInvocationToInvoker(_) => {
-                debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
+            Effect::SendAbortInvocationToInvoker(invocation_id) => {
+                debug_if_leader!(is_leader, restate.invocation.id = %invocation_id, "Effect: Send abort command to invoker");
             }
             Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these
