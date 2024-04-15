@@ -150,6 +150,7 @@ mod mocks {
         SetStateEntryMessage,
     };
     use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::{HandlerType, InvocationTarget};
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
     };
@@ -210,53 +211,70 @@ mod mocks {
                     .encode_to_vec()
                     .into(),
                 ),
-                Entry::Invoke(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::Invoke {
-                        is_completed: entry.is_completed(),
-                        enrichment_result: Some(InvokeEnrichmentResult {
-                            invocation_uuid: InvocationId::mock_random().invocation_uuid(),
-                            service_key: entry.request.key.clone().into_bytes(),
-                            service_name: entry.request.service_name.clone(),
-                            span_context: Default::default(),
-                        }),
-                    },
-                    InvokeEntryMessage {
-                        service_name: entry.request.service_name.into(),
-                        method_name: entry.request.method_name.into(),
-                        parameter: entry.request.parameter,
-                        result: entry.result.map(|r| match r {
-                            EntryResult::Success(v) => invoke_entry_message::Result::Value(v),
-                            EntryResult::Failure(code, msg) => {
-                                invoke_entry_message::Result::Failure(Failure {
-                                    code: code.into(),
-                                    message: msg.to_string(),
-                                })
-                            }
-                        }),
-                        ..InvokeEntryMessage::default()
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::BackgroundInvoke(entry) => EnrichedRawEntry::new(
-                    EnrichedEntryHeader::BackgroundInvoke {
-                        enrichment_result: InvokeEnrichmentResult {
-                            invocation_uuid: InvocationId::mock_random().invocation_uuid(),
-                            service_key: entry.request.key.clone().into_bytes(),
-                            service_name: entry.request.service_name.clone(),
-                            span_context: Default::default(),
+                Entry::Invoke(entry) => {
+                    let invocation_id = InvocationId::mock_random();
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::Invoke {
+                            is_completed: entry.is_completed(),
+                            enrichment_result: Some(InvokeEnrichmentResult {
+                                invocation_id,
+                                invocation_target: InvocationTarget::VirtualObject {
+                                    name: entry.request.service_name.clone(),
+                                    key: entry.request.key.clone(),
+                                    handler: entry.request.method_name.clone(),
+                                    handler_ty: HandlerType::Exclusive,
+                                },
+                                service_key: entry.request.key.clone().into_bytes(),
+                                span_context: Default::default(),
+                            }),
                         },
-                    },
-                    BackgroundInvokeEntryMessage {
-                        service_name: entry.request.service_name.into(),
-                        method_name: entry.request.method_name.into(),
-                        parameter: entry.request.parameter,
-                        invoke_time: entry.invoke_time,
-                        ..BackgroundInvokeEntryMessage::default()
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
+                        InvokeEntryMessage {
+                            service_name: entry.request.service_name.into(),
+                            method_name: entry.request.method_name.into(),
+                            parameter: entry.request.parameter,
+                            result: entry.result.map(|r| match r {
+                                EntryResult::Success(v) => invoke_entry_message::Result::Value(v),
+                                EntryResult::Failure(code, msg) => {
+                                    invoke_entry_message::Result::Failure(Failure {
+                                        code: code.into(),
+                                        message: msg.to_string(),
+                                    })
+                                }
+                            }),
+                            ..InvokeEntryMessage::default()
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    )
+                }
+                Entry::BackgroundInvoke(entry) => {
+                    let invocation_id = InvocationId::mock_random();
+
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::BackgroundInvoke {
+                            enrichment_result: InvokeEnrichmentResult {
+                                invocation_id,
+                                invocation_target: InvocationTarget::VirtualObject {
+                                    name: entry.request.service_name.clone(),
+                                    key: entry.request.key.clone(),
+                                    handler: entry.request.method_name.clone(),
+                                    handler_ty: HandlerType::Exclusive,
+                                },
+                                service_key: entry.request.key.clone().into_bytes(),
+                                span_context: Default::default(),
+                            },
+                        },
+                        BackgroundInvokeEntryMessage {
+                            service_name: entry.request.service_name.into(),
+                            method_name: entry.request.method_name.into(),
+                            parameter: entry.request.parameter,
+                            invoke_time: entry.invoke_time,
+                            ..BackgroundInvokeEntryMessage::default()
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    )
+                }
                 Entry::SetState(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::SetState {},
                     SetStateEntryMessage {

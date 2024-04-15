@@ -14,8 +14,9 @@ use std::collections::HashMap;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::component::{ComponentMetadata, ComponentType, HandlerMetadata};
+pub use restate_schema_api::component::{ComponentMetadata, HandlerMetadata};
 pub use restate_types::identifiers::ComponentRevision;
+pub use restate_types::invocation::ComponentType;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]

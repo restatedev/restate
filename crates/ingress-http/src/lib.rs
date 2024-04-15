@@ -41,13 +41,14 @@ impl ConnectInfo {
 mod mocks {
     use restate_schema_api::component::mocks::MockComponentMetadataResolver;
     use restate_schema_api::component::{
-        ComponentMetadata, ComponentMetadataResolver, ComponentType, HandlerMetadata, HandlerType,
+        ComponentMetadata, ComponentMetadataResolver, HandlerMetadata,
     };
     use restate_schema_api::invocation_target::mocks::MockInvocationTargetResolver;
     use restate_schema_api::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
     };
     use restate_types::identifiers::DeploymentId;
+    use restate_types::invocation::{ComponentType, HandlerType};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

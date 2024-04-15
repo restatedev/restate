@@ -8,6 +8,26 @@ package dev.restate.storage.domain.v1;
 // Common
 // ---------------------------------------------------------------------
 
+message InvocationTarget {
+    enum Ty {
+        UNKNOWN_TY = 0;
+        SERVICE = 1;
+        VIRTUAL_OBJECT = 2;
+    }
+
+    enum HandlerType {
+        UNKNOWN_HANDLER_TYPE = 0;
+        EXCLUSIVE = 1;
+        SHARED = 2;
+    }
+
+    Ty ty = 1;
+    bytes name = 2;
+    bytes handler = 3;
+    bytes key = 4;
+    HandlerType handler_ty = 5;
+}
+
 message ServiceId {
     bytes service_name = 1;
     bytes service_key = 2;
@@ -54,7 +74,7 @@ message Source {
 message InvocationStatus {
 
     message Invoked {
-        ServiceId service_id = 1;
+        InvocationTarget invocation_target = 1;
         JournalMeta journal_meta = 2;
         repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
@@ -70,10 +90,13 @@ message InvocationStatus {
             google.protobuf.Empty idempotency_key_none = 11;
             string idempotency_key_value = 12;
         }
+
+        // TODO remove
+        ServiceId service_id = 16;
     }
 
     message Suspended {
-        ServiceId service_id = 1;
+        InvocationTarget invocation_target = 1;
         JournalMeta journal_meta = 2;
         repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
@@ -90,12 +113,19 @@ message InvocationStatus {
             google.protobuf.Empty idempotency_key_none = 12;
             string idempotency_key_value = 13;
         }
+
+        // TODO remove
+        ServiceId service_id = 16;
     }
 
     message Completed {
-        ResponseResult result = 1;
-        ServiceId service_id = 2;
-        bytes handler_name = 3;
+        InvocationTarget invocation_target = 1;
+        ResponseResult result = 2;
+
+        // TODO remove
+        ServiceId service_id = 3;
+        bytes handler_name = 4;
+
         oneof idempotency_key {
             google.protobuf.Empty idempotency_key_none = 12;
             string idempotency_key_value = 13;
@@ -106,13 +136,12 @@ message InvocationStatus {
     }
 
     message Inboxed {
-        uint64 inbox_sequence_number = 1;
-        repeated ServiceInvocationResponseSink response_sinks = 2;
-        uint64 creation_time = 3;
-        uint64 modification_time = 4;
+        InvocationTarget invocation_target = 1;
 
-        ServiceId service_id = 5;
-        bytes handler = 6;
+        uint64 inbox_sequence_number = 2;
+        repeated ServiceInvocationResponseSink response_sinks = 3;
+        uint64 creation_time = 4;
+        uint64 modification_time = 5;
 
         bytes argument = 7;
         Source source = 8;
@@ -120,6 +149,10 @@ message InvocationStatus {
         repeated Header headers = 10;
         uint64 execution_time = 11;
         IdempotentRequestMetadata idempotency = 12;
+
+        // TODO remove these
+        ServiceId service_id = 13;
+        bytes handler = 14;
     }
 
     oneof status {
@@ -209,6 +242,9 @@ message ServiceInvocation {
     repeated Header headers = 7;
     uint64 execution_time = 8;
     IdempotentRequestMetadata idempotency = 9;
+
+    bytes invocation_id = 10;
+    InvocationTarget invocation_target = 11;
 }
 
 message StateMutation {
@@ -226,9 +262,9 @@ message InboxEntry {
 
 message InvocationResolutionResult {
     message Success {
-        bytes invocation_uuid = 1;
+        bytes invocation_id = 5;
+        InvocationTarget invocation_target = 6;
         bytes service_key = 2;
-        bytes service_name = 4;
         SpanContext span_context = 3;
     }
 
@@ -239,9 +275,9 @@ message InvocationResolutionResult {
 }
 
 message BackgroundCallResolutionResult {
-    bytes invocation_uuid = 1;
+    bytes invocation_id = 5;
+    InvocationTarget invocation_target = 6;
     bytes service_key = 2;
-    bytes service_name = 4;
     SpanContext span_context = 3;
 }
 message EnrichedEntryHeader {

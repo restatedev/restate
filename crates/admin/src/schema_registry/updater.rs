@@ -16,7 +16,6 @@ use http::{HeaderValue, Uri};
 use restate_schema::component::{ComponentLocation, ComponentSchemas, HandlerSchemas};
 use restate_schema::deployment::DeploymentSchemas;
 use restate_schema::Schema;
-use restate_schema_api::component::{ComponentType, HandlerType};
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
@@ -27,6 +26,7 @@ use restate_schema_api::subscription::{
 };
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
+use restate_types::invocation::{ComponentType, HandlerType};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;

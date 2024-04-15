@@ -26,7 +26,7 @@ pub mod mocks {
     use super::*;
 
     use restate_types::identifiers::{InvocationId, InvocationUuid};
-    use restate_types::invocation::ServiceInvocationSpanContext;
+    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
     };
@@ -62,9 +62,9 @@ pub mod mocks {
                         EnrichedEntryHeader::Invoke {
                             is_completed,
                             enrichment_result: Some(InvokeEnrichmentResult {
-                                invocation_uuid: Default::default(),
+                                invocation_id: InvocationId::mock_random(),
+                                invocation_target: InvocationTarget::service("", ""),
                                 service_key: Default::default(),
-                                service_name: Default::default(),
                                 span_context: invocation_span_context.clone(),
                             }),
                         }
@@ -79,9 +79,9 @@ pub mod mocks {
                 PlainEntryHeader::BackgroundInvoke { .. } => {
                     EnrichedEntryHeader::BackgroundInvoke {
                         enrichment_result: InvokeEnrichmentResult {
-                            invocation_uuid: Default::default(),
+                            invocation_id: InvocationId::mock_random(),
+                            invocation_target: InvocationTarget::service("", ""),
                             service_key: Default::default(),
-                            service_name: Default::default(),
                             span_context: invocation_span_context.clone(),
                         },
                     }

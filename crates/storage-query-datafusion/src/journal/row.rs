@@ -14,7 +14,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_rocksdb::journal_table::OwnedJournalRow;
-use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 
 use crate::table_util::format_using;
@@ -58,19 +58,10 @@ pub(crate) fn append_journal_row(
                             .expect("The key must be a string!"),
                     );
 
-                    row.invoked_component(&enrichment_result.service_name);
+                    row.invoked_component(enrichment_result.invocation_target.service_name());
 
                     if row.is_invoked_id_defined() {
-                        let partition_key = ServiceId::new(
-                            enrichment_result.service_name.clone(),
-                            enrichment_result.service_key.clone(),
-                        )
-                        .partition_key();
-
-                        row.invoked_id(format_using(
-                            output,
-                            &InvocationId::new(partition_key, enrichment_result.invocation_uuid),
-                        ));
+                        row.invoked_id(format_using(output, &enrichment_result.invocation_id));
                     }
 
                     if row.is_invoked_handler_defined() {

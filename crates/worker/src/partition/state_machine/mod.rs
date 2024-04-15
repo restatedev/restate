@@ -114,8 +114,8 @@ mod tests {
     };
     use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
-        InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
-        ServiceInvocationResponseSink, Source,
+        HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
+        ServiceInvocation, ServiceInvocationResponseSink, Source,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
@@ -370,6 +370,7 @@ mod tests {
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 fid: inboxed_fid.clone(),
+                invocation_id: inboxed_invocation_id,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_invocation_id,
                     entry_index: 0,
@@ -381,7 +382,7 @@ mod tests {
         let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&InvocationId::from(&inboxed_fid))
+            .get_invocation_status(&inboxed_invocation_id)
             .await?;
 
         // assert that inboxed invocation is in invocation_status
@@ -612,6 +613,13 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyObj",
+                    "MyKey",
+                    "MyHandler",
+                    HandlerType::Exclusive,
+                ),
                 fid: fid.clone(),
                 method_name: ByteString::from("MyHandler"),
                 argument: Default::default(),
@@ -695,7 +703,7 @@ mod tests {
         use restate_storage_api::timer_table::{Timer, TimerKey};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
-        use restate_types::invocation::Idempotency;
+        use restate_types::invocation::{HandlerType, Idempotency, InvocationTarget};
         use restate_wal_protocol::timer::TimerValue;
         use test_log::test;
 
@@ -839,6 +847,12 @@ mod tests {
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
+                    invocation_target: InvocationTarget::virtual_object(
+                        "MyObj",
+                        "MyKey",
+                        "handler",
+                        HandlerType::Exclusive,
+                    ),
                     service_id: original_request_fid.service_id.clone(),
                     handler: handler_name.clone(),
                     idempotency_key: Some(idempotency.key.clone()),
@@ -1071,6 +1085,12 @@ mod tests {
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
+                    invocation_target: InvocationTarget::virtual_object(
+                        "MyObj",
+                        "MyKey",
+                        "handler",
+                        HandlerType::Exclusive,
+                    ),
                     service_id: original_request_fid.service_id.clone(),
                     handler: handler_name.clone(),
                     idempotency_key: Some(idempotency.key.clone()),
@@ -1118,10 +1138,20 @@ mod tests {
         state_machine: &mut MockStateMachine,
         service_id: ServiceId,
     ) -> FullInvocationId {
+        let invocation_target = InvocationTarget::virtual_object(
+            service_id.service_name.clone(),
+            ByteString::try_from(service_id.key.clone()).unwrap(),
+            "MyMethod",
+            HandlerType::Exclusive,
+        );
+
         let fid = FullInvocationId::generate(service_id);
+        let invocation_id = InvocationId::from(&fid);
 
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
+                invocation_id,
+                invocation_target,
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),

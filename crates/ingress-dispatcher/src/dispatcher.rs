@@ -79,7 +79,7 @@ impl DispatchIngressRequest for IngressDispatcher {
         let IngressDispatcherRequest {
             correlation_id,
             fid,
-            handler_name,
+            invocation_target,
             argument,
             span_context,
             request_mode,
@@ -96,8 +96,10 @@ impl DispatchIngressRequest for IngressDispatcher {
         };
 
         let service_invocation = ServiceInvocation {
+            invocation_id,
+            method_name: invocation_target.handler_name().clone(),
+            invocation_target,
             fid,
-            method_name: handler_name,
             argument,
             source: invocation::Source::Ingress,
             response_sink,
@@ -170,7 +172,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         debug!(
-                            restate.invocation.id = ?invocation_response.invocation_id,
+                            restate.invocation.id = %invocation_response.invocation_id,
                             partition_processor_peer = %peer,
                             "Sent response of invocation out"
                         );
@@ -197,7 +199,9 @@ mod tests {
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::ServiceId;
     use restate_types::identifiers::{FullInvocationId, IdempotencyId, WithPartitionKey};
-    use restate_types::invocation::{Idempotency, ResponseResult, SpanRelation};
+    use restate_types::invocation::{
+        HandlerType, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
+    };
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::partition_table::{FindPartition, FixedPartitionTable};
     use restate_types::Version;
@@ -228,11 +232,17 @@ mod tests {
                 let service_id = ServiceId::new("MySvc", "MyKey");
                 let fid = FullInvocationId::generate(service_id.clone());
                 let handler_name = ByteString::from_static("pippo");
+                let invocation_target = InvocationTarget::virtual_object(
+                    "MySvc",
+                    "MyKey",
+                    "pippo",
+                    HandlerType::Exclusive,
+                );
                 let argument = Bytes::from_static(b"nbfjksdfs");
                 let idempotency_key = ByteString::from_static("123");
                 let (invocation, res) = IngressDispatcherRequest::invocation(
                     fid.clone(),
-                    handler_name.clone(),
+                    invocation_target,
                     argument.clone(),
                     SpanRelation::None,
                     Some(Idempotency {

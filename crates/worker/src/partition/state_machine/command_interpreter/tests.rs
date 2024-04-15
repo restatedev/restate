@@ -16,7 +16,8 @@ use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
 use restate_types::errors::codes;
-use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{InvocationUuid, WithPartitionKey};
+use restate_types::invocation::{HandlerType, InvocationTarget};
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
 use std::collections::HashMap;
@@ -433,6 +434,12 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
             timestamps: StatusTimestamps::now(),
             service_id: inboxed_fid.service_id.clone(),
             handler_name: Default::default(),
+            invocation_target: InvocationTarget::virtual_object(
+                "svc",
+                "key",
+                "",
+                HandlerType::Exclusive,
+            ),
             argument: Default::default(),
             source: Source::Ingress,
             span_context: Default::default(),
@@ -496,9 +503,9 @@ async fn kill_call_tree() -> Result<(), Error> {
     state_reader.register_invoked_status_and_locked(
         fid.clone(),
         vec![
-            uncompleted_invoke_entry(call_fid.clone()),
-            background_invoke_entry(background_fid.clone()),
-            completed_invoke_entry(finished_call_fid.clone()),
+            uncompleted_invoke_entry(call_invocation_id),
+            background_invoke_entry(background_invocation_id),
+            completed_invoke_entry(finished_call_invocation_id),
         ],
     );
 
@@ -545,14 +552,14 @@ async fn kill_call_tree() -> Result<(), Error> {
     Ok(())
 }
 
-fn completed_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
         EnrichedEntryHeader::Invoke {
             is_completed: true,
             enrichment_result: Some(InvokeEnrichmentResult {
-                invocation_uuid: target_fid.invocation_uuid,
-                service_key: target_fid.service_id.key,
-                service_name: target_fid.service_id.service_name,
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                service_key: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },
@@ -560,13 +567,13 @@ fn completed_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
     ))
 }
 
-fn background_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
         EnrichedEntryHeader::BackgroundInvoke {
             enrichment_result: InvokeEnrichmentResult {
-                invocation_uuid: target_fid.invocation_uuid,
-                service_key: target_fid.service_id.key,
-                service_name: target_fid.service_id.service_name,
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                service_key: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             },
         },
@@ -574,14 +581,14 @@ fn background_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
     ))
 }
 
-fn uncompleted_invoke_entry(target_fid: FullInvocationId) -> JournalEntry {
+fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
         EnrichedEntryHeader::Invoke {
             is_completed: false,
             enrichment_result: Some(InvokeEnrichmentResult {
-                invocation_uuid: target_fid.invocation_uuid,
-                service_key: target_fid.service_id.key,
-                service_name: target_fid.service_id.service_name,
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                service_key: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },
@@ -604,14 +611,16 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let call_fid = FullInvocationId::mock_random();
     let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
+    let background_invocation_id = InvocationId::from(&background_fid);
     let finished_call_fid = FullInvocationId::mock_random();
+    let finished_call_invocation_id = InvocationId::from(&finished_call_fid);
 
     state_reader.register_invoked_status_and_locked(
         fid.clone(),
         create_termination_journal(
-            call_fid.clone(),
-            background_fid.clone(),
-            finished_call_fid.clone(),
+            call_invocation_id,
+            background_invocation_id,
+            finished_call_invocation_id,
         ),
     );
 
@@ -659,12 +668,14 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let call_fid = FullInvocationId::mock_random();
     let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
+    let background_invocation_id = InvocationId::from(&background_fid);
     let finished_call_fid = FullInvocationId::mock_random();
+    let finished_call_invocation_id = InvocationId::from(&finished_call_fid);
 
     let journal = create_termination_journal(
-        call_fid.clone(),
-        background_fid.clone(),
-        finished_call_fid.clone(),
+        call_invocation_id,
+        background_invocation_id,
+        finished_call_invocation_id,
     );
     state_reader.register_suspended_status_and_locked(fid.clone(), vec![3, 4, 5, 6], journal);
 
@@ -699,14 +710,14 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 }
 
 fn create_termination_journal(
-    call_fid: FullInvocationId,
-    background_fid: FullInvocationId,
-    finished_call_fid: FullInvocationId,
+    call_invocation_id: InvocationId,
+    background_invocation_id: InvocationId,
+    finished_call_invocation_id: InvocationId,
 ) -> Vec<JournalEntry> {
     vec![
-        uncompleted_invoke_entry(call_fid),
-        completed_invoke_entry(finished_call_fid),
-        background_invoke_entry(background_fid),
+        uncompleted_invoke_entry(call_invocation_id),
+        completed_invoke_entry(finished_call_invocation_id),
+        background_invoke_entry(background_invocation_id),
         JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Input {},
             Bytes::default(),

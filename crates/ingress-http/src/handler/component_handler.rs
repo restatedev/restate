@@ -22,7 +22,9 @@ use metrics::{counter, histogram};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
-use restate_types::invocation::{Header, Idempotency, ResponseResult, SpanRelation};
+use restate_types::invocation::{
+    Header, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
+};
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, trace, warn, Instrument};
@@ -84,8 +86,8 @@ where
             parse_idempotency(req.headers(), invocation_target_meta.idempotency_retention)?;
 
         // Craft FullInvocationId
-        let fid = if let TargetType::VirtualObject { key } = target {
-            FullInvocationId::generate(ServiceId::new(component_name.clone(), key))
+        let fid = if let TargetType::VirtualObject { key } = &target {
+            FullInvocationId::generate(ServiceId::new(component_name.clone(), key.clone()))
         } else if let Some(ref idempotency) = idempotency {
             // We need this to make sure the internal components will deliver correctly this idempotent invocation always
             //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
@@ -98,10 +100,21 @@ where
             FullInvocationId::generate(ServiceId::unkeyed(component_name.clone()))
         };
 
+        // Craft InvocationTarget
+        let invocation_target = if let TargetType::VirtualObject { key } = target {
+            InvocationTarget::virtual_object(
+                &*component_name,
+                key,
+                &*handler_name,
+                invocation_target_meta.handler_ty,
+            )
+        } else {
+            InvocationTarget::service(&*component_name, &*handler_name)
+        };
+
         // Prepare the tracing span
         let (ingress_span, ingress_span_context) = prepare_tracing_span(&fid, &handler_name, &req);
 
-        let cloned_handler_name = handler_name.clone();
         let result = async move {
             info!("Processing ingress request");
 
@@ -147,7 +160,7 @@ where
                     }
                     Self::handle_component_call(
                         fid,
-                        cloned_handler_name,
+                        invocation_target,
                         idempotency,
                         body,
                         span_relation,
@@ -160,7 +173,7 @@ where
                 InvokeType::Send => {
                     Self::handle_component_send(
                         fid,
-                        cloned_handler_name,
+                        invocation_target,
                         idempotency,
                         body,
                         span_relation,
@@ -197,7 +210,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn handle_component_call(
         fid: FullInvocationId,
-        handler: String,
+        invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,
         body: Bytes,
         span_relation: SpanRelation,
@@ -208,7 +221,7 @@ where
         let invocation_id: InvocationId = fid.clone().into();
         let (invocation, response_rx) = IngressDispatcherRequest::invocation(
             fid,
-            handler,
+            invocation_target,
             body,
             span_relation,
             idempotency,
@@ -271,7 +284,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn handle_component_send(
         fid: FullInvocationId,
-        handler: String,
+        invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,
         body: Bytes,
         span_relation: SpanRelation,
@@ -287,7 +300,7 @@ where
         // Send the service invocation
         let invocation = IngressDispatcherRequest::background_invocation(
             fid,
-            handler,
+            invocation_target,
             body,
             span_relation,
             None,

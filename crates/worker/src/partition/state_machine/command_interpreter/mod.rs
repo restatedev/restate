@@ -36,12 +36,12 @@ use restate_types::errors::{
     KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, InvocationUuid, PartitionKey,
-    ServiceId, WithPartitionKey,
+    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, PartitionKey, ServiceId,
+    WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, InvocationTermination, ResponseResult, ServiceInvocation,
+    InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
     SpanRelationCause, TerminationFlavor,
 };
@@ -277,7 +277,7 @@ where
                 InboxEntry::Invocation(service_invocation.fid.clone()),
             );
             effects.store_inboxed_invocation(
-                InvocationId::from(&service_invocation.fid),
+                service_invocation.invocation_id,
                 InboxedInvocation::from_service_invocation(service_invocation, inbox_seq_number),
             );
         }
@@ -511,7 +511,7 @@ where
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Kill,
-                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                invocation_id,
                 inboxed,
                 effects,
             ),
@@ -544,7 +544,7 @@ where
                 let fid = FullInvocationId::combine(metadata.service_id.clone(), invocation_id);
 
                 self.cancel_journal_leaves(
-                    fid.clone(),
+                    invocation_id,
                     InvocationStatusProjection::Invoked,
                     metadata.journal_metadata.length,
                     state,
@@ -563,7 +563,7 @@ where
 
                 if self
                     .cancel_journal_leaves(
-                        fid.clone(),
+                        invocation_id,
                         InvocationStatusProjection::Suspended(waiting_for_completed_entries),
                         metadata.journal_metadata.length,
                         state,
@@ -571,14 +571,14 @@ where
                     )
                     .await?
                 {
-                    effects.resume_service(InvocationId::from(&fid), metadata);
+                    effects.resume_service(invocation_id, metadata);
                 }
 
                 Ok((Some(fid), related_span))
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Cancel,
-                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                invocation_id,
                 inboxed,
                 effects,
             ),
@@ -600,7 +600,7 @@ where
     fn terminate_inboxed_invocation(
         &mut self,
         termination_flavor: TerminationFlavor,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         inboxed_invocation: InboxedInvocation,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
@@ -614,6 +614,7 @@ where
             response_sinks,
             handler_name,
             span_context,
+            service_id,
             ..
         } = inboxed_invocation;
 
@@ -621,20 +622,18 @@ where
 
         // Reply back to callers with error, and publish end trace
         let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::combine(
-                fid.service_id.clone(),
-                handler_name.clone(),
-                idempotency.key,
-            )
+            IdempotencyId::combine(service_id.clone(), handler_name.clone(), idempotency.key)
         });
 
         self.send_response_to_sinks(
             effects,
-            &InvocationId::from(&fid),
+            &invocation_id,
             idempotency_id,
             response_sinks,
             &error,
         );
+
+        let fid = FullInvocationId::combine(service_id.clone(), invocation_id);
         self.notify_invocation_result(
             &fid,
             handler_name,
@@ -645,8 +644,8 @@ where
         );
 
         // Delete inbox entry and invocation status.
-        effects.delete_inbox_entry(fid.service_id.clone(), inbox_sequence_number);
-        effects.free_invocation(InvocationId::from(&fid));
+        effects.delete_inbox_entry(service_id.clone(), inbox_sequence_number);
+        effects.free_invocation(invocation_id);
 
         Ok((Some(fid), parent_span))
     }
@@ -691,14 +690,9 @@ where
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
-                        let target_fid = FullInvocationId::new(
-                            enrichment_result.service_name,
-                            enrichment_result.service_key,
-                            enrichment_result.invocation_uuid,
-                        );
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::kill(
-                                InvocationId::from(target_fid),
+                                enrichment_result.invocation_id,
                             )),
                             effects,
                         );
@@ -715,13 +709,12 @@ where
 
     async fn cancel_journal_leaves<State: StateReader>(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_status: InvocationStatusProjection,
         journal_length: EntryIndex,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<bool, Error> {
-        let invocation_id = InvocationId::from(&full_invocation_id);
         let mut journal = pin!(state.get_journal(&invocation_id, journal_length));
 
         let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
@@ -739,15 +732,9 @@ where
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
-                        let target_fid = FullInvocationId::new(
-                            enrichment_result.service_name,
-                            enrichment_result.service_key,
-                            enrichment_result.invocation_uuid,
-                        );
-
                         self.handle_outgoing_message(
                             OutboxMessage::InvocationTermination(InvocationTermination::cancel(
-                                InvocationId::from(target_fid),
+                                enrichment_result.invocation_id,
                             )),
                             effects,
                         );
@@ -779,7 +766,7 @@ where
                         );
 
                         let timer_key = TimerKey {
-                            invocation_uuid: full_invocation_id.invocation_uuid,
+                            invocation_uuid: invocation_id.invocation_uuid(),
                             journal_index,
                             timestamp: wake_up_time,
                         };
@@ -1176,7 +1163,7 @@ where
                 result.clone(),
             );
             match response_message {
-                ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
+                ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
                 ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
             }
         }
@@ -1300,8 +1287,9 @@ where
             } => {
                 if let Some(InvokeEnrichmentResult {
                     service_key,
-                    invocation_uuid,
                     span_context,
+                    invocation_id: callee_invocation_id,
+                    invocation_target,
                     ..
                 }) = enrichment_result
                 {
@@ -1311,8 +1299,9 @@ where
                     );
 
                     let service_invocation = Self::create_service_invocation(
-                        *invocation_uuid,
                         service_key.clone(),
+                        *callee_invocation_id,
+                        invocation_target.clone(),
                         request,
                         Source::Service(full_invocation_id.clone()),
                         Some((invocation_id, entry_index)),
@@ -1332,7 +1321,8 @@ where
             } => {
                 let InvokeEnrichmentResult {
                     service_key,
-                    invocation_uuid: invocation_id,
+                    invocation_id,
+                    invocation_target,
                     span_context,
                     ..
                 } = enrichment_result;
@@ -1354,8 +1344,9 @@ where
                 };
 
                 let service_invocation = Self::create_service_invocation(
-                    *invocation_id,
                     service_key.clone(),
+                    *invocation_id,
+                    invocation_target.clone(),
                     request,
                     Source::Service(full_invocation_id.clone()),
                     None,
@@ -1597,18 +1588,15 @@ where
         self.outbox_seq_number += 1;
     }
 
-    fn outbox_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
-        effects.enqueue_into_outbox(self.outbox_seq_number, message);
-        self.outbox_seq_number += 1;
-    }
-
     fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {
         effects.send_ingress_response(ingress_response);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_service_invocation(
-        invocation_id: InvocationUuid,
         invocation_key: Bytes,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         invoke_request: InvokeRequest,
         source: Source,
         response_target: Option<(InvocationId, EntryIndex)>,
@@ -1631,8 +1619,21 @@ where
             None
         };
 
+        let fid = FullInvocationId::new(
+            service_name,
+            invocation_key,
+            invocation_id.invocation_uuid(),
+        );
+        debug_assert_eq!(
+            invocation_id,
+            InvocationId::from(&fid),
+            "InvocationId and FullInvocationId must match"
+        );
+
         ServiceInvocation {
-            fid: FullInvocationId::new(service_name, invocation_key, invocation_id),
+            invocation_id,
+            invocation_target,
+            fid,
             method_name,
             argument: parameter,
             source,

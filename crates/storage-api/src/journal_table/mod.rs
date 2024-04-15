@@ -16,7 +16,7 @@ use restate_types::journal::CompletionResult;
 use std::future::Future;
 
 /// Different types of journal entries persisted by the runtime
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalEntry {
     Entry(EnrichedRawEntry),
     Completion(CompletionResult),

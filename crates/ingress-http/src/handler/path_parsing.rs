@@ -11,10 +11,9 @@
 use super::Handler;
 use super::HandlerError;
 
-use component::ComponentType;
 use http::Uri;
-use restate_schema_api::component;
 use restate_schema_api::component::ComponentMetadataResolver;
+use restate_types::invocation::ComponentType;
 use std::collections::VecDeque;
 
 pub(crate) enum AwakeableRequestType {
