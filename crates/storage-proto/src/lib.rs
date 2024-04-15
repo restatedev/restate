@@ -1967,11 +1967,7 @@ pub mod storage {
                         match value.value.ok_or(ConversionError::missing_field("value"))? {
                             timer::Value::CompleteSleepEntry(cse) => {
                                 restate_storage_api::timer_table::Timer::CompleteSleepEntry(
-                                    restate_types::identifiers::ServiceId::new(
-                                        ByteString::try_from(cse.service_name)
-                                            .map_err(ConversionError::invalid_data)?,
-                                        cse.service_key,
-                                    ),
+                                    cse.partition_key,
                                 )
                             }
                             timer::Value::Invoke(si) => {
@@ -1996,10 +1992,9 @@ pub mod storage {
                     Timer {
                         value: Some(match value {
                             restate_storage_api::timer_table::Timer::CompleteSleepEntry(
-                                service_id,
+                                partition_key,
                             ) => timer::Value::CompleteSleepEntry(timer::CompleteSleepEntry {
-                                service_name: service_id.service_name.into_bytes(),
-                                service_key: service_id.key,
+                                partition_key,
                             }),
 
                             restate_storage_api::timer_table::Timer::Invoke(si) => {

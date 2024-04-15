@@ -422,13 +422,12 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(service_id) => {
+                Timer::CompleteSleepEntry(_) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        rpc.service = %service_id.service_name,
                         restate.invocation.id = %timer_value.invocation_id(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
