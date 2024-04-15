@@ -370,6 +370,7 @@ mod tests {
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 fid: inboxed_fid.clone(),
+                invocation_id: inboxed_invocation_id,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_invocation_id,
                     entry_index: 0,
@@ -381,7 +382,7 @@ mod tests {
         let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&InvocationId::from(&inboxed_fid))
+            .get_invocation_status(&inboxed_invocation_id)
             .await?;
 
         // assert that inboxed invocation is in invocation_status
