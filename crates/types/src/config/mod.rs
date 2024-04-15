@@ -80,6 +80,10 @@ pub fn data_dir(dir: &str) -> PathBuf {
     guard.path().join(dir)
 }
 
+pub fn node_filepath(filename: &str) -> PathBuf {
+    data_dir(filename)
+}
+
 #[cfg(any(test, feature = "test-util"))]
 pub fn reset_base_temp_dir() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write().unwrap();

@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod cluster_marker;
 mod network_server;
 mod roles;
 
+use anyhow::Context;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
 use restate_network::Networking;
@@ -201,6 +203,10 @@ impl Node {
         let tc = task_center();
 
         let config = self.updateable_config.pinned();
+
+        cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())
+            .context("failed validating and updating cluster marker")?;
+
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
                 TaskKind::MetadataStore,

@@ -60,6 +60,7 @@ metrics-util = { version = "0.16.0" }
 once_cell = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
+semver = {  version = "1.0", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -78,6 +79,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+
+tempfile = { workspace = true }
 
 googletest = { workspace = true }
 test-log = { workspace = true }
