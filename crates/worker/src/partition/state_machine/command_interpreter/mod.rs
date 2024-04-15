@@ -511,7 +511,7 @@ where
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Kill,
-                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                invocation_id,
                 inboxed,
                 effects,
             ),
@@ -571,14 +571,14 @@ where
                     )
                     .await?
                 {
-                    effects.resume_service(InvocationId::from(&fid), metadata);
+                    effects.resume_service(invocation_id, metadata);
                 }
 
                 Ok((Some(fid), related_span))
             }
             InvocationStatus::Inboxed(inboxed) => self.terminate_inboxed_invocation(
                 TerminationFlavor::Cancel,
-                FullInvocationId::combine(inboxed.service_id.clone(), invocation_id),
+                invocation_id,
                 inboxed,
                 effects,
             ),
@@ -600,7 +600,7 @@ where
     fn terminate_inboxed_invocation(
         &mut self,
         termination_flavor: TerminationFlavor,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         inboxed_invocation: InboxedInvocation,
         effects: &mut Effects,
     ) -> Result<(Option<FullInvocationId>, SpanRelation), Error> {
@@ -614,6 +614,7 @@ where
             response_sinks,
             handler_name,
             span_context,
+            service_id,
             ..
         } = inboxed_invocation;
 
@@ -621,20 +622,18 @@ where
 
         // Reply back to callers with error, and publish end trace
         let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::combine(
-                fid.service_id.clone(),
-                handler_name.clone(),
-                idempotency.key,
-            )
+            IdempotencyId::combine(service_id.clone(), handler_name.clone(), idempotency.key)
         });
 
         self.send_response_to_sinks(
             effects,
-            &InvocationId::from(&fid),
+            &invocation_id,
             idempotency_id,
             response_sinks,
             &error,
         );
+
+        let fid = FullInvocationId::combine(service_id.clone(), invocation_id);
         self.notify_invocation_result(
             &fid,
             handler_name,
@@ -645,8 +644,8 @@ where
         );
 
         // Delete inbox entry and invocation status.
-        effects.delete_inbox_entry(fid.service_id.clone(), inbox_sequence_number);
-        effects.free_invocation(InvocationId::from(&fid));
+        effects.delete_inbox_entry(service_id.clone(), inbox_sequence_number);
+        effects.free_invocation(invocation_id);
 
         Ok((Some(fid), parent_span))
     }
