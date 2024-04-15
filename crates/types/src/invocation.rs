@@ -126,6 +126,20 @@ impl InvocationTarget {
             }
         }
     }
+
+    pub fn service_ty(&self) -> ComponentType {
+        match self {
+            InvocationTarget::Service { .. } => ComponentType::Service,
+            InvocationTarget::VirtualObject { .. } => ComponentType::VirtualObject,
+        }
+    }
+
+    pub fn handler_ty(&self) -> Option<HandlerType> {
+        match self {
+            InvocationTarget::Service { .. } => None,
+            InvocationTarget::VirtualObject { handler_ty, .. } => Some(*handler_ty),
+        }
+    }
 }
 
 impl fmt::Display for InvocationTarget {
