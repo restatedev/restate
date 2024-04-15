@@ -1163,7 +1163,7 @@ where
                 result.clone(),
             );
             match response_message {
-                ResponseMessage::Outbox(outbox) => self.outbox_message(outbox, effects),
+                ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
                 ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
             }
         }
@@ -1584,11 +1584,6 @@ where
         //                 state
         //             ).await
         //         }
-        effects.enqueue_into_outbox(self.outbox_seq_number, message);
-        self.outbox_seq_number += 1;
-    }
-
-    fn outbox_message(&mut self, message: OutboxMessage, effects: &mut Effects) {
         effects.enqueue_into_outbox(self.outbox_seq_number, message);
         self.outbox_seq_number += 1;
     }

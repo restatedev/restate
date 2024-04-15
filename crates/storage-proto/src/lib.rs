@@ -1718,19 +1718,13 @@ pub mod storage {
                                         .span_context
                                         .ok_or(ConversionError::missing_field("span_context"))?,
                                 )?;
-                            let invocation_uuid =
-                                try_bytes_into_invocation_uuid(success.invocation_uuid)?;
                             let service_key = success.service_key;
-                            let service_name = ByteString::try_from(success.service_name)
-                                .map_err(ConversionError::invalid_data)?;
 
                             Some(restate_types::journal::enriched::InvokeEnrichmentResult {
                                 invocation_id,
                                 invocation_target,
                                 span_context,
-                                invocation_uuid,
                                 service_key,
-                                service_name,
                             })
                         }
                     };
@@ -1751,17 +1745,13 @@ pub mod storage {
                             restate_types::journal::enriched::InvokeEnrichmentResult {
                                 invocation_id,
                                 invocation_target,
-                                invocation_uuid,
                                 service_key,
-                                service_name,
                                 span_context,
                             } => invocation_resolution_result::Result::Success(
                                 invocation_resolution_result::Success {
                                     invocation_id: invocation_id.into(),
                                     invocation_target: Some(invocation_target.into()),
-                                    invocation_uuid: invocation_uuid.into(),
                                     service_key,
-                                    service_name: service_name.into_bytes(),
                                     span_context: Some(SpanContext::from(span_context)),
                                 },
                             ),
@@ -1794,17 +1784,12 @@ pub mod storage {
                                 .span_context
                                 .ok_or(ConversionError::missing_field("span_context"))?,
                         )?;
-                    let invocation_uuid = try_bytes_into_invocation_uuid(value.invocation_uuid)?;
                     let service_key = value.service_key;
-                    let service_name = ByteString::try_from(value.service_name)
-                        .map_err(ConversionError::invalid_data)?;
 
                     Ok(restate_types::journal::enriched::InvokeEnrichmentResult {
                         invocation_id,
                         span_context,
-                        invocation_uuid,
                         service_key,
-                        service_name,
                         invocation_target,
                     })
                 }
@@ -1817,9 +1802,7 @@ pub mod storage {
                     BackgroundCallResolutionResult {
                         invocation_id: value.invocation_id.into(),
                         invocation_target: Some(value.invocation_target.into()),
-                        invocation_uuid: value.invocation_uuid.into(),
                         service_key: value.service_key,
-                        service_name: value.service_name.into_bytes(),
                         span_context: Some(SpanContext::from(value.span_context)),
                     }
                 }

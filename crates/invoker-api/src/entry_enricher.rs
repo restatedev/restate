@@ -64,9 +64,7 @@ pub mod mocks {
                             enrichment_result: Some(InvokeEnrichmentResult {
                                 invocation_id: InvocationId::mock_random(),
                                 invocation_target: InvocationTarget::service("", ""),
-                                invocation_uuid: Default::default(),
                                 service_key: Default::default(),
-                                service_name: Default::default(),
                                 span_context: invocation_span_context.clone(),
                             }),
                         }
@@ -83,9 +81,7 @@ pub mod mocks {
                         enrichment_result: InvokeEnrichmentResult {
                             invocation_id: InvocationId::mock_random(),
                             invocation_target: InvocationTarget::service("", ""),
-                            invocation_uuid: Default::default(),
                             service_key: Default::default(),
-                            service_name: Default::default(),
                             span_context: invocation_span_context.clone(),
                         },
                     }

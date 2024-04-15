@@ -99,9 +99,7 @@ where
         Ok(InvokeEnrichmentResult {
             invocation_id,
             invocation_target,
-            invocation_uuid,
             service_key: service_id.key,
-            service_name: service_id.service_name,
             span_context,
         })
     }

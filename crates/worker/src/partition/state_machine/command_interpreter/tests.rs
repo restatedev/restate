@@ -559,9 +559,7 @@ fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: Some(InvokeEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
-                invocation_uuid: invocation_id.invocation_uuid(),
                 service_key: Default::default(),
-                service_name: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },
@@ -575,9 +573,7 @@ fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: InvokeEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
-                invocation_uuid: invocation_id.invocation_uuid(),
                 service_key: Default::default(),
-                service_name: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             },
         },
@@ -592,9 +588,7 @@ fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: Some(InvokeEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
-                invocation_uuid: invocation_id.invocation_uuid(),
                 service_key: Default::default(),
-                service_name: Default::default(),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },

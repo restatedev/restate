@@ -11,7 +11,7 @@
 use super::raw::*;
 use super::*;
 
-use crate::identifiers::{InvocationId, InvocationUuid};
+use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use bytes::Bytes;
 
@@ -24,10 +24,8 @@ pub struct InvokeEnrichmentResult {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
 
-    // TODO Should remove those
-    pub invocation_uuid: InvocationUuid,
+    // TODO Should remove this
     pub service_key: Bytes,
-    pub service_name: ByteString,
 
     // When resolving the service and generating its id, we also generate the associated span
     pub span_context: ServiceInvocationSpanContext,
