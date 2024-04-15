@@ -172,7 +172,7 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         debug!(
-                            restate.invocation.id = ?invocation_response.invocation_id,
+                            restate.invocation.id = %invocation_response.invocation_id,
                             partition_processor_peer = %peer,
                             "Sent response of invocation out"
                         );
