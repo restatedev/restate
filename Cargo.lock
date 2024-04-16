@@ -5743,24 +5743,12 @@ dependencies = [
  "bytes",
  "bytestring",
  "futures-util",
- "restate-types",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "restate-storage-proto"
-version = "0.9.0"
-dependencies = [
- "anyhow",
- "bytes",
- "bytestring",
  "opentelemetry",
  "prost",
  "prost-build",
  "prost-types",
- "restate-storage-api",
  "restate-types",
+ "serde",
  "thiserror",
 ]
 
@@ -5819,7 +5807,6 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-storage-api",
- "restate-storage-proto",
  "restate-storage-query-datafusion",
  "restate-storage-rocksdb",
  "restate-types",
@@ -5855,7 +5842,6 @@ dependencies = [
  "restate-errors",
  "restate-rocksdb",
  "restate-storage-api",
- "restate-storage-proto",
  "restate-test-util",
  "restate-types",
  "rocksdb",

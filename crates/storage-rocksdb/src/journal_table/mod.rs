@@ -20,8 +20,7 @@ use futures::Stream;
 use futures_util::stream;
 use prost::Message;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
-use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
+use restate_storage_api::{storage, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };

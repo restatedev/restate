@@ -18,7 +18,7 @@ use futures::Stream;
 use futures_util::stream;
 use prost::Message;
 use restate_storage_api::deduplication_table::{DeduplicationTable, ReadOnlyDeduplicationTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{storage, Result, StorageError};
 use restate_types::dedup::{DedupInformation, DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
@@ -40,7 +40,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
     storage.get_blocking(key, move |_k, maybe_dedup_sequence_number| {
         if let Some(bytes) = maybe_dedup_sequence_number {
             Ok(Some(DedupSequenceNumber::try_from(
-                restate_storage_proto::storage::v1::DedupSequenceNumber::decode(bytes)
+                storage::v1::DedupSequenceNumber::decode(bytes)
                     .map_err(|error| StorageError::Conversion(error.into()))?,
             )?))
         } else {
@@ -60,7 +60,7 @@ fn get_all_sequence_numbers<S: StorageAccess>(
                 DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
 
             let res = if let Ok(Some(producer_id)) = key {
-                restate_storage_proto::storage::v1::DedupSequenceNumber::decode(v)
+                storage::v1::DedupSequenceNumber::decode(v)
                     .map_err(|err| StorageError::Conversion(err.into()))
                     .and_then(|sequence_number| {
                         DedupSequenceNumber::try_from(sequence_number)
@@ -124,11 +124,9 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
             .producer_id(producer_id);
         self.put_kv(
             key,
-            ProtoValue(
-                restate_storage_proto::storage::v1::DedupSequenceNumber::from(
-                    dedup_sequence_number,
-                ),
-            ),
+            ProtoValue(storage::v1::DedupSequenceNumber::from(
+                dedup_sequence_number,
+            )),
         );
     }
 }

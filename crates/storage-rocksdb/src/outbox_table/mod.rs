@@ -15,8 +15,7 @@ use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
 
 use prost::Message;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
+use restate_storage_api::{storage, Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 use std::ops::Range;

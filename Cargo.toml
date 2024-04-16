@@ -59,7 +59,6 @@ restate-server = { path = "server" }
 restate-service-client = { path = "crates/service-client" }
 restate-service-protocol = { path = "crates/service-protocol" }
 restate-storage-api = { path = "crates/storage-api" }
-restate-storage-proto = { path = "crates/storage-proto" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
 restate-storage-rocksdb = { path = "crates/storage-rocksdb" }

@@ -16,7 +16,6 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true, features = ["serde"] }
-restate-storage-proto = { workspace = true, features = ["conversion"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

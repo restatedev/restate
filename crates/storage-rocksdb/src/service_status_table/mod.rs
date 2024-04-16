@@ -20,8 +20,7 @@ use prost::Message;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
+use restate_storage_api::{storage, Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;

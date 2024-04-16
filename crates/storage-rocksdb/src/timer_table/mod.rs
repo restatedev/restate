@@ -18,8 +18,7 @@ use futures::Stream;
 use futures_util::stream;
 use prost::Message;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
-use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
+use restate_storage_api::{storage, Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
 define_table_key!(

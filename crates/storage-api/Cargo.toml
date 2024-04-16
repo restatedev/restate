@@ -18,5 +18,11 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 futures-util = { workspace = true }
+opentelemetry = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
