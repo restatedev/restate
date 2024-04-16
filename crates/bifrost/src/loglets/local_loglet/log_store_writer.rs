@@ -15,7 +15,9 @@ use restate_types::arc_util::Updateable;
 use restate_types::config::LocalLogletOptions;
 use rocksdb::{WriteBatch, DB};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, trace, warn};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+use tracing::{debug, error, trace, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 
@@ -41,18 +43,16 @@ enum DataUpdate {
 }
 
 pub(crate) struct LogStoreWriter {
-    current_batch: WriteBatch,
-    current_batch_acks: Vec<Ack>,
     db: Arc<DB>,
+    batch_acks_buf: Vec<Ack>,
     manual_wal_flush: bool,
 }
 
 impl LogStoreWriter {
     pub(crate) fn new(db: Arc<DB>, manual_wal_flush: bool) -> Self {
         Self {
-            current_batch: WriteBatch::default(),
-            current_batch_acks: Default::default(),
             db,
+            batch_acks_buf: Vec::default(),
             manual_wal_flush,
         }
     }
@@ -62,39 +62,33 @@ impl LogStoreWriter {
         mut self,
         mut updateable: impl Updateable<LocalLogletOptions> + Send + 'static,
     ) -> Result<RocksDbLogWriterHandle, ShutdownError> {
-        let (sender, mut receiver) = mpsc::channel(updateable.load().writer_queue_length);
+        // big enough to allows a second full batch to queue up while the existing one is being processed
+        let (sender, receiver) = mpsc::channel(updateable.load().writer_batch_commit_count * 2);
 
         task_center().spawn_child(
             TaskKind::LogletProvider,
             "local-loglet-writer",
             None,
             async move {
+                let opts = updateable.load();
+                let batch_size = std::cmp::max(1, opts.writer_batch_commit_count);
+                let batch_duration = opts.writer_batch_commit_duration.into();
+                let receiver =
+                    ReceiverStream::new(receiver).chunks_timeout(batch_size, batch_duration);
+                tokio::pin!(receiver);
+
                 loop {
-                    let batch_duration = updateable.load().writer_batch_commit_duration;
                     tokio::select! {
                         biased;
                         _ = cancellation_watcher() => {
                             break;
                         }
-                        _ = self.delay_commit(batch_duration) => {
-                            if !self.current_batch.is_empty() {
+                        Some(cmds) = receiver.next() => {
                                 let opts = updateable.load();
-                                trace!("Triggering local loglet write batch commit due to max latency");
-                                self.commit(opts);
-                            }
-                        }
-                        // watch config changes
-                        cmd = receiver.recv() => {
-                            if let Some(cmd) = cmd {
-                                let opts = updateable.load();
-                                self.handle_command(opts, cmd);
-                            } else {
-                                break;
-                            }
+                                self.handle_commands(opts, cmds);
                         }
                     }
                 }
-                self.commit(updateable.load());
                 debug!("Local loglet writer task finished");
                 Ok(())
             },
@@ -102,66 +96,77 @@ impl LogStoreWriter {
         Ok(RocksDbLogWriterHandle { sender })
     }
 
-    async fn delay_commit(&mut self, batch_duration: Option<humantime::Duration>) {
-        if !self.current_batch.is_empty() && batch_duration.is_some_and(|d| !d.is_zero()) {
-            tokio::time::sleep(batch_duration.unwrap().into()).await;
-        } else {
-            std::future::pending::<()>().await;
-        }
-    }
+    fn handle_commands(&mut self, opts: &LocalLogletOptions, commands: Vec<LogStoreWriteCommand>) {
+        let mut write_batch = WriteBatch::default();
+        self.batch_acks_buf.clear();
+        self.batch_acks_buf.reserve(commands.len());
+        let batch_acks = &mut self.batch_acks_buf;
 
-    fn handle_command(&mut self, opts: &LocalLogletOptions, command: LogStoreWriteCommand) {
-        if let Some(data_command) = command.data_update {
-            match data_command {
-                DataUpdate::PutRecord { offset, data } => {
-                    self.put_record(command.log_id, offset, data)
+        let data_cf = self.db.cf_handle(DATA_CF).expect("data cf exists");
+        let metadata_cf = self.db.cf_handle(METADATA_CF).expect("metadata cf exists");
+
+        for command in commands {
+            if let Some(data_command) = command.data_update {
+                match data_command {
+                    DataUpdate::PutRecord { offset, data } => {
+                        Self::put_record(data_cf, &mut write_batch, command.log_id, offset, data)
+                    }
                 }
+            }
+
+            if let Some(logstate_updates) = command.log_state_updates {
+                Self::update_log_state(
+                    metadata_cf,
+                    &mut write_batch,
+                    command.log_id,
+                    logstate_updates,
+                )
+            }
+
+            if let Some(ack) = command.ack {
+                batch_acks.push(ack);
             }
         }
 
-        if let Some(logstate_updates) = command.log_state_updates {
-            self.update_log_state(command.log_id, logstate_updates)
-        }
-
-        if let Some(ack) = command.ack {
-            self.current_batch_acks.push(ack);
-        }
-
-        if !self.current_batch.is_empty()
-            && self.current_batch.len() >= opts.writer_batch_commit_count
-        {
-            trace!("Local loglet write batch is full, committing");
-            self.commit(opts);
-        }
+        self.commit(opts, write_batch);
     }
 
-    fn update_log_state(&mut self, log_id: u64, updates: LogStateUpdates) {
-        let metadata_cf = self.db.cf_handle(METADATA_CF).expect("metadata cf exists");
-        self.current_batch.merge_cf(
+    fn update_log_state(
+        metadata_cf: &rocksdb::ColumnFamily,
+        write_batch: &mut WriteBatch,
+        log_id: u64,
+        updates: LogStateUpdates,
+    ) {
+        write_batch.merge_cf(
             metadata_cf,
             MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
             updates.to_bytes(),
         );
     }
 
-    fn put_record(&mut self, id: u64, offset: LogletOffset, data: Bytes) {
+    fn put_record(
+        data_cf: &rocksdb::ColumnFamily,
+        write_batch: &mut WriteBatch,
+        id: u64,
+        offset: LogletOffset,
+        data: Bytes,
+    ) {
         let key = RecordKey::new(id, offset);
-        let data_cf = self.db.cf_handle(DATA_CF).expect("data cf exists");
-        self.current_batch.put_cf(data_cf, &key.to_bytes(), data);
+        write_batch.put_cf(data_cf, &key.to_bytes(), data);
     }
 
-    fn commit(&mut self, opts: &LocalLogletOptions) {
+    fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
         let mut rocksdb_write_options = rocksdb::WriteOptions::new();
         rocksdb_write_options.disable_wal(opts.rocksdb.rocksdb_disable_wal());
+        rocksdb_write_options.set_sync(!opts.rocksdb.rocksdb_disable_wal());
 
-        let current_batch = std::mem::take(&mut self.current_batch);
         trace!(
             "Committing local loglet current write batch: {} items",
-            current_batch.len(),
+            write_batch.len(),
         );
 
-        if let Err(e) = self.db.write_opt(current_batch, &rocksdb_write_options) {
-            warn!("Failed to commit local loglet write batch: {}", e);
+        if let Err(e) = self.db.write_opt(write_batch, &rocksdb_write_options) {
+            error!("Failed to commit local loglet write batch: {}", e);
             self.send_acks(Err(Error::LogStoreError(e.into())));
             return;
         }
@@ -178,7 +183,7 @@ impl LogStoreWriter {
     }
 
     fn send_acks(&mut self, result: Result<(), Error>) {
-        self.current_batch_acks.drain(..).for_each(|a| {
+        self.batch_acks_buf.drain(..).for_each(|a| {
             let _ = a.send(result.clone());
         });
     }
