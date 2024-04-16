@@ -138,6 +138,7 @@ impl RocksDbManager {
         }
 
         let db = Arc::new(RocksAccess::open_db(&db_spec)?);
+        let path = db_spec.path.clone();
         let wrapper = Arc::new(RocksDb::new(db_spec, db.clone()));
 
         self.dbs.insert((owner, name.clone()), wrapper);
@@ -154,6 +155,7 @@ impl RocksDbManager {
             warn!(
                 db = %name,
                 owner = %owner,
+                path = %path.display(),
                 "Failed to register database with watchdog: {}, this database will \
                     not receive config updates but the system will continue to run as normal",
                 e
@@ -162,6 +164,7 @@ impl RocksDbManager {
         info!(
             db = %name,
             owner = %owner,
+            path = %path.display(),
             "Opened rocksdb database"
         );
         Ok(db)
