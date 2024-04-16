@@ -8,15 +8,47 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use once_cell::sync::Lazy;
 use restate_types::config::node_filepath;
 use semver::Version;
 use std::cmp::{max_by, Ordering};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
+use std::ops::Deref;
 use std::path::Path;
 use tracing::info;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
 const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
+
+/// Map containing compatibility information which is used when validating the cluster marker. This
+/// map only needs to contain the versions which change the compatibility with respect to the
+/// previously registered versions.
+///
+/// # Important
+/// This map needs to be updated whenever we release a version that is no longer compatible with
+/// previous versions.
+static COMPATIBILITY_MAP: Lazy<BTreeMap<Version, CompatibilityInformation>> = Lazy::new(|| {
+    BTreeMap::from([(
+        Version::new(0, 9, 0),
+        CompatibilityInformation::new(Version::new(0, 9, 0)),
+    )])
+});
+
+/// Compatibility information define the minimum supported Restate version that is compatible with
+/// this version.
+#[derive(Debug, Clone)]
+struct CompatibilityInformation {
+    min_supported_version: Version,
+}
+
+impl CompatibilityInformation {
+    fn new(min_supported_version: Version) -> Self {
+        Self {
+            min_supported_version,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterValidationError {
@@ -71,6 +103,7 @@ pub fn validate_and_update_cluster_marker(
         cluster_name,
         current_version,
         cluster_marker_filepath.as_path(),
+        COMPATIBILITY_MAP.deref(),
     )
 }
 
@@ -78,6 +111,7 @@ fn validate_and_update_cluster_marker_inner(
     cluster_name: &str,
     current_version: Version,
     cluster_marker_filepath: &Path,
+    compatibility_map: &BTreeMap<Version, CompatibilityInformation>,
 ) -> Result<(), ClusterValidationError> {
     let tmp_cluster_marker_filepath = cluster_marker_filepath
         .parent()
@@ -103,17 +137,18 @@ fn validate_and_update_cluster_marker_inner(
         });
     }
 
-    // we only support going back one minor version
-    let min_version = Version::new(
-        cluster_marker.max_version.major,
-        cluster_marker.max_version.minor.saturating_sub(1),
-        0,
-    );
+    // find the next compatibility boundary wrt to the max version
+    let (_, compatibility_boundary) = compatibility_map
+        .range(..=cluster_marker.max_version.clone())
+        .next_back()
+        .expect("at least version 0.9.0 should be present");
 
-    if current_version.cmp_precedence(&min_version) == Ordering::Less {
+    if current_version.cmp_precedence(&compatibility_boundary.min_supported_version)
+        == Ordering::Less
+    {
         return Err(ClusterValidationError::IncompatibleVersion {
             current_version,
-            min_version,
+            min_version: compatibility_boundary.min_supported_version.clone(),
         });
     }
 
@@ -151,12 +186,15 @@ fn validate_and_update_cluster_marker_inner(
 mod tests {
     use crate::cluster_marker::{
         validate_and_update_cluster_marker_inner, ClusterMarker, ClusterValidationError,
-        CLUSTER_MARKER_FILE_NAME,
+        CompatibilityInformation, CLUSTER_MARKER_FILE_NAME, COMPATIBILITY_MAP,
     };
+    use once_cell::sync::Lazy;
     use semver::Version;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::ops::Deref;
     use std::path::Path;
     use tempfile::{tempdir, NamedTempFile};
 
@@ -178,6 +216,14 @@ mod tests {
 
     const CLUSTER_NAME: &str = "test";
 
+    static TESTING_COMPATIBILITY_MAP: Lazy<BTreeMap<Version, CompatibilityInformation>> =
+        Lazy::new(|| {
+            BTreeMap::from([(
+                Version::new(1, 0, 0),
+                CompatibilityInformation::new(Version::new(1, 0, 0)),
+            )])
+        });
+
     #[test]
     fn cluster_marker_is_created() {
         let file = tempdir()
@@ -190,6 +236,7 @@ mod tests {
             CLUSTER_NAME,
             current_version.clone(),
             file.as_path(),
+            TESTING_COMPATIBILITY_MAP.deref(),
         )
         .unwrap();
 
@@ -221,6 +268,7 @@ mod tests {
             CLUSTER_NAME,
             current_version.clone(),
             file.path(),
+            TESTING_COMPATIBILITY_MAP.deref(),
         )
         .unwrap();
 
@@ -252,6 +300,7 @@ mod tests {
             CLUSTER_NAME,
             current_version.clone(),
             file.path(),
+            TESTING_COMPATIBILITY_MAP.deref(),
         )
         .unwrap();
 
@@ -283,6 +332,7 @@ mod tests {
             CLUSTER_NAME,
             current_version.clone(),
             file.path(),
+            TESTING_COMPATIBILITY_MAP.deref(),
         );
         assert!(matches!(
             result,
@@ -294,6 +344,7 @@ mod tests {
     fn incompatible_version() {
         let file = NamedTempFile::new().unwrap();
         let max_version = Version::new(1, 2, 6);
+        let compatibility_boundary = Version::new(1, 1, 1);
         let current_version = Version::new(1, 0, 3);
 
         write_cluster_marker(
@@ -302,10 +353,17 @@ mod tests {
         )
         .unwrap();
 
+        let mut compatibility_map = COMPATIBILITY_MAP.deref().clone();
+        compatibility_map.insert(
+            compatibility_boundary.clone(),
+            CompatibilityInformation::new(compatibility_boundary),
+        );
+
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             current_version.clone(),
             file.path(),
+            &compatibility_map,
         );
         assert!(matches!(
             result,
