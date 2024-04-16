@@ -32,7 +32,7 @@ protobuf_storage_encode_decode!(OutboxMessage);
 impl WithPartitionKey for OutboxMessage {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            OutboxMessage::ServiceInvocation(si) => si.fid.partition_key(),
+            OutboxMessage::ServiceInvocation(si) => si.invocation_id.partition_key(),
             OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
             OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
         }
