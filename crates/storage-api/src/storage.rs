@@ -2004,20 +2004,26 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::dedup::DedupSequenceNumber> for DedupSequenceNumber {
-            fn from(value: restate_types::dedup::DedupSequenceNumber) -> Self {
+        impl From<crate::deduplication_table::DedupSequenceNumber> for DedupSequenceNumber {
+            fn from(value: crate::deduplication_table::DedupSequenceNumber) -> Self {
                 match value {
-                    restate_types::dedup::DedupSequenceNumber::Sn(sn) => DedupSequenceNumber {
-                        variant: Some(Variant::SequenceNumber(sn)),
-                    },
-                    restate_types::dedup::DedupSequenceNumber::Esn(esn) => DedupSequenceNumber {
-                        variant: Some(Variant::EpochSequenceNumber(EpochSequenceNumber::from(esn))),
-                    },
+                    crate::deduplication_table::DedupSequenceNumber::Sn(sn) => {
+                        DedupSequenceNumber {
+                            variant: Some(Variant::SequenceNumber(sn)),
+                        }
+                    }
+                    crate::deduplication_table::DedupSequenceNumber::Esn(esn) => {
+                        DedupSequenceNumber {
+                            variant: Some(Variant::EpochSequenceNumber(EpochSequenceNumber::from(
+                                esn,
+                            ))),
+                        }
+                    }
                 }
             }
         }
 
-        impl TryFrom<DedupSequenceNumber> for restate_types::dedup::DedupSequenceNumber {
+        impl TryFrom<DedupSequenceNumber> for crate::deduplication_table::DedupSequenceNumber {
             type Error = ConversionError;
 
             fn try_from(value: DedupSequenceNumber) -> Result<Self, Self::Error> {
@@ -2027,11 +2033,11 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("variant"))?
                     {
                         Variant::SequenceNumber(sn) => {
-                            restate_types::dedup::DedupSequenceNumber::Sn(sn)
+                            crate::deduplication_table::DedupSequenceNumber::Sn(sn)
                         }
                         Variant::EpochSequenceNumber(esn) => {
-                            restate_types::dedup::DedupSequenceNumber::Esn(
-                                restate_types::dedup::EpochSequenceNumber::try_from(esn)?,
+                            crate::deduplication_table::DedupSequenceNumber::Esn(
+                                crate::deduplication_table::EpochSequenceNumber::try_from(esn)?,
                             )
                         }
                     },
@@ -2039,8 +2045,8 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::dedup::EpochSequenceNumber> for EpochSequenceNumber {
-            fn from(value: restate_types::dedup::EpochSequenceNumber) -> Self {
+        impl From<crate::deduplication_table::EpochSequenceNumber> for EpochSequenceNumber {
+            fn from(value: crate::deduplication_table::EpochSequenceNumber) -> Self {
                 EpochSequenceNumber {
                     leader_epoch: value.leader_epoch.into(),
                     sequence_number: value.sequence_number,
@@ -2048,11 +2054,11 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<EpochSequenceNumber> for restate_types::dedup::EpochSequenceNumber {
+        impl TryFrom<EpochSequenceNumber> for crate::deduplication_table::EpochSequenceNumber {
             type Error = ConversionError;
 
             fn try_from(value: EpochSequenceNumber) -> Result<Self, Self::Error> {
-                Ok(restate_types::dedup::EpochSequenceNumber {
+                Ok(crate::deduplication_table::EpochSequenceNumber {
                     leader_epoch: value.leader_epoch.into(),
                     sequence_number: value.sequence_number,
                 })

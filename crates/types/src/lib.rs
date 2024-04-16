@@ -18,7 +18,6 @@ mod version;
 
 pub mod arc_util;
 pub mod config;
-pub mod dedup;
 pub mod deployment;
 pub mod epoch;
 pub mod errors;

@@ -13,7 +13,9 @@ use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use bytes::{Buf, Bytes};
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
-use restate_storage_api::deduplication_table::ReadOnlyDeduplicationTable;
+use restate_storage_api::deduplication_table::{
+    DedupSequenceNumber, ProducerId, ReadOnlyDeduplicationTable,
+};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
@@ -30,7 +32,6 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
-use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::{
     EntryIndex, FullInvocationId, IdempotencyId, InvocationId, PartitionId, PartitionKey,
     ServiceId, WithPartitionKey,

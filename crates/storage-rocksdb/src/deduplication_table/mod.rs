@@ -17,9 +17,11 @@ use crate::{
 use futures::Stream;
 use futures_util::stream;
 use prost::Message;
-use restate_storage_api::deduplication_table::{DeduplicationTable, ReadOnlyDeduplicationTable};
+use restate_storage_api::deduplication_table::{
+    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
+    ReadOnlyDeduplicationTable,
+};
 use restate_storage_api::{storage, Result, StorageError};
-use restate_types::dedup::{DedupInformation, DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::PartitionId;
 use std::io::Cursor;
 

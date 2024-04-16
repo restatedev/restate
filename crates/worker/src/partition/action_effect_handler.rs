@@ -11,8 +11,8 @@
 use super::leadership::ActionEffect;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
+use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::BuiltinServiceEffects;

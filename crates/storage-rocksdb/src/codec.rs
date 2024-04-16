@@ -13,8 +13,8 @@ use bytes::{Buf, BufMut, Bytes};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
 use prost::Message;
+use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::StorageError;
-use restate_types::dedup::ProducerId;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 

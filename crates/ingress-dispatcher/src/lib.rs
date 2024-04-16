@@ -14,7 +14,6 @@ use prost::Message;
 use restate_core::metadata;
 use restate_pb::restate::internal::Event;
 use restate_schema_api::subscription::{EventReceiverComponentType, Sink, Subscription};
-use restate_types::dedup::DedupInformation;
 use restate_types::identifiers::{
     FullInvocationId, IdempotencyId, InvocationId, ServiceId, WithPartitionKey,
 };
@@ -33,6 +32,7 @@ mod dispatcher;
 pub mod error;
 
 pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
+use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::time::MillisSinceEpoch;
 
 // -- Types used by the ingress to interact with the dispatcher

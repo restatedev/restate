@@ -11,12 +11,13 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use restate_core::TaskCenterBuilder;
 use restate_rocksdb::RocksDbManager;
-use restate_storage_api::deduplication_table::DeduplicationTable;
+use restate_storage_api::deduplication_table::{
+    DedupSequenceNumber, DeduplicationTable, ProducerId,
+};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use tokio::runtime::Builder;
 
 async fn writing_to_rocksdb(worker_options: WorkerOptions) {

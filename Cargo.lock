@@ -5190,6 +5190,7 @@ dependencies = [
  "restate-node-protocol",
  "restate-pb",
  "restate-schema-api",
+ "restate-storage-api",
  "restate-test-util",
  "restate-types",
  "restate-wal-protocol",

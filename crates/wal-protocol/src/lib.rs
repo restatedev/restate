@@ -11,6 +11,7 @@
 use bytes::{Bytes, BytesMut};
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, ShutdownError};
+use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use restate_types::message::MessageIndex;
@@ -20,7 +21,6 @@ use restate_types::{flexbuffers_storage_encode_decode, Version};
 use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerValue;
-use restate_types::dedup::DedupInformation;
 use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};

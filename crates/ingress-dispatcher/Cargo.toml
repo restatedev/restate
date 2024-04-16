@@ -17,6 +17,8 @@ restate-core = { workspace = true }
 restate-node-protocol = { workspace = true }
 restate-pb = { workspace = true, features = ["restate-types"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
+# todo: only needed for DedupInformation :-( Probably fixed by merging restate-storage-api with restate-types
+restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
