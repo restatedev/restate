@@ -1142,7 +1142,7 @@ mod tests {
 
         let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
         let invocation_target = InvocationTarget::mock_service();
-        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 

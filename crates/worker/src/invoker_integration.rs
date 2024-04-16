@@ -16,7 +16,7 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId, WithPartitionKey};
 use restate_types::invocation::{
-    ComponentType, InvocationTarget, ServiceInvocationSpanContext, SpanRelation,
+    ComponentType, HandlerType, InvocationTarget, ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -114,22 +114,53 @@ where
 {
     fn enrich_entry(
         &self,
-        raw_entry: PlainRawEntry,
-        invocation_span_context: &ServiceInvocationSpanContext,
+        entry: PlainRawEntry,
+        current_invocation_target: &InvocationTarget,
+        current_invocation_span_context: &ServiceInvocationSpanContext,
     ) -> Result<EnrichedRawEntry, InvocationError> {
-        let (header, serialized_entry) = raw_entry.into_inner();
+        let (header, serialized_entry) = entry.into_inner();
+
         let enriched_header = match header {
             PlainEntryHeader::Input {} => EnrichedEntryHeader::Input {},
             PlainEntryHeader::Output {} => EnrichedEntryHeader::Output {},
             PlainEntryHeader::GetState { is_completed } => {
+                can_read_state(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                )?;
                 EnrichedEntryHeader::GetState { is_completed }
             }
-            PlainEntryHeader::SetState {} => EnrichedEntryHeader::SetState {},
-            PlainEntryHeader::ClearState {} => EnrichedEntryHeader::ClearState {},
+            PlainEntryHeader::SetState {} => {
+                can_write_state(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                    current_invocation_target.handler_ty(),
+                )?;
+                EnrichedEntryHeader::SetState {}
+            }
+            PlainEntryHeader::ClearState {} => {
+                can_write_state(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                    current_invocation_target.handler_ty(),
+                )?;
+                EnrichedEntryHeader::ClearState {}
+            }
             PlainEntryHeader::GetStateKeys { is_completed } => {
+                can_read_state(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                )?;
                 EnrichedEntryHeader::GetStateKeys { is_completed }
             }
-            PlainEntryHeader::ClearAllState => EnrichedEntryHeader::ClearAllState {},
+            PlainEntryHeader::ClearAllState => {
+                can_write_state(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                    current_invocation_target.handler_ty(),
+                )?;
+                EnrichedEntryHeader::ClearAllState {}
+            }
             PlainEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
             PlainEntryHeader::Invoke { is_completed, .. } => {
                 if !is_completed {
@@ -140,7 +171,7 @@ where
                             let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
                             request
                         },
-                        invocation_span_context.as_parent(),
+                        current_invocation_span_context.as_parent(),
                     )?;
 
                     EnrichedEntryHeader::Invoke {
@@ -165,7 +196,7 @@ where
                         );
                         request
                     },
-                    invocation_span_context.as_linked(),
+                    current_invocation_span_context.as_linked(),
                 )?;
 
                 EnrichedEntryHeader::BackgroundInvoke { enrichment_result }
@@ -201,4 +232,40 @@ where
 
         Ok(RawEntry::new(enriched_header, serialized_entry))
     }
+}
+
+#[inline]
+fn can_read_state(
+    entry_type: &EntryType,
+    service_type: &ComponentType,
+) -> Result<(), InvocationError> {
+    if !service_type.has_state() {
+        return Err(InvocationError::new(
+            codes::BAD_REQUEST,
+            format!(
+                "The service type {} does not have state and, therefore, does not support the entry type {}",
+                service_type, entry_type
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[inline]
+fn can_write_state(
+    entry_type: &EntryType,
+    service_type: &ComponentType,
+    handler_type: Option<HandlerType>,
+) -> Result<(), InvocationError> {
+    can_read_state(entry_type, service_type)?;
+    if handler_type != Some(HandlerType::Exclusive) {
+        return Err(InvocationError::new(
+            codes::BAD_REQUEST,
+            format!(
+                "The service type {} with handler type {:?} has no exclusive state access and, therefore, does not support the entry type {}",
+                service_type, handler_type, entry_type
+            ),
+        ));
+    }
+    Ok(())
 }

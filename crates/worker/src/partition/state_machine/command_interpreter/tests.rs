@@ -66,7 +66,7 @@ impl StateReaderMock {
         invocation_target: InvocationTarget,
         journal: Vec<JournalEntry>,
     ) -> InvocationId {
-        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         let service_id = ServiceId::with_partition_key(
             invocation_id.partition_key(),
@@ -101,7 +101,7 @@ impl StateReaderMock {
         waiting_for_completed_entries: impl IntoIterator<Item = EntryIndex>,
         journal: Vec<JournalEntry>,
     ) -> InvocationId {
-        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         let service_id = ServiceId::with_partition_key(
             invocation_id.partition_key(),
