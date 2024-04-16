@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::define_table_key;
 use crate::TableKind::PartitionStateMachine;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
+use restate_types::storage::{StorageDecode, StorageEncode};
 use std::future;
 use std::future::Future;
 
@@ -32,16 +31,7 @@ fn get<T: StorageDecode, S: StorageAccess>(
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id)
         .state_id(state_id);
-    storage.get_blocking(key, |_k, v| {
-        if let Some(bytes) = v {
-            Ok(Some(
-                StorageCodec::decode::<T>(bytes)
-                    .map_err(|err| StorageError::Conversion(err.into()))?,
-            ))
-        } else {
-            Ok(None)
-        }
-    })
+    storage.get_value(key)
 }
 
 fn put<S: StorageAccess>(
@@ -53,7 +43,7 @@ fn put<S: StorageAccess>(
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id)
         .state_id(state_id);
-    storage.put_kv(key, StorageSerdeValue(state_value));
+    storage.put_kv(key, state_value);
 }
 
 fn clear<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, state_id: u64) {

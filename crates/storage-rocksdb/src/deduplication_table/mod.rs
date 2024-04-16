@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
@@ -39,16 +38,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
         .partition_id(partition_id)
         .producer_id(producer_id.clone());
 
-    storage.get_blocking(key, move |_k, maybe_dedup_sequence_number| {
-        if let Some(bytes) = maybe_dedup_sequence_number {
-            Ok(Some(
-                StorageCodec::decode::<DedupSequenceNumber>(bytes)
-                    .map_err(|error| StorageError::Conversion(error.into()))?,
-            ))
-        } else {
-            Ok(None)
-        }
-    })
+    storage.get_value(key)
 }
 
 fn get_all_sequence_numbers<S: StorageAccess>(
@@ -120,6 +110,6 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
             .producer_id(producer_id);
-        self.put_kv(key, StorageSerdeValue(dedup_sequence_number));
+        self.put_kv(key, dedup_sequence_number);
     }
 }

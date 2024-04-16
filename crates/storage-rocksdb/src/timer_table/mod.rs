@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
@@ -95,7 +94,7 @@ fn add_timer<S: StorageAccess>(
 ) {
     let key = write_timer_key(partition_id, key);
 
-    storage.put_kv(key, StorageSerdeValue(timer));
+    storage.put_kv(key, timer);
 }
 
 fn delete_timer<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, key: &TimerKey) {

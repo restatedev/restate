@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
@@ -56,15 +55,7 @@ fn get_idempotency_metadata<S: StorageAccess>(
     storage: &mut S,
     idempotency_id: &IdempotencyId,
 ) -> Result<Option<IdempotencyMetadata>> {
-    storage.get_blocking(create_key(idempotency_id), move |_, v| {
-        if v.is_none() {
-            return Ok(None);
-        }
-        let idempotency_metadata = StorageCodec::decode::<IdempotencyMetadata>(v.unwrap())
-            .map_err(|err| StorageError::Generic(err.into()))?;
-
-        Ok(Some(idempotency_metadata))
-    })
+    storage.get_value(create_key(idempotency_id))
 }
 
 fn all_idempotency_metadata<S: StorageAccess>(
@@ -94,7 +85,7 @@ fn put_idempotency_metadata<S: StorageAccess>(
     idempotency_id: &IdempotencyId,
     metadata: IdempotencyMetadata,
 ) {
-    storage.put_kv(create_key(idempotency_id), StorageSerdeValue(metadata));
+    storage.put_kv(create_key(idempotency_id), metadata);
 }
 
 fn delete_idempotency_metadata<S: StorageAccess>(storage: &mut S, idempotency_id: &IdempotencyId) {

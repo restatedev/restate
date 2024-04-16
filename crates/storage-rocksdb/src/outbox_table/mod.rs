@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
@@ -35,7 +34,7 @@ fn add_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(message_index);
 
-    storage.put_kv(key, StorageSerdeValue(outbox_message));
+    storage.put_kv(key, outbox_message);
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -70,14 +69,7 @@ fn get_outbox_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(sequence_number);
 
-    storage.get_blocking(outbox_key, |_, v| {
-        if let Some(v) = v {
-            let t = decode_value(v)?;
-            Ok(Some(t))
-        } else {
-            Ok(None)
-        }
-    })
+    storage.get_value(outbox_key)
 }
 
 fn truncate_outbox<S: StorageAccess>(

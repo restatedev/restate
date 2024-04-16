@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::define_table_key;
 use crate::keys::TableKey;
 use crate::owned_iter::OwnedIterator;
@@ -51,7 +50,7 @@ fn put_journal_entry<S: StorageAccess>(
 ) {
     let key = write_journal_entry_key(invocation_id, journal_index);
 
-    storage.put_kv(key, StorageSerdeValue(journal_entry));
+    storage.put_kv(key, journal_entry);
 }
 
 fn get_journal_entry<S: StorageAccess>(
@@ -61,15 +60,7 @@ fn get_journal_entry<S: StorageAccess>(
 ) -> Result<Option<JournalEntry>> {
     let key = write_journal_entry_key(invocation_id, journal_index);
 
-    storage.get_blocking(key, move |_k, v| {
-        if v.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(
-            StorageCodec::decode::<JournalEntry>(v.unwrap())
-                .map_err(|err| StorageError::Generic(err.into()))?,
-        ))
-    })
+    storage.get_value(key)
 }
 
 fn get_journal<S: StorageAccess>(

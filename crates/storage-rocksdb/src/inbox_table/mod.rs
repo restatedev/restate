@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Inbox;
 use crate::{RocksDBTransaction, StorageAccess};
@@ -49,7 +48,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(key, StorageSerdeValue(inbox_entry));
+        self.put_kv(key, inbox_entry);
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {

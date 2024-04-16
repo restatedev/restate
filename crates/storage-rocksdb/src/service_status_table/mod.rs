@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
@@ -19,7 +18,7 @@ use bytestring::ByteString;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::Result;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::storage::StorageCodec;
@@ -53,7 +52,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     if status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
-        storage.put_kv(key, StorageSerdeValue(status));
+        storage.put_kv(key, status);
     }
 }
 
@@ -66,14 +65,9 @@ fn get_virtual_object_status<S: StorageAccess>(
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    storage.get_blocking(key, move |_, v| {
-        if v.is_none() {
-            return Ok(VirtualObjectStatus::Unlocked);
-        }
-        let v = v.unwrap();
-        StorageCodec::decode::<VirtualObjectStatus>(v)
-            .map_err(|err| StorageError::Generic(err.into()))
-    })
+    storage
+        .get_value(key)
+        .map(|value| value.unwrap_or(VirtualObjectStatus::Unlocked))
 }
 
 fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {

@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
@@ -62,7 +61,7 @@ fn put_invocation_status<S: StorageAccess>(
     if status == InvocationStatus::Free {
         storage.delete_key(&key);
     } else {
-        storage.put_kv(key, StorageSerdeValue(status));
+        storage.put_kv(key, status);
     }
 }
 
@@ -72,13 +71,9 @@ fn get_invocation_status<S: StorageAccess>(
 ) -> Result<InvocationStatus> {
     let key = write_invocation_status_key(invocation_id);
 
-    storage.get_blocking(key, move |_, v| {
-        if v.is_none() {
-            return Ok(InvocationStatus::Free);
-        }
-        let v = v.unwrap();
-        StorageCodec::decode::<InvocationStatus>(v).map_err(|err| StorageError::Generic(err.into()))
-    })
+    storage
+        .get_value::<_, InvocationStatus>(key)
+        .map(|value| value.unwrap_or(InvocationStatus::Free))
 }
 
 fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
