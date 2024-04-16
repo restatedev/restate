@@ -1017,7 +1017,7 @@ impl Effects {
         }
 
         // Create span and enter it
-        self.related_span.clone().attach_to_span(&span);
+        self.related_span.attach_to_span(&span);
         let _enter = span.enter();
 
         // Log all the effects
