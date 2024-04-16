@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry_api::trace::SpanId;
+use opentelemetry::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,

@@ -51,6 +51,7 @@ http-old = { package = "http", version = "0.2.12" }
 
 # Tracing
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 

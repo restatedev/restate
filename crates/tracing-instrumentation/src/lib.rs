@@ -17,16 +17,15 @@ use crate::pretty::PrettyFields;
 use crate::processor::ResourceModifyingSpanProcessor;
 use crate::tracer::SpanModifyingTracer;
 use metrics_tracing_context::MetricsLayer;
-use opentelemetry::sdk::trace::BatchSpanProcessor;
 use opentelemetry::trace::{TraceError, TracerProvider};
+use opentelemetry::KeyValue;
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
 use opentelemetry_otlp::{SpanExporterBuilder, WithExportConfig};
+use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
 use restate_types::config::{CommonOptions, LogFormat};
 use std::env;
 use std::fmt::Display;
-use std::str::FromStr;
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tracing::{info, warn, Level};
 use tracing_subscriber::filter::{Filtered, ParseError};
 use tracing_subscriber::fmt::time::SystemTime;
@@ -69,32 +68,41 @@ where
         return Ok(None);
     }
 
-    let resource = opentelemetry::sdk::Resource::new(vec![
-        opentelemetry_semantic_conventions::resource::SERVICE_NAME.string(service_name.clone()),
-        opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE.string("Restate"),
-        opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID
-            .string(instance_id.to_string()),
-        opentelemetry_semantic_conventions::resource::SERVICE_VERSION
-            .string(env!("CARGO_PKG_VERSION")),
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            service_name.clone(),
+        ),
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAMESPACE,
+            "Restate",
+        ),
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
+            instance_id.to_string(),
+        ),
+        KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+            env!("CARGO_PKG_VERSION"),
+        ),
     ]);
 
     // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
     // but also injecting ResourceModifyingSpanProcessor around the BatchSpanProcessor
 
-    let mut tracer_provider_builder = opentelemetry::sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry::sdk::trace::config().with_resource(resource));
+    let mut tracer_provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_config(opentelemetry_sdk::trace::config().with_resource(resource));
 
     if let Some(endpoint) = &common_opts.tracing_endpoint {
         let exporter = SpanExporterBuilder::from(
             opentelemetry_otlp::new_exporter()
                 .tonic()
-                .with_endpoint(endpoint)
-                .with_metadata(parse_headers_from_env()),
+                .with_endpoint(endpoint),
         )
         .build_span_exporter()?;
         tracer_provider_builder =
             tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
-                BatchSpanProcessor::builder(exporter, opentelemetry::runtime::Tokio).build(),
+                BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
             ));
     }
 
@@ -106,9 +114,9 @@ where
                         path.into(),
                         "trace".to_string(),
                         service_name,
-                        opentelemetry::runtime::Tokio,
+                        opentelemetry_sdk::runtime::Tokio,
                     ),
-                    opentelemetry::runtime::Tokio,
+                    opentelemetry_sdk::runtime::Tokio,
                 )
                 .build(),
             ));
@@ -132,42 +140,6 @@ where
             .with_tracer(tracer)
             .with_filter(EnvFilter::try_new(&common_opts.tracing_filter)?),
     ))
-}
-
-// Until https://github.com/open-telemetry/opentelemetry-rust/pull/1377 is released, we copy its logic
-// here to include trace headers in OTLP requests
-fn parse_headers_from_env() -> MetadataMap {
-    env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-        .or_else(|_| env::var("OTEL_EXPORTER_OTLP_HEADERS"))
-        .map(|input| {
-            let iter = parse_header_string(&input).filter_map(|(key, value)| {
-                Some((
-                    MetadataKey::from_str(key).ok()?,
-                    MetadataValue::try_from(value).ok()?,
-                ))
-            });
-            let (_, upper) = iter.size_hint();
-            let mut map = MetadataMap::with_capacity(upper.unwrap_or_default());
-            iter.for_each(|(key, value)| {
-                map.insert(key, value);
-            });
-            map
-        })
-        .unwrap_or_default()
-}
-
-fn parse_header_string(value: &str) -> impl Iterator<Item = (&str, &str)> {
-    value
-        .split_terminator(',')
-        .map(str::trim)
-        .filter_map(parse_header_key_value_string)
-}
-
-fn parse_header_key_value_string(key_value_string: &str) -> Option<(&str, &str)> {
-    key_value_string
-        .split_once('=')
-        .map(|(key, value)| (key.trim(), value.trim()))
-        .filter(|(key, value)| !key.is_empty() && !value.is_empty())
 }
 
 #[allow(clippy::type_complexity)]

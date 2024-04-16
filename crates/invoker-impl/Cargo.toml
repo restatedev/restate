@@ -37,6 +37,7 @@ hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stre
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 opentelemetry-http = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

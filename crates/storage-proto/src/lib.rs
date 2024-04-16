@@ -53,7 +53,7 @@ pub mod storage {
             use anyhow::anyhow;
             use bytes::{Buf, Bytes};
             use bytestring::ByteString;
-            use opentelemetry_api::trace::TraceState;
+            use opentelemetry::trace::TraceState;
             use restate_storage_api::StorageError;
             use restate_types::errors::{IdDecodeError, InvocationError};
             use restate_types::invocation::{InvocationTermination, TerminationFlavor};
@@ -1151,9 +1151,8 @@ pub mod storage {
                     } = value;
 
                     let trace_id = try_bytes_into_trace_id(trace_id)?;
-                    let span_id =
-                        opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
-                    let trace_flags = opentelemetry_api::trace::TraceFlags::new(
+                    let span_id = opentelemetry::trace::SpanId::from_bytes(span_id.to_be_bytes());
+                    let trace_flags = opentelemetry::trace::TraceFlags::new(
                         u8::try_from(trace_flags).map_err(ConversionError::invalid_data)?,
                     );
 
@@ -1167,7 +1166,7 @@ pub mod storage {
 
                     Ok(
                         restate_types::invocation::ServiceInvocationSpanContext::new(
-                            opentelemetry_api::trace::SpanContext::new(
+                            opentelemetry::trace::SpanContext::new(
                                 trace_id,
                                 span_id,
                                 trace_flags,
@@ -1210,7 +1209,7 @@ pub mod storage {
                     match value.kind.ok_or(ConversionError::missing_field("kind"))? {
                         span_relation::Kind::Parent(span_relation::Parent { span_id }) => {
                             let span_id =
-                                opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
+                                opentelemetry::trace::SpanId::from_bytes(span_id.to_be_bytes());
                             Ok(Self::Parent(span_id))
                         }
                         span_relation::Kind::Linked(span_relation::Linked {
@@ -1219,7 +1218,7 @@ pub mod storage {
                         }) => {
                             let trace_id = try_bytes_into_trace_id(trace_id)?;
                             let span_id =
-                                opentelemetry_api::trace::SpanId::from_bytes(span_id.to_be_bytes());
+                                opentelemetry::trace::SpanId::from_bytes(span_id.to_be_bytes());
                             Ok(Self::Linked(trace_id, span_id))
                         }
                     }
@@ -1246,7 +1245,7 @@ pub mod storage {
 
             fn try_bytes_into_trace_id(
                 mut bytes: Bytes,
-            ) -> Result<opentelemetry_api::trace::TraceId, ConversionError> {
+            ) -> Result<opentelemetry::trace::TraceId, ConversionError> {
                 if bytes.len() != 16 {
                     return Err(ConversionError::InvalidData(anyhow!(
                         "trace id pb definition needs to contain exactly 16 bytes"
@@ -1256,7 +1255,7 @@ pub mod storage {
                 let mut bytes_array = [0; 16];
                 bytes.copy_to_slice(&mut bytes_array);
 
-                Ok(opentelemetry_api::trace::TraceId::from_bytes(bytes_array))
+                Ok(opentelemetry::trace::TraceId::from_bytes(bytes_array))
             }
 
             impl TryFrom<ServiceInvocationResponseSink>

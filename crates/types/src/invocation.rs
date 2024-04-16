@@ -18,8 +18,8 @@ use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
 use bytestring::ByteString;
-use opentelemetry_api::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
-use opentelemetry_api::Context;
+use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
+use opentelemetry::Context;
 use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
@@ -30,7 +30,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use serde_with::{serde_as, FromInto};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
-pub use opentelemetry_api::trace::TraceId;
+pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

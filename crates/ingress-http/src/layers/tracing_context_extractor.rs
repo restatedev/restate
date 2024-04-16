@@ -10,7 +10,7 @@
 
 use http::{HeaderMap, Request};
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
-use opentelemetry::sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 

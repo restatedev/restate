@@ -20,17 +20,15 @@ console-subscriber = { version = "0.2.0", optional = true }
 derive_builder = { workspace = true }
 nu-ansi-term = "0.46.0"
 once_cell = { workspace = true }
-opentelemetry = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-contrib = { version = "0.12.0", features = ["jaeger_json_exporter", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.13.0" }
-opentelemetry-semantic-conventions = "0.12.0"
+opentelemetry = { workspace = true }
+opentelemetry-contrib = { version = "0.14.0", features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.15.0" }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-semantic-conventions = "0.14.0"
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
-# pin the version that opentelemetry-otlp uses; this dependency can be removed when otlp crate is released with
-# support for building tonic metadata from env vars
-tonic = { version = "0.9.2" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }

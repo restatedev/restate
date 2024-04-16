@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use opentelemetry::sdk::export::trace::SpanData;
-use opentelemetry::sdk::trace::Span;
-use opentelemetry::sdk::Resource;
 use opentelemetry::trace::TraceResult;
 use opentelemetry::{Context, Key, KeyValue};
+use opentelemetry_sdk::export::trace::SpanData;
+use opentelemetry_sdk::trace::Span;
+use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use std::borrow::Cow;
 
@@ -33,7 +33,7 @@ impl<T> ResourceModifyingSpanProcessor<T> {
     }
 }
 
-impl<T: opentelemetry::sdk::trace::SpanProcessor> opentelemetry::sdk::trace::SpanProcessor
+impl<T: opentelemetry_sdk::trace::SpanProcessor> opentelemetry_sdk::trace::SpanProcessor
     for ResourceModifyingSpanProcessor<T>
 {
     fn on_start(&self, span: &mut Span, cx: &Context) {
@@ -43,9 +43,11 @@ impl<T: opentelemetry::sdk::trace::SpanProcessor> opentelemetry::sdk::trace::Spa
     fn on_end(&self, data: SpanData) {
         let mut data = data;
 
-        if let Some(service_name) = data.attributes.get(&RPC_SERVICE) {
+        if let Some(service_name_attribute) =
+            data.attributes.iter().find(|kv| kv.key == RPC_SERVICE)
+        {
             data.resource = Cow::Owned(data.resource.merge(&Resource::new(std::iter::once(
-                KeyValue::new(SERVICE_NAME, service_name.clone()),
+                KeyValue::new(SERVICE_NAME, service_name_attribute.value.clone()),
             ))));
         };
 

@@ -29,7 +29,7 @@ hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
-opentelemetry_api = { workspace = true }
+opentelemetry = { workspace = true }
 rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["rc"] }
