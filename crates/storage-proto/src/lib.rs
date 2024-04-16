@@ -23,7 +23,7 @@ pub mod storage {
             use crate::storage::v1::dedup_sequence_number::Variant;
             use crate::storage::v1::enriched_entry_header::{
                 Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
-                GetState, GetStateKeys, Input, Invoke, Output, SetState, Sleep,
+                GetState, GetStateKeys, Input, Invoke, Output, SetState, SideEffect, Sleep,
             };
             use crate::storage::v1::invocation_status::{
                 Completed, Free, Inboxed, Invoked, Suspended,
@@ -1605,6 +1605,10 @@ pub mod storage {
                                 },
                             }
                         }
+                        enriched_entry_header::Kind::SideEffect(_) => {
+                            restate_types::journal::enriched::EnrichedEntryHeader::SideEffect {
+                            }
+                        }
                         enriched_entry_header::Kind::Custom(custom) => {
                             restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                                                             code: u16::try_from(custom.code)
@@ -1675,6 +1679,9 @@ pub mod storage {
                                 invocation_id: Bytes::copy_from_slice(&enrichment_result.invocation_id.to_bytes()),
                                 entry_index: enrichment_result.entry_index
                             })
+                        }
+                        restate_types::journal::enriched::EnrichedEntryHeader::SideEffect {..} => {
+                            enriched_entry_header::Kind::SideEffect(SideEffect {})
                         }
                         restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                             code,

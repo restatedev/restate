@@ -97,6 +97,7 @@ pub mod mocks {
                         },
                     }
                 }
+                PlainEntryHeader::SideEffect {} => EnrichedEntryHeader::SideEffect {},
                 PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
             };
 

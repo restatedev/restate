@@ -312,6 +312,7 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::CompleteAwakeableEntry => PlainEntryHeader::CompleteAwakeable {
             enrichment_result: (),
         },
+        MessageType::SideEffectEntry => PlainEntryHeader::SideEffect {},
         MessageType::CustomEntry(code) => PlainEntryHeader::Custom { code },
     }
 }
@@ -330,6 +331,7 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::BackgroundInvoke { .. } => MessageType::BackgroundInvokeEntry,
         PlainEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
         PlainEntryHeader::CompleteAwakeable { .. } => MessageType::CompleteAwakeableEntry,
+        PlainEntryHeader::SideEffect { .. } => MessageType::SideEffectEntry,
         PlainEntryHeader::Custom { code, .. } => MessageType::CustomEntry(*code),
     }
 }

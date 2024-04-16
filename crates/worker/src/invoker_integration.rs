@@ -21,7 +21,9 @@ use restate_types::invocation::{
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
 };
-use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
+use restate_types::journal::raw::{
+    EntryHeader, PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec,
+};
 use restate_types::journal::{BackgroundInvokeEntry, CompleteAwakeableEntry, Entry, InvokeEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
 use std::marker::PhantomData;
@@ -193,6 +195,7 @@ where
                     },
                 }
             }
+            EntryHeader::SideEffect { .. } => EnrichedEntryHeader::SideEffect {},
             PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
         };
 

@@ -765,6 +765,7 @@ fn create_termination_journal(
             SleepEntryMessage {
                 wake_up_time: 1337,
                 result: None,
+                ..Default::default()
             }
             .encode_to_vec()
             .into(),

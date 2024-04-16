@@ -36,6 +36,7 @@ pub enum Entry {
     BackgroundInvoke(BackgroundInvokeEntry),
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
+    SideEffect(SideEffectEntry),
     Custom(Bytes),
 }
 
@@ -153,6 +154,7 @@ pub enum EntryType {
     BackgroundInvoke,
     Awakeable,
     CompleteAwakeable,
+    SideEffect,
     Custom,
 }
 
@@ -329,5 +331,10 @@ impl CompletableEntry for AwakeableEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteAwakeableEntry {
     pub id: ByteString,
+    pub result: EntryResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideEffectEntry {
     pub result: EntryResult,
 }

@@ -208,4 +208,19 @@ mod pb_into {
             }))
         }
     }
+
+    impl TryFrom<SideEffectEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: SideEffectEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::SideEffect(SideEffectEntry {
+                result: match msg.result.ok_or("result")? {
+                    side_effect_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    side_effect_entry_message::Result::Failure(Failure { code, message }) => {
+                        EntryResult::Failure(code.into(), message.into())
+                    }
+                },
+            }))
+        }
+    }
 }
