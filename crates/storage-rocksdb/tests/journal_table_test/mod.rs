@@ -9,43 +9,68 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures_util::StreamExt;
+use once_cell::sync::Lazy;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+use restate_types::journal::enriched::{
+    EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+};
 use std::pin::pin;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
-const MOCK_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::new(
+const MOCK_SLEEP_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEntry::new(
     EnrichedEntryHeader::ClearState {},
     Bytes::new(),
 ));
+
+static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
+    JournalEntry::Entry(EnrichedRawEntry::new(
+        EnrichedEntryHeader::Invoke {
+            is_completed: true,
+            enrichment_result: Some(InvokeEnrichmentResult {
+                invocation_id: InvocationId::from_parts(789, InvocationUuid::from_parts(123, 456)),
+                invocation_target: InvocationTarget::Service {
+                    name: ByteString::from_static("MySvc"),
+                    handler: ByteString::from_static("MyHandler"),
+                },
+                service_key: Bytes::from_static(b"123"),
+                span_context: ServiceInvocationSpanContext::empty(),
+            }),
+        },
+        Bytes::new(),
+    ))
+});
 
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_parts(1706027034946, 12345678900001));
 
 async fn populate_data<T: JournalTable>(txn: &mut T) {
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, MOCK_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, MOCK_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, MOCK_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, MOCK_SLEEP_JOURNAL_ENTRY)
         .await;
-    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, MOCK_JOURNAL_ENTRY)
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, MOCK_SLEEP_JOURNAL_ENTRY)
+        .await;
+    txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 4, MOCK_INVOKE_JOURNAL_ENTRY.clone())
         .await;
 }
 
 async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
-    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 4));
+    let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 5));
     let mut count = 0;
     while (journal.next().await).is_some() {
         count += 1;
     }
 
-    assert_eq!(count, 4);
+    assert_eq!(count, 5);
 }
 
 async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
@@ -64,7 +89,18 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
         .await
         .expect("should not fail");
 
-    assert!(result.is_some());
+    // false positive because of Bytes
+    #[allow(clippy::borrow_interior_mutable_const)]
+    {
+        assert_eq!(result.unwrap(), MOCK_SLEEP_JOURNAL_ENTRY);
+    }
+
+    let result = txn
+        .get_journal_entry(&MOCK_INVOCATION_ID_1, 4)
+        .await
+        .expect("should not fail");
+
+    assert_eq!(result.unwrap(), MOCK_INVOKE_JOURNAL_ENTRY.clone());
 
     let result = txn
         .get_journal_entry(&MOCK_INVOCATION_ID_1, 10000)
@@ -75,11 +111,11 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(&MOCK_INVOCATION_ID_1, 4).await;
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).await;
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
-    for i in 0..4 {
+    for i in 0..5 {
         let result = txn
             .get_journal_entry(&MOCK_INVOCATION_ID_1, i)
             .await

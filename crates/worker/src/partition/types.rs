@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytestring::ByteString;
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, Source,
-    SpanRelation,
+    HandlerType, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, Source, SpanRelation,
 };
 use restate_wal_protocol::Command;
 
@@ -83,6 +84,14 @@ pub fn create_response_message(
             caller_context,
         } => {
             ResponseMessage::Outbox(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+                InvocationId::from(&target),
+                InvocationTarget::VirtualObject {
+                    name: target.service_id.service_name.clone(),
+                    key: ByteString::try_from(target.service_id.key.clone())
+                        .expect("The key must be a valid UTF-8 string"),
+                    handler: ByteString::from(method.clone()),
+                    handler_ty: HandlerType::Exclusive,
+                },
                 target,
                 method,
                 // Methods receiving responses MUST accept this input type

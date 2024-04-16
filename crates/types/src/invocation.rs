@@ -12,7 +12,7 @@
 
 use crate::errors::InvocationError;
 use crate::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, PartitionKey, WithPartitionKey,
+    EntryIndex, FullInvocationId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
 };
 use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
@@ -21,6 +21,7 @@ use bytestring::ByteString;
 use opentelemetry_api::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
 use opentelemetry_api::Context;
 use std::fmt;
+use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::Span;
@@ -31,11 +32,123 @@ use serde_with::{serde_as, FromInto};
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry_api::trace::TraceId;
 
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum ComponentType {
+    Service,
+    VirtualObject,
+}
+
+impl ComponentType {
+    pub fn requires_key(&self) -> bool {
+        matches!(self, ComponentType::VirtualObject)
+    }
+}
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum HandlerType {
+    Exclusive,
+    Shared,
+}
+
+impl HandlerType {
+    pub fn default_for_component_type(component_type: ComponentType) -> Self {
+        match component_type {
+            ComponentType::Service => HandlerType::Shared,
+            ComponentType::VirtualObject => HandlerType::Exclusive,
+        }
+    }
+}
+
+#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum InvocationTarget {
+    Service {
+        name: ByteString,
+        handler: ByteString,
+    },
+    VirtualObject {
+        name: ByteString,
+        key: ByteString,
+        handler: ByteString,
+        handler_ty: HandlerType,
+    },
+}
+
+impl InvocationTarget {
+    pub fn service(name: impl Into<ByteString>, handler: impl Into<ByteString>) -> Self {
+        Self::Service {
+            name: name.into(),
+            handler: handler.into(),
+        }
+    }
+
+    pub fn virtual_object(
+        name: impl Into<ByteString>,
+        key: impl Into<ByteString>,
+        handler: impl Into<ByteString>,
+        handler_ty: HandlerType,
+    ) -> Self {
+        Self::VirtualObject {
+            name: name.into(),
+            key: key.into(),
+            handler: handler.into(),
+            handler_ty,
+        }
+    }
+
+    pub fn service_name(&self) -> &ByteString {
+        match self {
+            InvocationTarget::Service { name, .. } => name,
+            InvocationTarget::VirtualObject { name, .. } => name,
+        }
+    }
+
+    pub fn key(&self) -> Option<&ByteString> {
+        match self {
+            InvocationTarget::Service { .. } => None,
+            InvocationTarget::VirtualObject { key, .. } => Some(key),
+        }
+    }
+
+    pub fn handler_name(&self) -> &ByteString {
+        match self {
+            InvocationTarget::Service { handler, .. } => handler,
+            InvocationTarget::VirtualObject { handler, .. } => handler,
+        }
+    }
+
+    pub fn as_keyed_service_id(&self) -> Option<ServiceId> {
+        match self {
+            InvocationTarget::Service { .. } => None,
+            InvocationTarget::VirtualObject { name, key, .. } => {
+                Some(ServiceId::new(name.clone(), key.as_bytes().clone()))
+            }
+        }
+    }
+}
+
+impl fmt::Display for InvocationTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/", self.service_name())?;
+        if let Some(key) = self.key() {
+            write!(f, "{}/", key)?;
+        }
+        write!(f, "{}", self.handler_name())?;
+        Ok(())
+    }
+}
+
 /// Struct representing an invocation to a service. This struct is processed by Restate to execute the invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceInvocation {
+    pub invocation_id: InvocationId,
+    pub invocation_target: InvocationTarget,
+
+    // TODO old fields to remove
     pub fid: FullInvocationId,
     pub method_name: ByteString,
+
     pub argument: Bytes,
     pub source: Source,
     pub response_sink: Option<ServiceInvocationResponseSink>,
@@ -61,6 +174,8 @@ impl ServiceInvocation {
     /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         fid: FullInvocationId,
         method_name: impl Into<ByteString>,
         argument: impl Into<Bytes>,
@@ -71,8 +186,16 @@ impl ServiceInvocation {
         execution_time: Option<MillisSinceEpoch>,
         idempotency: Option<Idempotency>,
     ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&fid, related_span);
+        debug_assert_eq!(
+            invocation_id,
+            InvocationId::from(&fid),
+            "InvocationId and FullInvocationId must match"
+        );
+
+        let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
         Self {
+            invocation_id,
+            invocation_target,
             fid,
             method_name: method_name.into(),
             argument: argument.into(),
@@ -88,7 +211,7 @@ impl ServiceInvocation {
 
 impl WithPartitionKey for ServiceInvocation {
     fn partition_key(&self) -> PartitionKey {
-        self.fid.partition_key()
+        self.invocation_id.partition_key()
     }
 }
 
@@ -96,51 +219,6 @@ impl WithPartitionKey for ServiceInvocation {
 pub struct InvocationInput {
     pub argument: Bytes,
     pub headers: Vec<Header>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MaybeFullInvocationId {
-    Partial(InvocationId),
-    Full(FullInvocationId),
-}
-
-impl From<MaybeFullInvocationId> for InvocationId {
-    fn from(value: MaybeFullInvocationId) -> Self {
-        match value {
-            MaybeFullInvocationId::Partial(iid) => iid,
-            MaybeFullInvocationId::Full(fid) => InvocationId::from(fid),
-        }
-    }
-}
-
-impl From<InvocationId> for MaybeFullInvocationId {
-    fn from(value: InvocationId) -> Self {
-        MaybeFullInvocationId::Partial(value)
-    }
-}
-
-impl From<FullInvocationId> for MaybeFullInvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        MaybeFullInvocationId::Full(value)
-    }
-}
-
-impl WithPartitionKey for MaybeFullInvocationId {
-    fn partition_key(&self) -> PartitionKey {
-        match self {
-            MaybeFullInvocationId::Partial(iid) => iid.partition_key(),
-            MaybeFullInvocationId::Full(fid) => fid.partition_key(),
-        }
-    }
-}
-
-impl fmt::Display for MaybeFullInvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MaybeFullInvocationId::Partial(iid) => fmt::Display::fmt(iid, f),
-            MaybeFullInvocationId::Full(fid) => fmt::Display::fmt(fid, f),
-        }
-    }
 }
 
 /// Representing a response for a caller
@@ -245,7 +323,7 @@ impl ServiceInvocationSpanContext {
     ///
     /// This function is **deterministic**.
     pub fn start(
-        full_invocation_id: &FullInvocationId,
+        invocation_id: &InvocationId,
         related_span: SpanRelation,
     ) -> ServiceInvocationSpanContext {
         if !related_span.is_sampled() {
@@ -258,7 +336,7 @@ impl ServiceInvocationSpanContext {
         let (cause, new_span_context) = match &related_span {
             SpanRelation::Linked(linked_span_context) => {
                 // use part of the invocation id as the span id of the new trace root
-                let span_id: SpanId = full_invocation_id.invocation_uuid.into();
+                let span_id: SpanId = invocation_id.invocation_uuid().into();
 
                 // use its reverse as the span id of the background_invoke 'pointer' span in the previous trace
                 // as we cannot use the same span id for both spans
@@ -270,7 +348,7 @@ impl ServiceInvocationSpanContext {
                 let new_span_context = SpanContext::new(
                     // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
                     // trace ids are 128 bits and 'worldwide unique'
-                    full_invocation_id.invocation_uuid.into(),
+                    invocation_id.invocation_uuid().into(),
                     // use part of the invocation id as the new span id; this is 64 bits and best-effort 'globally unique'
                     span_id,
                     // use sampling decision of the causing trace; this is NOT default otel behaviour but
@@ -293,7 +371,7 @@ impl ServiceInvocationSpanContext {
                     // use parent trace id
                     parent_span_context.trace_id(),
                     // use part of the invocation id as the new span id
-                    full_invocation_id.invocation_uuid.into(),
+                    invocation_id.invocation_uuid().into(),
                     // use sampling decision of parent trace; this is default otel behaviour
                     parent_span_context.trace_flags(),
                     false,
@@ -309,8 +387,8 @@ impl ServiceInvocationSpanContext {
                 // create a span context with a new trace
                 let new_span_context = SpanContext::new(
                     // use invocation id as the new trace id and span id
-                    full_invocation_id.invocation_uuid.into(),
-                    full_invocation_id.invocation_uuid.into(),
+                    invocation_id.invocation_uuid().into(),
+                    invocation_id.invocation_uuid().into(),
                     // we don't have the means to actually sample here; just hardcode a sampled trace
                     // as this should only happen in tests anyway
                     TraceFlags::SAMPLED,
@@ -464,21 +542,21 @@ impl SpanRelation {
 /// Message to terminate an invocation.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationTermination {
-    pub maybe_fid: MaybeFullInvocationId,
+    pub invocation_id: InvocationId,
     pub flavor: TerminationFlavor,
 }
 
 impl InvocationTermination {
-    pub fn kill(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+    pub const fn kill(invocation_id: InvocationId) -> Self {
         Self {
-            maybe_fid: maybe_fid.into(),
+            invocation_id,
             flavor: TerminationFlavor::Kill,
         }
     }
 
-    pub fn cancel(maybe_fid: impl Into<MaybeFullInvocationId>) -> Self {
+    pub const fn cancel(invocation_id: InvocationId) -> Self {
         Self {
-            maybe_fid: maybe_fid.into(),
+            invocation_id,
             flavor: TerminationFlavor::Cancel,
         }
     }
@@ -563,10 +641,41 @@ impl From<TraceId> for TraceIdDef {
 mod mocks {
     use super::*;
 
+    use rand::distributions::{Alphanumeric, DistString};
+
+    fn generate_string() -> ByteString {
+        Alphanumeric
+            .sample_string(&mut rand::thread_rng(), 8)
+            .into()
+    }
+
+    impl InvocationTarget {
+        pub fn mock_service() -> Self {
+            InvocationTarget::service(generate_string(), generate_string())
+        }
+
+        pub fn mock_virtual_object() -> Self {
+            InvocationTarget::virtual_object(
+                generate_string(),
+                generate_string(),
+                generate_string(),
+                HandlerType::Exclusive,
+            )
+        }
+    }
+
     impl ServiceInvocation {
         pub fn mock() -> Self {
+            let fid = FullInvocationId::mock_random();
             Self {
-                fid: FullInvocationId::mock_random(),
+                invocation_id: InvocationId::from(&fid),
+                invocation_target: InvocationTarget::virtual_object(
+                    fid.service_id.service_name.clone(),
+                    ByteString::try_from(fid.service_id.key.clone()).unwrap(),
+                    "mock",
+                    HandlerType::Exclusive,
+                ),
+                fid,
                 method_name: "mock".into(),
                 argument: Default::default(),
                 source: Source::Service(FullInvocationId::mock_random()),

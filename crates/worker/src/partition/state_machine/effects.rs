@@ -294,7 +294,7 @@ impl Effect {
                 message: OutboxMessage::InvocationTermination(invocation_termination),
             } => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %invocation_termination.maybe_fid,
+                restate.invocation.id = %invocation_termination.invocation_id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send invocation termination command '{:?}' to partition processor",
                 invocation_termination.flavor
@@ -422,13 +422,12 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(service_id) => {
+                Timer::CompleteSleepEntry(_) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        rpc.service = %service_id.service_name,
                         restate.invocation.id = %timer_value.invocation_id(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
@@ -583,8 +582,8 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::SendAbortInvocationToInvoker(_) => {
-                debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
+            Effect::SendAbortInvocationToInvoker(invocation_id) => {
+                debug_if_leader!(is_leader, restate.invocation.id = %invocation_id, "Effect: Send abort command to invoker");
             }
             Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these

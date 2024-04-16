@@ -14,7 +14,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use ulid::Ulid;
 
+use rand::RngCore;
 use std::fmt;
+use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -25,6 +27,7 @@ use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
+use crate::invocation::InvocationTarget;
 use crate::time::MillisSinceEpoch;
 
 /// Identifying the leader epoch of a partition processor
@@ -277,10 +280,11 @@ impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
     Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, serde::Serialize, serde::Deserialize,
 )]
 pub struct ServiceId {
+    // TODO rename this to KeyedServiceId. This type can be used only by keyed service types (virtual objects and workflows)
     /// Identifies the grpc service
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
-    pub key: Bytes,
+    pub key: Bytes, // TODO change this to ByteString
 
     partition_key: PartitionKey,
 }
@@ -292,6 +296,7 @@ impl ServiceId {
         Self::with_partition_key(partition_key, service_name, key)
     }
 
+    // TODO remove this
     pub fn unkeyed(service_name: impl Into<ByteString>) -> Self {
         Self::new(
             service_name,
@@ -345,11 +350,30 @@ pub struct InvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
+    // TODO deprecated, to remove
     pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
         Self {
             partition_key,
             inner: invocation_uuid.into(),
         }
+    }
+
+    pub fn generate<IKey: Hash>(
+        invocation_target: &InvocationTarget,
+        idempotency_key: Option<IKey>,
+    ) -> Self {
+        let partition_key = invocation_target
+            .key()
+            // If the invocation target is keyed, the PK is inferred from the key
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            // If there is an idempotency key, the PK is inferred from the idempotency key
+            .or_else(|| {
+                idempotency_key.map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            })
+            // In all the other cases, the PK is random
+            .unwrap_or_else(|| rand::thread_rng().next_u64());
+
+        InvocationId::from_parts(partition_key, InvocationUuid::new())
     }
 
     pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
@@ -369,6 +393,12 @@ impl InvocationId {
 
     pub fn to_bytes(&self) -> EncodedInvocationId {
         encode_invocation_id(&self.partition_key, &self.inner)
+    }
+}
+
+impl From<InvocationId> for Bytes {
+    fn from(value: InvocationId) -> Self {
+        Bytes::copy_from_slice(&value.to_bytes())
     }
 }
 
@@ -593,6 +623,7 @@ impl IdempotencyId {
         }
     }
 
+    // TODO remove this
     pub fn combine(
         service_id: ServiceId,
         handler_name: ByteString,
@@ -606,6 +637,20 @@ impl IdempotencyId {
             handler_name,
             idempotency_key,
         )
+    }
+
+    pub fn new_combine(
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
+        idempotency_key: ByteString,
+    ) -> Self {
+        IdempotencyId {
+            component_name: invocation_target.handler_name().clone(),
+            component_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
+            component_handler: invocation_target.handler_name().clone(),
+            idempotency_key,
+            partition_key: invocation_id.partition_key(),
+        }
     }
 }
 
@@ -813,8 +858,10 @@ mod mocks {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Bytes::copy_from_slice(
-                    &rand::thread_rng().sample::<[u8; 32], _>(rand::distributions::Standard),
+                Bytes::from(
+                    Alphanumeric
+                        .sample_string(&mut rand::thread_rng(), 16)
+                        .into_bytes(),
                 ),
             )
         }

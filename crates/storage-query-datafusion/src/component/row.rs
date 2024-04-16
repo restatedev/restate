@@ -11,7 +11,8 @@
 use super::schema::ComponentBuilder;
 
 use crate::table_util::format_using;
-use restate_schema_api::component::{ComponentMetadata, ComponentType};
+use restate_schema_api::component::ComponentMetadata;
+use restate_types::invocation::ComponentType;
 
 #[inline]
 pub(crate) fn append_component_row(

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::invocation_target::InvocationTargetMetadata;
+use restate_types::invocation::ComponentType;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HandlerSchemas {

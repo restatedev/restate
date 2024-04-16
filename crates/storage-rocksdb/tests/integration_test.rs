@@ -17,8 +17,8 @@ use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{FullInvocationId, ServiceId};
-use restate_types::invocation::{ServiceInvocation, Source, SpanRelation};
+use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
+use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -86,8 +86,12 @@ pub(crate) fn mock_full_invocation_id(service_id: ServiceId) -> FullInvocationId
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
+    let fid = FullInvocationId::generate(service_id);
+    let invocation_id = InvocationId::from(&fid);
     ServiceInvocation::new(
-        FullInvocationId::generate(service_id),
+        invocation_id,
+        InvocationTarget::mock_service(),
+        fid,
         ByteString::from_static("service"),
         Bytes::new(),
         Source::Ingress,
@@ -108,8 +112,12 @@ pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutatio
 }
 
 pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
+    let fid = FullInvocationId::mock_random();
+    let invocation_id = InvocationId::from(&fid);
     ServiceInvocation::new(
-        FullInvocationId::mock_random(),
+        invocation_id,
+        InvocationTarget::mock_service(),
+        fid,
         ByteString::from_static("service"),
         Bytes::new(),
         Source::Ingress,

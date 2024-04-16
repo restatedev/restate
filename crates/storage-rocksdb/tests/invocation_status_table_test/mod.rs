@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::assert_stream_eq;
+use bytestring::ByteString;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
@@ -18,7 +19,9 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{
     FullInvocationId, InvocationId, InvocationUuid, ServiceId, WithPartitionKey,
 };
-use restate_types::invocation::{ServiceInvocationSpanContext, Source};
+use restate_types::invocation::{
+    HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
+};
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -48,8 +51,15 @@ static INVOCATION_ID_3: Lazy<InvocationId> = Lazy::new(|| {
 });
 
 fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
+    let service_id = service_id.into();
     InvocationStatus::Invoked(InFlightInvocationMetadata {
-        service_id: service_id.into(),
+        invocation_target: InvocationTarget::virtual_object(
+            service_id.service_name.clone(),
+            ByteString::try_from(service_id.key.clone()).unwrap(),
+            "service",
+            HandlerType::Exclusive,
+        ),
+        service_id,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         deployment_id: None,
         method: "service".into(),
@@ -62,9 +72,16 @@ fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
 }
 
 fn suspended_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
+    let service_id = service_id.into();
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
-            service_id: service_id.into(),
+            invocation_target: InvocationTarget::virtual_object(
+                service_id.service_name.clone(),
+                ByteString::try_from(service_id.key.clone()).unwrap(),
+                "service",
+                HandlerType::Exclusive,
+            ),
+            service_id,
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             deployment_id: None,
             method: "service".into(),

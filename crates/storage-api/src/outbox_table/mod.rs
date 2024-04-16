@@ -32,7 +32,7 @@ impl WithPartitionKey for OutboxMessage {
         match self {
             OutboxMessage::ServiceInvocation(si) => si.fid.partition_key(),
             OutboxMessage::ServiceResponse(sr) => sr.id.partition_key(),
-            OutboxMessage::InvocationTermination(it) => it.maybe_fid.partition_key(),
+            OutboxMessage::InvocationTermination(it) => it.invocation_id.partition_key(),
         }
     }
 }

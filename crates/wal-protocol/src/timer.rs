@@ -32,19 +32,19 @@ impl TimerValue {
     }
 
     pub fn new_sleep(
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
         let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
+            invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         });
 
         Self {
             timer_key,
-            value: Timer::CompleteSleepEntry(full_invocation_id.service_id),
+            value: Timer::CompleteSleepEntry(invocation_id.partition_key()),
         }
     }
 
