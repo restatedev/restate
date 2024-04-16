@@ -19,7 +19,7 @@ use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder}
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
-use restate_types::{flexbuffers_storage_serde, Version, Versioned};
+use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -46,7 +46,7 @@ impl Versioned for Value {
     }
 }
 
-flexbuffers_storage_serde!(Value);
+flexbuffers_storage_encode_decode!(Value);
 
 /// Tests basic operations of the metadata store.
 #[test(tokio::test)]

@@ -21,7 +21,7 @@ use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
 use restate_storage_api::{storage, Result, StorageError};
-use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use std::ops::RangeInclusive;
 
@@ -41,17 +41,6 @@ fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
         .service_key(service_id.key.clone())
 }
 
-fn to_service_status(
-    partition_key: PartitionKey,
-    pb_status: storage::v1::ServiceStatus,
-) -> Result<VirtualObjectStatus> {
-    let invocation_uuid = InvocationUuid::try_from(pb_status).map_err(StorageError::from)?;
-    Ok(VirtualObjectStatus::Locked(InvocationId::new(
-        partition_key,
-        invocation_uuid,
-    )))
-}
-
 fn put_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
@@ -64,7 +53,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     if status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
-        let value = ProtoValue(storage::v1::ServiceStatus::from(status));
+        let value = ProtoValue(storage::v1::VirtualObjectStatus::from(status));
         storage.put_kv(key, value);
     }
 }
@@ -83,9 +72,9 @@ fn get_virtual_object_status<S: StorageAccess>(
             return Ok(VirtualObjectStatus::Unlocked);
         }
         let v = v.unwrap();
-        let proto = storage::v1::ServiceStatus::decode(v)
+        let proto = storage::v1::VirtualObjectStatus::decode(v)
             .map_err(|err| StorageError::Generic(err.into()))?;
-        to_service_status(service_id.partition_key(), proto)
+        VirtualObjectStatus::try_from(proto).map_err(StorageError::from)
     })
 }
 
@@ -142,9 +131,8 @@ impl RocksDBStorage {
         let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = storage::v1::ServiceStatus::decode(value).unwrap();
-            let state_value =
-                to_service_status(state_key.partition_key.unwrap(), state_value).unwrap();
+            let proto = storage::v1::VirtualObjectStatus::decode(value).unwrap();
+            let state_value = VirtualObjectStatus::try_from(proto).unwrap();
             OwnedVirtualObjectStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 name: state_key.service_name.unwrap(),

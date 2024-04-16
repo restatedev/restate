@@ -29,6 +29,7 @@ pub mod v1 {
         use prost::Message;
 
         use restate_types::errors::{IdDecodeError, InvocationError};
+        use restate_types::identifiers::WithPartitionKey;
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::storage::{
@@ -53,13 +54,14 @@ pub mod v1 {
         };
         use crate::storage::v1::{
             enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
-            invocation_target, outbox_message, response_result, service_status, source,
-            span_relation, timer, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
+            invocation_target, outbox_message, response_result, source, span_relation, timer,
+            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
             EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId, Header,
-            IdempotencyMetadata, IdempotentRequestMetadata, InboxEntry, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalMeta, KvPair, OutboxMessage,
-            ResponseResult, ServiceId, ServiceInvocation, ServiceInvocationResponseSink,
-            ServiceStatus, Source, SpanContext, SpanRelation, StateMutation, Timer,
+            IdempotencyMetadata, IdempotentRequestMetadata, InboxEntry, InvocationId,
+            InvocationResolutionResult, InvocationStatus, InvocationTarget, JournalEntry,
+            JournalMeta, KvPair, OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
+            VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -103,41 +105,65 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<ServiceStatus> for restate_types::identifiers::InvocationUuid {
+        impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
             type Error = ConversionError;
 
-            fn try_from(value: ServiceStatus) -> Result<Self, Self::Error> {
+            fn try_from(value: VirtualObjectStatus) -> Result<Self, Self::Error> {
                 Ok(
                     match value
                         .status
                         .ok_or(ConversionError::missing_field("status"))?
                     {
-                        service_status::Status::Locked(locked) => {
-                            try_bytes_into_invocation_uuid(locked.invocation_uuid)?
+                        virtual_object_status::Status::Locked(locked) => {
+                            crate::service_status_table::VirtualObjectStatus::Locked(
+                                restate_types::identifiers::InvocationId::try_from(
+                                    locked
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                )?,
+                            )
                         }
                     },
                 )
             }
         }
 
-        impl From<crate::service_status_table::VirtualObjectStatus> for ServiceStatus {
+        impl From<crate::service_status_table::VirtualObjectStatus> for VirtualObjectStatus {
             fn from(value: crate::service_status_table::VirtualObjectStatus) -> Self {
                 match value {
                     crate::service_status_table::VirtualObjectStatus::Locked(invocation_id) => {
-                        ServiceStatus {
-                            status: Some(service_status::Status::Locked(service_status::Locked {
-                                invocation_uuid: invocation_id
-                                    .invocation_uuid()
-                                    .to_bytes()
-                                    .to_vec()
-                                    .into(),
-                            })),
+                        VirtualObjectStatus {
+                            status: Some(virtual_object_status::Status::Locked(
+                                virtual_object_status::Locked {
+                                    invocation_id: Some(invocation_id.into()),
+                                },
+                            )),
                         }
                     }
                     crate::service_status_table::VirtualObjectStatus::Unlocked => {
                         unreachable!("Nothing should be stored for unlocked")
                     }
                 }
+            }
+        }
+
+        impl From<restate_types::identifiers::InvocationId> for InvocationId {
+            fn from(value: restate_types::identifiers::InvocationId) -> Self {
+                InvocationId {
+                    partition_key: value.partition_key(),
+                    invocation_uuid: value.invocation_uuid().to_bytes().to_vec().into(),
+                }
+            }
+        }
+
+        impl TryFrom<InvocationId> for restate_types::identifiers::InvocationId {
+            type Error = ConversionError;
+
+            fn try_from(value: InvocationId) -> Result<Self, Self::Error> {
+                Ok(restate_types::identifiers::InvocationId::new(
+                    value.partition_key,
+                    try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+                ))
             }
         }
 
