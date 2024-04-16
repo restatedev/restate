@@ -9,11 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
@@ -31,8 +30,8 @@ pub enum Action {
         invoke_input_journal: InvokeInputJournal,
     },
     InvokeBuiltInService {
-        full_invocation_id: FullInvocationId,
-        method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
         argument: Bytes,

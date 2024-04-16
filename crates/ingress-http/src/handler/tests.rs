@@ -27,7 +27,7 @@ use restate_schema_api::invocation_target::{
     OutputContentTypeRule, OutputRules,
 };
 use restate_test_util::{assert, assert_eq};
-use restate_types::identifiers::{IdempotencyId, ServiceId};
+use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::{ComponentType, HandlerType, Header, Idempotency, ResponseResult};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -316,7 +316,7 @@ async fn idempotency_key_parsing() {
         let correlation_id = ingress_req.correlation_id.clone();
 
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, idempotency, response_tx, _) =
+        let (invocation_id, invocation_target, argument, _, idempotency, response_tx, _) =
             ingress_req.expect_invocation();
         assert_eq!(invocation_target.service_name(), "greeter.Greeter");
         assert_eq!(invocation_target.handler_name(), "greet");
@@ -327,8 +327,8 @@ async fn idempotency_key_parsing() {
         assert_eq!(
             correlation_id,
             IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
-                ServiceId::new("greeter.Greeter", "123456"),
-                ByteString::from_static("greet"),
+                invocation_id,
+                &invocation_target,
                 ByteString::from_static("123456")
             ))
         );

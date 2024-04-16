@@ -44,7 +44,6 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     .await;
 
     let service_invocation = ServiceInvocation {
-        method_name: "mymethod".into(),
         ..mock_service_invocation(ServiceId::new("svc-2", "key-2"))
     };
     txn.add_timer(

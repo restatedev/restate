@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, WithPartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
@@ -49,13 +49,13 @@ impl TimerValue {
     }
 
     pub fn new_invoke(
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
         let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
+            invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         });
@@ -79,7 +79,7 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::new(self.value.partition_key(), self.timer_key.0.invocation_uuid)
+        InvocationId::from_parts(self.value.partition_key(), self.timer_key.0.invocation_uuid)
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {

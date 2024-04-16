@@ -22,7 +22,7 @@ use restate_network::Networking;
 use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
-use std::ops::{Deref, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -40,7 +40,7 @@ use restate_errors::NotRunningError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{FullInvocationId, InvocationId, PartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::EntryType;
 use restate_wal_protocol::timer::TimerValue;
@@ -282,7 +282,6 @@ where
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
 
-            let method = metadata.method;
             // Built-in services support only one response_sink
             debug_assert!(
                 metadata.response_sinks.len() <= 1,
@@ -292,8 +291,8 @@ where
             let argument = input_entry.serialized_entry().clone();
             built_in_service_invoker
                 .invoke(
-                    FullInvocationId::combine(metadata.service_id, invocation_id),
-                    &method,
+                    invocation_id,
+                    metadata.invocation_target,
                     metadata.journal_metadata.span_context,
                     response_sink,
                     argument,
@@ -447,16 +446,16 @@ where
                 .await
                 .map_err(Error::Invoker)?,
             Action::InvokeBuiltInService {
-                full_invocation_id,
+                invocation_id,
+                invocation_target,
                 span_context,
                 response_sink,
-                method,
                 argument,
             } => {
                 non_deterministic_service_invoker
                     .invoke(
-                        full_invocation_id,
-                        method.deref(),
+                        invocation_id,
+                        invocation_target,
                         span_context,
                         response_sink,
                         argument,

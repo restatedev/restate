@@ -14,7 +14,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
-use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     ComponentType, HandlerType, InvocationTarget, ServiceInvocationSpanContext, SpanRelation,
 };
@@ -61,27 +61,23 @@ where
             .map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
-        let (service_id, invocation_target) = match self
+        let invocation_target = match self
             .schemas
             .resolve_latest_invocation_target(&request.service_name, &request.method_name)
         {
             Some(meta) => match meta.component_ty {
-                ComponentType::Service => (
-                    ServiceId::unkeyed(request.service_name.clone()),
-                    InvocationTarget::service(request.service_name, request.method_name),
-                ),
-                ComponentType::VirtualObject => (
-                    ServiceId::new(request.service_name.clone(), request.key.as_bytes().clone()),
-                    InvocationTarget::virtual_object(
-                        request.service_name.clone(),
-                        ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
-                            InvocationError::from(anyhow!(
-                                "The request key is not a valid UTF-8 string: {e}"
-                            ))
-                        })?,
-                        request.method_name,
-                        meta.handler_ty,
-                    ),
+                ComponentType::Service => {
+                    InvocationTarget::service(request.service_name, request.method_name)
+                }
+                ComponentType::VirtualObject => InvocationTarget::virtual_object(
+                    request.service_name.clone(),
+                    ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
+                        InvocationError::from(anyhow!(
+                            "The request key is not a valid UTF-8 string: {e}"
+                        ))
+                    })?,
+                    request.method_name,
+                    meta.handler_ty,
                 ),
             },
             None => {
@@ -92,8 +88,7 @@ where
             }
         };
 
-        let invocation_uuid = InvocationUuid::new();
-        let invocation_id = InvocationId::from_parts(service_id.partition_key(), invocation_uuid);
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);
@@ -101,7 +96,6 @@ where
         Ok(InvokeEnrichmentResult {
             invocation_id,
             invocation_target,
-            service_key: service_id.key,
             span_context,
         })
     }

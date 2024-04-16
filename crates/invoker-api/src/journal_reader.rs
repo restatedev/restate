@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytestring::ByteString;
 use futures::Stream;
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -21,8 +20,6 @@ use std::future::Future;
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
-    // TODO could be removed once we introduce InvocationTarget with https://github.com/restatedev/restate/issues/1329
-    pub method: ByteString,
     pub deployment_id: Option<DeploymentId>,
 }
 
@@ -30,12 +27,10 @@ impl JournalMetadata {
     pub fn new(
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
-        method: ByteString,
         deployment_id: Option<DeploymentId>,
     ) -> Self {
         Self {
             deployment_id,
-            method,
             span_context,
             length,
         }
@@ -70,12 +65,7 @@ pub mod mocks {
             _sid: &'a InvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
-                JournalMetadata::new(
-                    0,
-                    ServiceInvocationSpanContext::empty(),
-                    "test".into(),
-                    None,
-                ),
+                JournalMetadata::new(0, ServiceInvocationSpanContext::empty(), None),
                 futures::stream::empty(),
             ))
         }

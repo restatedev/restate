@@ -23,7 +23,6 @@ use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::component::ComponentMetadataResolver;
 use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::{FullInvocationId, ServiceId};
 use restate_types::invocation::{InvocationTarget, ResponseResult, SpanRelation};
 use tracing::{info, trace, warn, Instrument};
 
@@ -40,16 +39,19 @@ where
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
-        let fid =
-            FullInvocationId::generate(ServiceId::unkeyed(restate_pb::AWAKEABLES_SERVICE_NAME));
-
         let handler_name: &'static str = match &awakeable_request_type {
             AwakeableRequestType::Resolve { .. } => restate_pb::AWAKEABLES_RESOLVE_HANDLER_NAME,
             AwakeableRequestType::Reject { .. } => restate_pb::AWAKEABLES_REJECT_HANDLER_NAME,
         };
+        let invocation_target = InvocationTarget::Service {
+            name: ByteString::from_static(restate_pb::AWAKEABLES_SERVICE_NAME),
+            handler: ByteString::from_static(handler_name),
+        };
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         // Prepare the tracing span
-        let (ingress_span, ingress_span_context) = prepare_tracing_span(&fid, handler_name, &req);
+        let (ingress_span, ingress_span_context) =
+            prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
         let dispatcher = self.dispatcher.clone();
         async move {
@@ -90,13 +92,9 @@ where
                 }
             };
 
-            let invocation_id: InvocationId = fid.clone().into();
             let (invocation, response_rx) = IngressDispatcherRequest::invocation(
-                fid,
-                InvocationTarget::Service {
-                    name: ByteString::from_static(restate_pb::AWAKEABLES_SERVICE_NAME),
-                    handler: ByteString::from_static(handler_name),
-                },
+                invocation_id,
+                invocation_target,
                 payload,
                 SpanRelation::Linked(ingress_span_context),
                 None,

@@ -19,7 +19,6 @@ use restate_core::metadata;
 use restate_core::network::MessageHandler;
 use restate_node_protocol::codec::Targeted;
 use restate_node_protocol::ingress::IngressMessage;
-use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{self, ServiceInvocation, ServiceInvocationResponseSink};
 use restate_types::message::MessageIndex;
 use restate_wal_protocol::append_envelope_to_bifrost;
@@ -78,7 +77,7 @@ impl DispatchIngressRequest for IngressDispatcher {
         let my_node_id = metadata().my_node_id();
         let IngressDispatcherRequest {
             correlation_id,
-            fid,
+            invocation_id,
             invocation_target,
             argument,
             span_context,
@@ -88,7 +87,6 @@ impl DispatchIngressRequest for IngressDispatcher {
             execution_time,
         } = ingress_request;
 
-        let invocation_id: InvocationId = fid.clone().into();
         let response_sink = if matches!(request_mode, IngressRequestMode::RequestResponse(_)) {
             Some(ServiceInvocationResponseSink::Ingress(my_node_id))
         } else {
@@ -97,9 +95,7 @@ impl DispatchIngressRequest for IngressDispatcher {
 
         let service_invocation = ServiceInvocation {
             invocation_id,
-            method_name: invocation_target.handler_name().clone(),
             invocation_target,
-            fid,
             argument,
             source: invocation::Source::Ingress,
             response_sink,
@@ -197,8 +193,7 @@ mod tests {
     use restate_core::TestCoreEnvBuilder;
     use restate_node_protocol::ingress::InvocationResponse;
     use restate_test_util::{let_assert, matchers::*};
-    use restate_types::identifiers::ServiceId;
-    use restate_types::identifiers::{FullInvocationId, IdempotencyId, WithPartitionKey};
+    use restate_types::identifiers::{IdempotencyId, InvocationId, WithPartitionKey};
     use restate_types::invocation::{
         HandlerType, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
     };
@@ -229,9 +224,6 @@ mod tests {
                 bifrost_svc.start().await?;
 
                 // Ask for a response, then drop the receiver
-                let service_id = ServiceId::new("MySvc", "MyKey");
-                let fid = FullInvocationId::generate(service_id.clone());
-                let handler_name = ByteString::from_static("pippo");
                 let invocation_target = InvocationTarget::virtual_object(
                     "MySvc",
                     "MyKey",
@@ -240,9 +232,19 @@ mod tests {
                 );
                 let argument = Bytes::from_static(b"nbfjksdfs");
                 let idempotency_key = ByteString::from_static("123");
+                let invocation_id = InvocationId::generate_with_idempotency_key(
+                    &invocation_target,
+                    Some(idempotency_key.clone()),
+                );
+                let idempotency_id = IdempotencyId::combine(
+                    invocation_id,
+                    &invocation_target,
+                    idempotency_key.clone(),
+                );
+
                 let (invocation, res) = IngressDispatcherRequest::invocation(
-                    fid.clone(),
-                    invocation_target,
+                    invocation_id,
+                    invocation_target.clone(),
                     argument.clone(),
                     SpanRelation::None,
                     Some(Idempotency {
@@ -258,7 +260,7 @@ mod tests {
                     .metadata
                     .partition_table()
                     .unwrap()
-                    .find_partition_id(fid.partition_key())?;
+                    .find_partition_id(invocation_id.partition_key())?;
                 let log_id = LogId::from(partition_id);
                 let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
 
@@ -274,8 +276,8 @@ mod tests {
                 assert_that!(
                     service_invocation,
                     pat!(ServiceInvocation {
-                        fid: eq(fid.clone()),
-                        method_name: eq(handler_name.clone()),
+                        invocation_id: eq(invocation_id),
+                        invocation_target: eq(invocation_target.clone()),
                         argument: eq(argument.clone()),
                         idempotency: some(eq(Idempotency {
                             key: idempotency_key.clone(),
@@ -291,12 +293,8 @@ mod tests {
                     .send(
                         metadata().my_node_id().into(),
                         &IngressMessage::InvocationResponse(InvocationResponse {
-                            invocation_id: service_invocation.fid.into(),
-                            idempotency_id: Some(IdempotencyId::combine(
-                                service_id.clone(),
-                                handler_name.clone(),
-                                idempotency_key.clone(),
-                            )),
+                            invocation_id: service_invocation.invocation_id,
+                            idempotency_id: Some(idempotency_id),
                             response: ResponseResult::Success(response.clone()),
                         }),
                     )

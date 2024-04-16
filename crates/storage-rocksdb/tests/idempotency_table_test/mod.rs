@@ -42,21 +42,21 @@ async fn test_idempotency_key() {
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_1,
         IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_1),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_1),
         },
     )
     .await;
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_2,
         IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_2),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_2),
         },
     )
     .await;
     txn.put_idempotency_metadata(
         &IDEMPOTENCY_ID_3,
         IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_3),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_3),
         },
     )
     .await;
@@ -69,7 +69,7 @@ async fn test_idempotency_key() {
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_1),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_1),
         })
     );
     assert_eq!(
@@ -78,7 +78,7 @@ async fn test_idempotency_key() {
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_2),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_2),
         })
     );
     assert_eq!(
@@ -87,7 +87,7 @@ async fn test_idempotency_key() {
             .await
             .unwrap(),
         Some(IdempotencyMetadata {
-            invocation_id: InvocationId::new(10, FIXTURE_INVOCATION_3),
+            invocation_id: InvocationId::from_parts(10, FIXTURE_INVOCATION_3),
         })
     );
     assert_eq!(

@@ -112,9 +112,7 @@ mod tests {
     use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
-    use restate_types::identifiers::{
-        FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
-    };
+    use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
     use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
         HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
@@ -235,22 +233,15 @@ mod tests {
         let mut state_machine = tc
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
-        let fid = mock_start_invocation(&mut state_machine).await;
+        let id = mock_start_invocation(&mut state_machine).await;
 
         let invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&InvocationId::from(&fid))
+            .get_invocation_status(&id)
             .await
             .unwrap();
-        assert_that!(
-            invocation_status,
-            pat!(InvocationStatus::Invoked(pat!(
-                InFlightInvocationMetadata {
-                    service_id: eq(fid.service_id)
-                }
-            )))
-        );
+        assert_that!(invocation_status, pat!(InvocationStatus::Invoked(_)));
 
         state_machine.shutdown().await
     }
@@ -312,8 +303,7 @@ mod tests {
         let mut state_machine = tc
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
-        let fid = mock_start_invocation(&mut state_machine).await;
-        let invocation_id = InvocationId::from(&fid);
+        let invocation_id = mock_start_invocation(&mut state_machine).await;
 
         // Send completion first
         let _ = state_machine
@@ -364,7 +354,7 @@ mod tests {
         let entry = state_machine
             .rocksdb_storage
             .transaction()
-            .get_journal_entry(&InvocationId::from(&fid), 1)
+            .get_journal_entry(&invocation_id, 1)
             .await
             .unwrap()
             .unwrap();
@@ -405,16 +395,14 @@ mod tests {
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
 
-        let fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
-        let invocation_target = InvocationTarget::mock_virtual_object();
-        let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
-        let inboxed_invocation_id = InvocationId::from(&inboxed_fid);
-        let caller_fid = FullInvocationId::mock_random();
-        let caller_invocation_id = InvocationId::from(&caller_fid);
+        let (invocation_id, invocation_target) =
+            InvocationId::mock_with(InvocationTarget::mock_virtual_object());
+        let (inboxed_id, inboxed_target) = InvocationId::mock_with(invocation_target.clone());
+        let caller_id = InvocationId::mock_random();
 
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
-                fid,
+                invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
             }))
@@ -422,11 +410,10 @@ mod tests {
 
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
-                fid: inboxed_fid.clone(),
-                invocation_id: inboxed_invocation_id,
-                invocation_target,
+                invocation_id: inboxed_id,
+                invocation_target: inboxed_target,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
-                    caller: caller_invocation_id,
+                    caller: caller_id,
                     entry_index: 0,
                 }),
                 ..ServiceInvocation::mock()
@@ -436,7 +423,7 @@ mod tests {
         let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&inboxed_invocation_id)
+            .get_invocation_status(&inboxed_id)
             .await?;
 
         // assert that inboxed invocation is in invocation_status
@@ -444,14 +431,14 @@ mod tests {
 
         let actions = state_machine
             .apply(Command::TerminateInvocation(InvocationTermination::kill(
-                inboxed_invocation_id,
+                inboxed_id,
             )))
             .await;
 
         let current_invocation_status = state_machine
             .storage()
             .transaction()
-            .get_invocation_status(&inboxed_invocation_id)
+            .get_invocation_status(&inboxed_id)
             .await?;
 
         // assert that invocation status was removed
@@ -474,7 +461,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::NewOutboxMessage {
-                message: outbox_message_matcher(caller_invocation_id)
+                message: outbox_message_matcher(caller_id)
             }))
         );
 
@@ -487,7 +474,7 @@ mod tests {
 
         assert_that!(
             outbox_message,
-            some((ge(0), outbox_message_matcher(caller_invocation_id)))
+            some((ge(0), outbox_message_matcher(caller_id)))
         );
 
         state_machine.shutdown().await
@@ -502,8 +489,13 @@ mod tests {
         let mut state_machine = tc
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
-        let fid = mock_start_invocation(&mut state_machine).await;
-        let invocation_id = InvocationId::from(&fid);
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let keyed_service_id = invocation_target.as_keyed_service_id().unwrap();
+        let invocation_id = mock_start_invocation_with_invocation_target(
+            &mut state_machine,
+            invocation_target.clone(),
+        )
+        .await;
 
         let first_state_mutation: HashMap<Bytes, Bytes> = [
             (Bytes::from_static(b"foobar"), Bytes::from_static(b"foobar")),
@@ -521,7 +513,7 @@ mod tests {
         assert_eq!(
             state_machine
                 .rocksdb_storage
-                .get_all_user_states(&fid.service_id)
+                .get_all_user_states(&keyed_service_id)
                 .count()
                 .await,
             0
@@ -529,14 +521,14 @@ mod tests {
 
         state_machine
             .apply(Command::PatchState(ExternalStateMutation {
-                component_id: fid.service_id.clone(),
+                component_id: keyed_service_id.clone(),
                 version: None,
                 state: first_state_mutation,
             }))
             .await;
         state_machine
             .apply(Command::PatchState(ExternalStateMutation {
-                component_id: fid.service_id.clone(),
+                component_id: keyed_service_id.clone(),
                 version: None,
                 state: second_state_mutation.clone(),
             }))
@@ -553,7 +545,7 @@ mod tests {
 
         let all_states: HashMap<_, _> = state_machine
             .rocksdb_storage
-            .get_all_user_states(&fid.service_id)
+            .get_all_user_states(&keyed_service_id)
             .try_collect()
             .await?;
 
@@ -581,9 +573,8 @@ mod tests {
             .await;
         txn.commit().await.unwrap();
 
-        let fid =
+        let invocation_id =
             mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
-        let invocation_id = InvocationId::from(&fid);
 
         state_machine
             .apply(Command::InvokerEffect(InvokerEffect {
@@ -614,15 +605,14 @@ mod tests {
         let mut state_machine = tc
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
-        let fid = mock_start_invocation(&mut state_machine).await;
-        let invocation_id = InvocationId::from(&fid);
+        let service_id = ServiceId::mock_random();
+        let invocation_id =
+            mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
 
         // Mock some state
         let mut txn = state_machine.rocksdb_storage.transaction();
-        txn.put_user_state(&fid.service_id, b"key1", b"value1")
-            .await;
-        txn.put_user_state(&fid.service_id, b"key2", b"value2")
-            .await;
+        txn.put_user_state(&service_id, b"key1", b"value1").await;
+        txn.put_user_state(&service_id, b"key2", b"value2").await;
         txn.commit().await.unwrap();
 
         let actions = state_machine
@@ -662,20 +652,13 @@ mod tests {
         let mut state_machine = tc
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
-        let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-        let invocation_id = InvocationId::from(&fid);
+        let (invocation_id, invocation_target) =
+            InvocationId::mock_with(InvocationTarget::mock_virtual_object());
 
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 invocation_id,
-                invocation_target: InvocationTarget::virtual_object(
-                    "MyObj",
-                    "MyKey",
-                    "MyHandler",
-                    HandlerType::Exclusive,
-                ),
-                fid: fid.clone(),
-                method_name: ByteString::from("MyHandler"),
+                invocation_target,
                 argument: Default::default(),
                 source: Source::Ingress,
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
@@ -757,7 +740,7 @@ mod tests {
         use restate_storage_api::timer_table::{Timer, TimerKey};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
-        use restate_types::invocation::{HandlerType, Idempotency, InvocationTarget};
+        use restate_types::invocation::{Idempotency, InvocationTarget};
         use restate_wal_protocol::timer::TimerValue;
         use test_log::test;
 
@@ -770,25 +753,24 @@ mod tests {
             let mut state_machine = tc
                 .run_in_scope("mock-state-machine", None, MockStateMachine::create())
                 .await;
-            let fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-            let handler_name = ByteString::from_static("handler");
-            let invocation_id = InvocationId::from(&fid);
+
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
-            let idempotency_id = IdempotencyId::new(
-                fid.service_id.service_name.clone(),
-                Some(fid.service_id.key.clone()),
-                handler_name.clone(),
-                idempotency.key.clone(),
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
             );
+            let idempotency_id =
+                IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key.clone());
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
-                    fid: fid.clone(),
-                    method_name: handler_name.clone(),
+                    invocation_id,
+                    invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress(
                         GenerationalNodeId::new(1, 1),
                     )),
@@ -878,19 +860,19 @@ mod tests {
             let mut state_machine = tc
                 .run_in_scope("mock-state-machine", None, MockStateMachine::create())
                 .await;
-            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-            let handler_name = ByteString::from_static("handler");
-            let invocation_id = InvocationId::from(&original_request_fid);
+
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
-            let idempotency_id = IdempotencyId::new(
-                original_request_fid.service_id.service_name.clone(),
-                Some(original_request_fid.service_id.key.clone()),
-                handler_name.clone(),
-                idempotency.key.clone(),
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
             );
+            let idempotency_id =
+                IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key.clone());
+
             let response_bytes = Bytes::from_static(b"123");
             let ingress_id = GenerationalNodeId::new(1, 1);
 
@@ -901,14 +883,7 @@ mod tests {
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
-                    invocation_target: InvocationTarget::virtual_object(
-                        "MyObj",
-                        "MyKey",
-                        "handler",
-                        HandlerType::Exclusive,
-                    ),
-                    service_id: original_request_fid.service_id.clone(),
-                    handler: handler_name.clone(),
+                    invocation_target: invocation_target.clone(),
                     idempotency_key: Some(idempotency.key.clone()),
                     response_result: ResponseResult::Success(response_bytes.clone()),
                 }),
@@ -917,12 +892,14 @@ mod tests {
             txn.commit().await.unwrap();
 
             // Send a request, should be completed immediately with result
-            let second_request_fid =
-                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let second_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
+            );
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
-                    fid: second_request_fid.clone(),
-                    method_name: handler_name.clone(),
+                    invocation_id: second_invocation_id,
+                    invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
                     idempotency: Some(idempotency),
                     ..ServiceInvocation::mock()
@@ -940,7 +917,7 @@ mod tests {
                 state_machine
                     .storage()
                     .transaction()
-                    .get_invocation_status(&InvocationId::from(&second_request_fid))
+                    .get_invocation_status(&second_invocation_id)
                     .await
                     .unwrap(),
                 pat!(InvocationStatus::Free)
@@ -958,19 +935,19 @@ mod tests {
             let mut state_machine = tc
                 .run_in_scope("mock-state-machine", None, MockStateMachine::create())
                 .await;
-            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-            let handler_name = ByteString::from_static("handler");
-            let invocation_id = InvocationId::from(&original_request_fid);
+
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
-            let idempotency_id = IdempotencyId::new(
-                original_request_fid.service_id.service_name.clone(),
-                Some(original_request_fid.service_id.key.clone()),
-                handler_name.clone(),
-                idempotency.key.clone(),
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
             );
+            let idempotency_id =
+                IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key.clone());
+
             let ingress_id = GenerationalNodeId::new(1, 1);
 
             // Prepare idempotency metadata
@@ -980,12 +957,14 @@ mod tests {
             txn.commit().await.unwrap();
 
             // Send a request, should be completed immediately with result
-            let second_request_fid =
-                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let second_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
+            );
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
-                    fid: second_request_fid.clone(),
-                    method_name: handler_name.clone(),
+                    invocation_id: second_invocation_id,
+                    invocation_target,
                     response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
                     idempotency: Some(idempotency),
                     ..ServiceInvocation::mock()
@@ -1003,7 +982,7 @@ mod tests {
                 state_machine
                     .storage()
                     .transaction()
-                    .get_invocation_status(&InvocationId::from(&second_request_fid))
+                    .get_invocation_status(&second_invocation_id)
                     .await
                     .unwrap(),
                 pat!(InvocationStatus::Free)
@@ -1021,27 +1000,30 @@ mod tests {
             let mut state_machine = tc
                 .run_in_scope("mock-state-machine", None, MockStateMachine::create())
                 .await;
-            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-            let original_invocation_id = InvocationId::from(&original_request_fid);
-            let handler_name = ByteString::from_static("handler");
+
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
-            let idempotency_id = IdempotencyId::new(
-                original_request_fid.service_id.service_name.clone(),
-                Some(original_request_fid.service_id.key.clone()),
-                handler_name.clone(),
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let first_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
+            );
+            let idempotency_id = IdempotencyId::combine(
+                first_invocation_id,
+                &invocation_target,
                 idempotency.key.clone(),
             );
+
             let ingress_id_1 = GenerationalNodeId::new(1, 1);
             let ingress_id_2 = GenerationalNodeId::new(2, 1);
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
-                    fid: original_request_fid.clone(),
-                    method_name: handler_name.clone(),
+                    invocation_id: first_invocation_id,
+                    invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
                     idempotency: Some(idempotency.clone()),
                     ..ServiceInvocation::mock()
@@ -1050,18 +1032,20 @@ mod tests {
             assert_that!(
                 actions,
                 contains(pat!(Action::Invoke {
-                    invocation_id: eq(original_invocation_id),
+                    invocation_id: eq(first_invocation_id),
                     invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
                 }))
             );
 
             // Latch to existing invocation
-            let second_request_fid =
-                FullInvocationId::generate(original_request_fid.service_id.clone());
+            let second_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
+            );
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
-                    fid: second_request_fid,
-                    method_name: handler_name.clone(),
+                    invocation_id: second_invocation_id,
+                    invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_2)),
                     idempotency: Some(idempotency),
                     ..ServiceInvocation::mock()
@@ -1074,7 +1058,7 @@ mod tests {
             let actions = state_machine
                 .apply_multiple([
                     Command::InvokerEffect(InvokerEffect {
-                        invocation_id: original_invocation_id,
+                        invocation_id: first_invocation_id,
                         kind: InvokerEffectKind::JournalEntry {
                             entry_index: 1,
                             entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -1083,7 +1067,7 @@ mod tests {
                         },
                     }),
                     Command::InvokerEffect(InvokerEffect {
-                        invocation_id: original_invocation_id,
+                        invocation_id: first_invocation_id,
                         kind: InvokerEffectKind::End,
                     }),
                 ])
@@ -1118,19 +1102,18 @@ mod tests {
             let mut state_machine = tc
                 .run_in_scope("mock-state-machine", None, MockStateMachine::create())
                 .await;
-            let original_request_fid = FullInvocationId::generate(ServiceId::new("MyObj", "MyKey"));
-            let handler_name = ByteString::from_static("handler");
-            let invocation_id = InvocationId::from(&original_request_fid);
+
             let idempotency = Idempotency {
                 key: ByteString::from_static("my-idempotency-key"),
                 retention: Duration::from_secs(60) * 60 * 24,
             };
-            let idempotency_id = IdempotencyId::new(
-                original_request_fid.service_id.service_name.clone(),
-                Some(original_request_fid.service_id.key.clone()),
-                handler_name.clone(),
-                idempotency.key.clone(),
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency.key.clone()),
             );
+            let idempotency_id =
+                IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key.clone());
 
             // Prepare idempotency metadata and completed status
             let mut txn = state_machine.storage().transaction();
@@ -1139,14 +1122,7 @@ mod tests {
             txn.put_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
-                    invocation_target: InvocationTarget::virtual_object(
-                        "MyObj",
-                        "MyKey",
-                        "handler",
-                        HandlerType::Exclusive,
-                    ),
-                    service_id: original_request_fid.service_id.clone(),
-                    handler: handler_name.clone(),
+                    invocation_target,
                     idempotency_key: Some(idempotency.key.clone()),
                     response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 }),
@@ -1191,43 +1167,12 @@ mod tests {
     async fn mock_start_invocation_with_service_id(
         state_machine: &mut MockStateMachine,
         service_id: ServiceId,
-    ) -> FullInvocationId {
-        let invocation_target = InvocationTarget::virtual_object(
-            service_id.service_name.clone(),
-            ByteString::try_from(service_id.key.clone()).unwrap(),
-            "MyMethod",
-            HandlerType::Exclusive,
-        );
-
-        let fid = FullInvocationId::generate(service_id);
-        let invocation_id = InvocationId::from(&fid);
-
-        let actions = state_machine
-            .apply(Command::Invoke(ServiceInvocation {
-                invocation_id,
-                invocation_target: invocation_target.clone(),
-                fid: fid.clone(),
-                method_name: ByteString::from("MyMethod"),
-                argument: Default::default(),
-                source: Source::Ingress,
-                response_sink: None,
-                span_context: Default::default(),
-                headers: vec![],
-                execution_time: None,
-                idempotency: None,
-            }))
-            .await;
-
-        assert_that!(
-            actions,
-            contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-                invocation_target: eq(invocation_target),
-                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
-            }))
-        );
-
-        fid
+    ) -> InvocationId {
+        mock_start_invocation_with_invocation_target(
+            state_machine,
+            InvocationTarget::mock_from_service_id(service_id),
+        )
+        .await
     }
 
     async fn mock_start_invocation_with_invocation_target(
@@ -1235,23 +1180,9 @@ mod tests {
         invocation_target: InvocationTarget,
     ) -> InvocationId {
         let invocation_id = InvocationId::generate(&invocation_target);
-        let fid = FullInvocationId::combine(
-            ServiceId::with_partition_key(
-                invocation_id.partition_key(),
-                invocation_target.service_name().clone(),
-                invocation_target
-                    .key()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_bytes(),
-            ),
-            invocation_id,
-        );
 
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
-                fid: fid.clone(),
-                method_name: invocation_target.handler_name().clone(),
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 argument: Default::default(),
@@ -1276,10 +1207,10 @@ mod tests {
         invocation_id
     }
 
-    async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> FullInvocationId {
-        mock_start_invocation_with_service_id(
+    async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> InvocationId {
+        mock_start_invocation_with_invocation_target(
             state_machine,
-            ServiceId::new("MySvc", Bytes::default()),
+            InvocationTarget::mock_virtual_object(),
         )
         .await
     }
