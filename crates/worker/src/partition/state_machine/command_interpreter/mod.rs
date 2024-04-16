@@ -41,9 +41,9 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelation,
-    SpanRelationCause, TerminationFlavor,
+    HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SpanRelation, SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -259,28 +259,46 @@ where
             return Ok((None, SpanRelation::None));
         }
 
-        let service_status = state
-            .get_virtual_object_status(&service_invocation.fid.service_id)
-            .await?;
-
         let fid = service_invocation.fid.clone();
         let span_relation = service_invocation.span_context.as_parent();
 
-        if deterministic::ServiceInvoker::is_supported(fid.service_id.service_name.deref()) {
+        // If deterministic built-in service, just go and execute it
+        if deterministic::ServiceInvoker::is_supported(
+            service_invocation.invocation_target.service_name(),
+        ) {
             self.handle_deterministic_built_in_service_invocation(service_invocation, effects)
                 .await;
-        } else if let VirtualObjectStatus::Unlocked = service_status {
-            effects.invoke_service(service_invocation);
-        } else {
-            let inbox_seq_number = self.enqueue_into_inbox(
-                effects,
-                InboxEntry::Invocation(service_invocation.fid.clone()),
-            );
-            effects.store_inboxed_invocation(
-                service_invocation.invocation_id,
-                InboxedInvocation::from_service_invocation(service_invocation, inbox_seq_number),
-            );
+            return Ok((Some(fid), span_relation));
         }
+
+        // If it's exclusive, we need to acquire the exclusive lock
+        if service_invocation.invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+            let keyed_service_id = service_invocation
+                .invocation_target
+                .as_keyed_service_id()
+                .unwrap();
+
+            let service_status = state.get_virtual_object_status(&keyed_service_id).await?;
+
+            // If locked, enqueue in inbox and be done with it
+            if let VirtualObjectStatus::Locked(_) = service_status {
+                let inbox_seq_number = self.enqueue_into_inbox(
+                    effects,
+                    InboxEntry::Invocation(service_invocation.fid.clone()),
+                );
+                effects.store_inboxed_invocation(
+                    service_invocation.invocation_id,
+                    InboxedInvocation::from_service_invocation(
+                        service_invocation,
+                        inbox_seq_number,
+                    ),
+                );
+                return Ok((Some(fid), span_relation));
+            }
+        }
+
+        // We're ready to invoke the service!
+        effects.invoke_service(service_invocation);
         Ok((Some(fid), span_relation))
     }
 
@@ -985,7 +1003,6 @@ where
         invocation_id: InvocationId,
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
-        let service_id = invocation_metadata.service_id.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention_time = invocation_metadata.completion_retention_time;
 
@@ -997,6 +1014,9 @@ where
             Ok(()),
             effects,
         );
+
+        // Pop from inbox
+        Self::try_pop_inbox(effects, &invocation_metadata.invocation_target);
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
@@ -1053,7 +1073,6 @@ where
             effects.free_invocation(invocation_id);
         }
         effects.drop_journal(invocation_id, journal_length);
-        effects.pop_inbox(service_id);
 
         Ok(())
     }
@@ -1078,7 +1097,7 @@ where
 
         effects.free_invocation(invocation_id);
         effects.drop_journal(invocation_id, invocation_metadata.journal_metadata.length);
-        effects.pop_inbox(full_invocation_id.service_id);
+        Self::try_pop_inbox(effects, &invocation_metadata.invocation_target);
 
         Ok(())
     }
@@ -1090,7 +1109,6 @@ where
         invocation_metadata: InFlightInvocationMetadata,
         error: InvocationError,
     ) -> Result<(), Error> {
-        let service_id = invocation_metadata.service_id.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
 
         self.notify_invocation_result(
@@ -1124,6 +1142,9 @@ where
             response_result.clone(),
         );
 
+        // Pop from inbox
+        Self::try_pop_inbox(effects, &invocation_metadata.invocation_target);
+
         // Store the completed status or free it
         if !invocation_metadata.completion_retention_time.is_zero() {
             let (completed_invocation, completion_retention_time) =
@@ -1141,7 +1162,6 @@ where
         }
 
         effects.drop_journal(invocation_id, journal_length);
-        effects.pop_inbox(service_id);
 
         Ok(())
     }
@@ -1166,6 +1186,13 @@ where
                 ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
                 ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
             }
+        }
+    }
+
+    fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
+        // Inbox exists only for exclusive handler cases
+        if invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+            effects.pop_inbox(invocation_target.as_keyed_service_id().unwrap())
         }
     }
 

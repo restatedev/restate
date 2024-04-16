@@ -102,6 +102,9 @@ mod tests {
     };
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
+    use restate_storage_api::service_status_table::{
+        VirtualObjectStatus, VirtualObjectStatusTable,
+    };
     use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::Transaction;
     use restate_storage_rocksdb::RocksDBStorage;
@@ -110,7 +113,7 @@ mod tests {
     use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{
-        FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
+        FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
     };
     use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
@@ -253,6 +256,54 @@ mod tests {
     }
 
     #[test(tokio::test)]
+    async fn shared_invocation_skips_inbox() -> TestResult {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
+
+        let invocation_target =
+            InvocationTarget::virtual_object("MySvc", "MyKey", "MyHandler", HandlerType::Shared);
+
+        // Let's lock the virtual object
+        let mut tx = state_machine.rocksdb_storage.transaction();
+        tx.put_virtual_object_status(
+            &invocation_target.as_keyed_service_id().unwrap(),
+            VirtualObjectStatus::Locked(InvocationId::mock_random()),
+        )
+        .await;
+        tx.commit().await.unwrap();
+
+        // Start the invocation
+        let invocation_id = mock_start_invocation_with_invocation_target(
+            &mut state_machine,
+            invocation_target.clone(),
+        )
+        .await;
+
+        // Should be in invoked status
+        let invocation_status = state_machine
+            .storage()
+            .transaction()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap();
+        assert_that!(
+            invocation_status,
+            pat!(InvocationStatus::Invoked(pat!(
+                InFlightInvocationMetadata {
+                    invocation_target: eq(invocation_target.clone())
+                }
+            )))
+        );
+
+        state_machine.shutdown().await
+    }
+
+    #[test(tokio::test)]
     async fn awakeable_completion_received_before_entry() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -355,6 +406,7 @@ mod tests {
             .await;
 
         let fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
+        let invocation_target = InvocationTarget::mock_virtual_object();
         let inboxed_fid = FullInvocationId::generate(ServiceId::new("svc", "key"));
         let inboxed_invocation_id = InvocationId::from(&inboxed_fid);
         let caller_fid = FullInvocationId::mock_random();
@@ -363,6 +415,7 @@ mod tests {
         let _ = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 fid,
+                invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
             }))
             .await;
@@ -371,6 +424,7 @@ mod tests {
             .apply(Command::Invoke(ServiceInvocation {
                 fid: inboxed_fid.clone(),
                 invocation_id: inboxed_invocation_id,
+                invocation_target,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor {
                     caller: caller_invocation_id,
                     entry_index: 0,
@@ -1173,6 +1227,51 @@ mod tests {
         );
 
         fid
+    }
+
+    async fn mock_start_invocation_with_invocation_target(
+        state_machine: &mut MockStateMachine,
+        invocation_target: InvocationTarget,
+    ) -> InvocationId {
+        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let fid = FullInvocationId::combine(
+            ServiceId::with_partition_key(
+                invocation_id.partition_key(),
+                invocation_target.service_name().clone(),
+                invocation_target
+                    .key()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_bytes(),
+            ),
+            invocation_id,
+        );
+
+        let actions = state_machine
+            .apply(Command::Invoke(ServiceInvocation {
+                fid: fid.clone(),
+                method_name: invocation_target.handler_name().clone(),
+                invocation_id,
+                invocation_target,
+                argument: Default::default(),
+                source: Source::Ingress,
+                response_sink: None,
+                span_context: Default::default(),
+                headers: vec![],
+                execution_time: None,
+                idempotency: None,
+            }))
+            .await;
+
+        assert_that!(
+            actions,
+            contains(pat!(Action::Invoke {
+                full_invocation_id: eq(fid.clone()),
+                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+            }))
+        );
+
+        invocation_id
     }
 
     async fn mock_start_invocation(state_machine: &mut MockStateMachine) -> FullInvocationId {
