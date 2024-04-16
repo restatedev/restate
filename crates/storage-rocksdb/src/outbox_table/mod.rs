@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
+use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Outbox;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
 
-use prost::Message;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::{storage, Result, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
+use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 use std::ops::Range;
 
@@ -35,8 +35,7 @@ fn add_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(message_index);
 
-    let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
-    storage.put_kv(key, value);
+    storage.put_kv(key, StorageSerdeValue(outbox_message));
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -170,10 +169,8 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
 
 fn decode_value(v: &[u8]) -> crate::Result<OutboxMessage> {
     // decode value
-    let decoded = storage::v1::OutboxMessage::decode(v)
-        .map_err(|error| StorageError::Generic(error.into()))?;
-    let outbox_message =
-        OutboxMessage::try_from(decoded).map_err(|e| StorageError::Conversion(e.into()))?;
+    let outbox_message = StorageCodec::decode::<OutboxMessage>(v)
+        .map_err(|error| StorageError::Conversion(error.into()))?;
 
     Ok(outbox_message)
 }

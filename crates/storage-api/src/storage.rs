@@ -8,6 +8,57 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+/// Implement [`restate_types::storage::StorageSerde`] using the protobuf codec for the given type.
+/// The protobuf type needs to have the same name as the implementing type, and it needs to be
+/// present in [`v1`]. Moreover, the protobuf type needs to implement From and TryInto the
+/// implementing type.
+#[macro_export]
+macro_rules! protobuf_storage_encode_decode {
+    ($ty:ident) => {
+        protobuf_storage_encode_decode!($ty, $crate::storage::v1::$ty);
+    };
+    ($ty:ident, $protobuf_ty:path) => {
+        impl restate_types::storage::StorageEncode for $ty {
+            const DEFAULT_CODEC: restate_types::storage::StorageCodecKind =
+                restate_types::storage::StorageCodecKind::Protobuf;
+
+            fn encode<B: bytes::BufMut>(
+                &self,
+                buf: &mut B,
+            ) -> std::result::Result<(), restate_types::storage::StorageEncodeError> {
+                <$protobuf_ty as prost::Message>::encode(&self.clone().into(), buf).map_err(|err| {
+                    restate_types::storage::StorageEncodeError::EncodeValue(err.into())
+                })
+            }
+        }
+
+        impl restate_types::storage::StorageDecode for $ty {
+            fn decode(
+                buf: &[u8],
+                kind: restate_types::storage::StorageCodecKind,
+            ) -> std::result::Result<Self, restate_types::storage::StorageDecodeError>
+            where
+                Self: Sized,
+            {
+                match kind {
+                    restate_types::storage::StorageCodecKind::Protobuf => {
+                        let invocation_status = <$protobuf_ty as prost::Message>::decode(buf)
+                            .map_err(|err| {
+                                restate_types::storage::StorageDecodeError::DecodeValue(err.into())
+                            })?;
+                        $ty::try_from(invocation_status).map_err(|err| {
+                            restate_types::storage::StorageDecodeError::DecodeValue(err.into())
+                        })
+                    }
+                    codec => {
+                        Err(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec))
+                    }
+                }
+            }
+        }
+    };
+}
+
 pub mod v1 {
     #![allow(warnings)]
     #![allow(clippy::all)]
@@ -59,9 +110,9 @@ pub mod v1 {
             EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId, Header,
             IdempotencyMetadata, IdempotentRequestMetadata, InboxEntry, InvocationId,
             InvocationResolutionResult, InvocationStatus, InvocationTarget, JournalEntry,
-            JournalMeta, KvPair, OutboxMessage, ResponseResult, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
-            VirtualObjectStatus,
+            JournalMeta, KvPair, OutboxMessage, ResponseResult, SequenceNumber, ServiceId,
+            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
+            StateMutation, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -238,47 +289,6 @@ pub mod v1 {
 
                 InvocationStatus {
                     status: Some(status),
-                }
-            }
-        }
-
-        #[derive(derive_more::From)]
-        pub struct InvocationStatusStorageSerde(
-            pub crate::invocation_status_table::InvocationStatus,
-        );
-
-        impl InvocationStatusStorageSerde {
-            pub fn into_inner(self) -> crate::invocation_status_table::InvocationStatus {
-                self.0
-            }
-        }
-
-        impl StorageEncode for InvocationStatusStorageSerde {
-            const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::Protobuf;
-
-            fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
-                InvocationStatus::from(self.0.clone())
-                    .encode(buf)
-                    .map_err(|err| StorageEncodeError::EncodeValue(err.into()))
-            }
-        }
-
-        impl StorageDecode for InvocationStatusStorageSerde {
-            fn decode(buf: &[u8], kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
-            where
-                Self: Sized,
-            {
-                match kind {
-                    StorageCodecKind::Protobuf => {
-                        let invocation_status = InvocationStatus::decode(buf)
-                            .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
-                        crate::invocation_status_table::InvocationStatus::try_from(
-                            invocation_status,
-                        )
-                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))
-                        .map(|value| InvocationStatusStorageSerde(value))
-                    }
-                    codec => Err(StorageDecodeError::UnsupportedCodecKind(codec)),
                 }
             }
         }
@@ -2126,6 +2136,20 @@ pub mod v1 {
                     )
                     .map_err(|e| ConversionError::invalid_data(e))?,
                 })
+            }
+        }
+
+        impl From<crate::fsm_table::SequenceNumber> for SequenceNumber {
+            fn from(value: crate::fsm_table::SequenceNumber) -> Self {
+                SequenceNumber {
+                    sequence_number: value.into(),
+                }
+            }
+        }
+
+        impl From<SequenceNumber> for crate::fsm_table::SequenceNumber {
+            fn from(value: SequenceNumber) -> Self {
+                Self::from(value.sequence_number)
             }
         }
     }

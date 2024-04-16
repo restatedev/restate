@@ -59,6 +59,10 @@ message InvocationId {
     bytes invocation_uuid = 2;
 }
 
+message SequenceNumber {
+    uint64 sequence_number = 1;
+}
+
 // ---------------------------------------------------------------------
 // Service Invocation
 // ---------------------------------------------------------------------

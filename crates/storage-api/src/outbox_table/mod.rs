@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
@@ -26,6 +26,8 @@ pub enum OutboxMessage {
     /// Terminate invocation to send to another partition processor
     InvocationTermination(InvocationTermination),
 }
+
+protobuf_storage_encode_decode!(OutboxMessage);
 
 impl WithPartitionKey for OutboxMessage {
     fn partition_key(&self) -> PartitionKey {

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
+use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
@@ -16,13 +16,13 @@ use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
-use prost::Message;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::{storage, Result, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -53,8 +53,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     if status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
-        let value = ProtoValue(storage::v1::VirtualObjectStatus::from(status));
-        storage.put_kv(key, value);
+        storage.put_kv(key, StorageSerdeValue(status));
     }
 }
 
@@ -72,9 +71,8 @@ fn get_virtual_object_status<S: StorageAccess>(
             return Ok(VirtualObjectStatus::Unlocked);
         }
         let v = v.unwrap();
-        let proto = storage::v1::VirtualObjectStatus::decode(v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
-        VirtualObjectStatus::try_from(proto).map_err(StorageError::from)
+        StorageCodec::decode::<VirtualObjectStatus>(v)
+            .map_err(|err| StorageError::Generic(err.into()))
     })
 }
 
@@ -131,8 +129,7 @@ impl RocksDBStorage {
         let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
-            let proto = storage::v1::VirtualObjectStatus::decode(value).unwrap();
-            let state_value = VirtualObjectStatus::try_from(proto).unwrap();
+            let state_value = StorageCodec::decode::<VirtualObjectStatus>(value.as_ref()).unwrap();
             OwnedVirtualObjectStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 name: state_key.service_name.unwrap(),

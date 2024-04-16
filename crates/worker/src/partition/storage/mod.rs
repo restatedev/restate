@@ -10,13 +10,13 @@
 
 use crate::metric_definitions::{PARTITION_STORAGE_TX_COMMITTED, PARTITION_STORAGE_TX_CREATED};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, ProducerId, ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
+use restate_storage_api::fsm_table::{ReadOnlyFsmTable, SequenceNumber};
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
@@ -90,15 +90,12 @@ async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
     partition_id: PartitionId,
     state_id: u64,
 ) -> Result<MessageIndex, StorageError> {
-    let seq_number = storage.get(partition_id, state_id).await?;
-
-    if let Some(mut seq_number) = seq_number {
-        let mut buffer = [0; 8];
-        seq_number.copy_to_slice(&mut buffer);
-        Ok(MessageIndex::from_be_bytes(buffer))
-    } else {
-        Ok(0)
-    }
+    let seq_number = storage
+        .get::<SequenceNumber>(partition_id, state_id)
+        .await?;
+    Ok(seq_number
+        .map(Into::into)
+        .unwrap_or(MessageIndex::default()))
 }
 
 impl<Storage> PartitionStorage<Storage>
@@ -131,18 +128,12 @@ where
     }
 
     pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {
-        let bytes = self
+        let seq_number = self
             .storage
-            .get(self.partition_id, fsm_variable::APPLIED_LSN)
+            .get::<SequenceNumber>(self.partition_id, fsm_variable::APPLIED_LSN)
             .await?;
 
-        Ok(if let Some(bytes) = bytes {
-            let (lsn, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .map_err(|err| StorageError::Generic(err.into()))?;
-            Some(lsn)
-        } else {
-            None
-        })
+        Ok(seq_number.map(|seq_number| Lsn::from(u64::from(seq_number))))
     }
 
     pub fn scan_invoked_invocations(
@@ -242,9 +233,12 @@ where
         seq_number: MessageIndex,
         state_id: u64,
     ) -> Result<(), StorageError> {
-        let bytes = &seq_number.to_be_bytes();
         self.inner
-            .put(self.partition_id, state_id, bytes.as_slice())
+            .put(
+                self.partition_id,
+                state_id,
+                SequenceNumber::from(seq_number),
+            )
             .await;
 
         Ok(())
@@ -261,12 +255,12 @@ where
     }
 
     pub async fn store_applied_lsn(&mut self, lsn: Lsn) -> StorageResult<()> {
-        // todo: Rethink serialization of lsn
-        let bytes = bincode::serde::encode_to_vec(lsn, bincode::config::standard())
-            .map_err(|err| StorageError::Generic(err.into()))?;
-
         self.inner
-            .put(self.partition_id, fsm_variable::APPLIED_LSN, bytes)
+            .put(
+                self.partition_id,
+                fsm_variable::APPLIED_LSN,
+                SequenceNumber::from(u64::from(lsn)),
+            )
             .await;
 
         Ok(())

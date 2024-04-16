@@ -16,12 +16,10 @@ use crate::{RocksDBStorage, TableKind, TableScanIterationDecision};
 use crate::{RocksDBTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
 };
-use restate_storage_api::storage::v1::pb_conversion::InvocationStatusStorageSerde;
-use restate_storage_api::{storage, Result, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{FullInvocationId, PartitionKey};
 use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::storage::StorageCodec;
@@ -64,7 +62,7 @@ fn put_invocation_status<S: StorageAccess>(
     if status == InvocationStatus::Free {
         storage.delete_key(&key);
     } else {
-        storage.put_kv(key, StorageSerdeValue(InvocationStatusStorageSerde(status)));
+        storage.put_kv(key, StorageSerdeValue(status));
     }
 }
 
@@ -79,9 +77,7 @@ fn get_invocation_status<S: StorageAccess>(
             return Ok(InvocationStatus::Free);
         }
         let v = v.unwrap();
-        StorageCodec::decode::<InvocationStatusStorageSerde>(v)
-            .map_err(|err| StorageError::Generic(err.into()))
-            .map(|value| value.into_inner())
+        StorageCodec::decode::<InvocationStatus>(v).map_err(|err| StorageError::Generic(err.into()))
     })
 }
 
@@ -112,9 +108,8 @@ fn read_invoked_full_invocation_id(
     v: &mut &[u8],
 ) -> Result<Option<FullInvocationId>> {
     let invocation_id = invocation_id_from_bytes(&mut k)?;
-    let proto = storage::v1::InvocationStatus::decode(v)
+    let invocation_status = StorageCodec::decode::<InvocationStatus>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
-    let invocation_status = InvocationStatus::try_from(proto).map_err(StorageError::from)?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
         Ok(Some(FullInvocationId::combine(
             invocation_meta.service_id,
@@ -187,8 +182,7 @@ impl RocksDBStorage {
         let iter = self.iterator_from(PartitionKeyRange::<InvocationStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let state_key = InvocationStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = storage::v1::InvocationStatus::decode(value).unwrap();
-            let state_value = InvocationStatus::try_from(state_value).unwrap();
+            let state_value = StorageCodec::decode::<InvocationStatus>(value.as_ref()).unwrap();
             OwnedInvocationStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 invocation_uuid: state_key.invocation_uuid.unwrap(),

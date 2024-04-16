@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
+use crate::codec::StorageSerdeValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
@@ -16,13 +16,13 @@ use crate::{
 };
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::{storage, Result, StorageError};
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
+use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 
 define_table_key!(
@@ -41,10 +41,10 @@ fn get_dedup_sequence_number<S: StorageAccess>(
 
     storage.get_blocking(key, move |_k, maybe_dedup_sequence_number| {
         if let Some(bytes) = maybe_dedup_sequence_number {
-            Ok(Some(DedupSequenceNumber::try_from(
-                storage::v1::DedupSequenceNumber::decode(bytes)
+            Ok(Some(
+                StorageCodec::decode::<DedupSequenceNumber>(bytes)
                     .map_err(|error| StorageError::Conversion(error.into()))?,
-            )?))
+            ))
         } else {
             Ok(None)
         }
@@ -62,12 +62,8 @@ fn get_all_sequence_numbers<S: StorageAccess>(
                 DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
 
             let res = if let Ok(Some(producer_id)) = key {
-                storage::v1::DedupSequenceNumber::decode(v)
+                StorageCodec::decode::<DedupSequenceNumber>(v)
                     .map_err(|err| StorageError::Conversion(err.into()))
-                    .and_then(|sequence_number| {
-                        DedupSequenceNumber::try_from(sequence_number)
-                            .map_err(|err| StorageError::Conversion(err.into()))
-                    })
                     .map(|sequence_number| DedupInformation {
                         producer_id,
                         sequence_number,
@@ -124,11 +120,6 @@ impl<'a> DeduplicationTable for RocksDBTransaction<'a> {
         let key = DeduplicationKey::default()
             .partition_id(partition_id)
             .producer_id(producer_id);
-        self.put_kv(
-            key,
-            ProtoValue(storage::v1::DedupSequenceNumber::from(
-                dedup_sequence_number,
-            )),
-        );
+        self.put_kv(key, StorageSerdeValue(dedup_sequence_number));
     }
 }
