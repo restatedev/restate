@@ -52,6 +52,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
                     })
                     .collect(),
                 value,
+                ..Default::default()
             }
             .encode_to_vec()
             .into(),
@@ -84,7 +85,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             Invoke,
             BackgroundInvoke,
             Awakeable,
-            CompleteAwakeable
+            CompleteAwakeable,
+            SideEffect
         })
     }
 
@@ -207,6 +209,7 @@ mod mocks {
                                 })
                             }
                         }),
+                        ..Default::default()
                     }
                     .encode_to_vec()
                     .into(),
@@ -241,7 +244,7 @@ mod mocks {
                                     })
                                 }
                             }),
-                            ..InvokeEntryMessage::default()
+                            ..Default::default()
                         }
                         .encode_to_vec()
                         .into(),
@@ -269,7 +272,7 @@ mod mocks {
                             method_name: entry.request.method_name.into(),
                             parameter: entry.request.parameter,
                             invoke_time: entry.invoke_time,
-                            ..BackgroundInvokeEntryMessage::default()
+                            ..Default::default()
                         }
                         .encode_to_vec()
                         .into(),
@@ -280,19 +283,27 @@ mod mocks {
                     SetStateEntryMessage {
                         key: entry.key,
                         value: entry.value,
+                        ..Default::default()
                     }
                     .encode_to_vec()
                     .into(),
                 ),
                 Entry::ClearState(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::ClearState {},
-                    ClearStateEntryMessage { key: entry.key }
-                        .encode_to_vec()
-                        .into(),
+                    ClearStateEntryMessage {
+                        key: entry.key,
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                    .into(),
                 ),
                 Entry::ClearAllState => EnrichedRawEntry::new(
                     EnrichedEntryHeader::ClearAllState {},
-                    ClearAllStateEntryMessage {}.encode_to_vec().into(),
+                    ClearAllStateEntryMessage {
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                    .into(),
                 ),
                 Entry::GetStateKeys(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::GetStateKeys {
@@ -314,6 +325,7 @@ mod mocks {
             InputEntryMessage {
                 headers: vec![],
                 value,
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -330,6 +342,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -350,6 +363,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -368,6 +382,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -389,6 +404,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()

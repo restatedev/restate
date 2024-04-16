@@ -327,6 +327,9 @@ message EnrichedEntryHeader {
         uint32 entry_index = 2;
     }
 
+    message SideEffect {
+    }
+
     message Custom {
         uint32 code = 1;
     }
@@ -345,6 +348,7 @@ message EnrichedEntryHeader {
         Awakeable awakeable = 9;
         CompleteAwakeable complete_awakeable = 10;
         Custom custom = 11;
+        SideEffect side_effect = 14;
     }
 }
 

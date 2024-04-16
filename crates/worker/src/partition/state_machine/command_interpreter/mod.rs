@@ -1434,7 +1434,7 @@ where
                     effects,
                 );
             }
-            EnrichedEntryHeader::Custom { .. } => {
+            EnrichedEntryHeader::SideEffect { .. } | EnrichedEntryHeader::Custom { .. } => {
                 // We just store it
             }
         }

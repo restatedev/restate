@@ -127,6 +127,7 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     CompleteAwakeable {
         enrichment_result: AwakeableEnrichmentResult,
     },
+    SideEffect,
     Custom {
         code: u16,
     },
@@ -149,6 +150,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::BackgroundInvoke { .. } => None,
             EntryHeader::Awakeable { is_completed, .. } => Some(*is_completed),
             EntryHeader::CompleteAwakeable { .. } => None,
+            EntryHeader::SideEffect { .. } => None,
             EntryHeader::Custom { .. } => None,
         }
     }
@@ -167,6 +169,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::BackgroundInvoke { .. } => {}
             EntryHeader::Awakeable { is_completed, .. } => *is_completed = true,
             EntryHeader::CompleteAwakeable { .. } => {}
+            EntryHeader::SideEffect { .. } => {}
             EntryHeader::Custom { .. } => {}
         }
     }
@@ -185,6 +188,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::BackgroundInvoke { .. } => EntryType::BackgroundInvoke,
             EntryHeader::Awakeable { .. } => EntryType::Awakeable,
             EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
+            EntryHeader::SideEffect { .. } => EntryType::SideEffect,
             EntryHeader::Custom { .. } => EntryType::Custom,
         }
     }
@@ -212,6 +216,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompleteAwakeable { .. } => EntryHeader::CompleteAwakeable {
                 enrichment_result: (),
             },
+            EntryHeader::SideEffect { .. } => EntryHeader::SideEffect {},
             EntryHeader::Custom { code } => EntryHeader::Custom { code },
         }
     }

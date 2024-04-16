@@ -44,6 +44,7 @@ pub enum MessageType {
     BackgroundInvokeEntry,
     AwakeableEntry,
     CompleteAwakeableEntry,
+    SideEffectEntry,
     CustomEntry(u16),
 }
 
@@ -68,6 +69,7 @@ impl MessageType {
             MessageType::BackgroundInvokeEntry => MessageKind::Syscall,
             MessageType::AwakeableEntry => MessageKind::Syscall,
             MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
+            MessageType::SideEffectEntry => MessageKind::Syscall,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -113,6 +115,7 @@ const INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C01;
 const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
 const AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C03;
 const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
+const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
 
 impl From<MessageType> for MessageTypeId {
     fn from(mt: MessageType) -> Self {
@@ -135,6 +138,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::BackgroundInvokeEntry => BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE,
             MessageType::AwakeableEntry => AWAKEABLE_ENTRY_MESSAGE_TYPE,
             MessageType::CompleteAwakeableEntry => COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE,
+            MessageType::SideEffectEntry => SIDE_EFFECT_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -167,6 +171,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::BackgroundInvokeEntry),
             AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::AwakeableEntry),
             COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
+            SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::SideEffectEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
         }
