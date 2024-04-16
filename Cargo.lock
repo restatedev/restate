@@ -5604,6 +5604,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "serde",
+ "serde_with",
  "strum_macros 0.26.2",
 ]
 

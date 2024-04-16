@@ -15,20 +15,27 @@ use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use enum_map::Enum;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logs {
     pub version: Version,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub logs: HashMap<LogId, Chain>,
 }
 
 /// the chain is a list of segments in (from Lsn) order.
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub chain: BTreeMap<Lsn, Arc<LogletConfig>>,
 }
 
