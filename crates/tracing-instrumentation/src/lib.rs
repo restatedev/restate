@@ -53,7 +53,6 @@ pub enum Error {
 fn build_tracing_layer<S>(
     common_opts: &CommonOptions,
     service_name: String,
-    instance_id: impl Display,
 ) -> Result<
     Option<
         Filtered<tracing_opentelemetry::OpenTelemetryLayer<S, SpanModifyingTracer>, EnvFilter, S>,
@@ -79,7 +78,7 @@ where
         ),
         KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_INSTANCE_ID,
-            instance_id.to_string(),
+            format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
         ),
         KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
@@ -182,7 +181,6 @@ where
 pub fn init_tracing_and_logging(
     common_opts: &CommonOptions,
     service_name: impl Display,
-    instance_id: impl Display,
 ) -> Result<TracingGuard, Error> {
     let restate_service_name = format!("Restate service: {service_name}");
 
@@ -205,7 +203,6 @@ pub fn init_tracing_and_logging(
     let layers = layers.with(build_tracing_layer(
         common_opts,
         restate_service_name.clone(),
-        instance_id,
     )?);
 
     layers.init();
