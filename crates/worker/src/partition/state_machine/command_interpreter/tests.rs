@@ -38,13 +38,15 @@ impl StateReaderMock {
     pub fn mock_invocation_metadata(
         journal_length: u32,
         service_id: ServiceId,
+        invocation_target: InvocationTarget,
     ) -> InFlightInvocationMetadata {
         InFlightInvocationMetadata {
             service_id,
-            journal_metadata: JournalMetadata {
-                length: journal_length,
-                span_context: ServiceInvocationSpanContext::empty(),
-            },
+            invocation_target,
+            journal_metadata: JournalMetadata::new(
+                journal_length,
+                ServiceInvocationSpanContext::empty(),
+            ),
             ..InFlightInvocationMetadata::mock()
         }
     }
@@ -61,11 +63,20 @@ impl StateReaderMock {
 
     fn register_invoked_status_and_locked(
         &mut self,
-        fid: FullInvocationId,
+        invocation_target: InvocationTarget,
         journal: Vec<JournalEntry>,
-    ) {
-        let invocation_id = InvocationId::from(&fid);
-        let service_id = fid.service_id;
+    ) -> InvocationId {
+        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+
+        let service_id = ServiceId::with_partition_key(
+            invocation_id.partition_key(),
+            invocation_target.service_name().clone(),
+            invocation_target
+                .key()
+                .cloned()
+                .unwrap_or_default()
+                .into_bytes(),
+        );
 
         self.services.insert(
             service_id.clone(),
@@ -76,19 +87,31 @@ impl StateReaderMock {
             InvocationStatus::Invoked(Self::mock_invocation_metadata(
                 u32::try_from(journal.len()).unwrap(),
                 service_id,
+                invocation_target,
             )),
             journal,
         );
+
+        invocation_id
     }
 
     fn register_suspended_status_and_locked(
         &mut self,
-        fid: FullInvocationId,
+        invocation_target: InvocationTarget,
         waiting_for_completed_entries: impl IntoIterator<Item = EntryIndex>,
         journal: Vec<JournalEntry>,
-    ) {
-        let invocation_id = InvocationId::from(&fid);
-        let service_id = fid.service_id;
+    ) -> InvocationId {
+        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+
+        let service_id = ServiceId::with_partition_key(
+            invocation_id.partition_key(),
+            invocation_target.service_name().clone(),
+            invocation_target
+                .key()
+                .cloned()
+                .unwrap_or_default()
+                .into_bytes(),
+        );
 
         self.services.insert(
             service_id.clone(),
@@ -100,11 +123,14 @@ impl StateReaderMock {
                 metadata: Self::mock_invocation_metadata(
                     u32::try_from(journal.len()).unwrap(),
                     service_id,
+                    invocation_target,
                 ),
                 waiting_for_completed_entries: HashSet::from_iter(waiting_for_completed_entries),
             },
             journal,
         );
+
+        invocation_id
     }
 
     fn register_invocation_status(
@@ -264,27 +290,18 @@ async fn awakeable_with_success() {
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
-    let sid_caller = FullInvocationId::mock_random();
-    let sid_callee = FullInvocationId::mock_random();
-
+    let callee_invocation_id = InvocationId::mock_random();
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
-            id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
+            id: AwakeableIdentifier::new(callee_invocation_id, 1)
                 .to_string()
                 .into(),
             result: EntryResult::Success(Bytes::default()),
         },
     ));
-    let cmd = Command::InvokerEffect(InvokerEffect {
-        invocation_id: InvocationId::from(&sid_caller),
-        kind: EffectKind::JournalEntry {
-            entry_index: 1,
-            entry,
-        },
-    });
 
-    state_reader.register_invoked_status_and_locked(
-        sid_caller.clone(),
+    let caller_invocation_id = state_reader.register_invoked_status_and_locked(
+        InvocationTarget::mock_virtual_object(),
         vec![JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Awakeable {
                 is_completed: false,
@@ -294,7 +311,17 @@ async fn awakeable_with_success() {
     );
 
     state_machine
-        .on_apply(cmd, &mut effects, &mut state_reader)
+        .on_apply(
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id: caller_invocation_id,
+                kind: EffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry,
+                },
+            }),
+            &mut effects,
+            &mut state_reader,
+        )
         .await
         .unwrap();
     let_assert!(Effect::EnqueueIntoOutbox { message, .. } = effects.drain().next().unwrap());
@@ -305,7 +332,7 @@ async fn awakeable_with_success() {
             result: ResponseResult::Success(_),
         }) = message
     );
-    assert_eq!(id, InvocationId::from(&sid_callee));
+    assert_eq!(id, callee_invocation_id);
     assert_eq!(entry_index, 1);
 }
 
@@ -316,27 +343,18 @@ async fn awakeable_with_failure() {
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
-    let sid_caller = FullInvocationId::mock_random();
-    let sid_callee = FullInvocationId::mock_random();
-
+    let callee_invocation_id = InvocationId::mock_random();
     let entry = ProtobufRawEntryCodec::serialize_enriched(Entry::CompleteAwakeable(
         CompleteAwakeableEntry {
-            id: AwakeableIdentifier::new(sid_callee.clone().into(), 1)
+            id: AwakeableIdentifier::new(callee_invocation_id, 1)
                 .to_string()
                 .into(),
             result: EntryResult::Failure(codes::BAD_REQUEST, "Some failure".into()),
         },
     ));
-    let cmd = Command::InvokerEffect(InvokerEffect {
-        invocation_id: InvocationId::from(&sid_caller),
-        kind: EffectKind::JournalEntry {
-            entry_index: 1,
-            entry,
-        },
-    });
 
-    state_reader.register_invoked_status_and_locked(
-        sid_caller.clone(),
+    let caller_invocation_id = state_reader.register_invoked_status_and_locked(
+        InvocationTarget::mock_virtual_object(),
         vec![JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Awakeable {
                 is_completed: false,
@@ -346,7 +364,17 @@ async fn awakeable_with_failure() {
     );
 
     state_machine
-        .on_apply(cmd, &mut effects, &mut state_reader)
+        .on_apply(
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id: caller_invocation_id,
+                kind: EffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry,
+                },
+            }),
+            &mut effects,
+            &mut state_reader,
+        )
         .await
         .unwrap();
     let_assert!(Effect::EnqueueIntoOutbox { message, .. } = effects.drain().next().unwrap());
@@ -357,7 +385,7 @@ async fn awakeable_with_failure() {
             result: ResponseResult::Failure(failure),
         }) = message
     );
-    assert_eq!(id, InvocationId::from(sid_callee));
+    assert_eq!(id, callee_invocation_id);
     assert_eq!(entry_index, 1);
     assert_eq!(failure.message(), "Some failure");
 }
@@ -369,19 +397,19 @@ async fn send_response_using_invocation_id() {
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
-    let fid = FullInvocationId::mock_random();
-    let invocation_id = InvocationId::from(&fid);
-
-    let cmd = Command::InvocationResponse(InvocationResponse {
-        id: invocation_id,
-        entry_index: 1,
-        result: ResponseResult::Success(Bytes::from_static(b"hello")),
-    });
-
-    state_reader.register_invoked_status_and_locked(fid.clone(), vec![]);
+    let invocation_id = state_reader
+        .register_invoked_status_and_locked(InvocationTarget::mock_virtual_object(), vec![]);
 
     state_machine
-        .on_apply(cmd, &mut effects, &mut state_reader)
+        .on_apply(
+            Command::InvocationResponse(InvocationResponse {
+                id: invocation_id,
+                entry_index: 1,
+                result: ResponseResult::Success(Bytes::from_static(b"hello")),
+            }),
+            &mut effects,
+            &mut state_reader,
+        )
         .await
         .unwrap();
     assert_that!(
@@ -491,8 +519,6 @@ async fn kill_call_tree() -> Result<(), Error> {
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
-    let fid = FullInvocationId::mock_random();
-    let invocation_id = InvocationId::from(&fid);
     let call_fid = FullInvocationId::mock_random();
     let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
@@ -500,8 +526,9 @@ async fn kill_call_tree() -> Result<(), Error> {
     let finished_call_fid = FullInvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::from(&finished_call_fid);
 
-    state_reader.register_invoked_status_and_locked(
-        fid.clone(),
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = state_reader.register_invoked_status_and_locked(
+        invocation_target.clone(),
         vec![
             uncompleted_invoke_entry(call_invocation_id),
             background_invoke_entry(background_invocation_id),
@@ -529,7 +556,9 @@ async fn kill_call_tree() -> Result<(), Error> {
             contains(pat!(Effect::DropJournal {
                 invocation_id: eq(invocation_id),
             })),
-            contains(pat!(Effect::PopInbox(eq(fid.service_id.clone())))),
+            contains(pat!(Effect::PopInbox(eq(invocation_target
+                .as_keyed_service_id()
+                .unwrap())))),
             contains(terminate_invocation_outbox_message_matcher(
                 call_invocation_id,
                 TerminationFlavor::Kill
@@ -606,8 +635,6 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
-    let fid = FullInvocationId::mock_random();
-    let invocation_id = InvocationId::from(&fid);
     let call_fid = FullInvocationId::mock_random();
     let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
@@ -615,8 +642,8 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let finished_call_fid = FullInvocationId::mock_random();
     let finished_call_invocation_id = InvocationId::from(&finished_call_fid);
 
-    state_reader.register_invoked_status_and_locked(
-        fid.clone(),
+    let invocation_id = state_reader.register_invoked_status_and_locked(
+        InvocationTarget::mock_virtual_object(),
         create_termination_journal(
             call_invocation_id,
             background_invocation_id,
@@ -664,7 +691,6 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
-    let fid = FullInvocationId::mock_random();
     let call_fid = FullInvocationId::mock_random();
     let call_invocation_id = InvocationId::from(&call_fid);
     let background_fid = FullInvocationId::mock_random();
@@ -677,11 +703,15 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
         background_invocation_id,
         finished_call_invocation_id,
     );
-    state_reader.register_suspended_status_and_locked(fid.clone(), vec![3, 4, 5, 6], journal);
+    let invocation_id = state_reader.register_suspended_status_and_locked(
+        InvocationTarget::mock_virtual_object(),
+        vec![3, 4, 5, 6],
+        journal,
+    );
 
     command_interpreter
         .on_apply(
-            Command::TerminateInvocation(InvocationTermination::cancel(InvocationId::from(&fid))),
+            Command::TerminateInvocation(InvocationTermination::cancel(invocation_id)),
             &mut effects,
             &mut state_reader,
         )
@@ -701,7 +731,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             store_canceled_completion_matcher(6),
             delete_timer(5),
             pat!(Effect::ResumeService {
-                invocation_id: eq(InvocationId::from(fid)),
+                invocation_id: eq(invocation_id),
             }),
         ]
     );
