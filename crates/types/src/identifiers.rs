@@ -258,13 +258,13 @@ impl From<u128> for InvocationUuid {
     }
 }
 
-impl From<InvocationUuid> for opentelemetry_api::trace::TraceId {
+impl From<InvocationUuid> for opentelemetry::trace::TraceId {
     fn from(value: InvocationUuid) -> Self {
         Self::from_bytes(value.to_bytes())
     }
 }
 
-impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
+impl From<InvocationUuid> for opentelemetry::trace::SpanId {
     fn from(value: InvocationUuid) -> Self {
         let raw_be_bytes = value.to_bytes();
         let last8: [u8; 8] = std::convert::TryInto::try_into(&raw_be_bytes[8..16]).unwrap();

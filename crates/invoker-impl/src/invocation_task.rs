@@ -18,8 +18,8 @@ use hyper::http::response::Parts as ResponseParts;
 use hyper::http::HeaderValue;
 use hyper::{http, Body, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,

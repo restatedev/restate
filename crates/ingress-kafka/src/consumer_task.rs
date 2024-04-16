@@ -10,7 +10,7 @@
 
 use base64::Engine;
 use bytes::Bytes;
-use opentelemetry_api::trace::TraceContextExt;
+use opentelemetry::trace::TraceContextExt;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
