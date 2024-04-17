@@ -888,6 +888,7 @@ mod tests {
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
                     invocation_target: invocation_target.clone(),
+                    source: Source::Ingress,
                     idempotency_key: Some(idempotency.key.clone()),
                     response_result: ResponseResult::Success(response_bytes.clone()),
                 }),
@@ -1127,6 +1128,7 @@ mod tests {
                 &invocation_id,
                 InvocationStatus::Completed(CompletedInvocation {
                     invocation_target,
+                    source: Source::Ingress,
                     idempotency_key: Some(idempotency.key.clone()),
                     response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 }),

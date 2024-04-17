@@ -313,6 +313,7 @@ impl InFlightInvocationMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
+    pub source: Source,
     pub idempotency_key: Option<ByteString>,
     pub response_result: ResponseResult,
 }
@@ -325,6 +326,7 @@ impl CompletedInvocation {
         (
             Self {
                 invocation_target: in_flight_invocation_metadata.invocation_target,
+                source: in_flight_invocation_metadata.source,
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 response_result,
             },

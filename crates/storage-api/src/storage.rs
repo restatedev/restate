@@ -655,6 +655,12 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
+                let source = restate_types::invocation::Source::try_from(
+                    value
+                        .source
+                        .ok_or(ConversionError::missing_field("source"))?,
+                )?;
+
                 let idempotency_key = match value
                     .idempotency_key
                     .ok_or(ConversionError::missing_field("idempotency_key"))?
@@ -667,6 +673,7 @@ pub mod v1 {
 
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
+                    source,
                     response_result: value
                         .result
                         .ok_or(ConversionError::missing_field("result"))?
@@ -680,12 +687,14 @@ pub mod v1 {
             fn from(value: crate::invocation_status_table::CompletedInvocation) -> Self {
                 let crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
+                    source,
                     idempotency_key,
                     response_result,
                 } = value;
 
                 Completed {
                     invocation_target: Some(InvocationTarget::from(invocation_target)),
+                    source: Some(Source::from(source)),
                     result: Some(ResponseResult::from(response_result)),
                     idempotency_key: Some(match idempotency_key {
                         Some(key) => {
