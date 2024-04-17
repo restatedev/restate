@@ -155,7 +155,9 @@ impl<S: StateReader> InvocationContext<'_, S> {
             } else {
                 self.state_reader
                     .read_state(
-                        &self.invocation_target.as_keyed_service_id().unwrap(),
+                        &self.invocation_target.as_keyed_service_id().expect(
+                            "Non deterministic built in services requesting state MUST be keyed",
+                        ),
                         &key.0,
                     )
                     .await

@@ -271,7 +271,9 @@ where
             let keyed_service_id = service_invocation
                 .invocation_target
                 .as_keyed_service_id()
-                .unwrap();
+                .expect(
+                    "When the handler type is Exclusive, the invocation target must have a key",
+                );
 
             let service_status = state.get_virtual_object_status(&keyed_service_id).await?;
 
@@ -437,7 +439,7 @@ where
                     invocation_metadata
                         .invocation_target
                         .as_keyed_service_id()
-                        .unwrap(),
+                        .expect("Non deterministic built in services clearing state MUST be keyed"),
                     *invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
@@ -449,7 +451,7 @@ where
                     invocation_metadata
                         .invocation_target
                         .as_keyed_service_id()
-                        .unwrap(),
+                        .expect("Non deterministic built in services clearing state MUST be keyed"),
                     *invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
@@ -1155,7 +1157,9 @@ where
     fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
         // Inbox exists only for exclusive handler cases
         if invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
-            effects.pop_inbox(invocation_target.as_keyed_service_id().unwrap())
+            effects.pop_inbox(invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            ))
         }
     }
 
