@@ -27,6 +27,7 @@ pub struct InvocationStatusReportInner {
     pub last_retry_attempt_failure: Option<InvocationErrorReport>,
     pub next_retry_at: Option<SystemTime>,
     pub last_attempt_deployment_id: Option<DeploymentId>,
+    pub last_attempt_server: Option<String>,
 }
 
 impl Default for InvocationStatusReportInner {
@@ -38,6 +39,7 @@ impl Default for InvocationStatusReportInner {
             last_retry_attempt_failure: None,
             next_retry_at: None,
             last_attempt_deployment_id: None,
+            last_attempt_server: None,
         }
     }
 }
@@ -92,6 +94,10 @@ impl InvocationStatusReport {
 
     pub fn last_attempt_deployment_id(&self) -> Option<&DeploymentId> {
         self.2.last_attempt_deployment_id.as_ref()
+    }
+
+    pub fn last_attempt_server(&self) -> Option<&str> {
+        self.2.last_attempt_server.as_deref()
     }
 }
 

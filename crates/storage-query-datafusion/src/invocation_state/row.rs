@@ -34,6 +34,9 @@ pub(crate) fn append_state_row(
     if let Some(last_attempt_deployment_id) = status_row.last_attempt_deployment_id() {
         row.last_attempt_deployment_id(last_attempt_deployment_id.to_string());
     }
+    if let Some(last_attempt_server) = status_row.last_attempt_server() {
+        row.last_attempt_server(last_attempt_server);
+    }
 
     if let Some(next_retry_at) = status_row.next_retry_at() {
         row.next_retry_at(MillisSinceEpoch::as_u64(&next_retry_at.into()) as i64);
