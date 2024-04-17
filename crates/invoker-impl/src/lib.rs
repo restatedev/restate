@@ -392,6 +392,13 @@ where
                             has_changed,
                         ).await
                     }
+                    InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                        self.handle_server_header_received(
+                            partition,
+                            invocation_id,
+                            x_restate_server_header
+                        ).await
+                    }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
                         self.handle_new_entry(
                             partition,
@@ -574,6 +581,41 @@ where
         } else {
             // If no state machine, this might be an event for an aborted invocation.
             trace!("No state machine found for selected deployment id");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_server_header_received(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        x_restate_server_header: String,
+    ) {
+        if let Some((_, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            trace!(
+                "x-restate-server header {}. Invocation state: {:?}",
+                x_restate_server_header,
+                ism.invocation_state_debug()
+            );
+
+            self.status_store.on_server_header_receiver(
+                &partition,
+                &invocation_id,
+                x_restate_server_header,
+            );
+        } else {
+            // If no state machine, this might be an event for an aborted invocation.
+            trace!("No state machine found for selected server header");
         }
     }
 
