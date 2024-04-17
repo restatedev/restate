@@ -107,12 +107,12 @@ pub mod v1 {
             enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
             invocation_target, outbox_message, response_result, source, span_relation, timer,
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EpochSequenceNumber, FullInvocationId, Header,
-            IdempotencyMetadata, IdempotentRequestMetadata, InboxEntry, InvocationId,
-            InvocationResolutionResult, InvocationStatus, InvocationTarget, JournalEntry,
-            JournalMeta, KvPair, OutboxMessage, ResponseResult, SequenceNumber, ServiceId,
-            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
-            StateMutation, Timer, VirtualObjectStatus,
+            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata,
+            IdempotentRequestMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatus, InvocationTarget, JournalEntry, JournalMeta, KvPair, OutboxMessage,
+            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
+            VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -211,7 +211,7 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: InvocationId) -> Result<Self, Self::Error> {
-                Ok(restate_types::identifiers::InvocationId::new(
+                Ok(restate_types::identifiers::InvocationId::from_parts(
                     value.partition_key,
                     try_bytes_into_invocation_uuid(value.invocation_uuid)?,
                 ))
@@ -303,14 +303,6 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let service_id = value
-                    .service_id
-                    .ok_or(ConversionError::missing_field("service_id"))?
-                    .try_into()?;
-
-                let method_name = value.method_name.try_into().map_err(|e| {
-                    ConversionError::InvalidData(anyhow!("Cannot decode method_name string {e}"))
-                })?;
                 let deployment_id =
                     value.deployment_id.and_then(
                         |one_of_deployment_id| match one_of_deployment_id {
@@ -359,11 +351,9 @@ pub mod v1 {
                 };
 
                 Ok(crate::invocation_status_table::InFlightInvocationMetadata {
-                    service_id,
                     invocation_target,
                     journal_metadata,
                     deployment_id,
-                    method: method_name,
                     response_sinks,
                     timestamps: crate::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
@@ -379,10 +369,8 @@ pub mod v1 {
         impl From<crate::invocation_status_table::InFlightInvocationMetadata> for Invoked {
             fn from(value: crate::invocation_status_table::InFlightInvocationMetadata) -> Self {
                 let crate::invocation_status_table::InFlightInvocationMetadata {
-                    service_id,
                     invocation_target,
                     deployment_id,
-                    method,
                     response_sinks,
                     journal_metadata,
                     timestamps,
@@ -393,12 +381,10 @@ pub mod v1 {
 
                 Invoked {
                     invocation_target: Some(invocation_target.into()),
-                    service_id: Some(service_id.into()),
                     response_sinks: response_sinks
                         .into_iter()
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
                         .collect(),
-                    method_name: method.into_bytes(),
                     deployment_id: Some(match deployment_id {
                         None => invocation_status::invoked::DeploymentId::None(()),
                         Some(deployment_id) => invocation_status::invoked::DeploymentId::Value(
@@ -437,14 +423,6 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let service_id = value
-                    .service_id
-                    .ok_or(ConversionError::missing_field("service_id"))?
-                    .try_into()?;
-
-                let method_name = value.method_name.try_into().map_err(|e| {
-                    ConversionError::InvalidData(anyhow!("Cannot decode method_name string {e}"))
-                })?;
                 let deployment_id =
                     value.deployment_id.and_then(
                         |one_of_deployment_id| match one_of_deployment_id {
@@ -495,12 +473,10 @@ pub mod v1 {
 
                 Ok((
                     crate::invocation_status_table::InFlightInvocationMetadata {
-                        service_id,
                         invocation_target,
                         journal_metadata,
                         deployment_id: deployment_id
                             .map(|d| d.parse().expect("valid deployment id")),
-                        method: method_name,
                         response_sinks,
                         timestamps: crate::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
@@ -533,14 +509,12 @@ pub mod v1 {
 
                 Suspended {
                     invocation_target: Some(metadata.invocation_target.into()),
-                    service_id: Some(metadata.service_id.into()),
                     response_sinks: metadata
                         .response_sinks
                         .into_iter()
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
                         .collect(),
                     journal_meta: Some(journal_meta),
-                    method_name: metadata.method.into_bytes(),
                     deployment_id: Some(match metadata.deployment_id {
                         None => invocation_status::suspended::DeploymentId::None(()),
                         Some(deployment_id) => invocation_status::suspended::DeploymentId::Value(
@@ -576,14 +550,6 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let service_id = value
-                    .service_id
-                    .ok_or(ConversionError::missing_field("service_id"))?
-                    .try_into()?;
-
-                let handler_name = value.handler.try_into().map_err(|e| {
-                    ConversionError::InvalidData(anyhow!("Cannot decode method_name string {e}"))
-                })?;
                 let response_sinks = value
                     .response_sinks
                     .into_iter()
@@ -632,8 +598,6 @@ pub mod v1 {
                         MillisSinceEpoch::new(value.creation_time),
                         MillisSinceEpoch::new(value.modification_time),
                     ),
-                    service_id,
-                    handler_name,
                     source,
                     span_context,
                     headers,
@@ -650,10 +614,8 @@ pub mod v1 {
                 let crate::invocation_status_table::InboxedInvocation {
                     invocation_target,
                     inbox_sequence_number,
-                    service_id,
                     response_sinks,
                     timestamps,
-                    handler_name,
                     argument,
                     source,
                     span_context,
@@ -667,8 +629,6 @@ pub mod v1 {
                 Inboxed {
                     invocation_target: Some(invocation_target.into()),
                     inbox_sequence_number,
-                    service_id: Some(service_id.into()),
-                    handler: handler_name.into_bytes(),
                     response_sinks: response_sinks
                         .into_iter()
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
@@ -695,10 +655,6 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let handler_name = value.handler_name.try_into().map_err(|e| {
-                    ConversionError::InvalidData(anyhow!("Cannot decode method_name string {e}"))
-                })?;
-
                 let idempotency_key = match value
                     .idempotency_key
                     .ok_or(ConversionError::missing_field("idempotency_key"))?
@@ -711,11 +667,6 @@ pub mod v1 {
 
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
-                    service_id: value
-                        .service_id
-                        .ok_or(ConversionError::missing_field("service_id"))?
-                        .try_into()?,
-                    handler: handler_name,
                     response_result: value
                         .result
                         .ok_or(ConversionError::missing_field("result"))?
@@ -729,8 +680,6 @@ pub mod v1 {
             fn from(value: crate::invocation_status_table::CompletedInvocation) -> Self {
                 let crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
-                    service_id,
-                    handler,
                     idempotency_key,
                     response_result,
                 } = value;
@@ -738,8 +687,6 @@ pub mod v1 {
                 Completed {
                     invocation_target: Some(InvocationTarget::from(invocation_target)),
                     result: Some(ResponseResult::from(response_result)),
-                    service_id: Some(service_id.into()),
-                    handler_name: handler.into_bytes(),
                     idempotency_key: Some(match idempotency_key {
                         Some(key) => {
                             invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(
@@ -793,8 +740,15 @@ pub mod v1 {
                     .ok_or(ConversionError::missing_field("source"))?
                 {
                     source::Source::Ingress(_) => restate_types::invocation::Source::Ingress,
-                    source::Source::Service(fid) => restate_types::invocation::Source::Service(
-                        restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                    source::Source::Service(service) => restate_types::invocation::Source::Service(
+                        restate_types::identifiers::InvocationId::from_slice(
+                            &service.invocation_id,
+                        )?,
+                        restate_types::invocation::InvocationTarget::try_from(
+                            service
+                                .invocation_target
+                                .ok_or(ConversionError::missing_field("invocation_target"))?,
+                        )?,
                     ),
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
                 };
@@ -807,9 +761,13 @@ pub mod v1 {
             fn from(value: restate_types::invocation::Source) -> Self {
                 let source = match value {
                     restate_types::invocation::Source::Ingress => source::Source::Ingress(()),
-                    restate_types::invocation::Source::Service(fid) => {
-                        source::Source::Service(FullInvocationId::from(fid))
-                    }
+                    restate_types::invocation::Source::Service(
+                        invocation_id,
+                        invocation_target,
+                    ) => source::Source::Service(source::Service {
+                        invocation_id: invocation_id.into(),
+                        invocation_target: Some(InvocationTarget::from(invocation_target)),
+                    }),
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
                 };
 
@@ -825,9 +783,16 @@ pub mod v1 {
             fn try_from(value: InboxEntry) -> Result<Self, Self::Error> {
                 Ok(
                     match value.entry.ok_or(ConversionError::missing_field("entry"))? {
-                        inbox_entry::Entry::InvocationId(fid) => {
+                        inbox_entry::Entry::Invocation(invocation) => {
                             crate::inbox_table::InboxEntry::Invocation(
-                                restate_types::identifiers::FullInvocationId::try_from(fid)?,
+                                restate_types::identifiers::ServiceId::try_from(
+                                    invocation
+                                        .service_id
+                                        .ok_or(ConversionError::missing_field("service_id"))?,
+                                )?,
+                                restate_types::identifiers::InvocationId::from_slice(
+                                    &invocation.invocation_id,
+                                )?,
                             )
                         }
                         inbox_entry::Entry::StateMutation(state_mutation) => {
@@ -845,8 +810,11 @@ pub mod v1 {
         impl From<crate::inbox_table::InboxEntry> for InboxEntry {
             fn from(inbox_entry: crate::inbox_table::InboxEntry) -> Self {
                 let inbox_entry = match inbox_entry {
-                    crate::inbox_table::InboxEntry::Invocation(fid) => {
-                        inbox_entry::Entry::InvocationId(FullInvocationId::from(fid))
+                    crate::inbox_table::InboxEntry::Invocation(service_id, invocation_id) => {
+                        inbox_entry::Entry::Invocation(inbox_entry::Invocation {
+                            service_id: Some(service_id.into()),
+                            invocation_id: invocation_id.into(),
+                        })
                     }
                     crate::inbox_table::InboxEntry::StateMutation(state_mutation) => {
                         inbox_entry::Entry::StateMutation(StateMutation::from(state_mutation))
@@ -866,8 +834,6 @@ pub mod v1 {
                 let ServiceInvocation {
                     invocation_id,
                     invocation_target,
-                    id,
-                    method_name,
                     response_sink,
                     span_context,
                     argument,
@@ -884,10 +850,6 @@ pub mod v1 {
                     invocation_target.ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let id = restate_types::identifiers::FullInvocationId::try_from(
-                    id.ok_or(ConversionError::missing_field("id"))?,
-                )?;
-
                 let span_context =
                     restate_types::invocation::ServiceInvocationSpanContext::try_from(
                         span_context.ok_or(ConversionError::missing_field("span_context"))?,
@@ -897,9 +859,6 @@ pub mod v1 {
                     Option::<restate_types::invocation::ServiceInvocationResponseSink>::try_from(
                         response_sink.ok_or(ConversionError::missing_field("response_sink"))?,
                     )?;
-
-                let method_name =
-                    ByteString::try_from(method_name).map_err(ConversionError::invalid_data)?;
 
                 let source = restate_types::invocation::Source::try_from(
                     source.ok_or(ConversionError::missing_field("source"))?,
@@ -923,8 +882,6 @@ pub mod v1 {
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
                     invocation_target,
-                    fid: id,
-                    method_name,
                     argument,
                     source,
                     response_sink,
@@ -940,20 +897,16 @@ pub mod v1 {
             fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
                 let invocation_id = Bytes::copy_from_slice(&value.invocation_id.to_bytes());
                 let invocation_target = InvocationTarget::from(value.invocation_target);
-                let id = FullInvocationId::from(value.fid);
                 let span_context = SpanContext::from(value.span_context);
                 let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
-                let method_name = value.method_name.into_bytes();
                 let source = Source::from(value.source);
                 let headers = value.headers.into_iter().map(Into::into).collect();
 
                 ServiceInvocation {
                     invocation_id,
                     invocation_target: Some(invocation_target),
-                    id: Some(id),
                     span_context: Some(span_context),
                     response_sink: Some(response_sink),
-                    method_name,
                     argument: value.argument,
                     source: Some(source),
                     headers,
@@ -1128,41 +1081,6 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<FullInvocationId> for restate_types::identifiers::FullInvocationId {
-            type Error = ConversionError;
-
-            fn try_from(value: FullInvocationId) -> Result<Self, Self::Error> {
-                let FullInvocationId {
-                    service_name,
-                    service_key,
-                    invocation_uuid,
-                } = value;
-
-                let service_name =
-                    ByteString::try_from(service_name).map_err(ConversionError::invalid_data)?;
-                let invocation_uuid = try_bytes_into_invocation_uuid(invocation_uuid)?;
-
-                Ok(restate_types::identifiers::FullInvocationId::new(
-                    service_name,
-                    service_key,
-                    invocation_uuid,
-                ))
-            }
-        }
-
-        impl From<restate_types::identifiers::FullInvocationId> for FullInvocationId {
-            fn from(value: restate_types::identifiers::FullInvocationId) -> Self {
-                let service_key = value.service_id.key;
-                let service_name = value.service_id.service_name.into_bytes();
-
-                FullInvocationId {
-                    invocation_uuid: value.invocation_uuid.into(),
-                    service_key,
-                    service_name,
-                }
-            }
-        }
-
         fn try_bytes_into_invocation_uuid(
             bytes: Bytes,
         ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
@@ -1318,19 +1236,19 @@ pub mod v1 {
                         )
                     }
                     ResponseSink::NewInvocation(new_invocation) => {
-                        let target = restate_types::identifiers::FullInvocationId::try_from(
-                            new_invocation
-                                .target
-                                .ok_or(ConversionError::missing_field("target"))?,
-                        )?;
-                        Some(
-                            restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
-                                target,
-                                method: new_invocation.method,
-                                caller_context: new_invocation.caller_context,
-                            },
-                        )
-                    }
+                            let target = restate_types::invocation::InvocationTarget::try_from(
+                                new_invocation
+                                    .invocation_target
+                                    .ok_or(ConversionError::missing_field("invocation_target"))?,
+                            )?;
+                            Some(
+                                restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
+                                    id: restate_types::identifiers::InvocationId::from_slice(&new_invocation.invocation_id)?,
+                                    target,
+                                    caller_context: new_invocation.caller_context,
+                                },
+                            )
+                        }
                     ResponseSink::None(_) => None,
                 };
 
@@ -1361,12 +1279,12 @@ pub mod v1 {
                     },
                     Some(
                         restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
-                            target, method, caller_context
+                            target, id, caller_context
                         },
                     ) => ResponseSink::NewInvocation(NewInvocation {
-                        method,
-                        target: Some(FullInvocationId::from(target)),
-                        caller_context
+                      invocation_id: id.into(),
+                            invocation_target: Some(target.into()),
+                            caller_context
                     }),
                     None => ResponseSink::None(Default::default()),
                 };
@@ -1754,13 +1672,11 @@ pub mod v1 {
                                     .span_context
                                     .ok_or(ConversionError::missing_field("span_context"))?,
                             )?;
-                        let service_key = success.service_key;
 
                         Some(restate_types::journal::enriched::InvokeEnrichmentResult {
                             invocation_id,
                             invocation_target,
                             span_context,
-                            service_key,
                         })
                     }
                 };
@@ -1781,13 +1697,11 @@ pub mod v1 {
                         restate_types::journal::enriched::InvokeEnrichmentResult {
                             invocation_id,
                             invocation_target,
-                            service_key,
                             span_context,
                         } => invocation_resolution_result::Result::Success(
                             invocation_resolution_result::Success {
                                 invocation_id: invocation_id.into(),
                                 invocation_target: Some(invocation_target.into()),
-                                service_key,
                                 span_context: Some(SpanContext::from(span_context)),
                             },
                         ),
@@ -1820,12 +1734,10 @@ pub mod v1 {
                             .span_context
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
-                let service_key = value.service_key;
 
                 Ok(restate_types::journal::enriched::InvokeEnrichmentResult {
                     invocation_id,
                     span_context,
-                    service_key,
                     invocation_target,
                 })
             }
@@ -1838,7 +1750,6 @@ pub mod v1 {
                 BackgroundCallResolutionResult {
                     invocation_id: value.invocation_id.into(),
                     invocation_target: Some(value.invocation_target.into()),
-                    service_key: value.service_key,
                     span_context: Some(SpanContext::from(value.span_context)),
                 }
             }
