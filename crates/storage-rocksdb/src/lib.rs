@@ -654,9 +654,9 @@ trait StorageAccess {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
-                if let Some(slice) = slice {
+                if let Some(mut slice) = slice {
                     Ok(Some(
-                        StorageCodec::decode::<V>(slice)
+                        StorageCodec::decode::<V, _>(&mut slice)
                             .map_err(|err| StorageError::Generic(err.into()))?,
                     ))
                 } else {

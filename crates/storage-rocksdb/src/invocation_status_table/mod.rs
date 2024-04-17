@@ -103,7 +103,7 @@ fn read_invoked_full_invocation_id(
     v: &mut &[u8],
 ) -> Result<Option<FullInvocationId>> {
     let invocation_id = invocation_id_from_bytes(&mut k)?;
-    let invocation_status = StorageCodec::decode::<InvocationStatus>(v)
+    let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
         Ok(Some(FullInvocationId::combine(
@@ -175,9 +175,9 @@ impl RocksDBStorage {
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedInvocationStatusRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<InvocationStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, value)| {
+        OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = InvocationStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = StorageCodec::decode::<InvocationStatus>(value.as_ref()).unwrap();
+            let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value).unwrap();
             OwnedInvocationStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 invocation_uuid: state_key.invocation_uuid.unwrap(),

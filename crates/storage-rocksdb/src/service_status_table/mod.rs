@@ -121,9 +121,9 @@ impl RocksDBStorage {
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedVirtualObjectStatusRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, value)| {
+        OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = StorageCodec::decode::<VirtualObjectStatus>(value.as_ref()).unwrap();
+            let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value).unwrap();
             OwnedVirtualObjectStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 name: state_key.service_name.unwrap(),

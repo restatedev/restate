@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::GenericError;
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
 use std::mem;
 
 #[derive(Debug, thiserror::Error)]
@@ -73,22 +73,20 @@ impl StorageCodec {
         value.encode(buf)
     }
 
-    pub fn decode<T: StorageDecode>(buf: &[u8]) -> Result<T, StorageDecodeError> {
-        if buf.len() < mem::size_of::<u8>() {
+    pub fn decode<T: StorageDecode, B: Buf>(buf: &mut B) -> Result<T, StorageDecodeError> {
+        if buf.remaining() < mem::size_of::<u8>() {
             return Err(StorageDecodeError::ReadingCodec(format!(
                 "remaining bytes in buf '{}' < version bytes '{}'",
-                buf.len(),
+                buf.remaining(),
                 mem::size_of::<u8>()
             )));
         }
 
         // read version
-        let (codec, bytes) = buf.split_at(mem::size_of::<u8>());
-        let codec =
-            StorageCodecKind::try_from(*codec.first().expect("codec byte must be present"))?;
+        let codec = StorageCodecKind::try_from(buf.get_u8())?;
 
         // decode value
-        T::decode(bytes, codec)
+        T::decode(buf, codec)
     }
 }
 
@@ -112,7 +110,7 @@ pub trait StorageEncode {
 /// To support codec evolution, this trait implementation needs to be able to decode values encoded
 /// with any previously used codec.
 pub trait StorageDecode {
-    fn decode(buf: &[u8], kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+    fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized;
 }
@@ -142,7 +140,7 @@ impl<T: StorageEncode> StorageEncode for Box<T> {
 }
 
 impl<T: StorageDecode> StorageDecode for Box<T> {
-    fn decode(buf: &[u8], kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+    fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized,
     {
@@ -165,14 +163,20 @@ macro_rules! flexbuffers_storage_encode_decode {
             ) -> Result<(), $crate::storage::StorageEncodeError> {
                 let vec = flexbuffers::to_vec(self)
                     .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))?;
+                // write the length
+                buf.put_u32_le(u32::try_from(vec.len()).map_err(|_| {
+                    $crate::storage::StorageEncodeError::EncodeValue(
+                        "only support serializing types of size <= 4GB".into(),
+                    )
+                })?);
                 buf.put(&vec[..]);
                 Ok(())
             }
         }
 
         impl $crate::storage::StorageDecode for $name {
-            fn decode(
-                buf: &[u8],
+            fn decode<B: ::bytes::Buf>(
+                buf: &mut B,
                 kind: $crate::storage::StorageCodecKind,
             ) -> Result<Self, $crate::storage::StorageDecodeError>
             where
@@ -180,9 +184,39 @@ macro_rules! flexbuffers_storage_encode_decode {
             {
                 match kind {
                     $crate::storage::StorageCodecKind::FlexbuffersSerde => {
-                        flexbuffers::from_slice(buf).map_err(|err| {
-                            $crate::storage::StorageDecodeError::DecodeValue(err.into())
-                        })
+                        if buf.remaining() < 4 {
+                            return Err($crate::storage::StorageDecodeError::DecodeValue(
+                                "insufficient data: expecting 4 bytes for length".into(),
+                            ));
+                        }
+                        let length =
+                            usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
+
+                        if buf.remaining() < length {
+                            return Err($crate::storage::StorageDecodeError::DecodeValue(
+                                format!(
+                                    "insufficient data: expecting {} bytes for flexbuffers",
+                                    length
+                                )
+                                .into(),
+                            ));
+                        }
+
+                        if buf.chunk().len() >= length {
+                            let result = flexbuffers::from_slice(buf.chunk()).map_err(|err| {
+                                $crate::storage::StorageDecodeError::DecodeValue(err.into())
+                            })?;
+                            buf.advance(length);
+
+                            Ok(result)
+                        } else {
+                            // need to allocate contiguous buffer of length for flexbuffers
+                            let mut bytes = buf.copy_to_bytes(length);
+
+                            flexbuffers::from_slice(&mut bytes).map_err(|err| {
+                                $crate::storage::StorageDecodeError::DecodeValue(err.into())
+                            })
+                        }
                     }
                     codec => Err($crate::storage::StorageDecodeError::UnsupportedCodecKind(
                         codec,

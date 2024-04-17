@@ -63,9 +63,9 @@ fn all_idempotency_metadata<S: StorageAccess>(
     range: RangeInclusive<PartitionKey>,
 ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_ {
     let iter = storage.iterator_from(TableScan::PartitionKeyRange::<IdempotencyKey>(range));
-    stream::iter(OwnedIterator::new(iter).map(|(mut k, v)| {
+    stream::iter(OwnedIterator::new(iter).map(|(mut k, mut v)| {
         let key = IdempotencyKey::deserialize_from(&mut k)?;
-        let idempotency_metadata = StorageCodec::decode::<IdempotencyMetadata>(v.as_ref())
+        let idempotency_metadata = StorageCodec::decode::<IdempotencyMetadata, _>(&mut v)
             .map_err(|err| StorageError::Generic(err.into()))?;
 
         Ok((

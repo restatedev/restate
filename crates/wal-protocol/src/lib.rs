@@ -50,7 +50,8 @@ impl Envelope {
     }
 
     pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, StorageDecodeError> {
-        StorageCodec::decode::<Self>(bytes.as_ref())
+        let mut bytes = bytes.as_ref();
+        StorageCodec::decode::<Self, _>(&mut bytes)
     }
 }
 

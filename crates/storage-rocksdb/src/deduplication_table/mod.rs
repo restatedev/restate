@@ -47,12 +47,12 @@ fn get_all_sequence_numbers<S: StorageAccess>(
 ) -> impl Stream<Item = Result<DedupInformation>> + Send {
     stream::iter(storage.for_each_key_value_in_place(
         TableScan::Partition::<DeduplicationKey>(partition_id),
-        move |k, v| {
+        move |k, mut v| {
             let key =
                 DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);
 
             let res = if let Ok(Some(producer_id)) = key {
-                StorageCodec::decode::<DedupSequenceNumber>(v)
+                StorageCodec::decode::<DedupSequenceNumber, _>(&mut v)
                     .map_err(|err| StorageError::Conversion(err.into()))
                     .map(|sequence_number| DedupInformation {
                         producer_id,

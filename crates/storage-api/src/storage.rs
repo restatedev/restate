@@ -33,8 +33,8 @@ macro_rules! protobuf_storage_encode_decode {
         }
 
         impl restate_types::storage::StorageDecode for $ty {
-            fn decode(
-                buf: &[u8],
+            fn decode<B: bytes::Buf>(
+                buf: &mut B,
                 kind: restate_types::storage::StorageCodecKind,
             ) -> std::result::Result<Self, restate_types::storage::StorageDecodeError>
             where

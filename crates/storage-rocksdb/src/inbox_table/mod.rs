@@ -124,11 +124,11 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 }
 
-fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> Result<SequenceNumberInboxEntry> {
+fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
     let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
     let sequence_number = *key.sequence_number_ok_or()?;
 
-    let inbox_entry = StorageCodec::decode::<InboxEntry>(v)
+    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
         .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))

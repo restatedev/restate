@@ -55,11 +55,11 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     Ok(timer_key)
 }
 
-fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
+fn decode_seq_timer_key_value(k: &[u8], mut v: &[u8]) -> Result<(TimerKey, Timer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
-    let timer =
-        StorageCodec::decode::<Timer>(v).map_err(|error| StorageError::Generic(error.into()))?;
+    let timer = StorageCodec::decode::<Timer, _>(&mut v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok((timer_key, timer))
 }

@@ -122,8 +122,8 @@ impl MetadataStoreClient {
     ) -> Result<Option<T>, ReadError> {
         let value = self.inner.get(key).await?;
 
-        if let Some(versioned_value) = value {
-            let value = StorageCodec::decode::<T>(versioned_value.value.as_ref())
+        if let Some(mut versioned_value) = value {
+            let value = StorageCodec::decode::<T, _>(&mut versioned_value.value)
                 .map_err(|err| ReadError::Codec(err.into()))?;
 
             assert_eq!(

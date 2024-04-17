@@ -159,9 +159,9 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
     Ok((sequence_number, outbox_message))
 }
 
-fn decode_value(v: &[u8]) -> crate::Result<OutboxMessage> {
+fn decode_value(mut v: &[u8]) -> crate::Result<OutboxMessage> {
     // decode value
-    let outbox_message = StorageCodec::decode::<OutboxMessage>(v)
+    let outbox_message = StorageCodec::decode::<OutboxMessage, _>(&mut v)
         .map_err(|error| StorageError::Conversion(error.into()))?;
 
     Ok(outbox_message)
