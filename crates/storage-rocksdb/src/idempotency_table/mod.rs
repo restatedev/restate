@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyPrefix, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
 use crate::{RocksDBStorage, TableKind};
@@ -27,6 +27,7 @@ use std::ops::RangeInclusive;
 
 define_table_key!(
     TableKind::Idempotency,
+    KeyPrefix::Idempotency,
     IdempotencyKey(
         partition_key: PartitionKey,
         component_name: ByteString,

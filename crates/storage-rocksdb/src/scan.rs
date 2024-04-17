@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::TableKey;
+use crate::keys::{KeyCodec, TableKey};
 use crate::scan::TableScan::{KeyPrefix, KeyRangeInclusive, Partition, PartitionKeyRange};
 use crate::TableKind;
 use bytes::BytesMut;
@@ -46,22 +46,29 @@ impl<K: TableKey> From<TableScan<K>> for PhysicalScan {
                 }
             }
             Partition(partition_id) => {
-                let buf = partition_id.to_be_bytes();
-                let prefix = BytesMut::from(&buf[..]);
+                let mut prefix = BytesMut::with_capacity(
+                    partition_id.serialized_length() + K::serialized_key_prefix_length(),
+                );
+                K::serialize_key_prefix(&mut prefix);
+                partition_id.encode(&mut prefix);
                 PhysicalScan::Prefix(K::table(), prefix)
             }
             PartitionKeyRange(range) => {
                 let (start, end) = (range.start(), range.end());
-                let start_bytes = start.to_be_bytes();
+                let mut start_bytes = BytesMut::with_capacity(
+                    start.serialized_length() + K::serialized_key_prefix_length(),
+                );
+                K::serialize_key_prefix(&mut start_bytes);
+                start.encode(&mut start_bytes);
                 match end.checked_add(1) {
-                    None => PhysicalScan::RangeOpen(K::table(), BytesMut::from(&start_bytes[..])),
+                    None => PhysicalScan::RangeOpen(K::table(), start_bytes),
                     Some(end) => {
-                        let end_bytes = end.to_be_bytes();
-                        PhysicalScan::RangeExclusive(
-                            K::table(),
-                            BytesMut::from(&start_bytes[..]),
-                            BytesMut::from(&end_bytes[..]),
-                        )
+                        let mut end_bytes = BytesMut::with_capacity(
+                            end.serialized_length() + K::serialized_key_prefix_length(),
+                        );
+                        K::serialize_key_prefix(&mut end_bytes);
+                        end.encode(&mut end_bytes);
+                        PhysicalScan::RangeExclusive(K::table(), start_bytes, end_bytes)
                     }
                 }
             }

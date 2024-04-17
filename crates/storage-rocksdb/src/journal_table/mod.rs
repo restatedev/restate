@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::define_table_key;
 use crate::keys::TableKey;
+use crate::keys::{define_table_key, KeyPrefix};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
@@ -28,6 +28,7 @@ use std::ops::RangeInclusive;
 
 define_table_key!(
     Journal,
+    KeyPrefix::Journal,
     JournalKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,

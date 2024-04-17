@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyPrefix, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
     RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
@@ -26,6 +26,7 @@ use std::io::Cursor;
 
 define_table_key!(
     Deduplication,
+    KeyPrefix::Deduplication,
     DeduplicationKey(partition_id: PartitionId, producer_id: ProducerId)
 );
 
