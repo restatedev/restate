@@ -40,7 +40,7 @@ use restate_errors::NotRunningError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::identifiers::{FullInvocationId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::EntryType;
 use restate_wal_protocol::timer::TimerValue;
@@ -242,30 +242,30 @@ where
             let invoked_invocations = partition_storage.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
-            while let Some(full_invocation_id) = invoked_invocations.next().await {
-                let full_invocation_id = full_invocation_id?;
+            while let Some(invocation_id_and_target) = invoked_invocations.next().await {
+                let (invocation_id, invocation_target) = invocation_id_and_target?;
 
                 if !non_deterministic::ServiceInvoker::is_supported(
-                    &full_invocation_id.service_id.service_name,
+                    invocation_target.service_name(),
                 ) {
                     invoker_handle
                         .invoke(
                             partition_leader_epoch,
-                            InvocationId::from(&full_invocation_id),
-                            full_invocation_id.service_id,
+                            invocation_id,
+                            invocation_target,
                             InvokeInputJournal::NoCachedJournal,
                         )
                         .await
                         .map_err(Error::Invoker)?;
                 } else {
-                    built_in_invoked_services.push(full_invocation_id);
+                    built_in_invoked_services.push(invocation_id);
                 }
             }
         }
 
-        for full_invocation_id in built_in_invoked_services {
+        for invocation_id in built_in_invoked_services {
             let input_entry = partition_storage
-                .load_journal_entry(&InvocationId::from(&full_invocation_id), 0)
+                .load_journal_entry(&invocation_id, 0)
                 .await?
                 .expect("first journal entry must be present; if not, this indicates a bug.");
 
@@ -277,7 +277,7 @@ where
             );
 
             let status = partition_storage
-                .get_invocation_status(&InvocationId::from(&full_invocation_id))
+                .get_invocation_status(&invocation_id)
                 .await?;
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
@@ -292,7 +292,7 @@ where
             let argument = input_entry.serialized_entry().clone();
             built_in_service_invoker
                 .invoke(
-                    full_invocation_id,
+                    FullInvocationId::combine(metadata.service_id, invocation_id),
                     &method,
                     metadata.journal_metadata.span_context,
                     response_sink,
@@ -406,13 +406,14 @@ where
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
-                full_invocation_id,
+                invocation_id,
+                invocation_target,
                 invoke_input_journal,
             } => invoker_tx
                 .invoke(
                     partition_leader_epoch,
-                    InvocationId::from(&full_invocation_id),
-                    full_invocation_id.service_id,
+                    invocation_id,
+                    invocation_target,
                     invoke_input_journal,
                 )
                 .await

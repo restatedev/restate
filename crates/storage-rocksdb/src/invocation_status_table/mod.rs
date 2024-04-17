@@ -19,8 +19,8 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
-use restate_types::identifiers::{FullInvocationId, PartitionKey};
-use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_types::invocation::InvocationTarget;
 use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
@@ -84,7 +84,7 @@ fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &I
 fn invoked_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
-) -> Vec<Result<FullInvocationId>> {
+) -> Vec<Result<(InvocationId, InvocationTarget)>> {
     storage.for_each_key_value_in_place(
         PartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
@@ -101,15 +101,12 @@ fn invoked_invocations<S: StorageAccess>(
 fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
-) -> Result<Option<FullInvocationId>> {
+) -> Result<Option<(InvocationId, InvocationTarget)>> {
     let invocation_id = invocation_id_from_bytes(&mut k)?;
     let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
-        Ok(Some(FullInvocationId::combine(
-            invocation_meta.service_id,
-            invocation_id,
-        )))
+        Ok(Some((invocation_id, invocation_meta.invocation_target)))
     } else {
         Ok(None)
     }
@@ -126,7 +123,7 @@ impl ReadOnlyInvocationStatusTable for RocksDBStorage {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
 }
@@ -143,7 +140,7 @@ impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
 }

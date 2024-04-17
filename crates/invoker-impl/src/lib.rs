@@ -35,9 +35,7 @@ use restate_timer_queue::TimerQueue;
 use restate_types::arc_util::Updateable;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
-};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
@@ -60,6 +58,7 @@ pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
+use restate_types::invocation::InvocationTarget;
 
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
@@ -87,7 +86,7 @@ trait InvocationTaskRunner {
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -118,7 +117,7 @@ where
         opts: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -129,7 +128,7 @@ where
                 self.client.clone(),
                 partition,
                 invocation_id,
-                service_id,
+                invocation_target,
                 RESTATE_SERVICE_PROTOCOL_VERSION,
                 opts.inactivity_timeout.into(),
                 opts.abort_timeout.into(),
@@ -374,7 +373,7 @@ where
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.service_id, invoke_input_command.journal).await;
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal).await;
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -469,8 +468,10 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %service_id.service_name,
+            rpc.service = %invocation_target.service_name(),
+            rpc.method = %invocation_target.handler_name(),
             restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -479,7 +480,7 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) {
         debug_assert!(self
@@ -496,7 +497,7 @@ where
             partition,
             invocation_id,
             journal,
-            InvocationStateMachine::create(service_id, options.retry_policy.clone()),
+            InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
         )
         .await
     }
@@ -928,7 +929,7 @@ where
             options,
             partition,
             invocation_id,
-            ism.service_id.clone(),
+            ism.invocation_target.clone(),
             self.invocation_tasks_tx.clone(),
             completions_rx,
             journal,
@@ -1010,8 +1011,7 @@ mod tests {
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::InvocationUuid;
-    use restate_types::identifiers::{FullInvocationId, LeaderEpoch};
+    use restate_types::identifiers::LeaderEpoch;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
@@ -1072,7 +1072,7 @@ mod tests {
         F: Fn(
             PartitionLeaderEpoch,
             InvocationId,
-            ServiceId,
+            InvocationTarget,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
             InvokeInputJournal,
@@ -1084,7 +1084,7 @@ mod tests {
             _options: &InvokerOptions,
             partition: PartitionLeaderEpoch,
             invocation_id: InvocationId,
-            service_id: ServiceId,
+            invocation_target: InvocationTarget,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             input_journal: InvokeInputJournal,
@@ -1093,7 +1093,7 @@ mod tests {
             task_pool.spawn((*self)(
                 partition,
                 invocation_id,
-                service_id,
+                invocation_target,
                 invoker_tx,
                 invoker_rx,
                 input_journal,
@@ -1141,7 +1141,8 @@ mod tests {
             .unwrap();
 
         let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
-        let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::new());
+        let invocation_target = InvocationTarget::mock_service();
+        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
@@ -1152,8 +1153,8 @@ mod tests {
         handle
             .invoke(
                 partition_leader_epoch,
-                InvocationId::from(&fid),
-                fid.service_id,
+                invocation_id,
+                invocation_target,
                 InvokeInputJournal::NoCachedJournal,
             )
             .await
@@ -1197,7 +1198,7 @@ mod tests {
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
-                service_id: ServiceId::mock_random(),
+                invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
@@ -1205,7 +1206,7 @@ mod tests {
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
-                service_id: ServiceId::mock_random(),
+                invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
@@ -1305,7 +1306,7 @@ mod tests {
                 &invoker_options,
                 MOCK_PARTITION,
                 invocation_id,
-                ServiceId::mock_random(),
+                InvocationTarget::mock_virtual_object(),
                 InvokeInputJournal::NoCachedJournal,
             )
             .await;

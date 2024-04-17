@@ -641,7 +641,7 @@ impl IdempotencyId {
 
     pub fn new_combine(
         invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
+        invocation_target: &InvocationTarget,
         idempotency_key: ByteString,
     ) -> Self {
         IdempotencyId {

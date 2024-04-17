@@ -524,7 +524,7 @@ pub enum SpanRelationCause {
     ),
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub enum SpanRelation {
     #[default]
     None,
@@ -534,12 +534,12 @@ pub enum SpanRelation {
 
 impl SpanRelation {
     /// Attach this [`SpanRelation`] to the given [`Span`]
-    pub fn attach_to_span(self, span: &Span) {
+    pub fn attach_to_span(&self, span: &Span) {
         match self {
             SpanRelation::Parent(span_context) => {
-                span.set_parent(Context::new().with_remote_span_context(span_context))
+                span.set_parent(Context::new().with_remote_span_context(span_context.clone()))
             }
-            SpanRelation::Linked(span_context) => span.add_link(span_context),
+            SpanRelation::Linked(span_context) => span.add_link(span_context.clone()),
             SpanRelation::None => (),
         };
     }
