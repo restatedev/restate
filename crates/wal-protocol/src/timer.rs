@@ -102,7 +102,7 @@ impl PartialEq for TimerValue {
 
 impl Eq for TimerValue {}
 
-/// New type wrapper to implement [`restate_timer::TimerKey`] for [`TimerKey`].
+/// New type wrapper to implement [`restate_types::timer::TimerKey`] for [`TimerKey`].
 ///
 /// # Important
 /// We use the [`TimerKey`] to read the timers in an absolute order. The timer service

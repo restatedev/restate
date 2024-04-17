@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::define_table_key;
+use crate::keys::{define_table_key, KeyPrefix};
 use crate::TableKind::PartitionStateMachine;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
@@ -20,6 +20,7 @@ use std::future::Future;
 
 define_table_key!(
     PartitionStateMachine,
+    KeyPrefix::Fsm,
     PartitionStateMachineKey(partition_id: PartitionId, state_id: u64)
 );
 

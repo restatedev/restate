@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyPrefix, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
@@ -22,6 +22,7 @@ use restate_types::storage::StorageCodec;
 
 define_table_key!(
     Timers,
+    KeyPrefix::Timers,
     TimersKey(
         partition_id: PartitionId,
         timestamp: u64,
