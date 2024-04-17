@@ -167,6 +167,13 @@ pub mod mocks {
     #[derive(Debug, Clone, Default)]
     pub struct MockStatusHandle(Vec<InvocationStatusReport>);
 
+    impl MockStatusHandle {
+        pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
+            self.0.push(invocation_status_report);
+            self
+        }
+    }
+
     impl StatusHandle for MockStatusHandle {
         type Iterator = std::vec::IntoIter<InvocationStatusReport>;
 

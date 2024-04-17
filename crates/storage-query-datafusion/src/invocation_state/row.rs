@@ -49,5 +49,18 @@ pub(crate) fn append_state_row(
         if let Some(doc_error_code) = last_retry_attempt_failure.doc_error_code() {
             row.last_error_code(doc_error_code.code())
         }
+
+        if let Some(related_entry) = last_retry_attempt_failure.related_entry() {
+            row.related_entry_index(related_entry.related_entry_index as u64);
+            row.related_entry_name(&related_entry.related_entry_name);
+
+            if row.is_related_entry_type_defined() {
+                if let Some(related_entry_type) = &related_entry.related_entry_type {
+                    row.related_entry_type(format_using(output, related_entry_type));
+                } else {
+                    row.related_entry_type("Unknown");
+                }
+            }
+        }
     }
 }

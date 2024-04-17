@@ -16,6 +16,7 @@ use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
 use restate_core::task_center;
 use restate_invoker_api::status_handle::mocks::MockStatusHandle;
+use restate_invoker_api::StatusHandle;
 use restate_rocksdb::RocksDbManager;
 use restate_schema_api::component::mocks::MockComponentMetadataResolver;
 use restate_schema_api::component::{ComponentMetadata, ComponentMetadataResolver};
@@ -84,7 +85,16 @@ impl DeploymentResolver for MockSchemas {
 pub(crate) struct MockQueryEngine(RocksDBStorage, QueryContext);
 
 impl MockQueryEngine {
-    pub async fn create() -> (Self, impl Future<Output = ()>) {
+    pub async fn create_with(
+        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        schemas: impl DeploymentResolver
+            + ComponentMetadataResolver
+            + Send
+            + Sync
+            + Debug
+            + Clone
+            + 'static,
+    ) -> (Self, impl Future<Output = ()>) {
         // Prepare Rocksdb
         task_center().run_in_scope_sync("db-manager-init", None, || {
             RocksDbManager::init(Constant::new(CommonOptions::default()))
@@ -101,13 +111,8 @@ impl MockQueryEngine {
 
         let query_engine = Self(
             rocksdb.clone(),
-            QueryContext::from_options(
-                &QueryEngineOptions::default(),
-                rocksdb,
-                MockStatusHandle::default(),
-                MockSchemas::default(),
-            )
-            .unwrap(),
+            QueryContext::from_options(&QueryEngineOptions::default(), rocksdb, status, schemas)
+                .unwrap(),
         );
 
         // Return shutdown future
@@ -115,6 +120,10 @@ impl MockQueryEngine {
             signal.drain().await;
             writer_join_handle.await.unwrap().unwrap();
         })
+    }
+
+    pub async fn create() -> (Self, impl Future<Output = ()>) {
+        Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
     }
 
     pub fn rocksdb_mut(&mut self) -> &mut RocksDBStorage {
