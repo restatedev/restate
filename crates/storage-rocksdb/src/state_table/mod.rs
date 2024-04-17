@@ -29,7 +29,7 @@ define_table_key!(
     StateKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: Bytes,
+        service_key: ByteString,
         state_key: Bytes
     )
 );
@@ -184,7 +184,7 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
 pub struct OwnedStateRow {
     pub partition_key: PartitionKey,
     pub service: ByteString,
-    pub service_key: Bytes,
+    pub service_key: ByteString,
     pub state_key: Bytes,
     pub state_value: Bytes,
 }

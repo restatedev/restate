@@ -135,7 +135,7 @@ impl InvocationTarget {
         match self {
             InvocationTarget::Service { .. } => None,
             InvocationTarget::VirtualObject { name, key, .. } => {
-                Some(ServiceId::new(name.clone(), key.as_bytes().clone()))
+                Some(ServiceId::new(name.clone(), key.clone()))
             }
         }
     }
@@ -678,7 +678,7 @@ mod mocks {
         pub fn mock_from_service_id(service_id: ServiceId) -> Self {
             InvocationTarget::virtual_object(
                 service_id.service_name,
-                ByteString::try_from(service_id.key.clone()).unwrap(),
+                service_id.key,
                 "MyMethod",
                 HandlerType::Exclusive,
             )

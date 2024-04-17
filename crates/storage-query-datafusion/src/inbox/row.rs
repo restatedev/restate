@@ -30,7 +30,7 @@ pub(crate) fn append_inbox_row(
 
         row.component(&service_id.service_name);
 
-        row.component_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
+        row.component_key(&service_id.key);
 
         if row.is_id_defined() {
             row.id(format_using(output, &invocation_id));

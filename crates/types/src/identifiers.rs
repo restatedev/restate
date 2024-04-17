@@ -283,13 +283,13 @@ pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
-    pub key: Bytes, // TODO change this to ByteString
+    pub key: ByteString,
 
     partition_key: PartitionKey,
 }
 
 impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+    pub fn new(service_name: impl Into<ByteString>, key: impl Into<ByteString>) -> Self {
         let key = key.into();
         let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
         Self::with_partition_key(partition_key, service_name, key)
@@ -300,7 +300,7 @@ impl ServiceId {
     pub fn with_partition_key(
         partition_key: PartitionKey,
         service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
+        key: impl Into<ByteString>,
     ) -> Self {
         Self {
             service_name: service_name.into(),
@@ -753,11 +753,7 @@ mod mocks {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Bytes::from(
-                    Alphanumeric
-                        .sample_string(&mut rand::thread_rng(), 16)
-                        .into_bytes(),
-                ),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
             )
         }
     }
@@ -783,6 +779,27 @@ mod mocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::invocation::HandlerType;
+
+    #[test]
+    fn service_id_and_invocation_id_partition_key_should_match() {
+        let invocation_target = InvocationTarget::virtual_object(
+            "MyService",
+            "MyKey",
+            "MyMethod",
+            HandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&invocation_target);
+
+        assert_eq!(
+            invocation_id.partition_key(),
+            invocation_target
+                .as_keyed_service_id()
+                .unwrap()
+                .partition_key()
+        );
+    }
 
     #[test]
     fn roundtrip_invocation_id() {
