@@ -401,7 +401,7 @@ where
         let path: PathAndQuery = format!(
             "/invoke/{}/{}",
             self.invocation_target.service_name(),
-            &self.invocation_target.handler_name()
+            self.invocation_target.handler_name()
         )
         .try_into()
         .expect("must be able to build a valid invocation path");

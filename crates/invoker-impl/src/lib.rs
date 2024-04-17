@@ -469,7 +469,9 @@ where
         skip_all,
         fields(
             rpc.service = %invocation_target.service_name(),
+            rpc.method = %invocation_target.handler_name(),
             restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
