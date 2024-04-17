@@ -189,7 +189,7 @@ impl IngressDispatcherRequest {
                                 .to_owned()
                         },
                         &**handler,
-                        // This seems really wrong, we should check what the heck we're doing here...
+                        // TODO this is temporary, See https://github.com/restatedev/restate/issues/1423
                         HandlerType::Exclusive,
                     ),
                     EventReceiverComponentType::Service => {
@@ -222,7 +222,7 @@ impl IngressDispatcherRequest {
                 argument: restate_pb::restate::internal::ProxyThroughRequest {
                     target_service: invocation_target.service_name().to_string(),
                     target_method: invocation_target.handler_name().to_string(),
-                    // This seems very wrong too!
+                    // TODO this is temporary, see https://github.com/restatedev/restate/issues/1423
                     target_key: invocation_target
                         .key()
                         .map(|bs| bs.as_bytes().clone())
