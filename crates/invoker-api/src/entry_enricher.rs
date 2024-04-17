@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::errors::InvocationError;
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 
@@ -17,7 +17,8 @@ pub trait EntryEnricher {
     fn enrich_entry(
         &self,
         entry: PlainRawEntry,
-        invocation_span_context: &ServiceInvocationSpanContext,
+        current_invocation_target: &InvocationTarget,
+        current_invocation_span_context: &ServiceInvocationSpanContext,
     ) -> Result<EnrichedRawEntry, InvocationError>;
 }
 
@@ -38,10 +39,11 @@ pub mod mocks {
     impl EntryEnricher for MockEntryEnricher {
         fn enrich_entry(
             &self,
-            raw_entry: PlainRawEntry,
-            invocation_span_context: &ServiceInvocationSpanContext,
+            entry: PlainRawEntry,
+            _current_invocation_target: &InvocationTarget,
+            current_invocation_span_context: &ServiceInvocationSpanContext,
         ) -> Result<EnrichedRawEntry, InvocationError> {
-            let (header, entry) = raw_entry.into_inner();
+            let (header, entry) = entry.into_inner();
             let enriched_header = match header {
                 PlainEntryHeader::Input {} => EnrichedEntryHeader::Input {},
                 PlainEntryHeader::Output {} => EnrichedEntryHeader::Output {},
@@ -65,7 +67,7 @@ pub mod mocks {
                                 invocation_id: InvocationId::mock_random(),
                                 invocation_target: InvocationTarget::service("", ""),
                                 service_key: Default::default(),
-                                span_context: invocation_span_context.clone(),
+                                span_context: current_invocation_span_context.clone(),
                             }),
                         }
                     } else {
@@ -82,7 +84,7 @@ pub mod mocks {
                             invocation_id: InvocationId::mock_random(),
                             invocation_target: InvocationTarget::service("", ""),
                             service_key: Default::default(),
-                            span_context: invocation_span_context.clone(),
+                            span_context: current_invocation_span_context.clone(),
                         },
                     }
                 }

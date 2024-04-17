@@ -1234,7 +1234,7 @@ mod tests {
         state_machine: &mut MockStateMachine,
         invocation_target: InvocationTarget,
     ) -> InvocationId {
-        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let invocation_id = InvocationId::generate(&invocation_target);
         let fid = FullInvocationId::combine(
             ServiceId::with_partition_key(
                 invocation_id.partition_key(),

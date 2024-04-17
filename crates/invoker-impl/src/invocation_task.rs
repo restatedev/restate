@@ -714,7 +714,7 @@ where
                 let entry_type = entry.header().as_entry_type();
                 let enriched_entry = shortcircuit!(self
                     .entry_enricher
-                    .enrich_entry(entry, parent_span_context)
+                    .enrich_entry(entry, &self.invocation_target, parent_span_context)
                     .map_err(|e| InvocationTaskError::EntryEnrichment(
                         self.next_journal_index,
                         entry_type,

@@ -20,14 +20,13 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceState};
 use opentelemetry::Context;
+use serde_with::{serde_as, FromInto};
 use std::fmt;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-use serde_with::{serde_as, FromInto};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
@@ -40,8 +39,18 @@ pub enum ComponentType {
 }
 
 impl ComponentType {
-    pub fn requires_key(&self) -> bool {
+    pub fn is_keyed(&self) -> bool {
         matches!(self, ComponentType::VirtualObject)
+    }
+
+    pub fn has_state(&self) -> bool {
+        self.is_keyed()
+    }
+}
+
+impl fmt::Display for ComponentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
     }
 }
 
@@ -58,6 +67,12 @@ impl HandlerType {
             ComponentType::Service => HandlerType::Shared,
             ComponentType::VirtualObject => HandlerType::Exclusive,
         }
+    }
+}
+
+impl fmt::Display for HandlerType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
     }
 }
 
