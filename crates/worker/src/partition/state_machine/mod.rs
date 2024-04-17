@@ -26,7 +26,9 @@ pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 pub use effects::Effects;
 use restate_types::identifiers::PartitionKey;
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
+use restate_types::journal::EntryType;
 use restate_wal_protocol::Command;
 
 #[derive(Debug)]
@@ -34,6 +36,8 @@ pub struct StateMachine<Codec>(CommandInterpreter<Codec>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("the invocation target {0:?} should have a service id, because we're trying to process the entry {1}")]
+    ExpectedServiceIdForEntry(InvocationTarget, EntryType),
     #[error("failed to deserialize entry: {0}")]
     Codec(#[from] RawEntryCodecError),
     #[error(transparent)]

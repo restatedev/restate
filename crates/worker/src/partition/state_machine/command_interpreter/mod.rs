@@ -1196,7 +1196,12 @@ where
                             &invocation_metadata
                                 .invocation_target
                                 .as_keyed_service_id()
-                                .unwrap(),
+                                .ok_or_else(|| {
+                                    Error::ExpectedServiceIdForEntry(
+                                        invocation_metadata.invocation_target.clone(),
+                                        journal_entry.header().as_entry_type(),
+                                    )
+                                })?,
                             &key,
                         )
                         .await?;
@@ -1222,7 +1227,12 @@ where
                     invocation_metadata
                         .invocation_target
                         .as_keyed_service_id()
-                        .unwrap(),
+                        .ok_or_else(|| {
+                            Error::ExpectedServiceIdForEntry(
+                                invocation_metadata.invocation_target.clone(),
+                                journal_entry.header().as_entry_type(),
+                            )
+                        })?,
                     invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     key,
@@ -1238,7 +1248,12 @@ where
                     invocation_metadata
                         .invocation_target
                         .as_keyed_service_id()
-                        .unwrap(),
+                        .ok_or_else(|| {
+                            Error::ExpectedServiceIdForEntry(
+                                invocation_metadata.invocation_target.clone(),
+                                journal_entry.header().as_entry_type(),
+                            )
+                        })?,
                     invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     key,
@@ -1249,7 +1264,12 @@ where
                     invocation_metadata
                         .invocation_target
                         .as_keyed_service_id()
-                        .unwrap(),
+                        .ok_or_else(|| {
+                            Error::ExpectedServiceIdForEntry(
+                                invocation_metadata.invocation_target.clone(),
+                                journal_entry.header().as_entry_type(),
+                            )
+                        })?,
                     invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                 );
@@ -1262,7 +1282,12 @@ where
                             &invocation_metadata
                                 .invocation_target
                                 .as_keyed_service_id()
-                                .unwrap(),
+                                .ok_or_else(|| {
+                                    Error::ExpectedServiceIdForEntry(
+                                        invocation_metadata.invocation_target.clone(),
+                                        journal_entry.header().as_entry_type(),
+                                    )
+                                })?,
                         )
                         .await?;
                     let completion_result = Codec::serialize_get_state_keys_completion(value);
