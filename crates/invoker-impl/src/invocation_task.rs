@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{InvokerError, Notification};
+use super::Notification;
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::http::response::Parts as ResponseParts;
+use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{http, Body, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_http::HeaderInjector;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
+use restate_invoker_api::status_handle::InvocationErrorRelatedEntry;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
 };
@@ -39,8 +41,6 @@ use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
 use std::collections::HashSet;
 use std::error::Error;
-
-use hyper::http::uri::PathAndQuery;
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
@@ -98,9 +98,12 @@ pub(crate) enum InvocationTaskError {
     ResponseTimeout,
     #[error("cannot process received entry at index {0} of type {1}: {2}")]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
-    #[error(transparent)]
+    #[error("Error message received from the SDK with related entry {0:?}: {1}")]
     #[code(restate_errors::RT0007)]
-    ErrorMessageReceived(#[from] InvocationError),
+    ErrorMessageReceived(
+        Option<InvocationErrorRelatedEntry>,
+        #[source] InvocationError,
+    ),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
     #[error("Bad header {0}: {1}")]
@@ -109,14 +112,16 @@ pub(crate) enum InvocationTaskError {
     Other(#[from] anyhow::Error),
 }
 
-impl InvokerError for InvocationTaskError {
-    fn is_transient(&self) -> bool {
+impl InvocationTaskError {
+    pub(crate) fn is_transient(&self) -> bool {
         true
     }
 
-    fn to_invocation_error(&self) -> InvocationError {
+    pub(crate) fn into_invocation_error_and_related_entry(
+        self,
+    ) -> (InvocationError, Option<InvocationErrorRelatedEntry>) {
         match self {
-            InvocationTaskError::ErrorMessageReceived(e) => e.clone(),
+            InvocationTaskError::ErrorMessageReceived(related_entry, e) => (e, related_entry),
             InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -128,9 +133,9 @@ impl InvokerError for InvocationTaskError {
                 if let Some(desc) = e.description() {
                     err = err.with_description(desc);
                 }
-                err
+                (err, None)
             }
-            e => InvocationError::internal(e),
+            e => (InvocationError::internal(e), None),
         }
     }
 }
@@ -541,6 +546,7 @@ where
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                None,
                                 InvocationError::default()
                             ))
                         }
@@ -570,6 +576,7 @@ where
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                None,
                                 InvocationError::default()
                             ))
                         }
@@ -706,9 +713,19 @@ where
                 }
                 TerminalLoopState::Suspended(suspension_indexes)
             }
-            ProtocolMessage::Error(e) => TerminalLoopState::Failed(
-                InvocationTaskError::ErrorMessageReceived(InvocationError::from(e)),
-            ),
+            ProtocolMessage::Error(e) => {
+                TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                    Some(InvocationErrorRelatedEntry {
+                        related_entry_index: e.related_entry_index,
+                        related_entry_name: e.related_entry_name.clone(),
+                        related_entry_type: u16::try_from(e.related_entry_type)
+                            .ok()
+                            .and_then(|idx| MessageType::try_from(idx).ok())
+                            .and_then(|mt| EntryType::try_from(mt).ok()),
+                    }),
+                    InvocationError::from(e),
+                ))
+            }
             ProtocolMessage::End(_) => TerminalLoopState::Closed,
             ProtocolMessage::UnparsedEntry(entry) => {
                 let entry_type = entry.header().as_entry_type();

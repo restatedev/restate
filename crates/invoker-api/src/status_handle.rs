@@ -12,6 +12,7 @@ use codederror::Code;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
+use restate_types::journal::{EntryIndex, EntryType};
 use std::fmt;
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -102,16 +103,29 @@ impl InvocationStatusReport {
 }
 
 #[derive(Debug, Clone)]
+pub struct InvocationErrorRelatedEntry {
+    pub related_entry_index: EntryIndex,
+    pub related_entry_name: String,
+    pub related_entry_type: Option<EntryType>,
+}
+
+#[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
     err: InvocationError,
     doc_error_code: Option<&'static Code>,
+    related_entry: Option<InvocationErrorRelatedEntry>,
 }
 
 impl InvocationErrorReport {
-    pub fn new(err: InvocationError, doc_error_code: Option<&'static Code>) -> Self {
+    pub fn new(
+        err: InvocationError,
+        doc_error_code: Option<&'static Code>,
+        related_entry: Option<InvocationErrorRelatedEntry>,
+    ) -> Self {
         InvocationErrorReport {
             err,
             doc_error_code,
+            related_entry,
         }
     }
 
@@ -125,6 +139,10 @@ impl InvocationErrorReport {
 
     pub fn display_err(&self) -> impl fmt::Display + '_ {
         &self.err
+    }
+
+    pub fn related_entry(&self) -> Option<&InvocationErrorRelatedEntry> {
+        self.related_entry.as_ref()
     }
 }
 
