@@ -45,8 +45,7 @@ use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use rocksdb::SingleThreaded;
-use rocksdb::WriteOptions;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
@@ -73,16 +72,6 @@ const DEDUP_TABLE_NAME: &str = "dedup";
 const FSM_TABLE_NAME: &str = "fsm";
 const TIMERS_TABLE_NAME: &str = "timers";
 const JOURNAL_TABLE_NAME: &str = "journal";
-
-type StorageFormatVersion = u32;
-
-/// Version of the used storage format. Whenever you introduce a breaking change, this version needs
-/// to be incremented in order to distinguish the new from the old versions. Ideally, you also add
-/// a migration path from the old to the new format.
-const STORAGE_FORMAT_VERSION: StorageFormatVersion = 2;
-
-/// Key under which the storage format version is stored in the default column family of RocksDB.
-const STORAGE_FORMAT_VERSION_KEY: &[u8] = b"internal_storage_format_version";
 
 pub(crate) type Result<T> = std::result::Result<T, StorageError>;
 
@@ -153,9 +142,6 @@ pub enum BuildError {
         #[code]
         RocksError,
     ),
-    #[error("db contains incompatible storage format version '{0}'; supported version is '{STORAGE_FORMAT_VERSION}'")]
-    #[code(restate_errors::RT0008)]
-    IncompatibleStorageFormat(StorageFormatVersion),
     #[error("db contains no storage format version")]
     #[code(restate_errors::RT0009)]
     MissingStorageFormatVersion,
@@ -248,8 +234,6 @@ impl RocksDBStorage {
         data_dir: PathBuf,
         updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> std::result::Result<(Self, Writer), BuildError> {
-        let is_empty_db = Self::is_empty_db(&data_dir);
-
         let cfs = vec![
             //
             // keyed by partition key + user key
@@ -285,12 +269,6 @@ impl RocksDBStorage {
         .await
         .map_err(|_| ShutdownError)??;
 
-        if is_empty_db {
-            Self::write_storage_format_version(&rdb, STORAGE_FORMAT_VERSION)?;
-        } else {
-            Self::assert_compatible_storage_format_version(&rdb)?;
-        }
-
         let writer = Writer::new(rdb.clone());
         let writer_handle = writer.create_writer_handle();
 
@@ -303,63 +281,6 @@ impl RocksDBStorage {
             },
             writer,
         ))
-    }
-
-    /// Checks if the RocksDB storage directory is empty and, therefore, the db being empty.
-    /// A non existing directory is also considered empty.
-    fn is_empty_db(path: impl AsRef<Path>) -> bool {
-        let path = path.as_ref();
-
-        !path.exists()
-            || path
-                .read_dir()
-                .expect("RocksDB directory must exist")
-                .count()
-                == 0
-    }
-
-    /// Writes the current storage format version to RocksDB under the
-    /// [`STORAGE_FORMAT_VERSION_KEY`].
-    fn write_storage_format_version(
-        db: &DB,
-        storage_format_version: StorageFormatVersion,
-    ) -> std::result::Result<(), BuildError> {
-        let mut write_opts = WriteOptions::default();
-        write_opts.disable_wal(false);
-
-        db.put_opt(
-            STORAGE_FORMAT_VERSION_KEY,
-            storage_format_version.to_be_bytes(),
-            &write_opts,
-        )
-        .map_err(BuildError::Other)?;
-
-        db.flush_wal(true).map_err(BuildError::Other)
-    }
-
-    /// Asserts that the opened RocksDB contains data that is compatible with the current storage
-    /// format version. The storage format version is read from [`STORAGE_FORMAT_VERSION_KEY`] in
-    /// the default column family.
-    fn assert_compatible_storage_format_version(db: &DB) -> std::result::Result<(), BuildError> {
-        let version_bytes = db
-            .get(STORAGE_FORMAT_VERSION_KEY)
-            .map_err(BuildError::Other)?;
-
-        let version = if let Some(version_bytes) = version_bytes {
-            let bytes: [u8; 4] = version_bytes
-                .try_into()
-                .expect("The storage format version needs to be an u32.");
-            u32::from_be_bytes(bytes)
-        } else {
-            // if storage format version is not present, then the db must originate from Restate < 0.8
-            return Err(BuildError::MissingStorageFormatVersion);
-        };
-
-        if version != STORAGE_FORMAT_VERSION {
-            Err(BuildError::IncompatibleStorageFormat(version))
-        } else {
-            Ok(())
-        }
     }
 
     fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
@@ -727,83 +648,5 @@ trait StorageAccess {
         }
 
         res
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{BuildError, RocksDBStorage, STORAGE_FORMAT_VERSION};
-    use googletest::matchers::eq;
-    use googletest::{assert_that, pat};
-    use restate_core::TaskCenterBuilder;
-    use restate_rocksdb::RocksDbManager;
-    use restate_types::arc_util::Constant;
-    use restate_types::config::{CommonOptions, WorkerOptions};
-    use tempfile::tempdir;
-    use test_log::test;
-
-    #[test]
-    fn non_existing_directory_is_empty_db() {
-        let non_existing_directory = tempdir().unwrap().path().join("should_not_exist");
-        assert!(RocksDBStorage::is_empty_db(non_existing_directory))
-    }
-
-    #[test]
-    fn empty_directory_is_empty_db() {
-        let empty_directory = tempdir().unwrap();
-        assert!(RocksDBStorage::is_empty_db(empty_directory))
-    }
-
-    #[test]
-    fn non_empty_directory_is_not_empty_db() {
-        let directory = tempdir().unwrap();
-        std::fs::File::create(directory.path().join("empty")).unwrap();
-
-        assert!(!RocksDBStorage::is_empty_db(directory))
-    }
-
-    #[tokio::test]
-    async fn incompatible_storage_format_version() -> Result<(), anyhow::Error> {
-        //
-        // create a rocksdb storage from options
-        //
-        // in test mode, base directory is a random temp dir automatically and is pinned to this
-        // worker options object.
-        let tc = TaskCenterBuilder::default()
-            .default_runtime_handle(tokio::runtime::Handle::current())
-            .build()
-            .expect("task_center builds");
-        tc.run_in_scope_sync("db-manager-init", None, || {
-            RocksDbManager::init(Constant::new(CommonOptions::default()))
-        });
-        let worker_options = WorkerOptions::default();
-        let (rocksdb, _) = RocksDBStorage::open(
-            worker_options.data_dir(),
-            Constant::new(worker_options.clone().rocksdb),
-        )
-        .await
-        .expect("RocksDB storage creation should succeed");
-
-        // fake a different storage format version
-        let incompatible_version = STORAGE_FORMAT_VERSION + 1;
-        RocksDBStorage::write_storage_format_version(&rocksdb.db, incompatible_version)?;
-
-        drop(rocksdb);
-        RocksDbManager::get().reset().await.unwrap();
-
-        let maybe_rocksdb = RocksDBStorage::open(
-            worker_options.data_dir(),
-            Constant::new(worker_options.rocksdb),
-        )
-        .await;
-
-        assert_that!(
-            maybe_rocksdb.err().unwrap(),
-            pat!(BuildError::IncompatibleStorageFormat(eq(
-                incompatible_version
-            )))
-        );
-
-        Ok(())
     }
 }
