@@ -24,6 +24,7 @@ define_table!(state(
     // guaranteed to be set unlike in `sys_status` table which require that the
     // deployment to be committed before it is set.
     last_attempt_deployment_id: DataType::LargeUtf8,
+    last_attempt_server: DataType::LargeUtf8,
     next_retry_at: DataType::Date64,
     last_failure: DataType::LargeUtf8,
     last_error_code: DataType::LargeUtf8,
