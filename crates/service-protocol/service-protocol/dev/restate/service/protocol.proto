@@ -78,11 +78,11 @@ message ErrorMessage {
 
   // Entry that caused the failure. This may be outside the current stored journal size.
   // If no specific entry caused the failure, the current replayed/processed entry can be used.
-  uint32 related_entry_index = 4;
-  // Name of the entry that caused the failure. Empty if no name was set.
-  string related_entry_name = 5;
-  // Entry type. 0 if unknown.
-  uint32 related_entry_type = 6;
+  optional uint32 related_entry_index = 4;
+  // Name of the entry that caused the failure.
+  optional string related_entry_name = 5;
+  // Entry type.
+  optional uint32 related_entry_type = 6;
 }
 
 // Type: 0x0000 + 4
