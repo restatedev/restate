@@ -16,7 +16,6 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use codederror::CodedError;
 use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
@@ -871,14 +870,10 @@ where
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
 
-                let error_code = error.code();
-                let (invocation_error, related_entry) =
-                    error.into_invocation_error_and_related_entry();
-
                 self.status_store.on_failure(
                     partition,
                     invocation_id,
-                    InvocationErrorReport::new(invocation_error, error_code, related_entry),
+                    error.into_invocation_error_report(),
                     Some(next_retry_at),
                 );
                 self.invocation_state_machine_manager.register_invocation(
@@ -902,14 +897,13 @@ where
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
 
-                let (invocation_error, _) = error.into_invocation_error_and_related_entry();
                 let _ = self
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Effect {
                         invocation_id,
-                        kind: EffectKind::Failed(invocation_error),
+                        kind: EffectKind::Failed(error.into_invocation_error()),
                     })
                     .await;
             }

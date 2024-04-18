@@ -9,11 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use codederror::Code;
-use restate_types::errors::{InvocationError, InvocationErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::{EntryIndex, EntryType};
-use std::fmt;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
@@ -103,47 +102,12 @@ impl InvocationStatusReport {
 }
 
 #[derive(Debug, Clone)]
-pub struct InvocationErrorRelatedEntry {
-    pub related_entry_index: EntryIndex,
-    pub related_entry_name: String,
-    pub related_entry_type: Option<EntryType>,
-}
-
-#[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
-    err: InvocationError,
-    doc_error_code: Option<&'static Code>,
-    related_entry: Option<InvocationErrorRelatedEntry>,
-}
-
-impl InvocationErrorReport {
-    pub fn new(
-        err: InvocationError,
-        doc_error_code: Option<&'static Code>,
-        related_entry: Option<InvocationErrorRelatedEntry>,
-    ) -> Self {
-        InvocationErrorReport {
-            err,
-            doc_error_code,
-            related_entry,
-        }
-    }
-
-    pub fn invocation_error_code(&self) -> InvocationErrorCode {
-        self.err.code()
-    }
-
-    pub fn doc_error_code(&self) -> Option<&'static Code> {
-        self.doc_error_code
-    }
-
-    pub fn display_err(&self) -> impl fmt::Display + '_ {
-        &self.err
-    }
-
-    pub fn related_entry(&self) -> Option<&InvocationErrorRelatedEntry> {
-        self.related_entry.as_ref()
-    }
+    pub err: InvocationError,
+    pub doc_error_code: Option<&'static Code>,
+    pub related_entry_index: Option<EntryIndex>,
+    pub related_entry_name: Option<String>,
+    pub related_entry_type: Option<EntryType>,
 }
 
 /// Struct to access the status of the invocations currently handled by the invoker

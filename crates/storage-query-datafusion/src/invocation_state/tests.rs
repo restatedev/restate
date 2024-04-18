@@ -17,9 +17,7 @@ use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use restate_core::TaskCenterBuilder;
 use restate_invoker_api::status_handle::mocks::MockStatusHandle;
-use restate_invoker_api::status_handle::{
-    InvocationErrorRelatedEntry, InvocationStatusReportInner,
-};
+use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
@@ -53,15 +51,13 @@ async fn join_invocation_tables_with_error() {
                         in_flight: false,
                         start_count: 1,
                         last_start_at: SystemTime::now() - Duration::from_secs(10),
-                        last_retry_attempt_failure: Some(InvocationErrorReport::new(
-                            invocation_error.clone(),
-                            None,
-                            Some(InvocationErrorRelatedEntry {
-                                related_entry_index: 1,
-                                related_entry_name: "my-side-effect".to_string(),
-                                related_entry_type: Some(EntryType::SideEffect),
-                            }),
-                        )),
+                        last_retry_attempt_failure: Some(InvocationErrorReport {
+                            err: invocation_error.clone(),
+                            doc_error_code: None,
+                            related_entry_index: Some(1),
+                            related_entry_name: Some("my-side-effect".to_string()),
+                            related_entry_type: Some(EntryType::SideEffect),
+                        }),
                         next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
                         last_attempt_deployment_id: Some(DeploymentId::new()),
                         last_attempt_server: Some("restate-sdk-java/0.8.0".to_owned()),

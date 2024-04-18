@@ -22,9 +22,9 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_http::HeaderInjector;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
-use restate_invoker_api::status_handle::InvocationErrorRelatedEntry;
 use restate_invoker_api::{
-    EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
+    EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
+    StateReader,
 };
 use restate_schema_api::deployment::{
     DeploymentMetadata, DeploymentResolver, DeploymentType, ProtocolType,
@@ -112,16 +112,21 @@ pub(crate) enum InvocationTaskError {
     Other(#[from] anyhow::Error),
 }
 
+#[derive(Debug, Default)]
+pub struct InvocationErrorRelatedEntry {
+    pub related_entry_index: Option<restate_types::journal::EntryIndex>,
+    pub related_entry_name: Option<String>,
+    pub related_entry_type: Option<EntryType>,
+}
+
 impl InvocationTaskError {
     pub(crate) fn is_transient(&self) -> bool {
         true
     }
 
-    pub(crate) fn into_invocation_error_and_related_entry(
-        self,
-    ) -> (InvocationError, Option<InvocationErrorRelatedEntry>) {
+    pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
-            InvocationTaskError::ErrorMessageReceived(related_entry, e) => (e, related_entry),
+            InvocationTaskError::ErrorMessageReceived(_, e) => e,
             InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -133,9 +138,29 @@ impl InvocationTaskError {
                 if let Some(desc) = e.description() {
                     err = err.with_description(desc);
                 }
-                (err, None)
+                err
             }
-            e => (InvocationError::internal(e), None),
+            e => InvocationError::internal(e),
+        }
+    }
+
+    pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
+        let doc_error_code = codederror::CodedError::code(&self);
+        let maybe_related_entry = match self {
+            InvocationTaskError::ErrorMessageReceived(ref mut related_entry, _) => {
+                related_entry.take()
+            }
+            _ => None,
+        }
+        .unwrap_or_default();
+        let err = self.into_invocation_error();
+
+        InvocationErrorReport {
+            doc_error_code,
+            err,
+            related_entry_index: maybe_related_entry.related_entry_index,
+            related_entry_name: maybe_related_entry.related_entry_name,
+            related_entry_type: maybe_related_entry.related_entry_type,
         }
     }
 }
@@ -718,8 +743,9 @@ where
                     Some(InvocationErrorRelatedEntry {
                         related_entry_index: e.related_entry_index,
                         related_entry_name: e.related_entry_name.clone(),
-                        related_entry_type: u16::try_from(e.related_entry_type)
-                            .ok()
+                        related_entry_type: e
+                            .related_entry_type
+                            .and_then(|t| u16::try_from(t).ok())
                             .and_then(|idx| MessageType::try_from(idx).ok())
                             .and_then(|mt| EntryType::try_from(mt).ok()),
                     }),
