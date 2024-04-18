@@ -107,8 +107,6 @@ fn db_options() -> rocksdb::Options {
     // no need to retain 1000 log files by default.
     //
     opts.set_keep_log_file_num(10);
-    // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
-    opts.set_use_direct_reads(true);
     opts
 }
 

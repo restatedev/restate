@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -161,6 +162,19 @@ pub struct CommonOptions {
     /// Default is 0
     pub rocksdb_total_memtables_size_limit: u64,
 
+    /// # Rocksdb Background Threads
+    ///
+    /// The number of threads to reserve to Rocksdb background tasks. Defaults to the number of
+    /// cores on the machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_bg_threads: Option<NonZeroU32>,
+
+    /// # Rocksdb High Priority Background Threads
+    ///
+    /// The number of threads to reserve to high priority Rocksdb background tasks.
+    /// Defaults to 2.
+    pub rocksdb_high_priority_bg_threads: NonZeroU32,
+
     /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
@@ -192,6 +206,15 @@ impl CommonOptions {
                 .unwrap()
                 .join(DEFAULT_STORAGE_DIRECTORY)
         })
+    }
+
+    pub fn rocksdb_bg_threads(&self) -> NonZeroU32 {
+        self.rocksdb_bg_threads.unwrap_or(
+            std::thread::available_parallelism()
+                .unwrap_or(NonZeroUsize::new(3).unwrap())
+                .try_into()
+                .expect("number of cpu cores fits in u32"),
+        )
     }
 }
 
@@ -225,6 +248,8 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             rocksdb_total_memtables_size_limit: 0,
             rocksdb_total_memory_limit: 4_000_000_000, // 4GB
+            rocksdb_bg_threads: None,
+            rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb: Default::default(),
         }
     }
