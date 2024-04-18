@@ -128,6 +128,7 @@ serde_json = "1.0"
 serde_with = "2.2"
 serde_yaml = "0.9"
 sha2 = "0.10.8"
+smartstring = { version = "1.0.1" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.26.1" }
 strum_macros = { version = "0.26.1" }

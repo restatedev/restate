@@ -11,7 +11,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use restate_rocksdb::{CfName, DbName, DbSpec, Owner, RocksDbManager, RocksError};
+use restate_rocksdb::{
+    CfExactPattern, CfName, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
+};
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
 use rocksdb::{DBCompressionType, DB};
@@ -52,19 +54,17 @@ impl RocksDbLogStore {
     ) -> Result<Self, LogStoreError> {
         let db_manager = RocksDbManager::get();
 
-        let cfs = vec![
-            (CfName::new(DATA_CF), cf_data_options()),
-            (CfName::new(METADATA_CF), cf_metadata_options()),
-        ];
+        let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let db_spec = DbSpec::new_db(
-            DbName::new(DB_NAME),
-            Owner::Bifrost,
-            data_dir,
-            db_options(),
-            cfs,
-        );
-
+        let db_spec =
+            DbSpecBuilder::new(DbName::new(DB_NAME), Owner::Bifrost, data_dir, db_options())
+                .add_cf_pattern(CfExactPattern::new(DATA_CF), cf_data_options)
+                .add_cf_pattern(CfExactPattern::new(METADATA_CF), cf_metadata_options)
+                // not very important but it's to reduce the number of merges by flushing.
+                // it's also a small cf so it should be quick.
+                .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+                .ensure_column_families(cfs)
+                .build_as_db();
         Ok(Self {
             db: db_manager.open_db(updateable_options, db_spec)?,
         })
@@ -111,8 +111,7 @@ fn db_options() -> rocksdb::Options {
 }
 
 // todo: optimize
-fn cf_data_options() -> rocksdb::Options {
-    let mut opts = rocksdb::Options::default();
+fn cf_data_options(mut opts: rocksdb::Options) -> rocksdb::Options {
     //
     // Set compactions per level
     //
@@ -133,8 +132,7 @@ fn cf_data_options() -> rocksdb::Options {
 }
 
 // todo: optimize
-fn cf_metadata_options() -> rocksdb::Options {
-    let mut opts = rocksdb::Options::default();
+fn cf_metadata_options(mut opts: rocksdb::Options) -> rocksdb::Options {
     //
     // Set compactions per level
     //
