@@ -28,4 +28,8 @@ define_table!(state(
     next_retry_at: DataType::Date64,
     last_failure: DataType::LargeUtf8,
     last_error_code: DataType::LargeUtf8,
+
+    related_entry_index: DataType::UInt64,
+    related_entry_name: DataType::LargeUtf8,
+    related_entry_type: DataType::LargeUtf8,
 ));

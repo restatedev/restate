@@ -16,7 +16,6 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use codederror::CodedError;
 use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
@@ -34,7 +33,6 @@ use restate_schema_api::deployment::DeploymentResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::arc_util::Updateable;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
-use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -54,6 +52,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::instrument;
 use tracing::{debug, trace};
 
+use crate::invocation_task::InvocationTaskError;
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
@@ -64,12 +63,6 @@ use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
-
-/// Internal error trait for the invoker errors
-trait InvokerError: std::error::Error {
-    fn is_transient(&self) -> bool;
-    fn to_invocation_error(&self) -> InvocationError;
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -777,7 +770,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        error: impl InvokerError + CodedError + Send + Sync + 'static,
+        error: InvocationTaskError,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
@@ -855,11 +848,11 @@ where
 
     // --- Helpers
 
-    async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
+    async fn handle_error_event(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        error: E,
+        error: InvocationTaskError,
         mut ism: InvocationStateMachine,
     ) {
         match ism.handle_task_error() {
@@ -876,10 +869,11 @@ where
                     humantime::format_duration(next_retry_timer_duration));
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
+
                 self.status_store.on_failure(
                     partition,
                     invocation_id,
-                    InvocationErrorReport::new(error.to_invocation_error(), error.code()),
+                    error.into_invocation_error_report(),
                     Some(next_retry_at),
                 );
                 self.invocation_state_machine_manager.register_invocation(
@@ -902,13 +896,14 @@ where
                     "Error when executing the invocation, not going to retry.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
+
                 let _ = self
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Effect {
                         invocation_id,
-                        kind: EffectKind::Failed(error.to_invocation_error()),
+                        kind: EffectKind::Failed(error.into_invocation_error()),
                     })
                     .await;
             }

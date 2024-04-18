@@ -13,3 +13,6 @@ mod schema;
 mod table;
 
 pub(crate) use table::register_self;
+
+#[cfg(test)]
+mod tests;

@@ -9,10 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use codederror::Code;
-use restate_types::errors::{InvocationError, InvocationErrorCode};
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use std::fmt;
+use restate_types::journal::{EntryIndex, EntryType};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
@@ -103,29 +103,11 @@ impl InvocationStatusReport {
 
 #[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
-    err: InvocationError,
-    doc_error_code: Option<&'static Code>,
-}
-
-impl InvocationErrorReport {
-    pub fn new(err: InvocationError, doc_error_code: Option<&'static Code>) -> Self {
-        InvocationErrorReport {
-            err,
-            doc_error_code,
-        }
-    }
-
-    pub fn invocation_error_code(&self) -> InvocationErrorCode {
-        self.err.code()
-    }
-
-    pub fn doc_error_code(&self) -> Option<&'static Code> {
-        self.doc_error_code
-    }
-
-    pub fn display_err(&self) -> impl fmt::Display + '_ {
-        &self.err
-    }
+    pub err: InvocationError,
+    pub doc_error_code: Option<&'static Code>,
+    pub related_entry_index: Option<EntryIndex>,
+    pub related_entry_name: Option<String>,
+    pub related_entry_type: Option<EntryType>,
 }
 
 /// Struct to access the status of the invocations currently handled by the invoker
@@ -148,6 +130,13 @@ pub mod mocks {
 
     #[derive(Debug, Clone, Default)]
     pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+
+    impl MockStatusHandle {
+        pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
+            self.0.push(invocation_status_report);
+            self
+        }
+    }
 
     impl StatusHandle for MockStatusHandle {
         type Iterator = std::vec::IntoIter<InvocationStatusReport>;
