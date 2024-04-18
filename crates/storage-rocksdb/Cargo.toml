@@ -32,6 +32,7 @@ prost = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+strum = { workspace = true }
 strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
