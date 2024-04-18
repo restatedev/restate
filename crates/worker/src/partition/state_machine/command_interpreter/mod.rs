@@ -1190,31 +1190,30 @@ where
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
-                    // Load state and write completion
-                    let value = state
-                        .load_state(
-                            &invocation_metadata
-                                .invocation_target
-                                .as_keyed_service_id()
-                                .ok_or_else(|| {
-                                    Error::ExpectedServiceIdForEntry(
-                                        invocation_metadata.invocation_target.clone(),
-                                        journal_entry.header().as_entry_type(),
-                                    )
-                                })?,
-                            &key,
-                        )
-                        .await?;
-                    let completion_result = value
-                        .map(CompletionResult::Success)
-                        .unwrap_or(CompletionResult::Empty);
-                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                    if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        // Load state and write completion
+                        let value = state.load_state(&service_id, &key).await?;
+                        let completion_result = value
+                            .map(CompletionResult::Success)
+                            .unwrap_or(CompletionResult::Empty);
+                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
-                    // We can already forward the completion
-                    effects.forward_completion(
-                        invocation_id,
-                        Completion::new(entry_index, completion_result),
-                    );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, completion_result),
+                        );
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no state",
+                            journal_entry.header().as_entry_type()
+                        );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Empty),
+                        );
+                    }
                 }
             }
             EnrichedEntryHeader::SetState { .. } => {
@@ -1223,73 +1222,76 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
-                effects.set_state(
-                    invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .ok_or_else(|| {
-                            Error::ExpectedServiceIdForEntry(
-                                invocation_metadata.invocation_target.clone(),
-                                journal_entry.header().as_entry_type(),
-                            )
-                        })?,
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    key,
-                    value,
-                );
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.set_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                        key,
+                        value,
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::ClearState { .. } => {
                 let_assert!(
                     Entry::ClearState(ClearStateEntry { key }) =
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
-                effects.clear_state(
-                    invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .ok_or_else(|| {
-                            Error::ExpectedServiceIdForEntry(
-                                invocation_metadata.invocation_target.clone(),
-                                journal_entry.header().as_entry_type(),
-                            )
-                        })?,
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    key,
-                );
+
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.clear_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                        key,
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::ClearAllState { .. } => {
-                effects.clear_all_state(
-                    invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .ok_or_else(|| {
-                            Error::ExpectedServiceIdForEntry(
-                                invocation_metadata.invocation_target.clone(),
-                                journal_entry.header().as_entry_type(),
-                            )
-                        })?,
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                );
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.clear_all_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::GetStateKeys { is_completed, .. } => {
                 if !is_completed {
                     // Load state and write completion
-                    let value = state
-                        .load_state_keys(
-                            &invocation_metadata
-                                .invocation_target
-                                .as_keyed_service_id()
-                                .ok_or_else(|| {
-                                    Error::ExpectedServiceIdForEntry(
-                                        invocation_metadata.invocation_target.clone(),
-                                        journal_entry.header().as_entry_type(),
-                                    )
-                                })?,
-                        )
-                        .await?;
+                    let value = if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        state.load_state_keys(&service_id).await?
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no state",
+                            journal_entry.header().as_entry_type()
+                        );
+                        vec![]
+                    };
+
                     let completion_result = Codec::serialize_get_state_keys_completion(value);
                     Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
