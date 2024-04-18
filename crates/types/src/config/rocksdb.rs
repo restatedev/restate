@@ -8,24 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::{NonZeroU32, NonZeroUsize};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(rename = "WorkerRocksDbOptions", default)
-)]
+#[cfg_attr(feature = "schemars", schemars(rename = "RocksDbOptions", default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 // NOTE: Prefix with rocksdb_
 pub struct RocksDbOptions {
-    /// # Threads
-    ///
-    /// The number of threads to reserve to Rocksdb background tasks.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_num_threads: Option<usize>,
-
     /// # Write Buffer size
     ///
     /// The size of a single memtable. Once memtable exceeds this size, it is marked
@@ -62,14 +55,36 @@ pub struct RocksDbOptions {
     /// Default: False (statistics enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_statistics: Option<bool>,
+
+    /// # RocksDB max background jobs (flushes and compactions)
+    ///
+    /// Default: the number of CPU cores on this node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_max_background_jobs: Option<NonZeroU32>,
+
+    /// # RocksDB compaction readahead size in bytes
+    ///
+    /// If non-zero, we perform bigger reads when doing compaction. If you're
+    /// running RocksDB on spinning disks, you should set this to at least 2MB.
+    /// That way RocksDB's compaction is doing sequential instead of random reads.
+    ///
+    /// Default: 2MB (2 * 1024 * 1024)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_compaction_readahead_size: Option<usize>,
+
+    /// # RocksDB statistics level
+    ///
+    /// StatsLevel can be used to reduce statistics overhead by skipping certain
+    /// types of stats in the stats collection process.
+    ///
+    /// Default: "except-detailed-timers"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_statistics_level: Option<StatisticsLevel>,
 }
 
 impl RocksDbOptions {
     pub fn apply_common(&mut self, common: &RocksDbOptions) {
         // apply memory limits?
-        if self.rocksdb_num_threads.is_none() {
-            self.rocksdb_num_threads = Some(common.rocksdb_num_threads());
-        }
         if self.rocksdb_write_buffer_size.is_none() {
             self.rocksdb_write_buffer_size = Some(common.rocksdb_write_buffer_size());
         }
@@ -82,10 +97,16 @@ impl RocksDbOptions {
         if self.rocksdb_disable_statistics.is_none() {
             self.rocksdb_disable_statistics = Some(common.rocksdb_disable_statistics());
         }
-    }
-
-    pub fn rocksdb_num_threads(&self) -> usize {
-        self.rocksdb_num_threads.unwrap_or(10)
+        if self.rocksdb_max_background_jobs.is_none() {
+            self.rocksdb_max_background_jobs = Some(common.rocksdb_max_background_jobs());
+        }
+        if self.rocksdb_compaction_readahead_size.is_none() {
+            self.rocksdb_compaction_readahead_size =
+                Some(common.rocksdb_compaction_readahead_size());
+        }
+        if self.rocksdb_statistics_level.is_none() {
+            self.rocksdb_statistics_level = Some(common.rocksdb_statistics_level());
+        }
     }
 
     pub fn rocksdb_write_buffer_size(&self) -> usize {
@@ -107,4 +128,48 @@ impl RocksDbOptions {
     pub fn rocksdb_batch_wal_flushes(&self) -> bool {
         self.rocksdb_batch_wal_flushes.unwrap_or(true)
     }
+
+    pub fn rocksdb_max_background_jobs(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_jobs.unwrap_or(
+            std::thread::available_parallelism()
+                .unwrap_or(NonZeroUsize::new(2).unwrap())
+                .try_into()
+                .expect("number of cpu cores fits in u32"),
+        )
+    }
+
+    pub fn rocksdb_compaction_readahead_size(&self) -> usize {
+        self.rocksdb_compaction_readahead_size
+            .unwrap_or(2 * 1024 * 1024)
+    }
+
+    pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {
+        self.rocksdb_statistics_level
+            .unwrap_or(StatisticsLevel::ExceptDetailedTimers)
+    }
+}
+
+// NOTE: Please keep this repr-equivalent to rocksdb::statistics::StatsLevel
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "RocksbStatistics"))]
+#[serde(rename_all = "kebab-case")]
+#[repr(u8)]
+pub enum StatisticsLevel {
+    /// Disable all metrics
+    DisableAll = 0,
+    /// Disable timer stats, and skip histogram stats
+    ExceptHistogramOrTimers = 2,
+    /// Skip timer stats
+    ExceptTimers,
+    /// Collect all stats except time inside mutex lock AND time spent on
+    /// compression.
+    ExceptDetailedTimers,
+    /// Collect all stats except the counters requiring to get time inside the
+    /// mutex lock.
+    ExceptTimeForMutex,
+    /// Collect all stats, including measuring duration of mutex operations.
+    /// If getting time is expensive on the platform to run, it can
+    /// reduce scalability to more threads, especially for writes.
+    All,
 }
