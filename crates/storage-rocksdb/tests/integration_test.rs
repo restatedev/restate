@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use futures::Stream;
 use restate_core::TaskCenterBuilder;
 use restate_rocksdb::RocksDbManager;
@@ -17,7 +16,7 @@ use restate_storage_api::StorageError;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
+use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
@@ -81,18 +80,11 @@ async fn test_read_write() {
     close.await;
 }
 
-pub(crate) fn mock_full_invocation_id(service_id: ServiceId) -> FullInvocationId {
-    FullInvocationId::generate(service_id)
-}
-
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
-    let fid = FullInvocationId::generate(service_id);
-    let invocation_id = InvocationId::from(&fid);
+    let invocation_target = InvocationTarget::mock_from_service_id(service_id);
     ServiceInvocation::new(
-        invocation_id,
-        InvocationTarget::mock_service(),
-        fid,
-        ByteString::from_static("service"),
+        InvocationId::generate(&invocation_target),
+        invocation_target,
         Bytes::new(),
         Source::Ingress,
         None,
@@ -101,6 +93,10 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         None,
         None,
     )
+}
+
+pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
+    mock_service_invocation(ServiceId::mock_random())
 }
 
 pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutation {
@@ -109,24 +105,6 @@ pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutatio
         version: None,
         state: HashMap::default(),
     }
-}
-
-pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {
-    let fid = FullInvocationId::mock_random();
-    let invocation_id = InvocationId::from(&fid);
-    ServiceInvocation::new(
-        invocation_id,
-        InvocationTarget::mock_service(),
-        fid,
-        ByteString::from_static("service"),
-        Bytes::new(),
-        Source::Ingress,
-        None,
-        SpanRelation::None,
-        vec![],
-        None,
-        None,
-    )
 }
 
 pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(

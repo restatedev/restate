@@ -24,7 +24,7 @@ use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{HandlerType, InvocationInput};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
@@ -196,7 +196,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     ) -> Result<(), Error> {
         match effect {
             Effect::InvokeService(service_invocation) => {
-                let invocation_id = InvocationId::from(&service_invocation.fid);
+                let invocation_id = service_invocation.invocation_id;
                 let (in_flight_invocation_meta, invocation_input) =
                     InFlightInvocationMetadata::from_service_invocation(service_invocation);
                 Self::invoke_service(
@@ -457,9 +457,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         // Note: the inbox seq numbers can have gaps.
         while let Some(inbox_entry) = state_storage.pop_inbox(&service_id).await? {
             match inbox_entry.inbox_entry {
-                InboxEntry::Invocation(fid) => {
-                    let invocation_id = InvocationId::from(fid);
-
+                InboxEntry::Invocation(_, invocation_id) => {
                     let inboxed_status =
                         state_storage.get_invocation_status(&invocation_id).await?;
 
@@ -542,11 +540,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: InvocationInput,
     ) -> Result<(), Error> {
-        let full_invocation_id = FullInvocationId::combine(
-            in_flight_invocation_metadata.service_id.clone(),
-            invocation_id,
-        );
-
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
@@ -571,7 +564,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             .await?;
 
         let input_entry = if non_deterministic::ServiceInvoker::is_supported(
-            &full_invocation_id.service_id.service_name,
+            in_flight_invocation_metadata
+                .invocation_target
+                .service_name(),
         ) {
             debug_assert!(
                 in_flight_invocation_metadata.response_sinks.len() <= 1,
@@ -579,13 +574,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             );
 
             collector.push(Action::InvokeBuiltInService {
-                full_invocation_id,
+                invocation_id,
+                invocation_target: in_flight_invocation_metadata.invocation_target,
                 span_context: in_flight_invocation_metadata.journal_metadata.span_context,
                 response_sink: in_flight_invocation_metadata
                     .response_sinks
                     .into_iter()
                     .next(),
-                method: in_flight_invocation_metadata.method,
                 argument: invocation_input.argument.clone(),
             });
 
@@ -608,7 +603,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     restate_invoker_api::JournalMetadata::new(
                         in_flight_invocation_metadata.journal_metadata.length,
                         in_flight_invocation_metadata.journal_metadata.span_context,
-                        in_flight_invocation_metadata.method.clone(),
                         None,
                     ),
                     vec![PlainRawEntry::new(

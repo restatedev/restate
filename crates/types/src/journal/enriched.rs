@@ -13,7 +13,6 @@ use super::*;
 
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use bytes::Bytes;
 
 pub type EnrichedEntryHeader = EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>;
 pub type EnrichedRawEntry = RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>;
@@ -23,9 +22,6 @@ pub type EnrichedRawEntry = RawEntry<InvokeEnrichmentResult, AwakeableEnrichment
 pub struct InvokeEnrichmentResult {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
-
-    // TODO Should remove this
-    pub service_key: Bytes,
 
     // When resolving the service and generating its id, we also generate the associated span
     pub span_context: ServiceInvocationSpanContext,

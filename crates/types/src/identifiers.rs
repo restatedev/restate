@@ -19,7 +19,6 @@ use std::fmt;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
-use uuid::Uuid;
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
@@ -284,24 +283,16 @@ pub struct ServiceId {
     /// Identifies the grpc service
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
-    pub key: Bytes, // TODO change this to ByteString
+    pub key: ByteString,
 
     partition_key: PartitionKey,
 }
 
 impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+    pub fn new(service_name: impl Into<ByteString>, key: impl Into<ByteString>) -> Self {
         let key = key.into();
         let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
         Self::with_partition_key(partition_key, service_name, key)
-    }
-
-    // TODO remove this
-    pub fn unkeyed(service_name: impl Into<ByteString>) -> Self {
-        Self::new(
-            service_name,
-            Bytes::copy_from_slice(Uuid::now_v7().to_string().as_ref()),
-        )
     }
 
     /// # Important
@@ -309,7 +300,7 @@ impl ServiceId {
     pub fn with_partition_key(
         partition_key: PartitionKey,
         service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
+        key: impl Into<ByteString>,
     ) -> Self {
         Self {
             service_name: service_name.into(),
@@ -350,32 +341,29 @@ pub struct InvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
-    // TODO deprecated, to remove
-    pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
-        Self {
-            partition_key,
-            inner: invocation_uuid.into(),
-        }
-    }
-
     pub fn generate(invocation_target: &InvocationTarget) -> Self {
-        InvocationId::generate_with_idempotency_key(invocation_target, None::<String>)
+        let partition_key = invocation_target
+            .key()
+            // If the invocation target is keyed, the PK is inferred from the key
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            // In all the other cases, the PK is random
+            .unwrap_or_else(|| rand::thread_rng().next_u64());
+
+        InvocationId::from_parts(partition_key, InvocationUuid::new())
     }
 
-    pub fn generate_with_idempotency_key<IKey: Hash>(
+    pub fn generate_with_idempotency_key(
         invocation_target: &InvocationTarget,
-        idempotency_key: Option<IKey>,
+        idempotency_key: impl Hash,
     ) -> Self {
         let partition_key = invocation_target
             .key()
             // If the invocation target is keyed, the PK is inferred from the key
             .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
-            // If there is an idempotency key, the PK is inferred from the idempotency key
-            .or_else(|| {
-                idempotency_key.map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
-            })
-            // In all the other cases, the PK is random
-            .unwrap_or_else(|| rand::thread_rng().next_u64());
+            // The PK is inferred from the idempotency key
+            .unwrap_or_else(|| {
+                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
+            });
 
         InvocationId::from_parts(partition_key, InvocationUuid::new())
     }
@@ -497,94 +485,6 @@ impl FromStr for InvocationId {
     }
 }
 
-/// Id of a single service invocation.
-///
-/// A service invocation id is composed of a [`ServiceId`] and an [`InvocationUuid`]
-/// that makes the id unique.
-#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct FullInvocationId {
-    /// Identifies the invoked service
-    pub service_id: ServiceId,
-    /// Uniquely identifies this invocation instance
-    pub invocation_uuid: InvocationUuid,
-}
-
-impl FullInvocationId {
-    pub fn new(
-        service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
-        invocation_uuid: impl Into<InvocationUuid>,
-    ) -> Self {
-        Self {
-            service_id: ServiceId::new(service_name, key),
-            invocation_uuid: invocation_uuid.into(),
-        }
-    }
-
-    pub fn generate(service_id: ServiceId) -> Self {
-        Self {
-            service_id,
-            invocation_uuid: InvocationUuid::new(),
-        }
-    }
-
-    pub fn combine(service_id: ServiceId, invocation_id: InvocationId) -> Self {
-        debug_assert_eq!(
-            service_id.partition_key, invocation_id.partition_key,
-            "Cannot combine ServiceId and InvocationId with different partition keys."
-        );
-        Self {
-            service_id,
-            invocation_uuid: invocation_id.invocation_uuid(),
-        }
-    }
-
-    pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
-        InvocationId {
-            partition_key: self.service_id.partition_key,
-            inner: self.invocation_uuid,
-        }
-        .to_bytes()
-    }
-}
-
-impl WithPartitionKey for FullInvocationId {
-    fn partition_key(&self) -> PartitionKey {
-        self.service_id.partition_key()
-    }
-}
-
-impl fmt::Display for FullInvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Passthrough to InvocationId's Display
-        fmt::Display::fmt(
-            &InvocationId::new(self.service_id.partition_key, self.invocation_uuid),
-            f,
-        )
-    }
-}
-
-impl From<FullInvocationId> for InvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        InvocationId::from(&value)
-    }
-}
-
-impl From<&FullInvocationId> for InvocationId {
-    fn from(value: &FullInvocationId) -> Self {
-        Self {
-            partition_key: value.partition_key(),
-            inner: value.invocation_uuid,
-        }
-    }
-}
-
-impl From<FullInvocationId> for EncodedInvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        value.to_invocation_id_bytes()
-    }
-}
-
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyId {
     /// Identifies the invoked component
@@ -627,23 +527,7 @@ impl IdempotencyId {
         }
     }
 
-    // TODO remove this
     pub fn combine(
-        service_id: ServiceId,
-        handler_name: ByteString,
-        idempotency_key: ByteString,
-    ) -> Self {
-        IdempotencyId::new(
-            service_id.service_name,
-            // The service_id.key will always be the idempotency key now for regular services,
-            // until we get rid of that field with https://github.com/restatedev/restate/issues/1329
-            Some(service_id.key),
-            handler_name,
-            idempotency_key,
-        )
-    }
-
-    pub fn new_combine(
         invocation_id: InvocationId,
         invocation_target: &InvocationTarget,
         idempotency_key: ByteString,
@@ -851,9 +735,16 @@ mod mocks {
 
     impl InvocationId {
         pub fn mock_random() -> Self {
-            Self::new(
+            Self::from_parts(
                 rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
                 InvocationUuid::new(),
+            )
+        }
+
+        pub fn mock_with(invocation_target: InvocationTarget) -> (Self, InvocationTarget) {
+            (
+                InvocationId::generate(&invocation_target),
+                invocation_target,
             )
         }
     }
@@ -862,18 +753,8 @@ mod mocks {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Bytes::from(
-                    Alphanumeric
-                        .sample_string(&mut rand::thread_rng(), 16)
-                        .into_bytes(),
-                ),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
             )
-        }
-    }
-
-    impl FullInvocationId {
-        pub fn mock_random() -> Self {
-            Self::generate(ServiceId::mock_random())
         }
     }
 
@@ -899,9 +780,30 @@ mod mocks {
 mod tests {
     use super::*;
 
+    use crate::invocation::HandlerType;
+
+    #[test]
+    fn service_id_and_invocation_id_partition_key_should_match() {
+        let invocation_target = InvocationTarget::virtual_object(
+            "MyService",
+            "MyKey",
+            "MyMethod",
+            HandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&invocation_target);
+
+        assert_eq!(
+            invocation_id.partition_key(),
+            invocation_target
+                .as_keyed_service_id()
+                .unwrap()
+                .partition_key()
+        );
+    }
+
     #[test]
     fn roundtrip_invocation_id() {
-        let expected = InvocationId::new(92, InvocationUuid::new());
+        let expected = InvocationId::from_parts(92, InvocationUuid::new());
         assert_eq!(
             expected,
             InvocationId::from_slice(&expected.to_bytes()).unwrap()

@@ -44,7 +44,7 @@ fn invocation_id_from_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Invoc
         .partition_key
         .take()
         .ok_or(StorageError::DataIntegrityError)?;
-    Ok(InvocationId::new(
+    Ok(InvocationId::from_parts(
         partition_key,
         key.invocation_uuid
             .take()

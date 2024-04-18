@@ -200,22 +200,18 @@ macro_rules! info_span_if_leader {
 impl Effect {
     fn log(&self, is_leader: bool) {
         match self {
-            Effect::InvokeService(ServiceInvocation { method_name, .. }) => debug_if_leader!(
-                is_leader,
-                rpc.method = %method_name,
-                "Effect: Invoke service"
-            ),
+            Effect::InvokeService(ServiceInvocation { .. }) => {
+                debug_if_leader!(is_leader, "Effect: Invoke service")
+            }
             Effect::ResumeService {
                 metadata:
                     InFlightInvocationMetadata {
-                        method,
                         journal_metadata: JournalMetadata { length, .. },
                         ..
                     },
                 ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.method = %method,
                 restate.journal.length = length,
                 "Effect: Resume service"
             ),
@@ -235,7 +231,6 @@ impl Effect {
                 );
                 debug_if_leader!(
                     is_leader,
-                    rpc.method = %metadata.method,
                     restate.journal.length = metadata.journal_metadata.length,
                     "Effect: Suspend service waiting on entries {:?}",
                     waiting_for_completed_entries
@@ -266,9 +261,10 @@ impl Effect {
                 message: OutboxMessage::ServiceInvocation(service_invocation),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation.fid.service_id.service_name,
-                rpc.method = %service_invocation.method_name,
-                restate.invocation.id = %service_invocation.fid,
+                rpc.service = %service_invocation.invocation_target.service_name(),
+                rpc.method = %service_invocation.invocation_target.handler_name(),
+                restate.invocation.id = %service_invocation.invocation_id,
+                restate.invocation.target = %service_invocation.invocation_target,
                 restate.outbox.seq = seq_number,
                 "Effect: Send service invocation to partition processor"
             ),
@@ -445,8 +441,10 @@ impl Effect {
                     // no span necessary; there will already be a background_invoke span
                     debug_if_leader!(
                         is_leader,
-                        rpc.service = %service_invocation.fid.service_id.service_name,
-                        restate.invocation.id = %service_invocation.fid,
+                        rpc.service = %service_invocation.invocation_target.service_name(),
+                        rpc.method = %service_invocation.invocation_target.handler_name(),
+                        restate.invocation.id = %service_invocation.invocation_id,
+                        restate.invocation.target = %service_invocation.invocation_target,
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         "Effect: Register background invoke timer"

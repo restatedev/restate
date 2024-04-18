@@ -176,7 +176,7 @@ impl RocksDBStorage {
             let journal_entry = StorageCodec::decode::<JournalEntry, _>(&mut value)
                 .expect("journal entry must deserialize into JournalEntry");
             OwnedJournalRow {
-                invocation_id: InvocationId::new(
+                invocation_id: InvocationId::from_parts(
                     journal_key
                         .partition_key
                         .expect("journal key must have a partition key"),
@@ -213,10 +213,10 @@ mod tests {
         //
         assert!(
             journal_entry_key(
-                &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+                &InvocationId::from_parts(1337, InvocationUuid::from_parts(0, 1)),
                 0
             ) < journal_entry_key(
-                &InvocationId::new(1337, InvocationUuid::from_parts(0, 2)),
+                &InvocationId::from_parts(1337, InvocationUuid::from_parts(0, 2)),
                 0
             )
         );
@@ -224,12 +224,12 @@ mod tests {
         // within the same service and key
         //
         let mut previous_key = journal_entry_key(
-            &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+            &InvocationId::from_parts(1337, InvocationUuid::from_parts(0, 1)),
             0,
         );
         for i in 1..300 {
             let current_key = journal_entry_key(
-                &InvocationId::new(1337, InvocationUuid::from_parts(0, 1)),
+                &InvocationId::from_parts(1337, InvocationUuid::from_parts(0, 1)),
                 i,
             );
             assert!(previous_key < current_key);

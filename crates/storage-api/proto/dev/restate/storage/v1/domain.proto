@@ -33,12 +33,6 @@ message ServiceId {
     bytes service_key = 2;
 }
 
-message FullInvocationId {
-    bytes service_name = 1;
-    bytes service_key = 2;
-    bytes invocation_uuid = 3;
-}
-
 message GenerationalNodeId {
     uint32 id = 1;
     uint32 generation = 2;
@@ -73,9 +67,14 @@ message JournalMeta {
 }
 
 message Source {
+    message Service {
+        bytes invocation_id = 1;
+        InvocationTarget invocation_target = 2;
+    }
+
     oneof source {
         google.protobuf.Empty ingress = 9;
-        FullInvocationId service = 10;
+        Service service = 10;
         google.protobuf.Empty internal = 11;
     }
 }
@@ -88,7 +87,6 @@ message InvocationStatus {
         repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
         uint64 modification_time = 5;
-        bytes method_name = 6;
         oneof deployment_id {
             google.protobuf.Empty none = 7;
             string value = 8;
@@ -99,9 +97,6 @@ message InvocationStatus {
             google.protobuf.Empty idempotency_key_none = 11;
             string idempotency_key_value = 12;
         }
-
-        // TODO remove
-        ServiceId service_id = 16;
     }
 
     message Suspended {
@@ -111,7 +106,6 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         repeated uint32 waiting_for_completed_entries = 6;
-        bytes method_name = 7;
         oneof deployment_id {
             google.protobuf.Empty none = 8;
             string value = 9;
@@ -122,18 +116,12 @@ message InvocationStatus {
             google.protobuf.Empty idempotency_key_none = 12;
             string idempotency_key_value = 13;
         }
-
-        // TODO remove
-        ServiceId service_id = 16;
     }
 
     message Completed {
         InvocationTarget invocation_target = 1;
         ResponseResult result = 2;
-
-        // TODO remove
-        ServiceId service_id = 3;
-        bytes handler_name = 4;
+        Source source = 3;
 
         oneof idempotency_key {
             google.protobuf.Empty idempotency_key_none = 12;
@@ -158,10 +146,6 @@ message InvocationStatus {
         repeated Header headers = 10;
         uint64 execution_time = 11;
         IdempotentRequestMetadata idempotency = 12;
-
-        // TODO remove these
-        ServiceId service_id = 13;
-        bytes handler = 14;
     }
 
     oneof status {
@@ -191,8 +175,8 @@ message ServiceInvocationResponseSink {
     }
 
     message NewInvocation {
-        FullInvocationId target = 1;
-        string method = 2;
+        bytes invocation_id = 1;
+        InvocationTarget invocation_target = 2;
         bytes caller_context = 3;
     }
 
@@ -242,8 +226,8 @@ message Header {
 }
 
 message ServiceInvocation {
-    FullInvocationId id = 1;
-    bytes method_name = 2;
+    bytes invocation_id = 1;
+    InvocationTarget invocation_target = 2;
     bytes argument = 3;
     ServiceInvocationResponseSink response_sink = 4;
     SpanContext span_context = 5;
@@ -251,9 +235,6 @@ message ServiceInvocation {
     repeated Header headers = 7;
     uint64 execution_time = 8;
     IdempotentRequestMetadata idempotency = 9;
-
-    bytes invocation_id = 10;
-    InvocationTarget invocation_target = 11;
 }
 
 message StateMutation {
@@ -263,17 +244,21 @@ message StateMutation {
 }
 
 message InboxEntry {
+    message Invocation {
+        bytes invocation_id = 1;
+        ServiceId service_id = 2;
+    }
+
     oneof entry {
-        FullInvocationId invocation_id = 3;
-        StateMutation state_mutation = 4;
+        Invocation invocation = 1;
+        StateMutation state_mutation = 2;
     }
 }
 
 message InvocationResolutionResult {
     message Success {
-        bytes invocation_id = 5;
-        InvocationTarget invocation_target = 6;
-        bytes service_key = 2;
+        bytes invocation_id = 1;
+        InvocationTarget invocation_target = 2;
         SpanContext span_context = 3;
     }
 
@@ -284,9 +269,8 @@ message InvocationResolutionResult {
 }
 
 message BackgroundCallResolutionResult {
-    bytes invocation_id = 5;
-    InvocationTarget invocation_target = 6;
-    bytes service_key = 2;
+    bytes invocation_id = 1;
+    InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
 }
 message EnrichedEntryHeader {
@@ -427,12 +411,6 @@ message OutboxMessage {
     message OutboxServiceInvocationResponse {
         bytes invocation_id = 1;
         uint32 entry_index = 2;
-        ResponseResult response_result = 3;
-    }
-
-    message OutboxIngressResponse {
-        FullInvocationId full_invocation_id = 1;
-        GenerationalNodeId ingress_node_id = 2;
         ResponseResult response_result = 3;
     }
 

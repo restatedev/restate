@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{assert_stream_eq, mock_full_invocation_id, mock_state_mutation};
+use crate::{assert_stream_eq, mock_state_mutation};
 use once_cell::sync::Lazy;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::Transaction;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{InvocationId, ServiceId};
 
 static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
     vec![
         SequenceNumberInboxEntry::new(
             7,
-            InboxEntry::Invocation(mock_full_invocation_id(ServiceId::new("svc-1", "key-1"))),
+            InboxEntry::Invocation(
+                ServiceId::new("svc-1", "key-1"),
+                InvocationId::mock_random(),
+            ),
         ),
         SequenceNumberInboxEntry::new(
             8,
@@ -27,11 +30,17 @@ static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
         ),
         SequenceNumberInboxEntry::new(
             9,
-            InboxEntry::Invocation(mock_full_invocation_id(ServiceId::new("svc-2", "key-1"))),
+            InboxEntry::Invocation(
+                ServiceId::new("svc-2", "key-1"),
+                InvocationId::mock_random(),
+            ),
         ),
         SequenceNumberInboxEntry::new(
             10,
-            InboxEntry::Invocation(mock_full_invocation_id(ServiceId::new("svc-1", "key-1"))),
+            InboxEntry::Invocation(
+                ServiceId::new("svc-1", "key-1"),
+                InvocationId::mock_random(),
+            ),
         ),
     ]
 });

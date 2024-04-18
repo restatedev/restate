@@ -39,7 +39,6 @@ static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
                     name: ByteString::from_static("MySvc"),
                     handler: ByteString::from_static("MyHandler"),
                 },
-                service_key: Bytes::from_static(b"123"),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },

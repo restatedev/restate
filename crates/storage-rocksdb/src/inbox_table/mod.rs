@@ -12,7 +12,6 @@ use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Inbox;
 use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
-use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
@@ -28,7 +27,7 @@ define_table_key!(
     InboxKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: Bytes,
+        service_key: ByteString,
         sequence_number: u64
     )
 );

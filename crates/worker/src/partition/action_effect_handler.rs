@@ -83,16 +83,16 @@ impl ActionEffectHandler {
                 //  to make sure the next command can see the effects of the previous one.
                 //  A problematic example case is a sequence of CreateVirtualJournal and AppendJournalEntry:
                 //  to append a journal entry we must have stored the JournalMetadata first.
-                let (fid, effects) = invoker_output.into_inner();
+                let (id, effects) = invoker_output.into_inner();
 
                 for effect in effects {
-                    let header = self.create_header(fid.partition_key());
+                    let header = self.create_header(id.partition_key());
                     append_envelope_to_bifrost(
                         &mut self.bifrost,
                         Envelope::new(
                             header.clone(),
                             Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                                fid.clone(),
+                                id,
                                 vec![effect],
                             )),
                         ),

@@ -23,7 +23,7 @@ pub(crate) fn append_virtual_object_status_row(
 
     row.partition_key(status_row.partition_key);
     row.name(&status_row.name);
-    row.key(std::str::from_utf8(&status_row.key).expect("The key must be a string!"));
+    row.key(&status_row.key);
 
     // Invocation id
     if row.is_invocation_id_defined() {

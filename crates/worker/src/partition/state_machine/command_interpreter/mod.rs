@@ -34,8 +34,7 @@ use restate_types::errors::{
     KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, IdempotencyId, InvocationId, PartitionKey, ServiceId,
-    WithPartitionKey,
+    EntryIndex, IdempotencyId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -59,7 +58,7 @@ use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::{Deref, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::pin::pin;
 use tracing::{debug, instrument, trace, warn};
 
@@ -220,8 +219,8 @@ where
         // If an idempotency key is set, handle idempotency
         if let Some(idempotency) = &service_invocation.idempotency {
             let idempotency_id = IdempotencyId::combine(
-                service_invocation.fid.service_id.clone(),
-                service_invocation.method_name.clone(),
+                service_invocation.invocation_id,
+                &service_invocation.invocation_target,
                 idempotency.key.clone(),
             );
             if self
@@ -229,7 +228,7 @@ where
                     effects,
                     state,
                     &idempotency_id,
-                    &InvocationId::from(&service_invocation.fid),
+                    &service_invocation.invocation_id,
                     service_invocation.response_sink.as_ref(),
                 )
                 .await?
@@ -238,8 +237,7 @@ where
                 return Ok(());
             }
             // Idempotent invocation needs to be processed for the first time, let's roll!
-            effects
-                .store_idempotency_id(idempotency_id, InvocationId::from(&service_invocation.fid));
+            effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
         }
 
         // If an execution_time is set, we schedule the invocation to be processed later
@@ -247,7 +245,7 @@ where
             let span_context = service_invocation.span_context.clone();
             effects.register_timer(
                 TimerValue::new_invoke(
-                    service_invocation.fid.clone(),
+                    service_invocation.invocation_id,
                     execution_time,
                     // This entry_index here makes little sense
                     0,
@@ -273,7 +271,9 @@ where
             let keyed_service_id = service_invocation
                 .invocation_target
                 .as_keyed_service_id()
-                .unwrap();
+                .expect(
+                    "When the handler type is Exclusive, the invocation target must have a key",
+                );
 
             let service_status = state.get_virtual_object_status(&keyed_service_id).await?;
 
@@ -281,7 +281,7 @@ where
             if let VirtualObjectStatus::Locked(_) = service_status {
                 let inbox_seq_number = self.enqueue_into_inbox(
                     effects,
-                    InboxEntry::Invocation(service_invocation.fid.clone()),
+                    InboxEntry::Invocation(keyed_service_id, service_invocation.invocation_id),
                 );
                 effects.store_inboxed_invocation(
                     service_invocation.invocation_id,
@@ -399,20 +399,16 @@ where
         state: &mut State,
         nbis_effects: BuiltinServiceEffects,
     ) -> Result<(), Error> {
-        let (full_invocation_id, nbis_effects) = nbis_effects.into_inner();
-        let invocation_status = Self::get_invocation_status_and_trace(
-            state,
-            &InvocationId::from(&full_invocation_id),
-            effects,
-        )
-        .await?;
+        let (invocation_id, nbis_effects) = nbis_effects.into_inner();
+        let invocation_status =
+            Self::get_invocation_status_and_trace(state, &invocation_id, effects).await?;
 
         match invocation_status {
             InvocationStatus::Invoked(invocation_metadata) => {
                 for nbis_effect in nbis_effects {
                     self.on_built_in_invoker_effect(
                         effects,
-                        &full_invocation_id,
+                        &invocation_id,
                         &invocation_metadata,
                         nbis_effect,
                     )
@@ -423,7 +419,7 @@ where
             _ => {
                 trace!(
                     "Received built in invoker effect for unknown invocation {}. Ignoring it.",
-                    full_invocation_id
+                    invocation_id
                 );
                 Ok(())
             }
@@ -433,15 +429,18 @@ where
     async fn on_built_in_invoker_effect(
         &mut self,
         effects: &mut Effects,
-        full_invocation_id: &FullInvocationId,
+        invocation_id: &InvocationId,
         invocation_metadata: &InFlightInvocationMetadata,
         nbis_effect: BuiltinServiceEffect,
     ) -> Result<(), Error> {
         match nbis_effect {
             BuiltinServiceEffect::SetState { key, value } => {
                 effects.set_state(
-                    full_invocation_id.service_id.clone(),
-                    full_invocation_id.clone().into(),
+                    invocation_metadata
+                        .invocation_target
+                        .as_keyed_service_id()
+                        .expect("Non deterministic built in services clearing state MUST be keyed"),
+                    *invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
                     value,
@@ -449,8 +448,11 @@ where
             }
             BuiltinServiceEffect::ClearState(key) => {
                 effects.clear_state(
-                    full_invocation_id.service_id.clone(),
-                    full_invocation_id.clone().into(),
+                    invocation_metadata
+                        .invocation_target
+                        .as_keyed_service_id()
+                        .expect("Non deterministic built in services clearing state MUST be keyed"),
+                    *invocation_id,
                     invocation_metadata.journal_metadata.span_context.clone(),
                     Bytes::from(key.into_owned()),
                 );
@@ -459,21 +461,12 @@ where
                 self.handle_outgoing_message(msg, effects);
             }
             BuiltinServiceEffect::End(None) => {
-                self.end_built_in_invocation(
-                    effects,
-                    full_invocation_id.clone(),
-                    invocation_metadata.clone(),
-                )
-                .await?
+                self.end_built_in_invocation(effects, *invocation_id, invocation_metadata.clone())
+                    .await?
             }
             BuiltinServiceEffect::End(Some(e)) => {
-                self.fail_invocation(
-                    effects,
-                    InvocationId::from(full_invocation_id),
-                    invocation_metadata.clone(),
-                    e,
-                )
-                .await?
+                self.fail_invocation(effects, *invocation_id, invocation_metadata.clone(), e)
+                    .await?
             }
             BuiltinServiceEffect::IngressResponse(ingress_response) => {
                 self.ingress_response(ingress_response, effects);
@@ -617,7 +610,7 @@ where
 
         // Reply back to callers with error, and publish end trace
         let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::new_combine(invocation_id, &invocation_target, idempotency.key)
+            IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key)
         });
 
         self.send_response_to_sinks(
@@ -848,16 +841,15 @@ where
             Timer::CleanInvocationStatus(invocation_id) => {
                 match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
                     InvocationStatus::Completed(CompletedInvocation {
-                        service_id,
-                        handler,
+                        invocation_target,
                         idempotency_key: Some(idempotency_key),
                         ..
                     }) => {
                         effects.free_invocation(invocation_id);
                         // Also cleanup the associated idempotency key
                         effects.delete_idempotency_id(IdempotencyId::combine(
-                            service_id,
-                            handler,
+                            invocation_id,
+                            &invocation_target,
                             idempotency_key,
                         ));
                     }
@@ -941,7 +933,7 @@ where
                         .await?
                     {
                         trace!(
-                            rpc.service = %invocation_metadata.service_id.service_name,
+                            rpc.service = %invocation_metadata.invocation_target.service_name(),
                             restate.invocation.id = %invocation_id,
                             "Resuming instead of suspending service because an awaited entry is completed/acked.");
                         any_completed = true;
@@ -1013,8 +1005,8 @@ where
                     .as_ref()
                     .map(|idempotency_key| {
                         IdempotencyId::combine(
-                            invocation_metadata.service_id.clone(),
-                            invocation_metadata.method.clone(),
+                            invocation_id,
+                            &invocation_metadata.invocation_target,
                             idempotency_key.clone(),
                         )
                     });
@@ -1056,11 +1048,9 @@ where
     async fn end_built_in_invocation(
         &mut self,
         effects: &mut Effects,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
-        let invocation_id = InvocationId::from(&full_invocation_id);
-
         self.notify_invocation_result(
             invocation_id,
             invocation_metadata.invocation_target.clone(),
@@ -1102,8 +1092,8 @@ where
             .as_ref()
             .map(|idempotency_key| {
                 IdempotencyId::combine(
-                    invocation_metadata.service_id.clone(),
-                    invocation_metadata.method.clone(),
+                    invocation_id,
+                    &invocation_metadata.invocation_target,
                     idempotency_key.clone(),
                 )
             });
@@ -1167,7 +1157,9 @@ where
     fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
         // Inbox exists only for exclusive handler cases
         if invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
-            effects.pop_inbox(invocation_target.as_keyed_service_id().unwrap())
+            effects.pop_inbox(invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            ))
         }
     }
 
@@ -1185,9 +1177,6 @@ where
             "Expect to receive next journal entry for {invocation_id}"
         );
 
-        let full_invocation_id =
-            FullInvocationId::combine(invocation_metadata.service_id.clone(), invocation_id);
-
         match journal_entry.header() {
             // nothing to do
             EnrichedEntryHeader::Input { .. } => {}
@@ -1201,20 +1190,30 @@ where
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
-                    // Load state and write completion
-                    let value = state
-                        .load_state(&invocation_metadata.service_id, &key)
-                        .await?;
-                    let completion_result = value
-                        .map(CompletionResult::Success)
-                        .unwrap_or(CompletionResult::Empty);
-                    Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+                    if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        // Load state and write completion
+                        let value = state.load_state(&service_id, &key).await?;
+                        let completion_result = value
+                            .map(CompletionResult::Success)
+                            .unwrap_or(CompletionResult::Empty);
+                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
-                    // We can already forward the completion
-                    effects.forward_completion(
-                        invocation_id,
-                        Completion::new(entry_index, completion_result),
-                    );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, completion_result),
+                        );
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no state",
+                            journal_entry.header().as_entry_type()
+                        );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Empty),
+                        );
+                    }
                 }
             }
             EnrichedEntryHeader::SetState { .. } => {
@@ -1223,39 +1222,76 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
 
-                effects.set_state(
-                    invocation_metadata.service_id.clone(),
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    key,
-                    value,
-                );
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.set_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                        key,
+                        value,
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::ClearState { .. } => {
                 let_assert!(
                     Entry::ClearState(ClearStateEntry { key }) =
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
-                effects.clear_state(
-                    invocation_metadata.service_id.clone(),
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    key,
-                );
+
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.clear_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                        key,
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::ClearAllState { .. } => {
-                effects.clear_all_state(
-                    invocation_metadata.service_id.clone(),
-                    invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                );
+                if let Some(service_id) =
+                    invocation_metadata.invocation_target.as_keyed_service_id()
+                {
+                    effects.clear_all_state(
+                        service_id,
+                        invocation_id,
+                        invocation_metadata.journal_metadata.span_context.clone(),
+                    );
+                } else {
+                    warn!(
+                        "Trying to process entry {} for a target that has no state",
+                        journal_entry.header().as_entry_type()
+                    );
+                }
             }
             EnrichedEntryHeader::GetStateKeys { is_completed, .. } => {
                 if !is_completed {
                     // Load state and write completion
-                    let value = state
-                        .load_state_keys(&invocation_metadata.service_id)
-                        .await?;
+                    let value = if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        state.load_state_keys(&service_id).await?
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no state",
+                            journal_entry.header().as_entry_type()
+                        );
+                        vec![]
+                    };
+
                     let completion_result = Codec::serialize_get_state_keys_completion(value);
                     Codec::write_completion(&mut journal_entry, completion_result.clone())?;
 
@@ -1285,10 +1321,9 @@ where
                 enrichment_result, ..
             } => {
                 if let Some(InvokeEnrichmentResult {
-                    service_key,
                     span_context,
                     invocation_id: callee_invocation_id,
-                    invocation_target,
+                    invocation_target: callee_invocation_target,
                     ..
                 }) = enrichment_result
                 {
@@ -1298,11 +1333,13 @@ where
                     );
 
                     let service_invocation = Self::create_service_invocation(
-                        service_key.clone(),
                         *callee_invocation_id,
-                        invocation_target.clone(),
+                        callee_invocation_target.clone(),
                         request,
-                        Source::Service(full_invocation_id.clone()),
+                        Source::Service(
+                            invocation_id,
+                            invocation_metadata.invocation_target.clone(),
+                        ),
                         Some((invocation_id, entry_index)),
                         span_context.clone(),
                         None,
@@ -1319,9 +1356,8 @@ where
                 enrichment_result, ..
             } => {
                 let InvokeEnrichmentResult {
-                    service_key,
-                    invocation_id,
-                    invocation_target,
+                    invocation_id: callee_invocation_id,
+                    invocation_target: callee_invocation_target,
                     span_context,
                     ..
                 } = enrichment_result;
@@ -1341,11 +1377,10 @@ where
                 };
 
                 let service_invocation = Self::create_service_invocation(
-                    service_key.clone(),
-                    *invocation_id,
-                    invocation_target.clone(),
+                    *callee_invocation_id,
+                    callee_invocation_target.clone(),
                     request,
-                    Source::Service(full_invocation_id.clone()),
+                    Source::Service(invocation_id, invocation_metadata.invocation_target.clone()),
                     None,
                     span_context.clone(),
                     delay,
@@ -1357,8 +1392,8 @@ where
                 };
 
                 effects.trace_background_invoke(
-                    *invocation_id,
-                    invocation_target.clone(),
+                    *callee_invocation_id,
+                    callee_invocation_target.clone(),
                     invocation_metadata.journal_metadata.span_context.clone(),
                     pointer_span_id,
                 );
@@ -1517,8 +1552,8 @@ where
     ) {
         // Invoke built-in service
         for effect in deterministic::ServiceInvoker::invoke(
-            &invocation.fid,
-            invocation.method_name.deref(),
+            &invocation.invocation_id,
+            &invocation.invocation_target,
             &invocation.span_context,
             invocation.response_sink.as_ref(),
             invocation.argument.clone(),
@@ -1594,7 +1629,6 @@ where
 
     #[allow(clippy::too_many_arguments)]
     fn create_service_invocation(
-        invocation_key: Bytes,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         invoke_request: InvokeRequest,
@@ -1603,12 +1637,7 @@ where
         span_context: ServiceInvocationSpanContext,
         execution_time: Option<MillisSinceEpoch>,
     ) -> ServiceInvocation {
-        let InvokeRequest {
-            service_name,
-            method_name,
-            parameter,
-            ..
-        } = invoke_request;
+        let InvokeRequest { parameter, .. } = invoke_request;
 
         let response_sink = if let Some((caller, entry_index)) = response_target {
             Some(ServiceInvocationResponseSink::PartitionProcessor {
@@ -1619,22 +1648,9 @@ where
             None
         };
 
-        let fid = FullInvocationId::new(
-            service_name,
-            invocation_key,
-            invocation_id.invocation_uuid(),
-        );
-        debug_assert_eq!(
-            invocation_id,
-            InvocationId::from(&fid),
-            "InvocationId and FullInvocationId must match"
-        );
-
         ServiceInvocation {
             invocation_id,
             invocation_target,
-            fid,
-            method_name,
             argument: parameter,
             source,
             response_sink,

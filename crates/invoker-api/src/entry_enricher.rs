@@ -66,7 +66,6 @@ pub mod mocks {
                             enrichment_result: Some(InvokeEnrichmentResult {
                                 invocation_id: InvocationId::mock_random(),
                                 invocation_target: InvocationTarget::service("", ""),
-                                service_key: Default::default(),
                                 span_context: current_invocation_span_context.clone(),
                             }),
                         }
@@ -83,7 +82,6 @@ pub mod mocks {
                         enrichment_result: InvokeEnrichmentResult {
                             invocation_id: InvocationId::mock_random(),
                             invocation_target: InvocationTarget::service("", ""),
-                            service_key: Default::default(),
                             span_context: current_invocation_span_context.clone(),
                         },
                     }
@@ -94,7 +92,7 @@ pub mod mocks {
                 PlainEntryHeader::CompleteAwakeable { .. } => {
                     EnrichedEntryHeader::CompleteAwakeable {
                         enrichment_result: AwakeableEnrichmentResult {
-                            invocation_id: InvocationId::new(0, InvocationUuid::new()),
+                            invocation_id: InvocationId::from_parts(0, InvocationUuid::new()),
                             entry_index: 1,
                         },
                     }

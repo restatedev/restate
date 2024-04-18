@@ -13,7 +13,6 @@ use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
 use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
-use bytes::Bytes;
 use bytestring::ByteString;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
@@ -29,7 +28,7 @@ define_table_key!(
     ServiceStatusKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: Bytes
+        service_key: ByteString
     )
 );
 
@@ -111,7 +110,7 @@ impl<'a> VirtualObjectStatusTable for RocksDBTransaction<'a> {
 pub struct OwnedVirtualObjectStatusRow {
     pub partition_key: PartitionKey,
     pub name: ByteString,
-    pub key: Bytes,
+    pub key: ByteString,
     pub status: VirtualObjectStatus,
 }
 

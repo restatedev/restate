@@ -21,7 +21,7 @@ use http_body_util::{BodyExt, Full};
 use metrics::{counter, histogram};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
-use restate_types::identifiers::{FullInvocationId, InvocationId, ServiceId};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
 };
@@ -85,22 +85,7 @@ where
         let idempotency =
             parse_idempotency(req.headers(), invocation_target_meta.idempotency_retention)?;
 
-        // Craft FullInvocationId
-        let fid = if let TargetType::VirtualObject { key } = &target {
-            FullInvocationId::generate(ServiceId::new(component_name.clone(), key.clone()))
-        } else if let Some(ref idempotency) = idempotency {
-            // We need this to make sure the internal components will deliver correctly this idempotent invocation always
-            //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
-            //  https://github.com/restatedev/restate/issues/1329
-            FullInvocationId::generate(ServiceId::new(
-                component_name.clone(),
-                idempotency.key.clone().into_bytes(),
-            ))
-        } else {
-            FullInvocationId::generate(ServiceId::unkeyed(component_name.clone()))
-        };
-
-        // Craft InvocationTarget
+        // Craft Invocation Target and Id
         let invocation_target = if let TargetType::VirtualObject { key } = target {
             InvocationTarget::virtual_object(
                 &*component_name,
@@ -111,9 +96,18 @@ where
         } else {
             InvocationTarget::service(&*component_name, &*handler_name)
         };
+        let invocation_id = if let Some(ref idempotency) = idempotency {
+            // We need this to make sure the internal components will deliver correctly this idempotent invocation always
+            //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
+            //  https://github.com/restatedev/restate/issues/1329
+            InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency.key)
+        } else {
+            InvocationId::generate(&invocation_target)
+        };
 
         // Prepare the tracing span
-        let (ingress_span, ingress_span_context) = prepare_tracing_span(&fid, &handler_name, &req);
+        let (ingress_span, ingress_span_context) =
+            prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
         let result = async move {
             info!("Processing ingress request");
@@ -159,7 +153,7 @@ where
                         return Err(HandlerError::UnsupportedDelay);
                     }
                     Self::handle_component_call(
-                        fid,
+                        invocation_id,
                         invocation_target,
                         idempotency,
                         body,
@@ -172,7 +166,7 @@ where
                 }
                 InvokeType::Send => {
                     Self::handle_component_send(
-                        fid,
+                        invocation_id,
                         invocation_target,
                         idempotency,
                         body,
@@ -209,7 +203,7 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn handle_component_call(
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,
         body: Bytes,
@@ -218,9 +212,8 @@ where
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let invocation_id: InvocationId = fid.clone().into();
         let (invocation, response_rx) = IngressDispatcherRequest::invocation(
-            fid,
+            invocation_id,
             invocation_target,
             body,
             span_relation,
@@ -283,7 +276,7 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn handle_component_send(
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,
         body: Bytes,
@@ -292,14 +285,12 @@ where
         delay: Option<Duration>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let invocation_id = InvocationId::from(&fid);
-
         // Establish execution_time
         let execution_time = delay.map(|d| SystemTime::now() + d);
 
         // Send the service invocation
         let invocation = IngressDispatcherRequest::background_invocation(
-            fid,
+            invocation_id,
             invocation_target,
             body,
             span_relation,

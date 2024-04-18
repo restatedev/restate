@@ -53,10 +53,9 @@ pub(crate) fn append_journal_row(
                 | EnrichedEntryHeader::BackgroundInvoke {
                     enrichment_result, ..
                 } => {
-                    row.invoked_component_key(
-                        std::str::from_utf8(&enrichment_result.service_key)
-                            .expect("The key must be a string!"),
-                    );
+                    if let Some(key) = enrichment_result.invocation_target.key() {
+                        row.invoked_component_key(key);
+                    }
 
                     row.invoked_component(enrichment_result.invocation_target.service_name());
 

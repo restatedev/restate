@@ -26,16 +26,19 @@ pub(crate) fn append_invocation_status_row(
     let mut row = builder.row();
 
     row.partition_key(status_row.partition_key);
-    if let Some(service_id) = status_row.invocation_status.service_id() {
-        row.component(&service_id.service_name);
-        row.component_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
+    if let Some(invocation_target) = status_row.invocation_status.invocation_target() {
+        row.component(invocation_target.service_name());
+        if let Some(key) = invocation_target.key() {
+            row.component_key(key);
+        }
+        row.handler(invocation_target.handler_name());
     }
 
     // Invocation id
     if row.is_id_defined() {
         row.id(format_using(
             output,
-            &InvocationId::new(status_row.partition_key, status_row.invocation_uuid),
+            &InvocationId::from_parts(status_row.partition_key, status_row.invocation_uuid),
         ));
     }
 
@@ -53,7 +56,6 @@ pub(crate) fn append_invocation_status_row(
     match status_row.invocation_status {
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
-            row.handler(inboxed.handler_name);
             fill_invoked_by(&mut row, output, inboxed.source);
         }
         InvocationStatus::Invoked(metadata) => {
@@ -67,9 +69,9 @@ pub(crate) fn append_invocation_status_row(
         InvocationStatus::Free => {
             row.status("free");
         }
-        InvocationStatus::Completed(completed_invocation) => {
+        InvocationStatus::Completed(completed) => {
             row.status("completed");
-            row.handler(completed_invocation.handler);
+            fill_invoked_by(&mut row, output, completed.source);
         }
     };
 }
@@ -80,7 +82,6 @@ fn fill_in_flight_invocation_metadata(
     meta: InFlightInvocationMetadata,
 ) {
     // journal_metadata and stats are filled by other functions
-    row.handler(meta.method);
     if let Some(deployment_id) = meta.deployment_id {
         row.pinned_deployment_id(deployment_id.to_string());
     }
@@ -90,11 +91,11 @@ fn fill_in_flight_invocation_metadata(
 #[inline]
 fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, source: Source) {
     match source {
-        Source::Service(caller) => {
+        Source::Service(invocation_id, invocation_target) => {
             row.invoked_by("component");
-            row.invoked_by_component(&caller.service_id.service_name);
+            row.invoked_by_component(invocation_target.service_name());
             if row.is_invoked_by_id_defined() {
-                row.invoked_by_id(format_using(output, &caller));
+                row.invoked_by_id(format_using(output, &invocation_id));
             }
         }
         Source::Ingress => {

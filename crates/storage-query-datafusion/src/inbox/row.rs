@@ -11,7 +11,7 @@
 use super::schema::InboxBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-use restate_types::identifiers::{InvocationId, TimestampAwareId, WithPartitionKey};
+use restate_types::identifiers::{TimestampAwareId, WithPartitionKey};
 
 #[inline]
 pub(crate) fn append_inbox_row(
@@ -24,24 +24,22 @@ pub(crate) fn append_inbox_row(
         inbox_entry,
     } = inbox_entry;
 
-    if let InboxEntry::Invocation(fid) = inbox_entry {
+    if let InboxEntry::Invocation(service_id, invocation_id) = inbox_entry {
         let mut row = builder.row();
-        row.partition_key(fid.partition_key());
+        row.partition_key(invocation_id.partition_key());
 
-        row.component(&fid.service_id.service_name);
+        row.component(&service_id.service_name);
 
-        row.component_key(
-            std::str::from_utf8(&fid.service_id.key).expect("The key must be a string!"),
-        );
+        row.component_key(&service_id.key);
 
         if row.is_id_defined() {
-            row.id(format_using(output, &InvocationId::from(&fid)));
+            row.id(format_using(output, &invocation_id));
         }
 
         row.sequence_number(inbox_sequence_number);
 
         if row.is_created_at_defined() {
-            let ts = fid.invocation_uuid.timestamp();
+            let ts = invocation_id.timestamp();
             row.created_at(ts.as_u64() as i64);
         }
     } else {

@@ -10,7 +10,7 @@
 
 use crate::{protobuf_storage_encode_decode, Result};
 use futures_util::Stream;
-use restate_types::identifiers::{FullInvocationId, PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
@@ -18,14 +18,14 @@ use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
-    Invocation(FullInvocationId),
+    Invocation(ServiceId, InvocationId),
     StateMutation(ExternalStateMutation),
 }
 
 impl InboxEntry {
     pub fn service_id(&self) -> &ServiceId {
         match self {
-            InboxEntry::Invocation(invocation) => &invocation.service_id,
+            InboxEntry::Invocation(service_id, _) => service_id,
             InboxEntry::StateMutation(state_mutation) => &state_mutation.component_id,
         }
     }
@@ -55,11 +55,12 @@ impl SequenceNumberInboxEntry {
     }
     pub fn from_invocation(
         inbox_sequence_number: MessageIndex,
-        full_invocation_id: FullInvocationId,
+        service_id: ServiceId,
+        invocation_id: InvocationId,
     ) -> Self {
         Self {
             inbox_sequence_number,
-            inbox_entry: InboxEntry::Invocation(full_invocation_id),
+            inbox_entry: InboxEntry::Invocation(service_id, invocation_id),
         }
     }
 

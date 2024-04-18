@@ -14,7 +14,6 @@
 
 use super::assert_stream_eq;
 
-use bytes::Bytes;
 use bytestring::ByteString;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
@@ -22,7 +21,7 @@ use restate_storage_api::invocation_status_table::{
     StatusTimestamps,
 };
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
 };
@@ -60,10 +59,8 @@ static INVOCATION_ID_3: Lazy<InvocationId> =
 fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
-        service_id: ServiceId::new("bla", Bytes::from_static(b"bla")),
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         deployment_id: None,
-        method: "service".into(),
         response_sinks: HashSet::new(),
         timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
         source: Source::Ingress,
@@ -76,10 +73,8 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
             invocation_target,
-            service_id: ServiceId::new("bla", Bytes::from_static(b"bla")),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             deployment_id: None,
-            method: "service".into(),
             response_sinks: HashSet::new(),
             timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
             source: Source::Ingress,
