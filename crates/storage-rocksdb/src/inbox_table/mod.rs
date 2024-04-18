@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::TableKind::Inbox;
 use crate::{RocksDBTransaction, StorageAccess};
@@ -17,11 +16,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
+use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -50,7 +48,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(key, ProtoValue(storage::v1::InboxEntry::from(inbox_entry)));
+        self.put_kv(key, inbox_entry);
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
@@ -126,13 +124,12 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 }
 
-fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> Result<SequenceNumberInboxEntry> {
+fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
     let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
     let sequence_number = *key.sequence_number_ok_or()?;
 
-    let inbox_entry = InboxEntry::try_from(
-        storage::v1::InboxEntry::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
-    )?;
+    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
 }

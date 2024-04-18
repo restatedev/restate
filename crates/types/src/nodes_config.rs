@@ -14,9 +14,10 @@
 use std::collections::HashMap;
 
 use enumset::{EnumSet, EnumSetType};
+use serde_with::serde_as;
 
 use crate::net::AdvertisedAddress;
-use crate::{GenerationalNodeId, NodeId, PlainNodeId};
+use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
@@ -45,10 +46,13 @@ pub enum Role {
     MetadataStore,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
     name_lookup: HashMap<String, PlainNodeId>,
 }
@@ -184,6 +188,8 @@ impl Versioned for NodesConfiguration {
         self.version()
     }
 }
+
+flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {

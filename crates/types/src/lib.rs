@@ -18,7 +18,6 @@ mod version;
 
 pub mod arc_util;
 pub mod config;
-pub mod dedup;
 pub mod deployment;
 pub mod epoch;
 pub mod errors;
@@ -34,6 +33,7 @@ pub mod nodes_config;
 pub mod partition_table;
 pub mod retries;
 pub mod state_mut;
+pub mod storage;
 pub mod subscription;
 pub mod time;
 pub mod timer;

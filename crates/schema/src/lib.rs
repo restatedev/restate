@@ -13,6 +13,7 @@ use restate_schema_api::component::{ComponentMetadata, HandlerMetadata};
 use restate_schema_api::deployment::DeploymentType;
 use restate_schema_api::subscription::Subscription;
 use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
+use serde_with::serde_as;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -33,11 +34,16 @@ use restate_types::{Version, Versioned};
 pub struct UpdateableSchema(Arc<ArcSwap<Schema>>);
 
 /// The schema information
+#[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Schema {
     pub version: Version,
     pub components: HashMap<String, ComponentSchemas>,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub deployments: HashMap<DeploymentId, DeploymentSchemas>,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub subscriptions: HashMap<SubscriptionId, Subscription>,
 }
 
@@ -91,6 +97,13 @@ impl Versioned for Schema {
     fn version(&self) -> Version {
         self.version
     }
+}
+
+pub mod storage {
+    use crate::Schema;
+    use restate_types::flexbuffers_storage_encode_decode;
+
+    flexbuffers_storage_encode_decode!(Schema);
 }
 
 #[cfg(feature = "test-util")]

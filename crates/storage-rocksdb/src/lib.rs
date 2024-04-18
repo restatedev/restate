@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod codec;
 pub mod deduplication_table;
 pub mod fsm_table;
 pub mod idempotency_table;
@@ -24,7 +23,6 @@ pub mod state_table;
 pub mod timer_table;
 mod writer;
 
-use crate::codec::Codec;
 use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
 use crate::writer::{Writer, WriterHandle};
@@ -39,6 +37,7 @@ use restate_rocksdb::{CfName, DbName, DbSpec, Owner, RocksDbManager, RocksError}
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::ColumnFamily;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
@@ -611,13 +610,22 @@ trait StorageAccess {
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>);
 
     #[inline]
-    fn put_kv<K: TableKey, V: Codec>(&mut self, key: K, value: V) {
+    fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
         let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
-        let value_buffer = self.cleared_value_buffer_mut(value.serialized_length());
-        value.encode(value_buffer);
+        self.put_cf(K::table(), key_buffer, value);
+    }
+
+    #[inline]
+    fn put_kv<K: TableKey, V: StorageEncode>(&mut self, key: K, value: V) {
+        let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buffer);
+        let key_buffer = key_buffer.split();
+
+        let value_buffer = self.cleared_value_buffer_mut(0);
+        StorageCodec::encode(&value, value_buffer).unwrap();
         let value_buffer = value_buffer.split();
 
         self.put_cf(K::table(), key_buffer, value_buffer);
@@ -633,6 +641,33 @@ trait StorageAccess {
     }
 
     #[inline]
+    fn get_value<K, V>(&mut self, key: K) -> Result<Option<V>>
+    where
+        K: TableKey,
+        V: StorageDecode,
+    {
+        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(&mut buf);
+        let buf = buf.split();
+
+        match self.get(K::table(), &buf) {
+            Ok(value) => {
+                let slice = value.as_ref().map(|v| v.as_ref());
+
+                if let Some(mut slice) = slice {
+                    Ok(Some(
+                        StorageCodec::decode::<V, _>(&mut slice)
+                            .map_err(|err| StorageError::Generic(err.into()))?,
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    #[inline]
     fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
         K: TableKey,
@@ -643,7 +678,7 @@ trait StorageAccess {
     }
 
     #[inline]
-    fn get_blocking<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    fn get_kv_raw<K, F, R>(&mut self, key: K, f: F) -> Result<R>
     where
         K: TableKey,
         F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,

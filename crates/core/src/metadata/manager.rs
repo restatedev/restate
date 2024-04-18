@@ -276,7 +276,7 @@ where
                 self.update_logs(logs);
             }
             MetadataContainer::Schema(schemas) => {
-                self.update_schema_information(schemas);
+                self.update_schema(schemas);
             }
         }
 
@@ -315,12 +315,12 @@ where
                 }
             }
             MetadataKind::Schema => {
-                if let Some(schema_information) = self
+                if let Some(schema) = self
                     .metadata_store_client
                     .get::<Schema>(SCHEMA_INFORMATION_KEY.clone())
                     .await?
                 {
-                    self.update_schema_information(schema_information)
+                    self.update_schema(schema)
                 }
             }
         }
@@ -347,8 +347,8 @@ where
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
-    fn update_schema_information(&mut self, schema_information: Schema) {
-        let maybe_new_version = Self::update_internal(&self.inner.schema, schema_information);
+    fn update_schema(&mut self, schema: Schema) {
+        let maybe_new_version = Self::update_internal(&self.inner.schema, schema);
 
         self.notify_watches(maybe_new_version, MetadataKind::Schema);
     }

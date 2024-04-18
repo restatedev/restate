@@ -34,10 +34,10 @@ pub mod types;
 
 use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream, LogRecord, Record};
 use restate_core::cancellation_watcher;
-use restate_storage_api::StorageError;
-use restate_types::dedup::{
+use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
 };
+use restate_storage_api::StorageError;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
@@ -369,8 +369,7 @@ impl LogReader {
     fn deserialize_record(record: Record) -> anyhow::Result<Envelope> {
         match record {
             Record::Data(payload) => {
-                // todo: Replace bincode with protobuf or something similar
-                let envelope = Envelope::decode_with_bincode(payload.as_ref())?;
+                let envelope = Envelope::from_bytes(payload.as_ref())?;
                 Ok(envelope)
             }
             Record::TrimGap(_) => {

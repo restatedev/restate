@@ -65,11 +65,11 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     ) -> Result<(), Error> {
         // Handle the command, returns the span_relation to use to log effects
         let command_type = command.name();
-        let (fid, span_relation) = self.0.on_apply(command, effects, transaction).await?;
+        self.0.on_apply(command, effects, transaction).await?;
         counter!(PARTITION_APPLY_COMMAND, "command" => command_type).increment(1);
 
         // Log the effects
-        effects.log(is_leader, fid, span_relation);
+        effects.log(is_leader);
 
         // Interpret effects
         effect_interpreter::EffectInterpreter::<Codec>::interpret_effects(
@@ -388,7 +388,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::Invoke {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id)
             }))
         );
 
@@ -690,7 +690,7 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::Invoke {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id),
                 invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))
         );
@@ -799,7 +799,7 @@ mod tests {
             assert_that!(
                 actions,
                 contains(pat!(Action::Invoke {
-                    full_invocation_id: eq(fid.clone()),
+                    invocation_id: eq(invocation_id),
                     invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
                 }))
             );
@@ -1050,7 +1050,7 @@ mod tests {
             assert_that!(
                 actions,
                 contains(pat!(Action::Invoke {
-                    full_invocation_id: eq(original_request_fid.clone()),
+                    invocation_id: eq(original_invocation_id),
                     invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
                 }))
             );
@@ -1205,7 +1205,7 @@ mod tests {
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 invocation_id,
-                invocation_target,
+                invocation_target: invocation_target.clone(),
                 fid: fid.clone(),
                 method_name: ByteString::from("MyMethod"),
                 argument: Default::default(),
@@ -1221,7 +1221,8 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::Invoke {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id),
+                invocation_target: eq(invocation_target),
                 invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))
         );
@@ -1233,7 +1234,7 @@ mod tests {
         state_machine: &mut MockStateMachine,
         invocation_target: InvocationTarget,
     ) -> InvocationId {
-        let invocation_id = InvocationId::generate(&invocation_target, None::<String>);
+        let invocation_id = InvocationId::generate(&invocation_target);
         let fid = FullInvocationId::combine(
             ServiceId::with_partition_key(
                 invocation_id.partition_key(),
@@ -1252,7 +1253,7 @@ mod tests {
                 fid: fid.clone(),
                 method_name: invocation_target.handler_name().clone(),
                 invocation_id,
-                invocation_target,
+                invocation_target: invocation_target.clone(),
                 argument: Default::default(),
                 source: Source::Ingress,
                 response_sink: None,
@@ -1266,7 +1267,8 @@ mod tests {
         assert_that!(
             actions,
             contains(pat!(Action::Invoke {
-                full_invocation_id: eq(fid.clone()),
+                invocation_id: eq(invocation_id),
+                invocation_target: eq(invocation_target),
                 invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))
         );

@@ -70,6 +70,19 @@ impl InvocationStatusStore {
         }
     }
 
+    pub(super) fn on_server_header_receiver(
+        &mut self,
+        partition: &PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+        x_restate_server_header: String,
+    ) {
+        if let Some(inner) = self.0.get_mut(partition) {
+            if let Some(report) = inner.get_mut(invocation_id) {
+                report.last_attempt_server = Some(x_restate_server_header);
+            }
+        }
+    }
+
     pub(super) fn on_end(
         &mut self,
         partition: &PartitionLeaderEpoch,

@@ -13,7 +13,8 @@ use super::JournalMetadata;
 
 use restate_errors::NotRunningError;
 use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch, ServiceId};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use std::future::Future;
@@ -34,8 +35,7 @@ pub trait ServiceHandle {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        // TODO replace this with InvocationTarget with https://github.com/restatedev/restate/issues/1329
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> Self::Future;
 

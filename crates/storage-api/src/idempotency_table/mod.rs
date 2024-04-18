@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::Result;
+use super::{protobuf_storage_encode_decode, Result};
 
 use futures_util::Stream;
 use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
@@ -19,6 +19,8 @@ use std::ops::RangeInclusive;
 pub struct IdempotencyMetadata {
     pub invocation_id: InvocationId,
 }
+
+protobuf_storage_encode_decode!(IdempotencyMetadata);
 
 pub trait ReadOnlyIdempotencyTable {
     fn get_idempotency_metadata(

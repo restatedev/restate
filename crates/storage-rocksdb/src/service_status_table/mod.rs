@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
 use crate::keys::{define_table_key, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
@@ -16,14 +15,13 @@ use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
-use prost::Message;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
-use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_storage_api::Result;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
+use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
@@ -42,17 +40,6 @@ fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
         .service_key(service_id.key.clone())
 }
 
-fn to_service_status(
-    partition_key: PartitionKey,
-    pb_status: storage::v1::ServiceStatus,
-) -> Result<VirtualObjectStatus> {
-    let invocation_uuid = InvocationUuid::try_from(pb_status).map_err(StorageError::from)?;
-    Ok(VirtualObjectStatus::Locked(InvocationId::new(
-        partition_key,
-        invocation_uuid,
-    )))
-}
-
 fn put_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
@@ -65,8 +52,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     if status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key);
     } else {
-        let value = ProtoValue(storage::v1::ServiceStatus::from(status));
-        storage.put_kv(key, value);
+        storage.put_kv(key, status);
     }
 }
 
@@ -79,15 +65,9 @@ fn get_virtual_object_status<S: StorageAccess>(
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    storage.get_blocking(key, move |_, v| {
-        if v.is_none() {
-            return Ok(VirtualObjectStatus::Unlocked);
-        }
-        let v = v.unwrap();
-        let proto = storage::v1::ServiceStatus::decode(v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
-        to_service_status(service_id.partition_key(), proto)
-    })
+    storage
+        .get_value(key)
+        .map(|value| value.unwrap_or(VirtualObjectStatus::Unlocked))
 }
 
 fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
@@ -141,11 +121,9 @@ impl RocksDBStorage {
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedVirtualObjectStatusRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, value)| {
+        OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = storage::v1::ServiceStatus::decode(value).unwrap();
-            let state_value =
-                to_service_status(state_key.partition_key.unwrap(), state_value).unwrap();
+            let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value).unwrap();
             OwnedVirtualObjectStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 name: state_key.service_name.unwrap(),

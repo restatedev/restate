@@ -25,6 +25,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
+flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
@@ -55,6 +56,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+tempfile = { workspace = true }
 
 googletest = { workspace = true }
 rand = { workspace = true }

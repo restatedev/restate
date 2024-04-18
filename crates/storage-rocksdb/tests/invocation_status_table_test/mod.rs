@@ -8,7 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::assert_stream_eq;
+// Unfortunately we need this because of https://github.com/rust-lang/rust-clippy/issues/9801
+#![allow(clippy::borrow_interior_mutable_const)]
+#![allow(clippy::declare_interior_mutable_const)]
+
+use super::assert_stream_eq;
+
+use bytes::Bytes;
 use bytestring::ByteString;
 use once_cell::sync::Lazy;
 use restate_storage_api::invocation_status_table::{
@@ -16,9 +22,7 @@ use restate_storage_api::invocation_status_table::{
     StatusTimestamps,
 };
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::identifiers::{
-    FullInvocationId, InvocationId, InvocationUuid, ServiceId, WithPartitionKey,
-};
+use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::{
     HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
 };
@@ -26,40 +30,37 @@ use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
 use std::time::Duration;
 
-static SERVICE_ID_1: Lazy<ServiceId> = Lazy::new(|| ServiceId::new("abc", "1"));
-static INVOCATION_ID_1: Lazy<InvocationId> = Lazy::new(|| {
-    InvocationId::new(
-        SERVICE_ID_1.partition_key(),
-        InvocationUuid::from_parts(1706027034946, 12345678900001),
-    )
-});
+const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
+    name: ByteString::from_static("abc"),
+    key: ByteString::from_static("1"),
+    handler: ByteString::from_static("myhandler"),
+    handler_ty: HandlerType::Exclusive,
+};
+static INVOCATION_ID_1: Lazy<InvocationId> =
+    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_1));
 
-static SERVICE_ID_2: Lazy<ServiceId> = Lazy::new(|| ServiceId::new("abc", "2"));
-static INVOCATION_ID_2: Lazy<InvocationId> = Lazy::new(|| {
-    InvocationId::new(
-        SERVICE_ID_2.partition_key(),
-        InvocationUuid::from_parts(1706027034946, 12345678900002),
-    )
-});
+const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
+    name: ByteString::from_static("abc"),
+    key: ByteString::from_static("2"),
+    handler: ByteString::from_static("myhandler"),
+    handler_ty: HandlerType::Exclusive,
+};
+static INVOCATION_ID_2: Lazy<InvocationId> =
+    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_2));
 
-static SERVICE_ID_3: Lazy<ServiceId> = Lazy::new(|| ServiceId::new("abc", "3"));
-static INVOCATION_ID_3: Lazy<InvocationId> = Lazy::new(|| {
-    InvocationId::new(
-        SERVICE_ID_3.partition_key(),
-        InvocationUuid::from_parts(1706027034946, 12345678900003),
-    )
-});
+const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
+    name: ByteString::from_static("abc"),
+    key: ByteString::from_static("3"),
+    handler: ByteString::from_static("myhandler"),
+    handler_ty: HandlerType::Exclusive,
+};
+static INVOCATION_ID_3: Lazy<InvocationId> =
+    Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_3));
 
-fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
-    let service_id = service_id.into();
+fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
-        invocation_target: InvocationTarget::virtual_object(
-            service_id.service_name.clone(),
-            ByteString::try_from(service_id.key.clone()).unwrap(),
-            "service",
-            HandlerType::Exclusive,
-        ),
-        service_id,
+        invocation_target,
+        service_id: ServiceId::new("bla", Bytes::from_static(b"bla")),
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
         deployment_id: None,
         method: "service".into(),
@@ -71,17 +72,11 @@ fn invoked_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
     })
 }
 
-fn suspended_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
-    let service_id = service_id.into();
+fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Suspended {
         metadata: InFlightInvocationMetadata {
-            invocation_target: InvocationTarget::virtual_object(
-                service_id.service_name.clone(),
-                ByteString::try_from(service_id.key.clone()).unwrap(),
-                "service",
-                HandlerType::Exclusive,
-            ),
-            service_id,
+            invocation_target,
+            service_id: ServiceId::new("bla", Bytes::from_static(b"bla")),
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
             deployment_id: None,
             method: "service".into(),
@@ -96,14 +91,23 @@ fn suspended_status(service_id: impl Into<ServiceId>) -> InvocationStatus {
 }
 
 async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
-    txn.put_invocation_status(&INVOCATION_ID_1, invoked_status(SERVICE_ID_1.clone()))
-        .await;
+    txn.put_invocation_status(
+        &INVOCATION_ID_1,
+        invoked_status(INVOCATION_TARGET_1.clone()),
+    )
+    .await;
 
-    txn.put_invocation_status(&INVOCATION_ID_2, invoked_status(SERVICE_ID_2.clone()))
-        .await;
+    txn.put_invocation_status(
+        &INVOCATION_ID_2,
+        invoked_status(INVOCATION_TARGET_2.clone()),
+    )
+    .await;
 
-    txn.put_invocation_status(&INVOCATION_ID_3, suspended_status(SERVICE_ID_3.clone()))
-        .await;
+    txn.put_invocation_status(
+        &INVOCATION_ID_3,
+        suspended_status(INVOCATION_TARGET_3.clone()),
+    )
+    .await;
 }
 
 async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
@@ -112,15 +116,15 @@ async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
         .await
         .expect("should not fail");
 
-    assert_eq!(status, invoked_status(SERVICE_ID_1.clone()));
+    assert_eq!(status, invoked_status(INVOCATION_TARGET_1.clone()));
 }
 
 async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut T) {
     let stream = txn.invoked_invocations(0..=u64::MAX);
 
     let expected = vec![
-        FullInvocationId::combine(SERVICE_ID_1.clone(), *INVOCATION_ID_1),
-        FullInvocationId::combine(SERVICE_ID_2.clone(), *INVOCATION_ID_2),
+        (*INVOCATION_ID_1, INVOCATION_TARGET_1.clone()),
+        (*INVOCATION_ID_2, INVOCATION_TARGET_2.clone()),
     ];
 
     assert_stream_eq(stream, expected).await;

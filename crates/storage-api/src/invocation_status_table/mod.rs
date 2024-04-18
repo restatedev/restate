@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use crate::{protobuf_storage_encode_decode, Result};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
-use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, InvocationId, PartitionKey, ServiceId,
-};
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionKey, ServiceId};
 use restate_types::invocation::{
     Header, Idempotency, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -88,6 +86,17 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(metadata.service_id.clone()),
             InvocationStatus::Invoked(metadata) => Some(metadata.service_id.clone()),
             InvocationStatus::Suspended { metadata, .. } => Some(metadata.service_id.clone()),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn invocation_target(&self) -> Option<&InvocationTarget> {
+        match self {
+            InvocationStatus::Inboxed(metadata) => Some(&metadata.invocation_target),
+            InvocationStatus::Invoked(metadata) => Some(&metadata.invocation_target),
+            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.invocation_target),
+            InvocationStatus::Completed(completed) => Some(&completed.invocation_target),
             _ => None,
         }
     }
@@ -177,6 +186,8 @@ impl InvocationStatus {
         }
     }
 }
+
+protobuf_storage_encode_decode!(InvocationStatus);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
@@ -356,7 +367,7 @@ pub trait ReadOnlyInvocationStatusTable {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send;
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {

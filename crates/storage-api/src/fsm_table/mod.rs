@@ -8,23 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
-use bytes::Bytes;
-use futures_util::Stream;
+use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::PartitionId;
+use restate_types::storage::{StorageDecode, StorageEncode};
 use std::future::Future;
 
+#[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
+pub struct SequenceNumber(u64);
+
+protobuf_storage_encode_decode!(SequenceNumber);
+
 pub trait ReadOnlyFsmTable {
-    fn get(
+    fn get<T>(
         &mut self,
         partition_id: PartitionId,
         state_id: u64,
-    ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
-
-    fn get_all_states(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> impl Stream<Item = Result<(u64, Bytes)>> + Send;
+    ) -> impl Future<Output = Result<Option<T>>> + Send
+    where
+        T: StorageDecode;
 }
 
 pub trait FsmTable: ReadOnlyFsmTable {
@@ -32,7 +33,7 @@ pub trait FsmTable: ReadOnlyFsmTable {
         &mut self,
         partition_id: PartitionId,
         state_id: u64,
-        state_value: impl AsRef<[u8]>,
+        state_value: impl StorageEncode,
     ) -> impl Future<Output = ()> + Send;
 
     fn clear(

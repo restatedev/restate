@@ -358,7 +358,11 @@ impl InvocationId {
         }
     }
 
-    pub fn generate<IKey: Hash>(
+    pub fn generate(invocation_target: &InvocationTarget) -> Self {
+        InvocationId::generate_with_idempotency_key(invocation_target, None::<String>)
+    }
+
+    pub fn generate_with_idempotency_key<IKey: Hash>(
         invocation_target: &InvocationTarget,
         idempotency_key: Option<IKey>,
     ) -> Self {
@@ -641,7 +645,7 @@ impl IdempotencyId {
 
     pub fn new_combine(
         invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
+        invocation_target: &InvocationTarget,
         idempotency_key: ByteString,
     ) -> Self {
         IdempotencyId {

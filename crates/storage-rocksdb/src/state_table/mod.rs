@@ -60,7 +60,7 @@ fn put_user_state<S: StorageAccess>(
     state_value: impl AsRef<[u8]>,
 ) {
     let key = write_state_entry_key(service_id, state_key);
-    storage.put_kv(key, state_value.as_ref());
+    storage.put_kv_raw(key, state_value.as_ref());
 }
 
 fn delete_user_state<S: StorageAccess>(
@@ -95,7 +95,7 @@ fn get_user_state<S: StorageAccess>(
     state_key: impl AsRef<[u8]>,
 ) -> Result<Option<Bytes>> {
     let key = write_state_entry_key(service_id, state_key);
-    storage.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+    storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
 }
 
 fn get_all_user_states<S: StorageAccess>(

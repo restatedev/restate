@@ -18,8 +18,11 @@ restate-test-util = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true }
+flexbuffers = { workspace = true }
 http = { workspace = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
+strum_macros = { workspace = true }
 
 [dev-dependencies]
 

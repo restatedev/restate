@@ -54,6 +54,15 @@ message Duration {
     uint32 nanos = 2;
 }
 
+message InvocationId {
+    uint64 partition_key = 1;
+    bytes invocation_uuid = 2;
+}
+
+message SequenceNumber {
+    uint64 sequence_number = 1;
+}
+
 // ---------------------------------------------------------------------
 // Service Invocation
 // ---------------------------------------------------------------------
@@ -164,9 +173,9 @@ message InvocationStatus {
     }
 }
 
-message ServiceStatus {
+message VirtualObjectStatus {
     message Locked {
-        bytes invocation_uuid = 1;
+        InvocationId invocation_id = 1;
     }
 
     oneof status {

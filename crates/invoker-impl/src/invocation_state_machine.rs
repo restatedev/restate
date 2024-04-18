@@ -21,7 +21,7 @@ use tokio::task::AbortHandle;
 /// Component encapsulating the business logic of the invocation state machine
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
-    pub(super) service_id: ServiceId,
+    pub(super) invocation_target: InvocationTarget,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter,
 }
@@ -129,11 +129,11 @@ impl fmt::Debug for InvocationState {
 
 impl InvocationStateMachine {
     pub(super) fn create(
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         retry_policy: RetryPolicy,
     ) -> InvocationStateMachine {
         Self {
-            service_id,
+            invocation_target,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
         }
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
-            ServiceId::mock_random(),
+            InvocationTarget::mock_virtual_object(),
             RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
         );
 
@@ -353,7 +353,7 @@ mod tests {
     #[test(tokio::test)]
     async fn handle_requires_ack() {
         let mut invocation_state_machine = InvocationStateMachine::create(
-            ServiceId::mock_random(),
+            InvocationTarget::mock_virtual_object(),
             RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
         );
 
