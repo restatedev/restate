@@ -131,7 +131,7 @@ pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationStat
         InvocationState::Running => DStyle::new().green(),
         InvocationState::Suspended => DStyle::new().dim(),
         InvocationState::BackingOff => DStyle::new().red(),
-        InvocationState::Inboxed => DStyle::new().blue(),
+        InvocationState::Completed => DStyle::new().blue(),
     };
     status_style.apply_to(status)
 }

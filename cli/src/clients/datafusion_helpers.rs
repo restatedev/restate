@@ -120,24 +120,24 @@ pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
     Unknown,
-    Inboxed,
     Pending,
     Ready,
     Running,
     Suspended,
     BackingOff,
+    Completed,
 }
 
 impl FromStr for InvocationState {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "inboxed" => Self::Inboxed,
             "pending" => Self::Pending,
             "ready" => Self::Ready,
             "running" => Self::Running,
             "suspended" => Self::Suspended,
             "backing-off" => Self::BackingOff,
+            "completed" => Self::Completed,
             _ => Self::Unknown,
         })
     }
@@ -152,7 +152,7 @@ impl Display for InvocationState {
             InvocationState::Running => write!(f, "running"),
             InvocationState::Suspended => write!(f, "suspended"),
             InvocationState::BackingOff => write!(f, "backing-off"),
-            InvocationState::Inboxed => write!(f, "inboxed"),
+            InvocationState::Completed => write!(f, "completed"),
         }
     }
 }
@@ -474,7 +474,8 @@ pub async fn get_service_status(
                 ss.component,
                 ss.handler,
                 CASE
-                 WHEN ss.status = 'inboxed' THEN 'inboxed'
+                 WHEN ss.status = 'inboxed' THEN 'pending'
+                 WHEN ss.status = 'completed' THEN 'completed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -615,7 +616,8 @@ pub async fn get_locked_keys_status(
                 ss.handler,
                 ss.component_key,
                 CASE
-                 WHEN ss.status = 'inboxed' THEN 'inboxed'
+                 WHEN ss.status = 'inboxed' THEN 'pending'
+                 WHEN ss.status = 'completed' THEN 'completed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -721,11 +723,12 @@ pub async fn find_active_invocations(
             ss.handler,
             ss.component_key,
             CASE
-             WHEN ss.status = 'inboxed' THEN 'inboxed'
-             WHEN ss.status = 'suspended' THEN 'suspended'
-             WHEN sis.in_flight THEN 'running'
-             WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-             ELSE 'ready'
+                WHEN ss.status = 'inboxed' THEN 'pending'
+                WHEN ss.status = 'completed' THEN 'completed'
+                WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN sis.in_flight THEN 'running'
+                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                ELSE 'ready'
             END AS combined_status,
             ss.created_at,
             ss.modified_at,
