@@ -51,7 +51,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::MetasClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     // To know the latest version of every service.
-    let components = client.get_components().await?.into_body().await?.components;
+    let services = client.get_components().await?.into_body().await?.components;
 
     let deployments = client
         .get_deployments()
@@ -67,9 +67,9 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         return Ok(());
     }
     // For each deployment, we need to calculate the status and # of invocations.
-    let mut latest_components: HashMap<String, ComponentMetadata> = HashMap::new();
-    for component in components {
-        latest_components.insert(component.name.clone(), component);
+    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
+    for service in services {
+        latest_services.insert(service.name.clone(), service);
     }
     //
     let mut table = Table::new_styled(&env.ui_config);
@@ -82,7 +82,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         "CREATED AT",
     ];
     if list_opts.extra {
-        header.push("COMPONENTS");
+        header.push("SERVICES");
     }
     table.set_styled_header(header);
 
@@ -96,7 +96,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             &deployment.id,
             &deployment.components,
             active_inv,
-            &latest_components,
+            &latest_services,
         );
         enriched_deployments.push((deployment, status, active_inv));
     }
@@ -120,10 +120,10 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             }),
         ];
         if list_opts.extra {
-            row.push(render_components(
+            row.push(render_services(
                 &deployment.id,
                 &deployment.components,
-                &latest_components,
+                &latest_services,
             ));
         }
 
@@ -135,17 +135,17 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     Ok(())
 }
 
-fn render_components(
+fn render_services(
     deployment_id: &DeploymentId,
-    components: &[ComponentNameRevPair],
-    latest_components: &HashMap<String, ComponentMetadata>,
+    services: &[ComponentNameRevPair],
+    latest_services: &HashMap<String, ComponentMetadata>,
 ) -> Cell {
     use std::fmt::Write as FmtWrite;
 
     let mut out = String::new();
-    for component in components {
-        if let Some(latest_component) = latest_components.get(&component.name) {
-            let style = if &latest_component.deployment_id == deployment_id {
+    for service in services {
+        if let Some(latest_service) = latest_services.get(&service.name) {
+            let style = if &latest_service.deployment_id == deployment_id {
                 // We are hosting the latest revision of this service.
                 Style::Success
             } else {
@@ -154,8 +154,8 @@ fn render_components(
             writeln!(
                 &mut out,
                 "- {} [{}]",
-                &component.name,
-                Styled(style, component.revision)
+                &service.name,
+                Styled(style, service.revision)
             )
             .unwrap();
         } else {
@@ -164,8 +164,8 @@ fn render_components(
             writeln!(
                 &mut out,
                 "- {} [{}]",
-                Styled(Style::Danger, &component.name),
-                component.revision
+                Styled(Style::Danger, &service.name),
+                service.revision
             )
             .unwrap();
         }

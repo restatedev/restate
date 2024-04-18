@@ -98,12 +98,12 @@ pub fn invocation_qualified_name(invocation: &Invocation) -> String {
     let svc = if let Some(key) = &invocation.key {
         format!(
             "[{} {} {}]",
-            invocation.component,
+            invocation.service,
             style("@").dim(),
             style(key).dim(),
         )
     } else {
-        invocation.component.to_string()
+        invocation.service.to_string()
     };
     format!("{}{}{}", svc, style("::").dim(), invocation.handler)
 }
@@ -147,7 +147,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         let invoked_by_msg = format!(
             "{} {}",
             invocation
-                .invoked_by_component
+                .invoked_by_service
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
