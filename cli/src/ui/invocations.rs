@@ -256,10 +256,8 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
         }
         JournalEntryType::Invoke(inv) | JournalEntryType::BackgroundInvoke(inv) => {
             format!(
-                "{}{}{} {}",
-                inv.invoked_component.as_ref().unwrap(),
-                style("::").dim(),
-                inv.invoked_handler.as_ref().unwrap(),
+                "{} {}",
+                inv.invoked_target.as_ref().unwrap(),
                 inv.invocation_id.as_deref().unwrap_or(""),
             )
         }

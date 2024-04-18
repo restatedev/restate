@@ -18,9 +18,7 @@ use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 
 use crate::table_util::format_using;
-use restate_types::journal::{
-    BackgroundInvokeEntry, Entry, InvokeEntry, InvokeRequest, SleepEntry,
-};
+use restate_types::journal::{Entry, SleepEntry};
 
 #[inline]
 pub(crate) fn append_journal_row(
@@ -45,6 +43,19 @@ pub(crate) fn append_journal_row(
                 row.completed(completed);
             }
 
+            if row.is_name_defined() {
+                if let Some(name) = entry
+                    .deserialize_name::<ProtobufRawEntryCodec>()
+                    .expect("journal entry must deserialize")
+                {
+                    row.name(name);
+                }
+            }
+
+            if row.is_raw_defined() {
+                row.raw(entry.serialized_entry());
+            }
+
             match &entry.header() {
                 EnrichedEntryHeader::Invoke {
                     enrichment_result: Some(enrichment_result),
@@ -53,20 +64,14 @@ pub(crate) fn append_journal_row(
                 | EnrichedEntryHeader::BackgroundInvoke {
                     enrichment_result, ..
                 } => {
-                    if let Some(key) = enrichment_result.invocation_target.key() {
-                        row.invoked_component_key(key);
-                    }
-
-                    row.invoked_component(enrichment_result.invocation_target.service_name());
-
                     if row.is_invoked_id_defined() {
                         row.invoked_id(format_using(output, &enrichment_result.invocation_id));
                     }
-
-                    if row.is_invoked_handler_defined() {
-                        if let Some(request) = deserialize_invocation_request(&entry) {
-                            row.invoked_handler(&request.method_name);
-                        }
+                    if row.is_invoked_target_defined() {
+                        row.invoked_target(format_using(
+                            output,
+                            &enrichment_result.invocation_target,
+                        ));
                     }
                 }
                 EnrichedEntryHeader::Sleep { .. } => {
@@ -84,22 +89,6 @@ pub(crate) fn append_journal_row(
             row.completed(true);
         }
     };
-}
-
-fn deserialize_invocation_request(entry: &EnrichedRawEntry) -> Option<InvokeRequest> {
-    let decoded_entry = entry
-        .deserialize_entry_ref::<ProtobufRawEntryCodec>()
-        .expect("journal entry must deserialize");
-
-    debug_assert!(matches!(
-        decoded_entry,
-        Entry::Invoke(_) | Entry::BackgroundInvoke(_)
-    ));
-    match decoded_entry {
-        Entry::Invoke(InvokeEntry { request, .. })
-        | Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) => Some(request),
-        _ => None,
-    }
 }
 
 fn deserialize_sleep_entry(entry: &EnrichedRawEntry) -> Option<SleepEntry> {

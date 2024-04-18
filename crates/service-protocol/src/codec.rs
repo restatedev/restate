@@ -36,6 +36,13 @@ macro_rules! match_decode {
     };
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct NamedEntryTemplate {
+    // By spec the field `name` is always tag 12
+    #[prost(string, optional, tag = "12")]
+    name: Option<String>,
+}
+
 #[derive(Debug, Default, Copy, Clone)]
 pub struct ProtobufRawEntryCodec;
 
@@ -88,6 +95,22 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             CompleteAwakeable,
             SideEffect
         })
+    }
+
+    fn read_entry_name(
+        entry_type: EntryType,
+        entry_value: Bytes,
+    ) -> Result<Option<String>, RawEntryCodecError> {
+        Ok(NamedEntryTemplate::decode(entry_value)
+            .map_err(|e| {
+                RawEntryCodecError::new(
+                    entry_type,
+                    ErrorKind::Decode {
+                        source: Some(e.into()),
+                    },
+                )
+            })?
+            .name)
     }
 
     fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(

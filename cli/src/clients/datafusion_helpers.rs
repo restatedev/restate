@@ -160,9 +160,7 @@ impl Display for InvocationState {
 #[derive(Debug, Clone)]
 pub struct OutgoingInvoke {
     pub invocation_id: Option<String>,
-    pub invoked_component: Option<String>,
-    pub invoked_handler: Option<String>,
-    pub invoked_component_key: Option<String>,
+    pub invoked_target: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -886,9 +884,7 @@ pub async fn get_invocation_journal(
             sj.entry_type,
             sj.completed,
             sj.invoked_id,
-            sj.invoked_component,
-            sj.invoked_handler,
-            sj.invoked_component_key,
+            sj.invoked_target,
             sj.sleep_wakeup_at
         FROM sys_journal sj
         WHERE
@@ -911,24 +907,18 @@ pub async fn get_invocation_journal(
             let entry_type = value_as_string(&batch, 1, i);
             let completed = batch.column(2).as_boolean().value(i);
             let outgoing_invocation_id = value_as_string_opt(&batch, 3, i);
-            let invoked_component = value_as_string_opt(&batch, 4, i);
-            let invoked_handler = value_as_string_opt(&batch, 5, i);
-            let invoked_component_key = value_as_string_opt(&batch, 6, i);
-            let wakeup_at = value_as_dt_opt(&batch, 7, i);
+            let outgoing_invoked_target = value_as_string_opt(&batch, 4, i);
+            let wakeup_at = value_as_dt_opt(&batch, 5, i);
 
             let entry_type = match entry_type.as_str() {
                 "Sleep" => JournalEntryType::Sleep { wakeup_at },
                 "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_component,
-                    invoked_handler,
-                    invoked_component_key,
+                    invoked_target: outgoing_invoked_target,
                 }),
                 "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_component,
-                    invoked_handler,
-                    invoked_component_key,
+                    invoked_target: outgoing_invoked_target,
                 }),
                 "Awakeable" => {
                     JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))

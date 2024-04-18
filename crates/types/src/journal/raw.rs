@@ -93,6 +93,12 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
         Codec::deserialize(self.ty(), self.entry.clone())
     }
 
+    pub fn deserialize_name<Codec: RawEntryCodec>(
+        &self,
+    ) -> Result<Option<String>, RawEntryCodecError> {
+        Codec::read_entry_name(self.ty(), self.entry.clone())
+    }
+
     pub fn erase_enrichment(self) -> PlainRawEntry {
         self.map_header(|h, _| h.erase_enrichment())
     }
@@ -257,6 +263,11 @@ pub trait RawEntryCodec {
     fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult;
 
     fn deserialize(entry_type: EntryType, entry_value: Bytes) -> Result<Entry, RawEntryCodecError>;
+
+    fn read_entry_name(
+        entry_type: EntryType,
+        entry_value: Bytes,
+    ) -> Result<Option<String>, RawEntryCodecError>;
 
     fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(
         entry: &mut RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
