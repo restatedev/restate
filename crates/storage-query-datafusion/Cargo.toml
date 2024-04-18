@@ -43,6 +43,8 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-invoker-api = { workspace = true, features = ["mocks"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-storage-api = { workspace = true, features = ["mocks"] }
+restate-service-protocol = { workspace = true, features = ["mocks"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 drain = { workspace = true }
