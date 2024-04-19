@@ -23,7 +23,7 @@ use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, Statis
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::{CfName, DbName, DbSpec, Owner, RocksAccess, RocksDb, RocksError};
+use crate::{DbName, DbSpec, Owner, RocksAccess, RocksDb, RocksError};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -133,28 +133,11 @@ impl RocksDbManager {
         // use the spec default options as base then apply the config from the updateable.
         self.amend_db_options(&mut db_spec.db_options, &options);
 
-        // for every column family, generate cf_options with the same strategy
-        for (_, cf_opts) in &mut db_spec.column_families {
-            self.amend_cf_options(cf_opts, &options);
-        }
+        let (db, cfs) = RocksAccess::open_db(&db_spec, self.default_cf_options(&options))?;
+        let db = Arc::new(db);
 
-        // make sure default column family uses the global cache so that it doesn't create
-        // its own cache (wastes ~32MB RSS per db)
-        if !db_spec
-            .column_families
-            .iter()
-            .any(|(c, _)| c.as_str() == "default")
-        {
-            let mut cf_opts = rocksdb::Options::default();
-            self.amend_cf_options(&mut cf_opts, &options);
-            db_spec
-                .column_families
-                .push((CfName::new("default"), cf_opts));
-        }
-
-        let db = Arc::new(RocksAccess::open_db(&db_spec)?);
         let path = db_spec.path.clone();
-        let wrapper = Arc::new(RocksDb::new(db_spec, db.clone()));
+        let wrapper = Arc::new(RocksDb::new(db_spec, db.clone(), cfs));
 
         self.dbs.insert((owner, name.clone()), wrapper);
 
@@ -236,29 +219,8 @@ impl RocksDbManager {
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
         for v in &self.dbs {
-            tasks.spawn_blocking(move || {
-                info!(
-                    db = %v.name,
-                    owner = %v.owner,
-                    "Shutting down rocksdb database"
-                );
-                if let Err(e) = v.db.flush_wal(true) {
-                    warn!(
-                        db = %v.name,
-                        owner = %v.owner,
-                        "Failed to flush local loglet rocksdb WAL: {}",
-                        e
-                    );
-                }
-                if let Err(e) = v.db.flush_memtables(v.cfs().as_slice(), true) {
-                    warn!(
-                        db = %v.name,
-                        owner = %v.owner,
-                        "Failed to flush memtables: {}",
-                        e
-                    );
-                }
-                v.db.cancel_all_background_work(true);
+            tasks.spawn(async move {
+                v.shutdown().await;
                 (v.name.clone(), v.owner)
             });
         }
@@ -325,7 +287,8 @@ impl RocksDbManager {
         db_options.set_use_direct_io_for_flush_and_compaction(true);
     }
 
-    fn amend_cf_options(&self, cf_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
+    fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
+        let mut cf_options = rocksdb::Options::default();
         // write buffer
         //
         cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size());
@@ -340,6 +303,8 @@ impl RocksDbManager {
         block_opts.set_cache_index_and_filter_blocks(true);
         block_opts.set_block_cache(&self.cache);
         cf_options.set_block_based_table_factory(&block_opts);
+
+        cf_options
     }
 }
 
