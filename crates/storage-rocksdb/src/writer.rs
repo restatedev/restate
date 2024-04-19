@@ -111,7 +111,7 @@ impl Writer {
         replies: &mut Vec<Sender<Result<(), StorageError>>>,
     ) -> Result<(), Error> {
         replies.push(response_tx);
-        if !try_write_batch(&self.db, replies, write_batch) {
+        if !try_write_batch(&self.db, replies, &write_batch) {
             return Ok(());
         }
         //
@@ -123,7 +123,7 @@ impl Writer {
         }) = self.rx.try_recv()
         {
             replies.push(response_tx);
-            if !try_write_batch(&self.db, replies, write_batch) {
+            if !try_write_batch(&self.db, replies, &write_batch) {
                 return Ok(());
             }
         }
@@ -145,7 +145,7 @@ impl Writer {
 fn try_write_batch(
     db: &Arc<DB>,
     futures: &mut Vec<Sender<Result<(), StorageError>>>,
-    batch: WriteBatch,
+    batch: &WriteBatch,
 ) -> bool {
     let result = db
         .write(batch)
