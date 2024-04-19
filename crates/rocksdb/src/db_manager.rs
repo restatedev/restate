@@ -58,6 +58,7 @@ impl Debug for RocksDbManager {
 }
 
 impl RocksDbManager {
+    #[track_caller]
     pub fn get() -> &'static RocksDbManager {
         DB_MANAGER.get().expect("DBManager not initialized")
     }

@@ -13,7 +13,8 @@ use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::grpc::handler::LocalMetadataStoreHandler;
 use crate::local::store::LocalMetadataStore;
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_types::config::MetadataStoreOptions;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::net::BindAddress;
 use tonic::server::NamedService;
 
@@ -41,8 +42,12 @@ impl LocalMetadataStoreService {
             bind_address,
         }
     }
-    pub fn from_options(opts: &MetadataStoreOptions) -> Result<Self, BuildError> {
-        let store = LocalMetadataStore::new(opts.data_dir(), opts.request_queue_length)?;
+    pub fn from_options(
+        opts: &MetadataStoreOptions,
+        rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
+    ) -> Result<Self, BuildError> {
+        let store =
+            LocalMetadataStore::new(opts.data_dir(), opts.request_queue_length, rocksdb_options)?;
         Ok(LocalMetadataStoreService::new(
             store,
             opts.bind_address.clone(),

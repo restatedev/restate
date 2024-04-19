@@ -15,8 +15,11 @@ use crate::{MetadataStoreClient, Precondition, WriteError};
 use bytestring::ByteString;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
+use restate_rocksdb::RocksDbManager;
+use restate_types::arc_util::Constant;
+use restate_types::config::{CommonOptions, Configuration};
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
@@ -237,9 +240,13 @@ async fn durable_storage() -> anyhow::Result<()> {
         })
         .await?;
 
-    env.tc.shutdown_node("shutdown", 0).await;
-
-    let (client, env) = create_test_environment_with_path(rocksdb_path).await?;
+    // restart the metadata store
+    env.tc
+        .cancel_tasks(Some(TaskKind::MetadataStore), None)
+        .await;
+    // reset RocksDbManager to allow restarting the metadata store
+    RocksDbManager::get().reset().await?;
+    let client = start_metadata_store(rocksdb_path, &env.tc).await?;
 
     // validate data
     env.tc
@@ -275,22 +282,38 @@ async fn create_test_environment(
 async fn create_test_environment_with_path(
     rocksdb_path: impl AsRef<Path>,
 ) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<MockNetworkSender>)> {
+    let env = TestCoreEnvBuilder::new_with_mock_network().build().await;
+
+    let task_center = &env.tc;
+
+    task_center.run_in_scope_sync("db-manager-init", None, || {
+        RocksDbManager::init(Constant::new(CommonOptions::default()))
+    });
+
+    let client = start_metadata_store(rocksdb_path, task_center).await?;
+
+    Ok((client, env))
+}
+
+async fn start_metadata_store(
+    rocksdb_path: impl AsRef<Path> + Sized,
+    task_center: &TaskCenter,
+) -> anyhow::Result<MetadataStoreClient> {
+    let store = LocalMetadataStore::new(
+        rocksdb_path,
+        32,
+        Configuration::mapped_updateable(|config| &config.common.rocksdb),
+    )?;
+
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
     let advertised_address = AdvertisedAddress::Uds(uds_path);
-    let store = LocalMetadataStore::new(rocksdb_path, 32)?;
     let service = LocalMetadataStoreService::new(store, bind_address);
     let grpc_service_name = service.grpc_service_name().to_owned();
 
-    let rocksdb_client = LocalMetadataStoreClient::new(advertised_address.clone());
-
-    let client = MetadataStoreClient::new(rocksdb_client);
-
-    let env = TestCoreEnvBuilder::new_with_mock_network().build().await;
-
-    env.tc.spawn(
-        TaskKind::SystemService,
-        "metadata-store",
+    task_center.spawn(
+        TaskKind::MetadataStore,
+        "local-metadata-store",
         None,
         async move {
             service.run().await?;
@@ -300,7 +323,7 @@ async fn create_test_environment_with_path(
 
     // await start-up of metadata store
     let health_client = HealthClient::new(create_grpc_channel_from_advertised_address(
-        advertised_address,
+        advertised_address.clone(),
     )?);
     let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, usize::MAX, None);
 
@@ -315,5 +338,8 @@ async fn create_test_environment_with_path(
         })
         .await?;
 
-    Ok((client, env))
+    let rocksdb_client = LocalMetadataStoreClient::new(advertised_address);
+    let client = MetadataStoreClient::new(rocksdb_client);
+
+    Ok(client)
 }

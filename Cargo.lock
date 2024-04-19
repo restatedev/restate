@@ -5648,6 +5648,7 @@ dependencies = [
  "restate-core",
  "restate-grpc-util",
  "restate-node-protocol",
+ "restate-rocksdb",
  "restate-types",
  "rocksdb",
  "schemars",

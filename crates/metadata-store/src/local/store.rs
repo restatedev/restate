@@ -13,6 +13,11 @@ use bytestring::ByteString;
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
+use restate_rocksdb::{
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
+};
+use restate_types::arc_util::Updateable;
+use restate_types::config::RocksDbOptions;
 use restate_types::errors::GenericError;
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, Options, WriteOptions, DB};
@@ -28,6 +33,7 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
 type Result<T> = std::result::Result<T, Error>;
 
+const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
 
 #[derive(Debug)]
@@ -82,7 +88,7 @@ impl Error {
 pub enum BuildError {
     #[error("failed opening rocksdb: {0}")]
     #[code(unknown)]
-    RocksDB(#[from] rocksdb::Error),
+    RocksDB(#[from] RocksError),
 }
 
 /// Single node metadata store which stores the key value pairs in RocksDB.
@@ -90,7 +96,7 @@ pub enum BuildError {
 /// In order to avoid issues arising from concurrency, we run the metadata
 /// store in a single thread.
 pub struct LocalMetadataStore {
-    db: DB,
+    db: Arc<DB>,
     write_opts: WriteOptions,
     request_rx: RequestReceiver,
 
@@ -100,17 +106,25 @@ pub struct LocalMetadataStore {
 
 impl LocalMetadataStore {
     pub fn new(
-        path: impl AsRef<Path>,
+        data_dir: impl AsRef<Path>,
         request_queue_length: usize,
+        rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> std::result::Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(request_queue_length);
 
-        let cfs = vec![rocksdb::ColumnFamilyDescriptor::new(
-            KV_PAIRS,
-            Self::cf_options(),
-        )];
+        let db_manager = RocksDbManager::get();
+        let cfs = vec![CfName::new(KV_PAIRS)];
+        let db_spec = DbSpecBuilder::new(
+            DbName::new(DB_NAME),
+            Owner::MetadataStore,
+            data_dir.as_ref().to_path_buf(),
+            Options::default(),
+        )
+        .add_cf_pattern(CfPrefixPattern::ANY, |opts| opts)
+        .ensure_column_families(cfs)
+        .build_as_db();
 
-        let db = DB::open_cf_descriptors(&Self::db_options(), path, cfs)?;
+        let db = db_manager.open_db(rocksdb_options, db_spec)?;
 
         Ok(Self {
             db,
@@ -118,22 +132,6 @@ impl LocalMetadataStore {
             request_rx,
             request_tx,
         })
-    }
-
-    fn db_options() -> Options {
-        // todo optimize db settings
-        let mut options = Options::default();
-
-        // create missing db/cfs if not present
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
-
-        options
-    }
-
-    fn cf_options() -> Options {
-        // todo optimize cf settings
-        Options::default()
     }
 
     fn default_write_options() -> WriteOptions {

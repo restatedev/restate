@@ -16,6 +16,7 @@ codederror = { workspace = true }
 restate-core = { workspace = true }
 restate-grpc-util = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -45,6 +46,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
 
 anyhow = { workspace = true }
 flexbuffers = { workspace = true }
