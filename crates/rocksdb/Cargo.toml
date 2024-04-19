@@ -17,18 +17,18 @@ restate-types = { workspace = true }
 restate-core = { workspace = true }
 
 anyhow = { workspace = true }
-async-trait = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-dashmap = { workspace = true }
 derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 once_cell = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
 rocksdb = { workspace = true }
 smartstring = { workspace = true }
 static_assertions = { workspace = true }

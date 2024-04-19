@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bytesize::ByteSize;
-use dashmap::DashMap;
+use parking_lot::RwLock;
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
@@ -23,7 +24,7 @@ use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, Statis
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::{DbName, DbSpec, Owner, RocksAccess, RocksDb, RocksError};
+use crate::{DbName, DbSpec, Owner, Priority, RocksAccess, RocksDb, RocksError};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -43,9 +44,11 @@ pub struct RocksDbManager {
     cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
     write_buffer_manager: WriteBufferManager,
-    dbs: DashMap<(Owner, DbName), Arc<RocksDb>>,
+    dbs: RwLock<HashMap<(Owner, DbName), Arc<RocksDb>>>,
     watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     shutting_down: AtomicBool,
+    high_pri_pool: rayon::ThreadPool,
+    low_pri_pool: rayon::ThreadPool,
 }
 
 impl Debug for RocksDbManager {
@@ -81,7 +84,20 @@ impl RocksDbManager {
         env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
         env.set_high_priority_background_threads(opts.rocksdb_high_priority_bg_threads.get() as i32);
 
-        let dbs = DashMap::default();
+        // Create our own storage thread pools
+        let high_pri_pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("rs:storage-hi-{}", i))
+            .num_threads(opts.storage_high_priority_bg_threads().into())
+            .build()
+            .expect("storage high priority thread pool to be created");
+
+        let low_pri_pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("rs:storage-lo-{}", i))
+            .num_threads(opts.storage_low_priority_bg_threads().into())
+            .build()
+            .expect("storage low priority thread pool to be created");
+
+        let dbs = RwLock::default();
 
         // unbounded channel since commands are rare and we don't want to block
         let (watchdog_tx, watchdog_rx) = mpsc::unbounded_channel();
@@ -93,6 +109,8 @@ impl RocksDbManager {
             dbs,
             watchdog_tx,
             shutting_down: AtomicBool::new(false),
+            high_pri_pool,
+            low_pri_pool,
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
@@ -110,7 +128,7 @@ impl RocksDbManager {
     }
 
     pub fn get_db(&self, owner: Owner, name: DbName) -> Option<Arc<RocksDb>> {
-        self.dbs.get(&(owner, name)).as_deref().cloned()
+        self.dbs.read().get(&(owner, name)).cloned()
     }
 
     // todo: move this to async after allowing bifrost to async-create providers.
@@ -141,7 +159,7 @@ impl RocksDbManager {
         let path = db_spec.path.clone();
         let wrapper = Arc::new(RocksDb::new(self, db_spec, db.clone()));
 
-        self.dbs.insert((owner, name.clone()), wrapper);
+        self.dbs.write().insert((owner, name.clone()), wrapper);
 
         if let Err(e) = self
             .watchdog_tx
@@ -198,13 +216,13 @@ impl RocksDbManager {
         builder.add_cache(&self.cache);
 
         if filter.is_empty() {
-            for db in self.dbs.iter() {
-                db.db.record_memory_stats(&mut builder);
+            for db in self.dbs.read().values() {
+                db.record_memory_stats(&mut builder);
             }
         } else {
             for key in filter {
-                if let Some(db) = self.dbs.get(key) {
-                    db.db.record_memory_stats(&mut builder);
+                if let Some(db) = self.dbs.read().get(key) {
+                    db.record_memory_stats(&mut builder);
                 }
             }
         }
@@ -213,17 +231,17 @@ impl RocksDbManager {
     }
 
     pub fn get_all_dbs(&self) -> Vec<Arc<RocksDb>> {
-        self.dbs.iter().map(|k| k.clone()).collect()
+        self.dbs.read().values().cloned().collect()
     }
 
     pub async fn shutdown(&'static self) {
         // Ask all databases to shutdown cleanly.
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
-        for v in &self.dbs {
+        for ((owner, name), db) in self.dbs.write().drain() {
             tasks.spawn(async move {
-                v.shutdown().await;
-                (v.name.clone(), v.owner)
+                db.shutdown().await;
+                (name.clone(), owner)
             });
         }
         // wait for all tasks to complete
@@ -307,6 +325,76 @@ impl RocksDbManager {
         cf_options.set_block_based_table_factory(&block_opts);
 
         cf_options
+    }
+
+    /// Spawn a rocksdb blocking operation in the background
+    pub(crate) async fn async_spawn<OP, R>(
+        &self,
+        priority: Priority,
+        op: OP,
+    ) -> Result<R, ShutdownError>
+    where
+        OP: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        if self
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ShutdownError);
+        }
+
+        self.async_spawn_unchecked(priority, op).await
+    }
+
+    /// Ignores the shutdown signal. This should be used if an IO operation needs
+    /// to be performed _during_ shutdown.
+    pub(crate) async fn async_spawn_unchecked<OP, R>(
+        &self,
+        priority: Priority,
+        op: OP,
+    ) -> Result<R, ShutdownError>
+    where
+        OP: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let action = move || {
+            let result = op();
+            // ignoring the error since receiver might not be interested in the response
+            let _ = tx.send(result);
+        };
+        match priority {
+            Priority::High => self.high_pri_pool.spawn(action),
+            Priority::Low => self.low_pri_pool.spawn(action),
+        }
+        rx.await.map_err(|_| ShutdownError)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn spawn<OP>(&self, priority: Priority, op: OP) -> Result<(), ShutdownError>
+    where
+        OP: FnOnce() + Send + 'static,
+    {
+        if self
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ShutdownError);
+        }
+        self.spawn_unchecked(priority, op);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn spawn_unchecked<OP>(&self, priority: Priority, op: OP)
+    where
+        OP: FnOnce() + Send + 'static,
+    {
+        match priority {
+            Priority::High => self.high_pri_pool.spawn(op),
+            Priority::Low => self.low_pri_pool.spawn(op),
+        }
     }
 }
 
