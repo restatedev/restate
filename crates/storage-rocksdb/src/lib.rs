@@ -198,16 +198,9 @@ impl Clone for RocksDBStorage {
 
 fn db_options() -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
-    db_options.set_atomic_flush(true);
-    //
     // no need to retain 1000 log files by default.
     //
     db_options.set_keep_log_file_num(1);
-    //
-    // Allow mmap read and write.
-    //
-    db_options.set_allow_mmap_reads(true);
-    db_options.set_allow_mmap_writes(true);
 
     db_options
 }

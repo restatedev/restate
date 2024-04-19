@@ -15,17 +15,15 @@ use std::time::Instant;
 
 use bytesize::ByteSize;
 use dashmap::DashMap;
-use rocksdb::{Cache, WriteBufferManager};
+use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_types::arc_util::Updateable;
-use restate_types::config::{CommonOptions, Configuration, RocksDbOptions};
+use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::{
-    amend_cf_options, amend_db_options, DbName, DbSpec, Owner, RocksAccess, RocksDb, RocksError,
-};
+use crate::{CfName, DbName, DbSpec, Owner, RocksAccess, RocksDb, RocksError};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -40,6 +38,7 @@ enum WatchdogCommand {
 ///
 /// It doesn't try to limit rocksdb use-cases from accessing the raw rocksdb.
 pub struct RocksDbManager {
+    env: rocksdb::Env,
     /// a shared rocksdb block cache
     cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
@@ -76,12 +75,19 @@ impl RocksDbManager {
             true,
             cache.clone(),
         );
+
+        // Setup the shared rocksdb environment
+        let mut env = rocksdb::Env::new().expect("rocksdb env is created");
+        env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
+        env.set_high_priority_background_threads(opts.rocksdb_high_priority_bg_threads.get() as i32);
+
         let dbs = DashMap::default();
 
         // unbounded channel since commands are rare and we don't want to block
         let (watchdog_tx, watchdog_rx) = mpsc::unbounded_channel();
 
         let manager = Self {
+            env,
             cache,
             write_buffer_manager,
             dbs,
@@ -125,16 +131,25 @@ impl RocksDbManager {
         let name = db_spec.name.clone();
         let owner = db_spec.owner;
         // use the spec default options as base then apply the config from the updateable.
-        amend_db_options(&mut db_spec.db_options, &options);
-        // write butter is controlled by write buffer manager
-        db_spec
-            .db_options
-            .set_write_buffer_manager(&self.write_buffer_manager);
-        // todo: set avoid_unnecessary_blocking_io = true;
+        self.amend_db_options(&mut db_spec.db_options, &options);
 
         // for every column family, generate cf_options with the same strategy
         for (_, cf_opts) in &mut db_spec.column_families {
-            amend_cf_options(cf_opts, &options, &self.cache);
+            self.amend_cf_options(cf_opts, &options);
+        }
+
+        // make sure default column family uses the global cache so that it doesn't create
+        // its own cache (wastes ~32MB RSS per db)
+        if !db_spec
+            .column_families
+            .iter()
+            .any(|(c, _)| c.as_str() == "default")
+        {
+            let mut cf_opts = rocksdb::Options::default();
+            self.amend_cf_options(&mut cf_opts, &options);
+            db_spec
+                .column_families
+                .push((CfName::new("default"), cf_opts));
         }
 
         let db = Arc::new(RocksAccess::open_db(&db_spec)?);
@@ -263,6 +278,69 @@ impl RocksDbManager {
         }
         info!("Rocksdb shutdown took {:?}", start.elapsed());
     }
+
+    fn amend_db_options(&self, db_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
+        db_options.set_env(&self.env);
+        db_options.create_if_missing(true);
+        db_options.create_missing_column_families(true);
+        db_options.set_max_background_jobs(opts.rocksdb_max_background_jobs().get() as i32);
+
+        // write butter is controlled by write buffer manager
+        db_options.set_write_buffer_manager(&self.write_buffer_manager);
+
+        // todo: set avoid_unnecessary_blocking_io = true;
+
+        if !opts.rocksdb_disable_statistics() {
+            db_options.enable_statistics();
+            db_options
+                .set_statistics_level(convert_statistics_level(opts.rocksdb_statistics_level()));
+        }
+
+        // Disable WAL archiving.
+        // the following two options has to be both 0 to disable WAL log archive.
+        db_options.set_wal_size_limit_mb(0);
+        db_options.set_wal_ttl_seconds(0);
+
+        if !opts.rocksdb_disable_wal() {
+            // Disable automatic WAL flushing.
+            // We will call flush manually, when we commit a storage transaction.
+            //
+            db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
+            // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk.
+            db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
+        }
+        //
+        // Let rocksdb decide for level sizes.
+        //
+        db_options.set_level_compaction_dynamic_level_bytes(true);
+        db_options.set_compaction_readahead_size(opts.rocksdb_compaction_readahead_size());
+        //
+        // [Not important setting, consider removing], allows to shard compressed
+        // block cache to up to 64 shards in memory.
+        //
+        db_options.set_table_cache_num_shard_bits(6);
+
+        // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
+        db_options.set_use_direct_reads(true);
+        db_options.set_use_direct_io_for_flush_and_compaction(true);
+    }
+
+    fn amend_cf_options(&self, cf_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
+        // write buffer
+        //
+        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size());
+        //
+        // bloom filters and block cache.
+        //
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_bloom_filter(10.0, true);
+        // use the latest Rocksdb table format.
+        // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
+        block_opts.set_format_version(5);
+        block_opts.set_cache_index_and_filter_blocks(true);
+        block_opts.set_block_cache(&self.cache);
+        cf_options.set_block_based_table_factory(&block_opts);
+    }
 }
 
 #[allow(dead_code)]
@@ -388,6 +466,18 @@ impl DbWatchdog {
 
         // todo: Apply other changes to the databases.
         // e.g. set write_buffer_size
+    }
+}
+
+fn convert_statistics_level(input: StatisticsLevel) -> rocksdb::statistics::StatsLevel {
+    use rocksdb::statistics::StatsLevel;
+    match input {
+        StatisticsLevel::DisableAll => StatsLevel::DisableAll,
+        StatisticsLevel::ExceptHistogramOrTimers => StatsLevel::ExceptHistogramOrTimers,
+        StatisticsLevel::ExceptTimers => StatsLevel::ExceptTimers,
+        StatisticsLevel::ExceptDetailedTimers => StatsLevel::ExceptDetailedTimers,
+        StatisticsLevel::ExceptTimeForMutex => StatsLevel::ExceptTimeForMutex,
+        StatisticsLevel::All => StatsLevel::All,
     }
 }
 
