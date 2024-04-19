@@ -14,9 +14,9 @@ use crate::c_error;
 use crate::cli_env::CliEnv;
 use crate::clients::MetaClientInterface;
 use crate::console::c_println;
-use crate::ui::component_methods::{icon_for_component_type, icon_for_is_public};
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{render_deployment_type, render_deployment_url};
+use crate::ui::service_handlers::{icon_for_is_public, icon_for_service_type};
 use crate::ui::watcher::Watch;
 
 use anyhow::{Context, Result};
@@ -52,7 +52,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
 
     if defs.components.is_empty() {
         c_error!(
-            "No components were found! Components are added by registering deployments with 'restate dep register'"
+            "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
         return Ok(());
     }
@@ -88,7 +88,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         }
 
         let public = icon_for_is_public(svc.public);
-        let flavor = icon_for_component_type(&svc.ty);
+        let flavor = icon_for_service_type(&svc.ty);
 
         let deployment = deployment_cache
             .get(&svc.deployment_id)

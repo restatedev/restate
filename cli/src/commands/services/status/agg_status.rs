@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{render_components_status, render_locked_keys, Status};
+use super::{render_locked_keys, render_services_status, Status};
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{get_components_status, get_locked_keys_status};
+use crate::clients::datafusion_helpers::{get_locked_keys_status, get_service_status};
 use crate::clients::{DataFusionHttpClient, MetaClientInterface, MetasClient};
 use crate::{c_error, c_title};
 
@@ -30,7 +30,7 @@ pub async fn run_aggregated_status(
         .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
-    progress.set_message("Fetching components status");
+    progress.set_message("Fetching services status");
     let components = metas_client
         .get_components()
         .await?
@@ -40,7 +40,7 @@ pub async fn run_aggregated_status(
     if components.is_empty() {
         progress.finish_and_clear();
         c_error!(
-            "No components were found! Components are added by registering deployments with 'restate dep register'"
+            "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
         return Ok(());
     }
@@ -53,14 +53,14 @@ pub async fn run_aggregated_status(
         .cloned()
         .collect();
 
-    let status_map = get_components_status(&sql_client, all_component_names).await?;
+    let status_map = get_service_status(&sql_client, all_component_names).await?;
 
     let locked_keys = get_locked_keys_status(&sql_client, keyed.iter().map(|x| &x.name)).await?;
     // Render UI
     progress.finish_and_clear();
     // Render Status Table
     c_title!("📷", "Summary");
-    render_components_status(env, components, status_map).await?;
+    render_services_status(env, components, status_map).await?;
     // Render Locked Keys
     if !locked_keys.is_empty() {
         c_title!("📨", "Active Keys");

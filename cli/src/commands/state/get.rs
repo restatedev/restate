@@ -30,10 +30,10 @@ pub struct Get {
     #[clap(long, short)]
     plain: bool,
 
-    /// Component name
+    /// service name
     component: String,
 
-    /// Component key
+    /// service key
     key: String,
 
     #[clap(flatten)]
@@ -57,7 +57,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Component"), Cell::new(&opts.component)]);
+    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.component)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
 
     c_println!("{table}");

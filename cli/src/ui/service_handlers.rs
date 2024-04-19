@@ -15,12 +15,9 @@ use comfy_table::{Cell, Color, Table};
 use restate_meta_rest_model::components::ComponentType;
 use restate_meta_rest_model::handlers::HandlerMetadata;
 
-pub fn create_component_handlers_table(
-    ui_config: &UiConfig,
-    handlers: &[HandlerMetadata],
-) -> Table {
+pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);
-    table.set_styled_header(vec!["METHOD", "INPUT TYPE", "OUTPUT TYPE"]);
+    table.set_styled_header(vec!["HANDLER", "INPUT TYPE", "OUTPUT TYPE"]);
 
     for handler in handlers {
         table.add_row(vec![
@@ -32,12 +29,12 @@ pub fn create_component_handlers_table(
     table
 }
 
-pub fn create_component_handlers_table_diff(
+pub fn create_service_handlers_table_diff(
     ui_config: &UiConfig,
-    old_component_handlers: &[HandlerMetadata],
-    new_component_handlers: &[HandlerMetadata],
+    old_service_handlers: &[HandlerMetadata],
+    new_service_handlers: &[HandlerMetadata],
 ) -> Table {
-    let mut old_component_handlers = old_component_handlers
+    let mut old_service_handlers = old_service_handlers
         .iter()
         .map(|m| (m.name.clone(), m))
         .collect::<std::collections::HashMap<_, _>>();
@@ -46,9 +43,9 @@ pub fn create_component_handlers_table_diff(
     table.set_styled_header(vec!["", "HANDLER", "INPUT TYPE", "OUTPUT TYPE"]);
 
     // Additions and updates
-    for handler in new_component_handlers {
+    for handler in new_service_handlers {
         let mut row = vec![];
-        if old_component_handlers.remove(&handler.name).is_some() {
+        if old_service_handlers.remove(&handler.name).is_some() {
             // possibly updated.
             row.push(Cell::new(""));
             row.push(Cell::new(&handler.name));
@@ -65,7 +62,7 @@ pub fn create_component_handlers_table_diff(
     }
 
     // Removals
-    for handler in old_component_handlers.values() {
+    for handler in old_service_handlers.values() {
         let row = vec![
             Cell::new("--").fg(Color::Red),
             Cell::new(&handler.name).fg(Color::Red),
@@ -78,7 +75,7 @@ pub fn create_component_handlers_table_diff(
     table
 }
 
-pub fn icon_for_component_type(svc_type: &ComponentType) -> Icon {
+pub fn icon_for_service_type(svc_type: &ComponentType) -> Icon {
     match svc_type {
         ComponentType::Service => Icon("", ""),
         ComponentType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "keyed"),

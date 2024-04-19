@@ -163,6 +163,7 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
+            InvocationStatus::Completed(completed) => Some(&completed.timestamps),
             _ => None,
         }
     }
@@ -315,6 +316,7 @@ pub struct CompletedInvocation {
     pub invocation_target: InvocationTarget,
     pub source: Source,
     pub idempotency_key: Option<ByteString>,
+    pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
 }
 
@@ -328,6 +330,7 @@ impl CompletedInvocation {
                 invocation_target: in_flight_invocation_metadata.invocation_target,
                 source: in_flight_invocation_metadata.source,
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
+                timestamps: in_flight_invocation_metadata.timestamps,
                 response_result,
             },
             in_flight_invocation_metadata.completion_retention_time,

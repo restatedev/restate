@@ -14,12 +14,12 @@ mod detailed_status;
 use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    ComponentHandlerLockedKeysMap, ComponentStatus, ComponentStatusMap, InvocationState,
+    InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
 use crate::clients::MetasClient;
-use crate::ui::component_methods::icon_for_component_type;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
+use crate::ui::service_handlers::icon_for_service_type;
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 use crate::ui::{duration_to_human_precise, duration_to_human_rough};
@@ -40,7 +40,7 @@ pub struct Status {
     sample_invocations_limit: usize,
 
     /// Service name, prints all services if omitted
-    component: Option<String>,
+    service: Option<String>,
 
     #[clap(flatten)]
     watch: Watch,
@@ -54,19 +54,19 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
     let metas_client = MetasClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
 
-    if let Some(svc) = &opts.component {
+    if let Some(svc) = &opts.service {
         detailed_status::run_detailed_status(env, svc, opts, metas_client, sql_client).await
     } else {
         agg_status::run_aggregated_status(env, opts, metas_client, sql_client).await
     }
 }
 
-async fn render_components_status(
+async fn render_services_status(
     env: &CliEnv,
     services: Vec<ComponentMetadata>,
-    status_map: ComponentStatusMap,
+    status_map: ServiceStatusMap,
 ) -> Result<()> {
-    let empty = ComponentStatus::default();
+    let empty = ServiceStatus::default();
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec![
         "",
@@ -78,15 +78,15 @@ async fn render_components_status(
         "OLDEST NON-SUSPENDED INVOCATION",
     ]);
     for svc in services {
-        let svc_status = status_map.get_component_status(&svc.name).unwrap_or(&empty);
+        let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
         // Service title
-        let flavor = icon_for_component_type(&svc.ty);
+        let flavor = icon_for_service_type(&svc.ty);
         let svc_title = format!("{} {}", svc.name, flavor);
         table.add_row(vec![
             Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold)
         ]);
 
-        render_methods_status(&mut table, svc, svc_status).await?;
+        render_handlers_status(&mut table, svc, svc_status).await?;
         table.add_row(vec![""]);
     }
     c_println!("{}", table);
@@ -94,7 +94,7 @@ async fn render_components_status(
 }
 
 fn render_handler_state_stats(
-    svc_status: &ComponentStatus,
+    svc_status: &ServiceStatus,
     method: &str,
     state: InvocationState,
 ) -> Cell {
@@ -116,10 +116,10 @@ fn render_handler_state_stats(
     }
 }
 
-async fn render_methods_status(
+async fn render_handlers_status(
     table: &mut Table,
     svc: ComponentMetadata,
-    svc_status: &ComponentStatus,
+    svc_status: &ServiceStatus,
 ) -> Result<()> {
     for handler in svc.handlers {
         let mut row = vec![];
@@ -194,7 +194,7 @@ async fn render_methods_status(
 }
 async fn render_locked_keys(
     env: &CliEnv,
-    locked_keys: ComponentHandlerLockedKeysMap,
+    locked_keys: ServiceHandlerLockedKeysMap,
     limit_per_service: usize,
 ) -> Result<()> {
     let locked_keys = locked_keys.into_inner();
