@@ -2,7 +2,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient};
 use crate::ui::console::StyledTable;
 use anyhow::{anyhow, bail, Context};
-use arrow::array::{BinaryArray, StringArray};
+use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
@@ -15,6 +15,12 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+pub struct StateEntriesQueryResult {
+    key: Option<String>,
+    value: Option<Vec<u8>>,
+}
 
 pub(crate) async fn get_current_state(
     env: &CliEnv,
@@ -37,32 +43,15 @@ pub(crate) async fn get_current_state(
         "select key, value from state where component = '{}' and component_key = '{}' ;",
         service, key
     );
-    let res = sql_client.run_query(sql).await?;
+    let query_result_iter = sql_client
+        .run_query_and_map_results::<StateEntriesQueryResult>(sql)
+        .await?;
     //
     // 2. convert the state to a map from str keys -> byte values.
     //
     let mut user_state = HashMap::new();
-    for batch in res.batches {
-        let n = batch.num_rows();
-        if n == 0 {
-            continue;
-        }
-        user_state.reserve(n);
-        let keys = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("bug: unexpected column type");
-        let vals = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .expect("bug: unexpected column type");
-        for i in 0..n {
-            let key = keys.value(i).to_string();
-            let val = Bytes::copy_from_slice(vals.value(i));
-            user_state.insert(key, val);
-        }
+    for row in query_result_iter {
+        user_state.insert(row.key.expect("key"), row.value.expect("value").into());
     }
     Ok(user_state)
 }

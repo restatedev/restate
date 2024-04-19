@@ -11,17 +11,19 @@
 //! A wrapper client for the datafusion HTTP service.
 
 use super::errors::ApiError;
+
 use crate::build_info;
 use crate::cli_env::CliEnv;
-use std::time::Duration;
-
-use arrow::array::AsArray;
+use arrow::array::{AsArray, StructArray};
 use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
+use arrow_convert::field::ArrowField;
 use bytes::Buf;
 use serde::Serialize;
+use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
@@ -34,6 +36,8 @@ pub enum Error {
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
     Arrow(#[from] ArrowError),
+    #[error("Mapping from query '{0}': {1}")]
+    Mapping(String, #[source] ArrowError),
     UrlParse(#[from] url::ParseError),
 }
 
@@ -119,6 +123,29 @@ impl DataFusionHttpClient {
         }
 
         Ok(SqlResponse { schema, batches })
+    }
+
+    pub async fn run_query_and_map_results<T: ArrowDeserialize + ArrowField<Type = T> + 'static>(
+        &self,
+        query: String,
+    ) -> Result<impl Iterator<Item = T>, Error> {
+        let sql_response = self.run_query(query.clone()).await?;
+        let mut results = Vec::new();
+        for batch in sql_response.batches {
+            let n = batch.num_rows();
+            if n == 0 {
+                continue;
+            }
+            results.reserve(n);
+
+            // Map results using arrow_convert
+            for row in arrow_array_deserialize_iterator::<T>(&StructArray::from(batch))
+                .map_err(|e| Error::Mapping(query.clone(), e))?
+            {
+                results.push(row);
+            }
+        }
+        Ok(results.into_iter())
     }
 
     pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
