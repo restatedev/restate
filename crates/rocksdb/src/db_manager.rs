@@ -133,11 +133,13 @@ impl RocksDbManager {
         // use the spec default options as base then apply the config from the updateable.
         self.amend_db_options(&mut db_spec.db_options, &options);
 
-        let (db, cfs) = RocksAccess::open_db(&db_spec, self.default_cf_options(&options))?;
-        let db = Arc::new(db);
+        let db = Arc::new(RocksAccess::open_db(
+            &db_spec,
+            self.default_cf_options(&options),
+        )?);
 
         let path = db_spec.path.clone();
-        let wrapper = Arc::new(RocksDb::new(db_spec, db.clone(), cfs));
+        let wrapper = Arc::new(RocksDb::new(db_spec, db.clone()));
 
         self.dbs.insert((owner, name.clone()), wrapper);
 
