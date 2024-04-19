@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use rocksdb::perf::MemoryUsageBuilder;
 use rocksdb::ColumnFamilyDescriptor;
-use rocksdb::SingleThreaded;
+use rocksdb::MultiThreaded;
 use tracing::trace;
 
+use crate::BoxedCfMatcher;
+use crate::BoxedCfOptionUpdater;
 use crate::CfName;
 use crate::DbSpec;
 use crate::RocksError;
@@ -33,7 +36,36 @@ pub trait RocksAccess {
     fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError>;
     fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError>;
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder);
+    /// This is a blocking operation and it's not meant to be called concurrently on the same
+    /// database, although it's not dangerous to do so. The only impact would be the one of the
+    /// callers will get an error.
+    fn open_cf(
+        &self,
+        name: CfName,
+        default_cf_options: rocksdb::Options,
+        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+    ) -> Result<(), RocksError>;
     fn cfs(&self) -> Vec<CfName>;
+}
+
+fn prepare_cf_options(
+    cf_patterns: &[(BoxedCfMatcher, BoxedCfOptionUpdater)],
+    default_cf_options: rocksdb::Options,
+    cf: &CfName,
+) -> Result<rocksdb::Options, RocksError> {
+    // try patterns one by one
+    for (pattern, options_updater) in cf_patterns {
+        if pattern.cf_matches(cf) {
+            // Stop at first pattern match
+            return Ok(options_updater(default_cf_options));
+        }
+    }
+    // default is special case
+    if cf.as_str() == "default" {
+        return Ok(default_cf_options);
+    }
+    // We have no pattern for this cf
+    Err(RocksError::UnknownColumnFamily(cf.clone()))
 }
 
 fn prepare_descriptors<T>(
@@ -48,26 +80,9 @@ fn prepare_descriptors<T>(
     all_cfs.extend(db_spec.ensure_column_families.iter().cloned());
 
     let mut descriptors = Vec::with_capacity(all_cfs.len());
-    'outer: for cf in all_cfs.iter() {
-        // try patterns one by one
-        for (pattern, options_updater) in &db_spec.cf_patterns {
-            if pattern.cf_matches(cf) {
-                // Stop at first pattern match
-                let cf_options = options_updater(default_cf_options.clone());
-                descriptors.push(ColumnFamilyDescriptor::new(cf.as_str(), cf_options));
-                continue 'outer;
-            }
-        }
-        // default is special case
-        if cf.as_str() == "default" {
-            descriptors.push(ColumnFamilyDescriptor::new(
-                cf.as_str(),
-                default_cf_options.clone(),
-            ));
-            continue 'outer;
-        }
-        // We have no pattern for this cf
-        return Err(RocksError::UnknownColumnFamily(cf.clone()));
+    for cf in all_cfs.iter() {
+        let cf_options = prepare_cf_options(&db_spec.cf_patterns, default_cf_options.clone(), cf)?;
+        descriptors.push(ColumnFamilyDescriptor::new(cf.as_str(), cf_options));
     }
 
     Ok(descriptors)
@@ -101,6 +116,16 @@ impl RocksAccess for rocksdb::DB {
 
         rocksdb::DB::open_cf_descriptors(&db_spec.db_options, &db_spec.path, descriptors)
             .map_err(RocksError::from_rocksdb_error)
+    }
+
+    fn open_cf(
+        &self,
+        name: CfName,
+        default_cf_options: rocksdb::Options,
+        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+    ) -> Result<(), RocksError> {
+        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+        Ok(rocksdb::DB::create_cf(self, name.as_str(), &options)?)
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
@@ -146,34 +171,30 @@ impl RocksAccess for rocksdb::DB {
     }
 }
 
-impl RocksAccess for rocksdb::OptimisticTransactionDB {
+impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
     fn open_db(
         db_spec: &DbSpec<Self>,
         default_cf_options: rocksdb::Options,
     ) -> Result<Self, RocksError> {
         // copy pasta from DB, this will be removed as soon we as we remove the use of
         // Optimistic Transaction DB
-        let mut all_cfs: HashSet<CfName> =
-            match rocksdb::OptimisticTransactionDB::<SingleThreaded>::list_cf(
-                &db_spec.db_options,
-                &db_spec.path,
-            ) {
-                Ok(existing) => existing.into_iter().map(Into::into).collect(),
-                Err(e) => {
-                    // Why it's okay to ignore this error? because we will attempt to open the
-                    // database immediately after. If the database exists and we failed in reading
-                    // the list of column families, rocksdb will fail on open (unless the list of
-                    // column families we have in `ensure_column_families` exactly match what's in
-                    // the database, in this case, it's okay to continue anyway)
-                    trace!(
+        let mut all_cfs: HashSet<CfName> = match Self::list_cf(&db_spec.db_options, &db_spec.path) {
+            Ok(existing) => existing.into_iter().map(Into::into).collect(),
+            Err(e) => {
+                // Why it's okay to ignore this error? because we will attempt to open the
+                // database immediately after. If the database exists and we failed in reading
+                // the list of column families, rocksdb will fail on open (unless the list of
+                // column families we have in `ensure_column_families` exactly match what's in
+                // the database, in this case, it's okay to continue anyway)
+                trace!(
                         db = %db_spec.name,
                         owner = %db_spec.name,
                         "Couldn't list cfs: {}", e);
-                    HashSet::with_capacity(
-                        db_spec.ensure_column_families.len() + 1, /* +1 for default */
-                    )
-                }
-            };
+                HashSet::with_capacity(
+                    db_spec.ensure_column_families.len() + 1, /* +1 for default */
+                )
+            }
+        };
 
         let descriptors = prepare_descriptors(db_spec, default_cf_options, &mut all_cfs)?;
 
@@ -183,6 +204,16 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB {
             descriptors,
         )
         .map_err(RocksError::from_rocksdb_error)
+    }
+
+    fn open_cf(
+        &self,
+        name: CfName,
+        default_cf_options: rocksdb::Options,
+        cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
+    ) -> Result<(), RocksError> {
+        let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+        Ok(Self::create_cf(self, name.as_str(), &options)?)
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {

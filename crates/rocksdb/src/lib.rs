@@ -16,6 +16,8 @@ mod rock_access;
 pub use db_manager::RocksDbManager;
 pub use db_spec::*;
 pub use error::*;
+use restate_core::ShutdownError;
+use restate_types::config::RocksDbOptions;
 pub use rock_access::*;
 use tracing::debug;
 use tracing::warn;
@@ -29,15 +31,17 @@ use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
-type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send>;
+type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync>;
 
 #[derive(derive_more::Display, Clone)]
 #[display(fmt = "{}::{}", owner, name)]
 pub struct RocksDb {
+    manager: &'static RocksDbManager,
     pub owner: Owner,
     pub name: DbName,
     pub path: PathBuf,
     pub db_options: rocksdb::Options,
+    cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     flush_on_shutdown: Arc<[BoxedCfMatcher]>,
     db: Arc<dyn RocksAccess + Send + Sync + 'static>,
 }
@@ -53,14 +57,16 @@ impl Deref for RocksDb {
 }
 
 impl RocksDb {
-    pub(crate) fn new<T>(spec: DbSpec<T>, db: Arc<T>) -> Self
+    pub(crate) fn new<T>(manager: &'static RocksDbManager, spec: DbSpec<T>, db: Arc<T>) -> Self
     where
         T: RocksAccess + Send + Sync + 'static,
     {
         Self {
+            manager,
             owner: spec.owner,
             name: spec.name,
             path: spec.path,
+            cf_patterns: spec.cf_patterns.into(),
             db,
             db_options: spec.db_options,
             flush_on_shutdown: spec.flush_on_shutdown.into(),
@@ -87,6 +93,16 @@ impl RocksDb {
 
     pub fn get_statistics_str(&self) -> Option<String> {
         self.db_options.get_statistics()
+    }
+
+    pub async fn open_cf(&self, name: CfName, opts: &RocksDbOptions) -> Result<(), RocksError> {
+        let default_cf_options = self.manager.default_cf_options(opts);
+        // todo Run in the background storage thread pool
+        let db = self.db.clone();
+        let cf_patterns = self.cf_patterns.clone();
+        tokio::task::spawn_blocking(move || db.open_cf(name, default_cf_options, cf_patterns))
+            .await
+            .map_err(|_| RocksError::Shutdown(ShutdownError))?
     }
 
     pub async fn shutdown(&self) {

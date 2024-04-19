@@ -139,7 +139,7 @@ impl RocksDbManager {
         )?);
 
         let path = db_spec.path.clone();
-        let wrapper = Arc::new(RocksDb::new(db_spec, db.clone()));
+        let wrapper = Arc::new(RocksDb::new(self, db_spec, db.clone()));
 
         self.dbs.insert((owner, name.clone()), wrapper);
 
@@ -289,7 +289,7 @@ impl RocksDbManager {
         db_options.set_use_direct_io_for_flush_and_compaction(true);
     }
 
-    fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
+    pub(crate) fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
         let mut cf_options = rocksdb::Options::default();
         // write buffer
         //
