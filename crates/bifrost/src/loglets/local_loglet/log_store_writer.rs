@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use restate_types::arc_util::Updateable;
 use restate_types::config::LocalLogletOptions;
-use rocksdb::{WriteBatch, DB};
+use rocksdb::{BoundColumnFamily, WriteBatch, DB};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -102,29 +102,35 @@ impl LogStoreWriter {
         self.batch_acks_buf.reserve(commands.len());
         let batch_acks = &mut self.batch_acks_buf;
 
-        let data_cf = self.db.cf_handle(DATA_CF).expect("data cf exists");
-        let metadata_cf = self.db.cf_handle(METADATA_CF).expect("metadata cf exists");
+        {
+            let data_cf = self.db.cf_handle(DATA_CF).expect("data cf exists");
+            let metadata_cf = self.db.cf_handle(METADATA_CF).expect("metadata cf exists");
 
-        for command in commands {
-            if let Some(data_command) = command.data_update {
-                match data_command {
-                    DataUpdate::PutRecord { offset, data } => {
-                        Self::put_record(data_cf, &mut write_batch, command.log_id, offset, data)
+            for command in commands {
+                if let Some(data_command) = command.data_update {
+                    match data_command {
+                        DataUpdate::PutRecord { offset, data } => Self::put_record(
+                            &data_cf,
+                            &mut write_batch,
+                            command.log_id,
+                            offset,
+                            data,
+                        ),
                     }
                 }
-            }
 
-            if let Some(logstate_updates) = command.log_state_updates {
-                Self::update_log_state(
-                    metadata_cf,
-                    &mut write_batch,
-                    command.log_id,
-                    logstate_updates,
-                )
-            }
+                if let Some(logstate_updates) = command.log_state_updates {
+                    Self::update_log_state(
+                        &metadata_cf,
+                        &mut write_batch,
+                        command.log_id,
+                        logstate_updates,
+                    )
+                }
 
-            if let Some(ack) = command.ack {
-                batch_acks.push(ack);
+                if let Some(ack) = command.ack {
+                    batch_acks.push(ack);
+                }
             }
         }
 
@@ -132,7 +138,7 @@ impl LogStoreWriter {
     }
 
     fn update_log_state(
-        metadata_cf: &rocksdb::ColumnFamily,
+        metadata_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
         log_id: u64,
         updates: LogStateUpdates,
@@ -145,7 +151,7 @@ impl LogStoreWriter {
     }
 
     fn put_record(
-        data_cf: &rocksdb::ColumnFamily,
+        data_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
         id: u64,
         offset: LogletOffset,
