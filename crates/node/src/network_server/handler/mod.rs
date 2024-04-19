@@ -216,7 +216,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
 
         // Properties (Gauges)
         // For properties, we need to get them for each column family.
-        for cf in db.cfs() {
+        for cf in &db.cfs() {
             let sanitized_cf_name = formatting::sanitize_label_value(cf);
             let mut cf_labels = Vec::with_capacity(labels.len() + 1);
             labels.clone_into(&mut cf_labels);
