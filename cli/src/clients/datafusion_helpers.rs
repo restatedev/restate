@@ -17,12 +17,13 @@ use std::str::FromStr;
 use super::DataFusionHttpClient;
 
 use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
-use arrow::datatypes::ArrowTemporalType;
+use arrow::datatypes::{ArrowTemporalType, Date64Type};
 use arrow::record_batch::RecordBatch;
 use clap::ValueEnum;
 use restate_meta_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
+use arrow_convert::{ArrowDeserialize, ArrowField};
 use chrono::{DateTime, Duration, Local, TimeZone};
 use restate_meta_rest_model::components::ComponentType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
@@ -235,22 +236,21 @@ impl Display for JournalEntryType {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct InvocationDetailed {
     pub invocation: Invocation,
     pub journal: Vec<JournalEntry>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Invocation {
     pub id: String,
-    pub service: String,
-    pub handler: String,
-    pub key: Option<String>, // Set only on keyed service
+    pub target: String,
+    pub target_service_ty: ComponentType,
     pub created_at: chrono::DateTime<Local>,
     // None if invoked directly (e.g. ingress)
     pub invoked_by_id: Option<String>,
-    pub invoked_by_service: Option<String>,
+    pub invoked_by_target: Option<String>,
     pub status: InvocationState,
     pub trace_id: Option<String>,
 
@@ -706,6 +706,60 @@ pub async fn get_locked_keys_status(
     Ok(key_map)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestateDateTime(DateTime<Local>);
+
+impl From<RestateDateTime> for DateTime<Local> {
+    fn from(value: RestateDateTime) -> Self {
+        value.0
+    }
+}
+
+impl arrow_convert::field::ArrowField for RestateDateTime {
+    type Type = Self;
+
+    #[inline]
+    fn data_type() -> arrow::datatypes::DataType {
+        arrow::datatypes::DataType::Date64
+    }
+}
+
+impl arrow_convert::deserialize::ArrowDeserialize for RestateDateTime {
+    type ArrayType = arrow::array::Date64Array;
+
+    #[inline]
+    fn arrow_deserialize(v: Option<i64>) -> Option<Self> {
+        v.and_then(arrow::temporal_conversions::as_datetime::<Date64Type>)
+            .map(|naive| Local.from_utc_datetime(&naive))
+            .map(RestateDateTime)
+    }
+}
+
+// enable Vec<RestateDateTime>
+arrow_convert::arrow_enable_vec_for_type!(RestateDateTime);
+
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+struct InvocationRowResult {
+    id: Option<String>,
+    target: Option<String>,
+    target_service_ty: Option<String>,
+    combined_status: String,
+    created_at: Option<RestateDateTime>,
+    modified_at: Option<RestateDateTime>,
+    pinned_deployment_id: Option<String>,
+    retry_count: Option<u64>,
+    last_failure: Option<String>,
+    last_attempt_deployment_id: Option<String>,
+    next_retry_at: Option<RestateDateTime>,
+    last_start_at: Option<RestateDateTime>,
+    invoked_by_id: Option<String>,
+    invoked_by_target: Option<String>,
+    comp_latest_deployment: Option<String>,
+    known_deployment_id: Option<String>,
+    trace_id: Option<String>,
+    full_count: Option<i64>,
+}
+
 pub async fn find_active_invocations(
     client: &DataFusionHttpClient,
     filter: &str,
@@ -719,9 +773,8 @@ pub async fn find_active_invocations(
         "WITH enriched_invocations AS
         (SELECT
             ss.id,
-            ss.component,
-            ss.handler,
-            ss.component_key,
+            ss.target,
+            ss.target_service_ty,
             CASE
                 WHEN ss.status = 'inboxed' THEN 'pending'
                 WHEN ss.status = 'completed' THEN 'completed'
@@ -739,8 +792,7 @@ pub async fn find_active_invocations(
             sis.next_retry_at,
             sis.last_start_at,
             ss.invoked_by_id,
-            ss.invoked_by_component,
-            comp.ty,
+            ss.invoked_by_target,
             comp.deployment_id as comp_latest_deployment,
             dp.id as known_deployment_id,
             ss.trace_id
@@ -756,80 +808,50 @@ pub async fn find_active_invocations(
         LIMIT {}",
         filter, order, post_filter, limit,
     );
-    let resp = client.run_query(query).await?;
-    for batch in resp.batches {
-        for i in 0..batch.num_rows() {
-            if full_count == 0 {
-                full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
-            }
-            let id = value_as_string(&batch, 0, i);
-            let service = value_as_string(&batch, 1, i);
-            let handler = value_as_string(&batch, 2, i);
-            let service_key = value_as_string_opt(&batch, 3, i);
-            let status: InvocationState = value_as_string(&batch, 4, i)
-                .parse()
-                .expect("Unexpected status");
-            let created_at = value_as_dt_opt(&batch, 5, i).expect("Missing created_at");
+    let rows = client
+        .run_query_and_map_results::<InvocationRowResult>(query)
+        .await?;
+    for row in rows {
+        let status = row.combined_status.parse().expect("Unexpected status");
 
-            let state_modified_at = value_as_dt_opt(&batch, 6, i);
+        // Running duration
+        let last_start: Option<DateTime<Local>> = row.last_start_at.map(Into::into);
+        let current_attempt_duration = if status == InvocationState::Running {
+            last_start.map(|last_start| Local::now().signed_duration_since(last_start))
+        } else {
+            None
+        };
 
-            let pinned_deployment_id = value_as_string_opt(&batch, 7, i);
+        let last_attempt_started_at = if status == InvocationState::BackingOff {
+            last_start
+        } else {
+            None
+        };
 
-            let num_retries = value_as_u64_opt(&batch, 8, i);
+        active.push(Invocation {
+            id: row.id.expect("id"),
+            target: row.target.expect("target"),
+            target_service_ty: parse_service_type(&row.target_service_ty.expect("target")),
+            status,
+            created_at: row.created_at.expect("created_at").into(),
+            invoked_by_id: row.invoked_by_id,
+            invoked_by_target: row.invoked_by_target,
+            state_modified_at: row.modified_at.map(Into::into),
+            num_retries: row.retry_count,
+            next_retry_at: row.next_retry_at.map(Into::into),
+            pinned_deployment_id: row.pinned_deployment_id,
+            pinned_deployment_exists: row.known_deployment_id.is_some(),
+            deployment_id_at_latest_svc_revision: row
+                .comp_latest_deployment
+                .expect("comp_latest_deployment"),
+            last_failure_message: row.last_failure,
+            last_attempt_deployment_id: row.last_attempt_deployment_id,
+            trace_id: row.trace_id,
+            current_attempt_duration,
+            last_attempt_started_at,
+        });
 
-            let last_failure_message = value_as_string_opt(&batch, 9, i);
-            let last_attempt_deployment_id = value_as_string_opt(&batch, 10, i);
-
-            let next_retry_at = value_as_dt_opt(&batch, 11, i);
-            let last_start = value_as_dt_opt(&batch, 12, i);
-
-            let invoked_by_id = value_as_string_opt(&batch, 13, i);
-            let invoked_by_service = value_as_string_opt(&batch, 14, i);
-            let service_type = parse_service_type(&value_as_string(&batch, 15, i));
-            let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
-
-            let existing_pinned_deployment_id = value_as_string_opt(&batch, 17, i);
-            let trace_id = value_as_string_opt(&batch, 18, i);
-
-            let key = if service_type == ComponentType::VirtualObject {
-                service_key
-            } else {
-                None
-            };
-
-            let mut invocation = Invocation {
-                id,
-                status,
-                service,
-                key,
-                handler,
-                created_at,
-                invoked_by_id,
-                invoked_by_service,
-                state_modified_at,
-                num_retries,
-                next_retry_at,
-                pinned_deployment_id,
-                pinned_deployment_exists: existing_pinned_deployment_id.is_some(),
-                deployment_id_at_latest_svc_revision,
-                last_failure_message,
-                last_attempt_deployment_id,
-                trace_id,
-                ..Default::default()
-            };
-
-            // Running duration
-            if status == InvocationState::Running {
-                invocation.current_attempt_duration =
-                    last_start.map(|last_start| Local::now().signed_duration_since(last_start));
-            }
-
-            if invocation.status == InvocationState::BackingOff {
-                invocation.last_attempt_started_at = last_start;
-            }
-
-            active.push(invocation);
-        }
+        full_count = row.full_count.expect("full_count") as usize;
     }
     Ok((active, full_count))
 }
@@ -851,6 +873,7 @@ pub async fn get_service_invocations(
     .0)
 }
 
+#[allow(dead_code)]
 fn parse_service_type(s: &str) -> ComponentType {
     match s {
         "service" => ComponentType::Service,

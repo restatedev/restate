@@ -45,7 +45,7 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
             if let Some(modified_at) = invocation.state_modified_at {
                 let suspend_duration = chrono::Local::now().signed_duration_since(modified_at);
                 // its keyed and in suspension
-                if suspend_duration.num_seconds() > 5 && invocation.key.is_some() {
+                if suspend_duration.num_seconds() > 5 && invocation.target_service_ty.is_keyed() {
                     let dur = duration_to_human_precise(suspend_duration, Tense::Present);
                     let dur_style = if suspend_duration.num_seconds() > 5 {
                         // too long...
@@ -93,21 +93,6 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
     msg
 }
 
-// [TicketDb @ my-user-200]::trySomethingNew
-pub fn invocation_qualified_name(invocation: &Invocation) -> String {
-    let svc = if let Some(key) = &invocation.key {
-        format!(
-            "[{} {} {}]",
-            invocation.service,
-            style("@").dim(),
-            style(key).dim(),
-        )
-    } else {
-        invocation.service.to_string()
-    };
-    format!("{}{}{}", svc, style("::").dim(), invocation.handler)
-}
-
 // ❯ [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
 fn invocation_header(invocation: &Invocation) -> String {
     // Unkeyed -> [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
@@ -119,7 +104,7 @@ fn invocation_header(invocation: &Invocation) -> String {
         "❯ {} {} {}",
         created_at,
         style(&invocation.id).bold(),
-        invocation_qualified_name(invocation),
+        invocation.target
     )
 }
 
@@ -147,7 +132,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         let invoked_by_msg = format!(
             "{} {}",
             invocation
-                .invoked_by_service
+                .invoked_by_target
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
