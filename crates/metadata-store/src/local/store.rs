@@ -15,10 +15,11 @@ use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_types::errors::GenericError;
 use restate_types::Version;
-use rocksdb::{ColumnFamily, Options, WriteOptions, DB};
+use rocksdb::{BoundColumnFamily, Options, WriteOptions, DB};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace};
 
@@ -167,7 +168,7 @@ impl LocalMetadataStore {
         debug!("Stopped LocalMetadataStore");
     }
 
-    fn kv_cf_handle(&self) -> &ColumnFamily {
+    fn kv_cf_handle(&self) -> Arc<BoundColumnFamily> {
         self.db
             .cf_handle(KV_PAIRS)
             .expect("KV_PAIRS column family exists")
@@ -211,7 +212,7 @@ impl LocalMetadataStore {
 
     fn get(&self, key: &ByteString) -> Result<Option<VersionedValue>> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(cf_handle, key)?;
+        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
 
         if let Some(bytes) = slice {
             Ok(Some(Self::decode(bytes)?))
@@ -222,7 +223,7 @@ impl LocalMetadataStore {
 
     fn get_version(&self, key: &ByteString) -> Result<Option<Version>> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(cf_handle, key)?;
+        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
 
         if let Some(bytes) = slice {
             // todo only deserialize the version part
@@ -264,7 +265,7 @@ impl LocalMetadataStore {
         let cf_handle = self.kv_cf_handle();
         let versioned_value = Self::encode(value)?;
         self.db
-            .put_cf_opt(cf_handle, key, versioned_value, &self.write_opts)?;
+            .put_cf_opt(&cf_handle, key, versioned_value, &self.write_opts)?;
         Ok(())
     }
 
@@ -296,7 +297,7 @@ impl LocalMetadataStore {
 
     fn delete_kv_pair(&self, key: &ByteString) -> Result<()> {
         self.db
-            .delete_cf_opt(self.kv_cf_handle(), key, &self.write_opts)
+            .delete_cf_opt(&self.kv_cf_handle(), key, &self.write_opts)
             .map_err(Into::into)
     }
 
