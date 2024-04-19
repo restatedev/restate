@@ -9,14 +9,18 @@
 // by the Apache License, Version 2.0.
 
 mod db_manager;
+mod db_spec;
 mod error;
 mod rock_access;
 
 pub use db_manager::RocksDbManager;
+pub use db_spec::*;
 pub use error::*;
 pub use rock_access::*;
+use tracing::debug;
+use tracing::warn;
 
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,126 +29,18 @@ use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
-#[derive(
-    Debug,
-    derive_more::Display,
-    strum_macros::VariantArray,
-    strum_macros::IntoStaticStr,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-)]
-#[strum(serialize_all = "kebab-case")]
-pub enum Owner {
-    PartitionProcessor,
-    Bifrost,
-    MetadataStore,
-}
-
-#[derive(
-    Debug,
-    derive_more::Deref,
-    derive_more::AsRef,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Display,
-    Clone,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-)]
-pub struct DbName(String);
-impl DbName {
-    pub fn new(name: &str) -> Self {
-        Self(name.to_owned())
-    }
-}
-
-#[derive(
-    Debug,
-    derive_more::Deref,
-    derive_more::AsRef,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Display,
-    Clone,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-)]
-pub struct CfName(String);
-impl CfName {
-    pub fn new(name: &str) -> Self {
-        Self(name.to_owned())
-    }
-}
-
-pub struct DbSpec<T> {
-    pub name: DbName,
-    pub owner: Owner,
-    pub path: PathBuf,
-    /// Options applied to the database _before_ applying RocksDbOptions loaded from disk/env.
-    pub db_options: rocksdb::Options,
-    /// Options of the column family are applied _before_ the values loaded from
-    /// RocksDbOptions from disk/env. Those act as default values for if the option
-    /// is defined in RockDbOptions.
-    ///
-    /// Overriding per-column family options from config file is not supported [yet].
-    pub column_families: Vec<(CfName, rocksdb::Options)>,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl DbSpec<rocksdb::DB> {
-    pub fn new_db(
-        name: DbName,
-        owner: Owner,
-        path: PathBuf,
-        db_options: rocksdb::Options,
-        column_families: Vec<(CfName, rocksdb::Options)>,
-    ) -> DbSpec<rocksdb::DB> {
-        Self {
-            name,
-            owner,
-            path,
-            db_options,
-            column_families,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl DbSpec<rocksdb::OptimisticTransactionDB> {
-    pub fn new_optimistic_db(
-        name: DbName,
-        owner: Owner,
-        path: PathBuf,
-        db_options: rocksdb::Options,
-        column_families: Vec<(CfName, rocksdb::Options)>,
-    ) -> DbSpec<rocksdb::OptimisticTransactionDB> {
-        Self {
-            name,
-            owner,
-            path,
-            db_options,
-            column_families,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
+type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
+type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send>;
 
 #[derive(derive_more::Display, Clone)]
 #[display(fmt = "{}::{}", owner, name)]
 pub struct RocksDb {
     pub owner: Owner,
     pub name: DbName,
+    pub path: PathBuf,
     pub db_options: rocksdb::Options,
-    pub column_families: BTreeMap<CfName, rocksdb::Options>,
+    flush_on_shutdown: Arc<[BoxedCfMatcher]>,
+    pub column_families: HashSet<CfName>,
     db: Arc<dyn RocksAccess + Send + Sync + 'static>,
 }
 
@@ -159,16 +55,18 @@ impl Deref for RocksDb {
 }
 
 impl RocksDb {
-    pub(crate) fn new<T>(spec: DbSpec<T>, db: Arc<T>) -> Self
+    pub(crate) fn new<T>(spec: DbSpec<T>, db: Arc<T>, column_families: HashSet<CfName>) -> Self
     where
         T: RocksAccess + Send + Sync + 'static,
     {
         Self {
             owner: spec.owner,
             name: spec.name,
+            path: spec.path,
             db,
             db_options: spec.db_options,
-            column_families: spec.column_families.into_iter().collect(),
+            flush_on_shutdown: spec.flush_on_shutdown.into(),
+            column_families,
         }
     }
 
@@ -178,8 +76,8 @@ impl RocksDb {
         &self.db
     }
 
-    pub fn cfs(&self) -> Vec<&CfName> {
-        self.column_families.keys().collect()
+    pub fn cfs(&self) -> impl Iterator<Item = &CfName> {
+        self.column_families.iter()
     }
 
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
@@ -192,5 +90,48 @@ impl RocksDb {
 
     pub fn get_statistics_str(&self) -> Option<String> {
         self.db_options.get_statistics()
+    }
+
+    pub async fn shutdown(&self) {
+        if let Err(e) = self.flush_wal(true) {
+            warn!(
+                db = %self.name,
+                owner = %self.owner,
+                "Failed to flush local loglet rocksdb WAL: {}",
+                e
+            );
+        }
+
+        let cfs_to_flush = self
+            .column_families
+            .iter()
+            .filter(|c| {
+                self.flush_on_shutdown
+                    .iter()
+                    .any(|matcher| matcher.cf_matches(c))
+            })
+            .collect::<Vec<_>>();
+        if cfs_to_flush.is_empty() {
+            debug!(
+                db = %self.name,
+                owner = %self.owner,
+                "No column families to flush for db on shutdown"
+            );
+            return;
+        }
+
+        debug!(
+            db = %self.name,
+            owner = %self.owner,
+            "Numbre of column families to flush on shutdown: {}", cfs_to_flush.len());
+        if let Err(e) = self.db.flush_memtables(&cfs_to_flush, true) {
+            warn!(
+                db = %self.name,
+                owner = %self.owner,
+                "Failed to flush memtables: {}",
+                e
+            );
+        }
+        self.db.cancel_all_background_work(true);
     }
 }
