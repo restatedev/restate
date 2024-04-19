@@ -116,7 +116,7 @@ impl LocalLoglet {
             read_opts.set_iterate_upper_bound(RecordKey::upper_bound(self.log_id).to_bytes());
 
             let mut iter = self.log_store.db().iterator_cf_opt(
-                data_cf,
+                &data_cf,
                 read_opts,
                 rocksdb::IteratorMode::From(&key.to_bytes(), rocksdb::Direction::Forward),
             );
