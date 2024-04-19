@@ -169,6 +169,7 @@ pub struct JournalEntry {
     pub seq: u32,
     pub entry_type: JournalEntryType,
     completed: bool,
+    pub name: Option<String>,
 }
 
 impl JournalEntry {
@@ -196,6 +197,7 @@ pub enum JournalEntryType {
     GetState,
     SetState,
     ClearState,
+    SideEffect,
     Other(String),
 }
 
@@ -217,6 +219,7 @@ impl JournalEntryType {
                 | JournalEntryType::Invoke(_)
                 | JournalEntryType::BackgroundInvoke(_)
                 | JournalEntryType::Awakeable(_)
+                | JournalEntryType::SideEffect
         )
     }
 }
@@ -231,6 +234,7 @@ impl Display for JournalEntryType {
             JournalEntryType::GetState => write!(f, "GetState"),
             JournalEntryType::SetState => write!(f, "SetState"),
             JournalEntryType::ClearState => write!(f, "ClearState"),
+            JournalEntryType::SideEffect => write!(f, "SideEffect"),
             JournalEntryType::Other(s) => write!(f, "{}", s),
         }
     }
@@ -910,6 +914,17 @@ pub async fn get_invocation(
     .pop())
 }
 
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+struct JournalRowResult {
+    index: Option<u32>,
+    entry_type: Option<String>,
+    completed: Option<bool>,
+    invoked_id: Option<String>,
+    invoked_target: Option<String>,
+    sleep_wakeup_at: Option<RestateDateTime>,
+    name: Option<String>,
+}
+
 pub async fn get_invocation_journal(
     client: &DataFusionHttpClient,
     invocation_id: &str,
@@ -923,7 +938,8 @@ pub async fn get_invocation_journal(
             sj.completed,
             sj.invoked_id,
             sj.invoked_target,
-            sj.sleep_wakeup_at
+            sj.sleep_wakeup_at,
+            sj.name
         FROM sys_journal sj
         WHERE
             sj.invocation_id = '{}'
@@ -933,30 +949,23 @@ pub async fn get_invocation_journal(
     );
 
     let my_invocation_id: InvocationId = invocation_id.parse().expect("Invocation ID is not valid");
-    let resp = client.run_query(query).await?;
-    let mut journal = vec![];
-    for batch in resp.batches {
-        for i in 0..batch.num_rows() {
-            let index = batch
-                .column(0)
-                .as_primitive::<arrow::datatypes::UInt32Type>()
-                .value(i);
 
-            let entry_type = value_as_string(&batch, 1, i);
-            let completed = batch.column(2).as_boolean().value(i);
-            let outgoing_invocation_id = value_as_string_opt(&batch, 3, i);
-            let outgoing_invoked_target = value_as_string_opt(&batch, 4, i);
-            let wakeup_at = value_as_dt_opt(&batch, 5, i);
-
-            let entry_type = match entry_type.as_str() {
-                "Sleep" => JournalEntryType::Sleep { wakeup_at },
+    let mut journal: Vec<_> = client
+        .run_query_and_map_results::<JournalRowResult>(query)
+        .await?
+        .map(|row| {
+            let index = row.index.expect("index");
+            let entry_type = match row.entry_type.expect("entry_type").as_str() {
+                "Sleep" => JournalEntryType::Sleep {
+                    wakeup_at: row.sleep_wakeup_at.map(Into::into),
+                },
                 "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
-                    invocation_id: outgoing_invocation_id,
-                    invoked_target: outgoing_invoked_target,
+                    invocation_id: row.invoked_id,
+                    invoked_target: row.invoked_target,
                 }),
                 "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
-                    invocation_id: outgoing_invocation_id,
-                    invoked_target: outgoing_invoked_target,
+                    invocation_id: row.invoked_id,
+                    invoked_target: row.invoked_target,
                 }),
                 "Awakeable" => {
                     JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))
@@ -964,16 +973,18 @@ pub async fn get_invocation_journal(
                 "GetState" => JournalEntryType::GetState,
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,
+                "SideEffect" => JournalEntryType::SideEffect,
                 t => JournalEntryType::Other(t.to_owned()),
             };
 
-            journal.push(JournalEntry {
+            JournalEntry {
                 seq: index,
                 entry_type,
-                completed,
-            });
-        }
-    }
+                completed: row.completed.unwrap_or_default(),
+                name: row.name,
+            }
+        })
+        .collect();
 
     // Sort by seq.
     journal.reverse();

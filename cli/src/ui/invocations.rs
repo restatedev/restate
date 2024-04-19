@@ -218,7 +218,7 @@ pub fn render_invocation_compact(env: &CliEnv, invocation: &Invocation) {
 }
 
 pub fn format_journal_entry(entry: &JournalEntry) -> String {
-    let completed_icon = if entry.is_completed() {
+    let state_icon = if entry.is_completed() {
         Icon("☑️ ", "[DONE]")
     } else if matches!(entry.entry_type, JournalEntryType::Sleep { .. }) {
         Icon("⏰", "[PENDING]")
@@ -233,11 +233,16 @@ pub fn format_journal_entry(entry: &JournalEntry) -> String {
     };
 
     let seq = format!("#{}", entry.seq);
+    let entry_ty_and_name = if let Some(name) = &entry.name {
+        format!("{} [{}]", entry.entry_type, name)
+    } else {
+        entry.entry_type.to_string()
+    };
     format!(
         " {} {} {} {}",
-        completed_icon,
+        state_icon,
         type_style.apply_to(seq),
-        type_style.apply_to(entry.entry_type.to_string()),
+        type_style.apply_to(entry_ty_and_name),
         format_entry_type_details(&entry.entry_type)
     )
 }
