@@ -14,14 +14,14 @@ use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
 use strum_macros::EnumIter;
 
-/// Every table key needs to have a key prefix. This allows to multiplex different keys in the same
+/// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
 ///
 /// # Important
 /// There must exist a bijective mapping between the enum variant and its byte representation.
-/// See [`KeyPrefix::as_bytes`] and [`KeyPrefix::from_bytes`].
+/// See [`KeyKind::as_bytes`] and [`KeyKind::from_bytes`].
 #[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display)]
-pub enum KeyPrefix {
+pub enum KeyKind {
     Deduplication,
     Fsm,
     Idempotency,
@@ -34,52 +34,52 @@ pub enum KeyPrefix {
     Timers,
 }
 
-impl KeyPrefix {
+impl KeyKind {
     pub const SERIALIZED_LENGTH: usize = 2;
 
-    /// A once assigned byte representation to a key prefix variant must never be changed! Instead,
+    /// A once assigned byte representation to a key kind variant must never be changed! Instead,
     /// create a new variant representing a new key.
     ///
     /// # Important
     /// The following invariant must hold:
     /// ```ignore
-    /// KeyPrefix::from_bytes(key_prefix.as_bytes()) == key_prefix
+    /// KeyKind::from_bytes(key_kind.as_bytes()) == key_kind
     /// ```
     fn as_bytes(&self) -> &[u8; Self::SERIALIZED_LENGTH] {
         match self {
-            KeyPrefix::Deduplication => b"de",
-            KeyPrefix::Fsm => b"fs",
-            KeyPrefix::Idempotency => b"ip",
-            KeyPrefix::Inbox => b"ib",
-            KeyPrefix::InvocationStatus => b"is",
-            KeyPrefix::Journal => b"jo",
-            KeyPrefix::Outbox => b"ob",
-            KeyPrefix::ServiceStatus => b"ss",
-            KeyPrefix::State => b"st",
-            KeyPrefix::Timers => b"ti",
+            KeyKind::Deduplication => b"de",
+            KeyKind::Fsm => b"fs",
+            KeyKind::Idempotency => b"ip",
+            KeyKind::Inbox => b"ib",
+            KeyKind::InvocationStatus => b"is",
+            KeyKind::Journal => b"jo",
+            KeyKind::Outbox => b"ob",
+            KeyKind::ServiceStatus => b"ss",
+            KeyKind::State => b"st",
+            KeyKind::Timers => b"ti",
         }
     }
 
-    /// A once assigned byte representation to a key prefix variant must never be changed! Instead,
+    /// A once assigned byte representation to a key kind variant must never be changed! Instead,
     /// create a new variant representing a new key.
     ///
     /// # Important
     /// The following invariant must hold:
     /// ```ignore
-    /// KeyPrefix::from_bytes(key_prefix.as_bytes()) == key_prefix
+    /// KeyKind::from_bytes(key_kind.as_bytes()) == key_kind
     /// ```
     fn from_bytes(bytes: &[u8; Self::SERIALIZED_LENGTH]) -> Option<Self> {
         match bytes {
-            b"de" => Some(KeyPrefix::Deduplication),
-            b"fs" => Some(KeyPrefix::Fsm),
-            b"ip" => Some(KeyPrefix::Idempotency),
-            b"ib" => Some(KeyPrefix::Inbox),
-            b"is" => Some(KeyPrefix::InvocationStatus),
-            b"jo" => Some(KeyPrefix::Journal),
-            b"ob" => Some(KeyPrefix::Outbox),
-            b"ss" => Some(KeyPrefix::ServiceStatus),
-            b"st" => Some(KeyPrefix::State),
-            b"ti" => Some(KeyPrefix::Timers),
+            b"de" => Some(KeyKind::Deduplication),
+            b"fs" => Some(KeyKind::Fsm),
+            b"ip" => Some(KeyKind::Idempotency),
+            b"ib" => Some(KeyKind::Inbox),
+            b"is" => Some(KeyKind::InvocationStatus),
+            b"jo" => Some(KeyKind::Journal),
+            b"ob" => Some(KeyKind::Outbox),
+            b"ss" => Some(KeyKind::ServiceStatus),
+            b"st" => Some(KeyKind::State),
+            b"ti" => Some(KeyKind::Timers),
             _ => None,
         }
     }
@@ -90,21 +90,20 @@ impl KeyPrefix {
     }
 
     pub fn deserialize<B: Buf>(buf: &mut B) -> Result<Self, StorageError> {
-        if buf.remaining() < KeyPrefix::SERIALIZED_LENGTH {
+        if buf.remaining() < KeyKind::SERIALIZED_LENGTH {
             return Err(StorageError::DataIntegrityError);
         }
 
-        let mut bytes = [0; KeyPrefix::SERIALIZED_LENGTH];
+        let mut bytes = [0; KeyKind::SERIALIZED_LENGTH];
         buf.copy_to_slice(&mut bytes);
-        Self::from_bytes(&bytes).ok_or_else(|| {
-            StorageError::Generic(anyhow::anyhow!("unknown key prefix: {:x?}", bytes))
-        })
+        Self::from_bytes(&bytes)
+            .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("unknown key kind: {:x?}", bytes)))
     }
 }
 
 pub trait TableKey: Sized + Send + 'static {
     fn is_complete(&self) -> bool;
-    fn serialize_key_prefix<B: BufMut>(bytes: &mut B);
+    fn serialize_key_kind<B: BufMut>(bytes: &mut B);
     fn serialize_to<B: BufMut>(&self, bytes: &mut B);
     fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
     fn table() -> TableKind;
@@ -116,14 +115,14 @@ pub trait TableKey: Sized + Send + 'static {
     }
 
     fn serialized_length(&self) -> usize;
-    fn serialized_key_prefix_length() -> usize;
+    fn serialized_key_kind_length() -> usize;
 }
 
 /// The following macro defines an ordered, named key tuple, that is used as a rocksdb key.
 ///
 /// Given the following definition
 /// ```ignore
-/// define_table_key!(FooBarTable, KeyPrefix::Foobar, FooBarKey(foo: u32, bar: Bytes));
+/// define_table_key!(FooBarTable, KeyKind::Foobar, FooBarKey(foo: u32, bar: Bytes));
 /// ```
 ///
 /// This macro expands to:
@@ -146,7 +145,7 @@ pub trait TableKey: Sized + Send + 'static {
 /// }
 ///
 /// impl FooBarKey {
-///     pub const KEY_PREFIX: KeyPrefix = KeyPrefix::Foobar;
+///     pub const KEY_KIND: KeyKind = KeyKind::Foobar;
 ///
 ///     pub fn foo(&mut self, foo: u32) -> &mut Self {
 ///         self.foo = Some(foo);
@@ -175,12 +174,12 @@ pub trait TableKey: Sized + Send + 'static {
 ///     }
 ///
 ///      #[inline]
-///      fn serialize_key_prefix<B: bytes::BufMut>(bytes: &mut B) {
-///            Self::KEY_PREFIX.serialize(bytes);
+///      fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
+///            Self::KEY_KIND.serialize(bytes);
 ///      }
 ///
 ///      fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
-///                 Self::serialize_key_prefix(bytes);
+///                 Self::serialize_key_kind(bytes);
 ///                 crate::keys::serialize(&self.foo, bytes);
 ///                 crate::keys::serialize(&self.bar, bytes);
 ///       }
@@ -188,10 +187,10 @@ pub trait TableKey: Sized + Send + 'static {
 ///       fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self> {
 ///                 let mut this: Self = Default::default();
 ///
-///                 let key_prefix = $crate::keys::KeyPrefix::deserialize(bytes)?;
+///                 let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
 ///
-///                 if key_prefix != FooBarKey::KEY_PREFIX {
-///                     return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key prefix '{}' but found key prefix '{}'", Self::KEY_PREFIX, key_prefix)))
+///                 if key_kind != FooBarKey::KEY_KIND {
+///                     return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key kind '{}' but found key kind '{}'", Self::KEY_KIND, key_kind)))
 ///                 }
 ///
 ///                 this.foo = crate::keys::deserialize(bytes)?;
@@ -200,8 +199,8 @@ pub trait TableKey: Sized + Send + 'static {
 ///                 return Ok(this);
 ///       }
 ///
-///     fn serialized_key_prefix_length() -> usize {
-///         KeyPrefix::SERIALIZED_LENGTH
+///     fn serialized_key_kind_length() -> usize {
+///         KeyKind::SERIALIZED_LENGTH
 ///     }
 ///
 ///     fn table() -> TableKind {
@@ -212,14 +211,14 @@ pub trait TableKey: Sized + Send + 'static {
 ///
 macro_rules! define_table_key {
 
-    ($table_kind:expr, $key_prefix:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
+    ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
         // main key holder
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
         pub struct $key_name { $(pub $element: Option<$ty>),+ }
 
         // builder
         impl $key_name {
-            const KEY_PREFIX: $crate::keys::KeyPrefix = $key_prefix;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
 
             $(pub fn $element(mut self, $element: $ty) -> Self {
                 self.$element = Some($element);
@@ -253,13 +252,13 @@ macro_rules! define_table_key {
             }
 
             #[inline]
-            fn serialize_key_prefix<B: bytes::BufMut>(bytes: &mut B) {
-                Self::KEY_PREFIX.serialize(bytes);
+            fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
+                Self::KEY_KIND.serialize(bytes);
             }
 
             #[inline]
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
-                Self::serialize_key_prefix(bytes);
+                Self::serialize_key_kind(bytes);
                 $(
                 $crate::keys::serialize(&self.$element, bytes);
                 )+
@@ -269,10 +268,10 @@ macro_rules! define_table_key {
             fn deserialize_from<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Self> {
                 let mut this: Self = Default::default();
 
-                let key_prefix = $crate::keys::KeyPrefix::deserialize(bytes)?;
+                let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
 
-                if key_prefix != Self::KEY_PREFIX {
-                    return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key prefix '{}' but found key prefix '{}'", Self::KEY_PREFIX, key_prefix)))
+                if key_kind != Self::KEY_KIND {
+                    return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key kind '{}' but found key kind '{}'", Self::KEY_KIND, key_kind)))
                 }
 
                 $(
@@ -284,8 +283,8 @@ macro_rules! define_table_key {
 
             #[inline]
             fn serialized_length(&self) -> usize {
-                // we always need a single byte for the key prefix
-                let mut serialized_length = Self::serialized_key_prefix_length();
+                // we always need space for the key kind
+                let mut serialized_length = Self::serialized_key_kind_length();
                 $(
                     serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$element);
                 )+
@@ -293,8 +292,8 @@ macro_rules! define_table_key {
             }
 
             #[inline]
-            fn serialized_key_prefix_length() -> usize {
-                $crate::keys::KeyPrefix::SERIALIZED_LENGTH
+            fn serialized_key_kind_length() -> usize {
+                $crate::keys::KeyKind::SERIALIZED_LENGTH
             }
         }
     })
@@ -542,15 +541,15 @@ mod tests {
         assert_eq!(uuid, got);
     }
 
-    define_table_key!(TableKind::Deduplication, KeyPrefix::Deduplication, DeduplicationTestKey(value: u64));
+    define_table_key!(TableKind::Deduplication, KeyKind::Deduplication, DeduplicationTestKey(value: u64));
 
     #[test]
     fn key_prefix_mismatch() {
         let mut buffer = DeduplicationTestKey::default().value(42).serialize();
         // overwrite the key prefix
-        KeyPrefix::Fsm.serialize(
+        KeyKind::Fsm.serialize(
             &mut buffer
-                .get_mut(0..KeyPrefix::SERIALIZED_LENGTH)
+                .get_mut(0..KeyKind::SERIALIZED_LENGTH)
                 .expect("key prefix must be present"),
         );
 
@@ -560,9 +559,9 @@ mod tests {
         assert_eq!(
             err.to_string(),
             format!(
-                "supported key prefix '{}' but found key prefix '{}'",
-                KeyPrefix::Deduplication,
-                KeyPrefix::Fsm
+                "supported key kind '{}' but found key kind '{}'",
+                KeyKind::Deduplication,
+                KeyKind::Fsm
             )
         );
     }
@@ -573,7 +572,7 @@ mod tests {
         // overwrite the key prefix with an unknown value
         let unknown_key_prefix = b"ZZ";
         buffer
-            .get_mut(0..KeyPrefix::SERIALIZED_LENGTH)
+            .get_mut(0..KeyKind::SERIALIZED_LENGTH)
             .expect("key prefix should be present")
             .put_slice(unknown_key_prefix);
 
@@ -582,14 +581,14 @@ mod tests {
         let_assert!(Err(StorageError::Generic(err)) = result);
         assert_eq!(
             err.to_string(),
-            format!("unknown key prefix: {:x?}", unknown_key_prefix)
+            format!("unknown key kind: {:x?}", unknown_key_prefix)
         );
     }
 
-    /// Tests that the [`KeyPrefix`] has a bijective byte representation.
+    /// Tests that the [`KeyKind`] has a bijective byte representation.
     #[test]
     fn bijective_byte_representation() {
-        let key_prefix_iter = KeyPrefix::iter();
+        let key_prefix_iter = KeyKind::iter();
         let mut buffer = BytesMut::with_capacity(2);
 
         for key_prefix in key_prefix_iter {
@@ -597,7 +596,7 @@ mod tests {
 
             key_prefix.serialize(&mut buffer);
             let deserialized_key_prefix =
-                KeyPrefix::deserialize(&mut buffer).expect("valid byte representation");
+                KeyKind::deserialize(&mut buffer).expect("valid byte representation");
             assert_eq!(key_prefix, deserialized_key_prefix);
         }
     }

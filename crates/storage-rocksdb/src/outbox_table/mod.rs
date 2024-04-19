@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyPrefix, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Outbox;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
 
@@ -21,7 +21,7 @@ use std::ops::Range;
 
 define_table_key!(
     Outbox,
-    KeyPrefix::Outbox,
+    KeyKind::Outbox,
     OutboxKey(partition_id: PartitionId, message_index: u64)
 );
 

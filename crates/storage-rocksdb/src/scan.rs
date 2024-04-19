@@ -46,27 +46,27 @@ impl<K: TableKey> From<TableScan<K>> for PhysicalScan {
                 }
             }
             Partition(partition_id) => {
-                let mut prefix = BytesMut::with_capacity(
-                    partition_id.serialized_length() + K::serialized_key_prefix_length(),
+                let mut kind = BytesMut::with_capacity(
+                    partition_id.serialized_length() + K::serialized_key_kind_length(),
                 );
-                K::serialize_key_prefix(&mut prefix);
-                partition_id.encode(&mut prefix);
-                PhysicalScan::Prefix(K::table(), prefix)
+                K::serialize_key_kind(&mut kind);
+                partition_id.encode(&mut kind);
+                PhysicalScan::Prefix(K::table(), kind)
             }
             PartitionKeyRange(range) => {
                 let (start, end) = (range.start(), range.end());
                 let mut start_bytes = BytesMut::with_capacity(
-                    start.serialized_length() + K::serialized_key_prefix_length(),
+                    start.serialized_length() + K::serialized_key_kind_length(),
                 );
-                K::serialize_key_prefix(&mut start_bytes);
+                K::serialize_key_kind(&mut start_bytes);
                 start.encode(&mut start_bytes);
                 match end.checked_add(1) {
                     None => PhysicalScan::RangeOpen(K::table(), start_bytes),
                     Some(end) => {
                         let mut end_bytes = BytesMut::with_capacity(
-                            end.serialized_length() + K::serialized_key_prefix_length(),
+                            end.serialized_length() + K::serialized_key_kind_length(),
                         );
-                        K::serialize_key_prefix(&mut end_bytes);
+                        K::serialize_key_kind(&mut end_bytes);
                         end.encode(&mut end_bytes);
                         PhysicalScan::RangeExclusive(K::table(), start_bytes, end_bytes)
                     }
