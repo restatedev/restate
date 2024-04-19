@@ -191,8 +191,8 @@ pub enum JournalEntryType {
     Sleep {
         wakeup_at: Option<chrono::DateTime<Local>>,
     },
-    Invoke(OutgoingInvoke),
-    BackgroundInvoke(OutgoingInvoke),
+    Call(OutgoingInvoke),
+    Send(OutgoingInvoke),
     Awakeable(AwakeableIdentifier),
     GetState,
     SetState,
@@ -206,7 +206,7 @@ impl JournalEntryType {
         matches!(
             self,
             JournalEntryType::Sleep { .. }
-                | JournalEntryType::Invoke(_)
+                | JournalEntryType::Call(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::GetState
         )
@@ -216,8 +216,8 @@ impl JournalEntryType {
         matches!(
             self,
             JournalEntryType::Sleep { .. }
-                | JournalEntryType::Invoke(_)
-                | JournalEntryType::BackgroundInvoke(_)
+                | JournalEntryType::Call(_)
+                | JournalEntryType::Send(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::SideEffect
         )
@@ -228,8 +228,8 @@ impl Display for JournalEntryType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JournalEntryType::Sleep { .. } => write!(f, "Sleep"),
-            JournalEntryType::Invoke(_) => write!(f, "Invoke"),
-            JournalEntryType::BackgroundInvoke(_) => write!(f, "BackgroundInvoke"),
+            JournalEntryType::Call(_) => write!(f, "Call"),
+            JournalEntryType::Send(_) => write!(f, "Send"),
             JournalEntryType::Awakeable(_) => write!(f, "Awakeable"),
             JournalEntryType::GetState => write!(f, "GetState"),
             JournalEntryType::SetState => write!(f, "SetState"),
@@ -959,11 +959,11 @@ pub async fn get_invocation_journal(
                 "Sleep" => JournalEntryType::Sleep {
                     wakeup_at: row.sleep_wakeup_at.map(Into::into),
                 },
-                "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
+                "Invoke" => JournalEntryType::Call(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
-                "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
+                "BackgroundInvoke" => JournalEntryType::Send(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
