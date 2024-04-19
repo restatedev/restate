@@ -21,13 +21,9 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use restate_types::config::RocksDbOptions;
-
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
-use rocksdb::BlockBasedOptions;
-use rocksdb::Cache;
 
 #[derive(
     Debug,
@@ -197,67 +193,4 @@ impl RocksDb {
     pub fn get_statistics_str(&self) -> Option<String> {
         self.db_options.get_statistics()
     }
-}
-
-pub(crate) fn amend_db_options(db_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
-    db_options.create_if_missing(true);
-    db_options.create_missing_column_families(true);
-
-    if opts.rocksdb_num_threads() > 0 {
-        db_options.increase_parallelism(opts.rocksdb_num_threads() as i32);
-        db_options.set_max_background_jobs(opts.rocksdb_num_threads() as i32);
-    }
-
-    if !opts.rocksdb_disable_statistics() {
-        db_options.enable_statistics();
-        // Reasonable default, but we might expose this as a config in the future.
-        db_options.set_statistics_level(rocksdb::statistics::StatsLevel::ExceptDetailedTimers);
-    }
-
-    //
-    // Disable WAL archiving.
-    // the following two options has to be both 0 to disable WAL log archive.
-    //
-    db_options.set_wal_size_limit_mb(0);
-    db_options.set_wal_ttl_seconds(0);
-    //
-    if !opts.rocksdb_disable_wal() {
-        // Disable automatic WAL flushing.
-        // We will call flush manually, when we commit a storage transaction.
-        //
-        db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
-        // Once the WAL logs exceed this size, rocksdb start will start flush memtables to disk.
-        db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
-    }
-    //
-    // Let rocksdb decide for level sizes.
-    //
-    db_options.set_level_compaction_dynamic_level_bytes(true);
-    db_options.set_compaction_readahead_size(1 << 21);
-    //
-    // We sometimes read from rocksdb directly in tokio threads, and
-    // at most we have 512 threads.
-    //
-    db_options.set_table_cache_num_shard_bits(9);
-}
-
-pub(crate) fn amend_cf_options(
-    cf_options: &mut rocksdb::Options,
-    opts: &RocksDbOptions,
-    cache: &Cache,
-) {
-    // write buffer
-    //
-    cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size());
-    //
-    // bloom filters and block cache.
-    //
-    let mut block_opts = BlockBasedOptions::default();
-    block_opts.set_bloom_filter(10.0, true);
-    // use the latest Rocksdb table format.
-    // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
-    block_opts.set_format_version(5);
-    block_opts.set_cache_index_and_filter_blocks(true);
-    block_opts.set_block_cache(cache);
-    cf_options.set_block_based_table_factory(&block_opts);
 }
