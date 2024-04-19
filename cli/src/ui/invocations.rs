@@ -185,6 +185,25 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 "Error:",
                 format!("{}\n{}", style(when).dim(), style(error).red()),
             );
+
+            table.add_kv_row(
+                "Caused by:",
+                format!(
+                    "{}{}",
+                    invocation
+                        .last_failure_entry_ty
+                        .as_deref()
+                        .unwrap_or("UNKNOWN"),
+                    invocation
+                        .last_failure_entry_name
+                        .as_deref()
+                        .map(|n| format!(" [{}]", n))
+                        .or_else(|| invocation
+                            .last_failure_entry_index
+                            .map(|idx| format!(" [{}]", idx)))
+                        .unwrap_or("".to_string())
+                ),
+            );
         }
     }
 }

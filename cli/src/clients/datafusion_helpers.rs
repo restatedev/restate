@@ -273,6 +273,9 @@ pub struct Invocation {
     pub last_attempt_started_at: Option<DateTime<Local>>,
     // Last attempt failed?
     pub last_failure_message: Option<String>,
+    pub last_failure_entry_index: Option<u64>,
+    pub last_failure_entry_name: Option<String>,
+    pub last_failure_entry_ty: Option<String>,
 }
 
 pub async fn count_deployment_active_inv(
@@ -749,6 +752,9 @@ struct InvocationRowResult {
     pinned_deployment_id: Option<String>,
     retry_count: Option<u64>,
     last_failure: Option<String>,
+    last_failure_related_entry_index: Option<u64>,
+    last_failure_related_entry_name: Option<String>,
+    last_failure_related_entry_type: Option<String>,
     last_attempt_deployment_id: Option<String>,
     next_retry_at: Option<RestateDateTime>,
     last_start_at: Option<RestateDateTime>,
@@ -788,6 +794,9 @@ pub async fn find_active_invocations(
             ss.pinned_deployment_id,
             sis.retry_count,
             sis.last_failure,
+            sis.last_failure_related_entry_index,
+            sis.last_failure_related_entry_name,
+            sis.last_failure_related_entry_type,
             sis.last_attempt_deployment_id,
             sis.next_retry_at,
             sis.last_start_at,
@@ -845,10 +854,13 @@ pub async fn find_active_invocations(
                 .comp_latest_deployment
                 .expect("comp_latest_deployment"),
             last_failure_message: row.last_failure,
+            last_failure_entry_index: row.last_failure_related_entry_index,
+            last_failure_entry_name: row.last_failure_related_entry_name,
             last_attempt_deployment_id: row.last_attempt_deployment_id,
             trace_id: row.trace_id,
             current_attempt_duration,
             last_attempt_started_at,
+            last_failure_entry_ty: row.last_failure_related_entry_type,
         });
 
         full_count = row.full_count.expect("full_count") as usize;
