@@ -40,13 +40,13 @@ use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use rocksdb::ColumnFamily;
+use rocksdb::BoundColumnFamily;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
+use rocksdb::MultiThreaded;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
-use rocksdb::SingleThreaded;
 use rocksdb::WriteOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,7 +54,7 @@ use std::sync::Arc;
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
 pub use writer::Writer as RocksDBWriter;
 
-pub type DB = rocksdb::OptimisticTransactionDB<SingleThreaded>;
+pub type DB = rocksdb::OptimisticTransactionDB<MultiThreaded>;
 type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
 
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
@@ -282,11 +282,11 @@ impl RocksDBStorage {
         .await
         .map_err(|_| ShutdownError)??;
 
-        if is_empty_db {
-            Self::write_storage_format_version(&rdb, STORAGE_FORMAT_VERSION)?;
-        } else {
-            Self::assert_compatible_storage_format_version(&rdb)?;
-        }
+        // if is_empty_db {
+        //     Self::write_storage_format_version(&rdb, STORAGE_FORMAT_VERSION)?;
+        // } else {
+        //     Self::assert_compatible_storage_format_version(&rdb)?;
+        // }
 
         let writer = Writer::new(rdb.clone());
         let writer_handle = writer.create_writer_handle();
@@ -359,7 +359,7 @@ impl RocksDBStorage {
         }
     }
 
-    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
+    fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
         self.db.cf_handle(cf_name(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
@@ -464,13 +464,13 @@ impl StorageAccess for RocksDBStorage {
     #[inline]
     fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         let table = self.table_handle(table);
-        self.db.put_cf(table, key, value).unwrap();
+        self.db.put_cf(&table, key, value).unwrap();
     }
 
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
         let table = self.table_handle(table);
-        self.db.delete_cf(table, key).unwrap();
+        self.db.delete_cf(&table, key).unwrap();
     }
 }
 
@@ -506,7 +506,7 @@ impl<'a> RocksDBTransaction<'a> {
         self.txn.raw_iterator_cf_opt(&table, opts)
     }
 
-    fn table_handle(&self, table_kind: TableKind) -> &ColumnFamily {
+    fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
         self.db.cf_handle(cf_name(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
@@ -576,13 +576,13 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
     #[inline]
     fn put_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         let table = self.table_handle(table);
-        self.txn.put_cf(table, key, value).unwrap();
+        self.txn.put_cf(&table, key, value).unwrap();
     }
 
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) {
         let table = self.table_handle(table);
-        self.txn.delete_cf(table, key).unwrap();
+        self.txn.delete_cf(&table, key).unwrap();
     }
 }
 
