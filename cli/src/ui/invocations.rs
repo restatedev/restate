@@ -100,12 +100,7 @@ fn invocation_header(invocation: &Invocation) -> String {
     let date_style = DStyle::new().dim();
     let created_at = date_style.apply_to(format!("[{}]", invocation.created_at));
 
-    format!(
-        "❯ {} {} {}",
-        created_at,
-        style(&invocation.id).bold(),
-        invocation.target
-    )
+    format!("❯ {} {}", created_at, style(&invocation.id).bold())
 }
 
 pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationState> {
@@ -122,6 +117,8 @@ pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationStat
 }
 
 pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
+    table.add_kv_row("Target:", &invocation.target);
+
     // Status: backing-off (Retried 1198 time(s). Next retry in 5 seconds and 78 ms) (if not pending....)
     let status_msg = invocation_status_note(invocation);
     let status = format!("{} {}", invocation_status(invocation.status), status_msg);

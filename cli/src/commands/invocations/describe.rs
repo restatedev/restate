@@ -57,7 +57,6 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             )
         ),
     );
-    table.add_kv_row("Target:", &inv.target);
     add_invocation_to_kv_table(&mut table, &inv);
     table.add_kv_row_if(
         || inv.state_modified_at.is_some(),
