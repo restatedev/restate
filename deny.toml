@@ -180,8 +180,9 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/rust-rocksdb/rust-rocksdb.git",
+    "https://github.com/slinkydeveloper/arrow-convert.git",
 ]
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
-github = ["restatedev"]
+github = ["restatedev", "slinkydeveloper"]

@@ -619,8 +619,7 @@ dependencies = [
 [[package]]
 name = "arrow_convert"
 version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac10b3bd7b5517106f81d432faa15d46a6ea5e92f79d92d9a52f1129bad6b316"
+source = "git+https://github.com/slinkydeveloper/arrow-convert.git#c3efdfdf93a6202c71a487b9e2db1e57620f0a4f"
 dependencies = [
  "arrow 51.0.0",
  "arrow_convert_derive",
@@ -632,8 +631,7 @@ dependencies = [
 [[package]]
 name = "arrow_convert_derive"
 version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d249bf4e468874cc14ff5deca8b40b4cc51b88896236e70e824d648c068ae293"
+source = "git+https://github.com/slinkydeveloper/arrow-convert.git#c3efdfdf93a6202c71a487b9e2db1e57620f0a4f"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
