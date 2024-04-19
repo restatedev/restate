@@ -347,6 +347,7 @@ impl KeyCodec for ByteString {
 
 impl KeyCodec for u64 {
     fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u64(*self);
     }
 
@@ -361,6 +362,7 @@ impl KeyCodec for u64 {
 
 impl KeyCodec for u32 {
     fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u32 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
         target.put_u32(*self);
     }
 
