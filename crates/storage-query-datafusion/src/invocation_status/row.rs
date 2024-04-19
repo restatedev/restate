@@ -15,7 +15,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{Source, TraceId};
+use restate_types::invocation::{ComponentType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -32,6 +32,13 @@ pub(crate) fn append_invocation_status_row(
             row.component_key(key);
         }
         row.handler(invocation_target.handler_name());
+        if row.is_target_defined() {
+            row.target(format_using(output, &invocation_target));
+        }
+        row.target_service_ty(match invocation_target.service_ty() {
+            ComponentType::Service => "service",
+            ComponentType::VirtualObject => "virtual_object",
+        });
     }
 
     // Invocation id
@@ -96,6 +103,9 @@ fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, so
             row.invoked_by_component(invocation_target.service_name());
             if row.is_invoked_by_id_defined() {
                 row.invoked_by_id(format_using(output, &invocation_id));
+            }
+            if row.is_invoked_by_target_defined() {
+                row.invoked_by_target(format_using(output, &invocation_target));
             }
         }
         Source::Ingress => {
