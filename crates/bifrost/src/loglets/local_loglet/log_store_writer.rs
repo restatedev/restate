@@ -170,7 +170,7 @@ impl LogStoreWriter {
             write_batch.len(),
         );
 
-        if let Err(e) = self.db.write_opt(write_batch, &rocksdb_write_options) {
+        if let Err(e) = self.db.write_opt(&write_batch, &rocksdb_write_options) {
             error!("Failed to commit local loglet write batch: {}", e);
             self.send_acks(Err(Error::LogStoreError(e.into())));
             return;
