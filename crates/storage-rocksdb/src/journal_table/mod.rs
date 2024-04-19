@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::keys::TableKey;
-use crate::keys::{define_table_key, KeyPrefix};
+use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::PartitionKeyRange;
 use crate::TableKind::Journal;
@@ -28,7 +28,7 @@ use std::ops::RangeInclusive;
 
 define_table_key!(
     Journal,
-    KeyPrefix::Journal,
+    KeyKind::Journal,
     JournalKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,

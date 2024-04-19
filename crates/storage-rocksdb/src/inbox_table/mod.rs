@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, KeyPrefix, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Inbox;
 use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
@@ -25,7 +25,7 @@ use std::ops::RangeInclusive;
 
 define_table_key!(
     Inbox,
-    KeyPrefix::Inbox,
+    KeyKind::Inbox,
     InboxKey(
         partition_key: PartitionKey,
         service_name: ByteString,
