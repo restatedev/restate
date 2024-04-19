@@ -146,6 +146,21 @@ pub struct CommonOptions {
     /// Disable prometheus metric recording and reporting. Default is `false`.
     pub disable_prometheus: bool,
 
+    /// Storage high priority thread pool
+    ///
+    /// This configures the restate-managed storage thread pool for performing
+    /// high-priority or latency-sensitive storage tasks when the IO operation cannot
+    /// be performed on in-memory caches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_high_priority_bg_threads: Option<NonZeroUsize>,
+
+    /// Storage low priority thread pool
+    ///
+    /// This configures the restate-managed storage thread pool for performing
+    /// low-priority or latency-insensitive storage tasks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_low_priority_bg_threads: Option<NonZeroUsize>,
+
     /// # Total memory limit for rocksdb caches and memtables. This includes memory
     /// for uncompressed block cache and all memtables by all open databases.
     ///
@@ -208,6 +223,22 @@ impl CommonOptions {
         })
     }
 
+    pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
+        self.storage_high_priority_bg_threads.unwrap_or(
+            std::thread::available_parallelism()
+                // Shouldn't really fail, but just in case.
+                .unwrap_or(NonZeroUsize::new(4).unwrap()),
+        )
+    }
+
+    pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
+        self.storage_low_priority_bg_threads.unwrap_or(
+            std::thread::available_parallelism()
+                // Shouldn't really fail, but just in case.
+                .unwrap_or(NonZeroUsize::new(4).unwrap()),
+        )
+    }
+
     pub fn rocksdb_bg_threads(&self) -> NonZeroU32 {
         self.rocksdb_bg_threads.unwrap_or(
             std::thread::available_parallelism()
@@ -246,6 +277,8 @@ impl Default for CommonOptions {
             log_format: Default::default(),
             log_disable_ansi_codes: false,
             default_thread_pool_size: None,
+            storage_high_priority_bg_threads: None,
+            storage_low_priority_bg_threads: None,
             rocksdb_total_memtables_size_limit: 0,
             rocksdb_total_memory_limit: 4_000_000_000, // 4GB
             rocksdb_bg_threads: None,

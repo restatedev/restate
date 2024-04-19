@@ -13,12 +13,7 @@ mod db_spec;
 mod error;
 mod rock_access;
 
-pub use db_manager::RocksDbManager;
-pub use db_spec::*;
-pub use error::*;
-use restate_core::ShutdownError;
 use restate_types::config::RocksDbOptions;
-pub use rock_access::*;
 use tracing::debug;
 use tracing::warn;
 
@@ -30,8 +25,31 @@ use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
+pub use self::db_manager::RocksDbManager;
+pub use self::db_spec::*;
+pub use self::error::*;
+pub use self::rock_access::RocksAccess;
+
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
 type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync>;
+
+/// Denotes whether an operation is considered latency sensitive or not
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Priority {
+    High,
+    Low,
+}
+
+/// Defines how to perform a potentially blocking rocksdb IO operation.
+pub enum IoMode {
+    /// [Dangerous] Allow blocking IO operation to happen in the worker thread (tokio)
+    AllowBlockingIO,
+    /// Fail the operation if operation needs to block on IO
+    NoBlockingIO,
+    /// Attempts to perform the operation without blocking IO in worker thread, if it's not
+    /// possible, it'll spawn work in the background thread pool.
+    Auto,
+}
 
 #[derive(derive_more::Display, Clone)]
 #[display(fmt = "{}::{}", owner, name)]
@@ -97,54 +115,61 @@ impl RocksDb {
 
     pub async fn open_cf(&self, name: CfName, opts: &RocksDbOptions) -> Result<(), RocksError> {
         let default_cf_options = self.manager.default_cf_options(opts);
-        // todo Run in the background storage thread pool
         let db = self.db.clone();
         let cf_patterns = self.cf_patterns.clone();
-        tokio::task::spawn_blocking(move || db.open_cf(name, default_cf_options, cf_patterns))
-            .await
-            .map_err(|_| RocksError::Shutdown(ShutdownError))?
+        self.manager
+            .async_spawn(Priority::Low, move || {
+                db.open_cf(name, default_cf_options, cf_patterns)
+            })
+            .await?
     }
 
-    pub async fn shutdown(&self) {
-        if let Err(e) = self.flush_wal(true) {
-            warn!(
-                db = %self.name,
-                owner = %self.owner,
-                "Failed to flush local loglet rocksdb WAL: {}",
-                e
-            );
-        }
+    pub async fn shutdown(self: Arc<Self>) {
+        // intentionally ignore scheduling error
+        let _ = self
+            .manager
+            .async_spawn_unchecked(Priority::Low, move || {
+                if let Err(e) = self.flush_wal(true) {
+                    warn!(
+                        db = %self.name,
+                        owner = %self.owner,
+                        "Failed to flush local loglet rocksdb WAL: {}",
+                        e
+                    );
+                }
 
-        let cfs_to_flush = self
-            .cfs()
-            .into_iter()
-            .filter(|c| {
-                self.flush_on_shutdown
-                    .iter()
-                    .any(|matcher| matcher.cf_matches(c))
-            })
-            .collect::<Vec<_>>();
-        if cfs_to_flush.is_empty() {
-            debug!(
-                db = %self.name,
-                owner = %self.owner,
-                "No column families to flush for db on shutdown"
-            );
-            return;
-        }
+                let cfs_to_flush = self
+                    .cfs()
+                    .into_iter()
+                    .filter(|c| {
+                        self.flush_on_shutdown
+                            .iter()
+                            .any(|matcher| matcher.cf_matches(c))
+                    })
+                    .collect::<Vec<_>>();
+                if cfs_to_flush.is_empty() {
+                    debug!(
+                        db = %self.name,
+                        owner = %self.owner,
+                        "No column families to flush for db on shutdown"
+                    );
+                    return;
+                }
 
-        debug!(
+                debug!(
             db = %self.name,
             owner = %self.owner,
             "Numbre of column families to flush on shutdown: {}", cfs_to_flush.len());
-        if let Err(e) = self.db.flush_memtables(cfs_to_flush.as_slice(), true) {
-            warn!(
-                db = %self.name,
-                owner = %self.owner,
-                "Failed to flush memtables: {}",
-                e
-            );
-        }
-        self.db.cancel_all_background_work(true);
+                if let Err(e) = self.db.flush_memtables(cfs_to_flush.as_slice(), true) {
+                    warn!(
+                        db = %self.name,
+                        owner = %self.owner,
+                        "Failed to flush memtables: {}",
+                        e
+                    );
+                }
+                self.db.cancel_all_background_work(true);
+            })
+            .await;
     }
 }

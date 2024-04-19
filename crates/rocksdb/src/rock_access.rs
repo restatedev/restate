@@ -22,6 +22,8 @@ use crate::CfName;
 use crate::DbSpec;
 use crate::RocksError;
 
+/// Operations in this trait can be IO blocking, prefer using `RocksDb` for efficient async access
+/// to the database.
 pub trait RocksAccess {
     fn open_db(
         db_spec: &DbSpec<Self>,
