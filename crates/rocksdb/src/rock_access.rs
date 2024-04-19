@@ -112,7 +112,8 @@ impl RocksAccess for rocksdb::DB {
             .iter()
             .filter_map(|name| self.cf_handle(name))
             .collect::<Vec<_>>();
-        Ok(self.flush_cfs_opt(&cfs, &flushopts)?)
+        let cf_refs = cfs.iter().collect::<Vec<_>>();
+        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
 
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
@@ -127,14 +128,14 @@ impl RocksAccess for rocksdb::DB {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.set_options_cf(handle, opts)?)
+        Ok(self.set_options_cf(&handle, opts)?)
     }
 
     fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError> {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.property_int_value_cf(handle, property)?)
+        Ok(self.property_int_value_cf(&handle, property)?)
     }
 
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
@@ -191,7 +192,8 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB {
             .iter()
             .filter_map(|name| self.cf_handle(name))
             .collect::<Vec<_>>();
-        Ok(self.flush_cfs_opt(&cfs, &flushopts)?)
+        let cf_refs = cfs.iter().collect::<Vec<_>>();
+        Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
 
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
@@ -206,14 +208,14 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.set_options_cf(handle, opts)?)
+        Ok(self.set_options_cf(&handle, opts)?)
     }
 
     fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError> {
         let Some(handle) = self.cf_handle(cf) else {
             return Err(RocksError::UnknownColumnFamily(cf.clone()));
         };
-        Ok(self.property_int_value_cf(handle, property)?)
+        Ok(self.property_int_value_cf(&handle, property)?)
     }
 
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {

@@ -16,7 +16,7 @@ use restate_rocksdb::{
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
-use rocksdb::{DBCompressionType, DB};
+use rocksdb::{BoundColumnFamily, DBCompressionType, DB};
 
 use super::keys::{MetadataKey, MetadataKind};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
@@ -70,18 +70,18 @@ impl RocksDbLogStore {
         })
     }
 
-    pub fn data_cf(&self) -> &rocksdb::ColumnFamily {
+    pub fn data_cf(&self) -> Arc<BoundColumnFamily> {
         self.db.cf_handle(DATA_CF).expect("DATA_CF exists")
     }
 
-    pub fn metadata_cf(&self) -> &rocksdb::ColumnFamily {
+    pub fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
         self.db.cf_handle(METADATA_CF).expect("METADATA_CF exists")
     }
 
     pub fn get_log_state(&self, log_id: u64) -> Result<Option<LogState>, LogStoreError> {
         let metadata_cf = self.metadata_cf();
         let value = self.db.get_pinned_cf(
-            metadata_cf,
+            &metadata_cf,
             MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
         )?;
 
