@@ -33,10 +33,10 @@ pub struct Edit {
     #[clap(long, short)]
     force: bool,
 
-    /// Component name
+    /// service name
     component: String,
 
-    /// Component key
+    /// service key
     key: String,
 }
 
@@ -61,7 +61,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Component"), Cell::new(&opts.component)]);
+    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.component)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
     table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
     table.add_row(vec![Cell::new("Binary?"), Cell::new(opts.binary)]);

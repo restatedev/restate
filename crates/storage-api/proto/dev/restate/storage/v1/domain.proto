@@ -122,6 +122,8 @@ message InvocationStatus {
         InvocationTarget invocation_target = 1;
         ResponseResult result = 2;
         Source source = 3;
+        uint64 creation_time = 4;
+        uint64 modification_time = 5;
 
         oneof idempotency_key {
             google.protobuf.Empty idempotency_key_none = 12;

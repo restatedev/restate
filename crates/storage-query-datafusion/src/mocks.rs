@@ -208,7 +208,8 @@ macro_rules! row {
                 $crate::mocks::row_column($idx, $column, |column, row| {
                     use datafusion::arrow::array::Array;
 
-                    let column = column.as_any().downcast_ref::<$arrayty>().unwrap();
+                    let column = column.as_any().downcast_ref::<$arrayty>()
+                        .expect(concat!("Downcast ref to ", stringify!($arrayty)));
                     if (column.len() <= row) {
                         return None
                     }

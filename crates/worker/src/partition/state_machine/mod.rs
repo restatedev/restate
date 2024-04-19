@@ -736,7 +736,7 @@ mod tests {
         use restate_storage_api::idempotency_table::{
             IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
         };
-        use restate_storage_api::invocation_status_table::CompletedInvocation;
+        use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::timer_table::{Timer, TimerKey};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
@@ -886,6 +886,7 @@ mod tests {
                     invocation_target: invocation_target.clone(),
                     source: Source::Ingress,
                     idempotency_key: Some(idempotency.key.clone()),
+                    timestamps: StatusTimestamps::now(),
                     response_result: ResponseResult::Success(response_bytes.clone()),
                 }),
             )
@@ -1126,6 +1127,7 @@ mod tests {
                     invocation_target,
                     source: Source::Ingress,
                     idempotency_key: Some(idempotency.key.clone()),
+                    timestamps: StatusTimestamps::now(),
                     response_result: ResponseResult::Success(Bytes::from_static(b"123")),
                 }),
             )

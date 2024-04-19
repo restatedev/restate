@@ -19,12 +19,12 @@ use restate_meta_rest_model::deployments::ComponentNameRevPair;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{MetaClientInterface, MetasClient};
-use crate::ui::component_methods::icon_for_component_type;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
+use crate::ui::service_handlers::icon_for_service_type;
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 use crate::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
@@ -49,11 +49,11 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = MetasClient::new(env)?;
 
-    let mut latest_components: HashMap<String, ComponentMetadata> = HashMap::new();
-    // To know the latest version of every component.
-    let components = client.get_components().await?.into_body().await?.components;
-    for component in components {
-        latest_components.insert(component.name.clone(), component);
+    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
+    // To know the latest version of every service.
+    let services = client.get_components().await?.into_body().await?.components;
+    for service in services {
+        latest_services.insert(service.name.clone(), service);
     }
 
     let deployment = client
@@ -66,7 +66,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 
-    let component_rev_pairs: Vec<_> = deployment
+    let service_rev_pairs: Vec<_> = deployment
         .components
         .iter()
         .map(|s| ComponentNameRevPair {
@@ -77,9 +77,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
     let status = calculate_deployment_status(
         &deployment.id,
-        &component_rev_pairs,
+        &service_rev_pairs,
         total_active_inv,
-        &latest_components,
+        &latest_services,
     );
 
     let mut table = Table::new_styled(&env.ui_config);
@@ -95,57 +95,57 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     // Services and methods.
     c_println!();
 
-    c_title!("🤖", "Components");
-    for component in deployment.components {
-        let Some(latest_component) = latest_components.get(&component.name) else {
-            // if we can't find this component in the latest set of components, something is off. A
-            // deployment cannot remove components defined by other deployment, so we should warn that
+    c_title!("🤖", "Services");
+    for service in deployment.components {
+        let Some(latest_service) = latest_services.get(&service.name) else {
+            // if we can't find this service in the latest set of services, something is off. A
+            // deployment cannot remove services defined by other deployment, so we should warn that
             // this is happening.
             c_eprintln!(
-                "Component {} is not found in the latest set of components. This is unexpected.",
-                component.name
+                "Service {} is not found in the latest set of services. This is unexpected.",
+                service.name
             );
             continue;
         };
 
-        c_indentln!(1, "- {}", Styled(Style::Info, &component.name));
+        c_indentln!(1, "- {}", Styled(Style::Info, &service.name));
         c_indentln!(
             2,
             "Type: {:?} {}",
-            component.ty,
-            icon_for_component_type(&component.ty),
+            service.ty,
+            icon_for_service_type(&service.ty),
         );
 
-        let latest_revision_message = if component.revision == latest_component.revision {
+        let latest_revision_message = if service.revision == latest_service.revision {
             // We are latest.
             format!("[{}]", Styled(Style::Success, "Latest"))
         } else {
             // Not latest
             format!(
                 "[Latest {} is in deployment ID {}]",
-                Styled(Style::Success, latest_component.revision),
-                latest_component.deployment_id
+                Styled(Style::Success, latest_service.revision),
+                latest_service.deployment_id
             )
         };
         c_indentln!(
             2,
             "Revision: {} {}",
-            component.revision,
+            service.revision,
             latest_revision_message
         );
         let mut methods_table = Table::new_styled(&env.ui_config);
         methods_table.set_styled_header(vec![
-            "METHOD",
+            "HANDLER",
             "INPUT TYPE",
             "OUTPUT TYPE",
             "ACTIVE INVOCATIONS",
         ]);
 
-        for handler in &component.handlers {
-            // how many inv pinned on this deployment+component+method.
+        for handler in &service.handlers {
+            // how many inv pinned on this deployment+service+method.
             let active_inv = active_inv
                 .iter()
-                .filter(|x| x.component == component.name && x.handler == handler.name)
+                .filter(|x| x.service == service.name && x.handler == handler.name)
                 .map(|x| x.inv_count)
                 .next()
                 .unwrap_or(0);

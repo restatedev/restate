@@ -120,24 +120,24 @@ pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
     Unknown,
-    Inboxed,
     Pending,
     Ready,
     Running,
     Suspended,
     BackingOff,
+    Completed,
 }
 
 impl FromStr for InvocationState {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "inboxed" => Self::Inboxed,
             "pending" => Self::Pending,
             "ready" => Self::Ready,
             "running" => Self::Running,
             "suspended" => Self::Suspended,
             "backing-off" => Self::BackingOff,
+            "completed" => Self::Completed,
             _ => Self::Unknown,
         })
     }
@@ -152,7 +152,7 @@ impl Display for InvocationState {
             InvocationState::Running => write!(f, "running"),
             InvocationState::Suspended => write!(f, "suspended"),
             InvocationState::BackingOff => write!(f, "backing-off"),
-            InvocationState::Inboxed => write!(f, "inboxed"),
+            InvocationState::Completed => write!(f, "completed"),
         }
     }
 }
@@ -160,9 +160,7 @@ impl Display for InvocationState {
 #[derive(Debug, Clone)]
 pub struct OutgoingInvoke {
     pub invocation_id: Option<String>,
-    pub invoked_component: Option<String>,
-    pub invoked_handler: Option<String>,
-    pub invoked_component_key: Option<String>,
+    pub invoked_target: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -246,13 +244,13 @@ pub struct InvocationDetailed {
 #[derive(Debug, Clone, Default)]
 pub struct Invocation {
     pub id: String,
-    pub component: String,
+    pub service: String,
     pub handler: String,
     pub key: Option<String>, // Set only on keyed service
     pub created_at: chrono::DateTime<Local>,
     // None if invoked directly (e.g. ingress)
     pub invoked_by_id: Option<String>,
-    pub invoked_by_component: Option<String>,
+    pub invoked_by_service: Option<String>,
     pub status: InvocationState,
     pub trace_id: Option<String>,
 
@@ -292,28 +290,28 @@ pub async fn count_deployment_active_inv(
         .await?)
 }
 
-pub struct ComponentHandlerUsage {
-    pub component: String,
+pub struct ServiceHandlerUsage {
+    pub service: String,
     pub handler: String,
     pub inv_count: i64,
 }
 
-/// Key is component name
+/// Key is service name
 #[derive(Clone, Default)]
-pub struct ComponentStatusMap(HashMap<String, ComponentStatus>);
+pub struct ServiceStatusMap(HashMap<String, ServiceStatus>);
 
-impl ComponentStatusMap {
+impl ServiceStatusMap {
     fn set_handler_stats(
         &mut self,
-        component: &str,
+        service: &str,
         handler: &str,
         state: InvocationState,
         stats: HandlerStateStats,
     ) {
         let comp_handlers = self
             .0
-            .entry(component.to_owned())
-            .or_insert_with(|| ComponentStatus {
+            .entry(service.to_owned())
+            .or_insert_with(|| ServiceStatus {
                 handlers: HashMap::new(),
             });
 
@@ -327,17 +325,17 @@ impl ComponentStatusMap {
         handler_info.per_state_totals.insert(state, stats);
     }
 
-    pub fn get_component_status(&self, component: &str) -> Option<&ComponentStatus> {
-        self.0.get(component)
+    pub fn get_service_status(&self, service: &str) -> Option<&ServiceStatus> {
+        self.0.get(service)
     }
 }
 
 #[derive(Default, Clone)]
-pub struct ComponentStatus {
+pub struct ServiceStatus {
     handlers: HashMap<String, HandlerInfo>,
 }
 
-impl ComponentStatus {
+impl ServiceStatus {
     pub fn get_handler_stats(
         &self,
         state: InvocationState,
@@ -388,7 +386,7 @@ pub struct HandlerStateStats {
 pub async fn count_deployment_active_inv_by_method(
     client: &DataFusionHttpClient,
     deployment_id: &DeploymentId,
-) -> Result<Vec<ComponentHandlerUsage>> {
+) -> Result<Vec<ServiceHandlerUsage>> {
     let mut output = vec![];
 
     let query = format!(
@@ -404,8 +402,8 @@ pub async fn count_deployment_active_inv_by_method(
 
     for batch in client.run_query(query).await?.batches {
         for i in 0..batch.num_rows() {
-            output.push(ComponentHandlerUsage {
-                component: value_as_string(&batch, 0, i),
+            output.push(ServiceHandlerUsage {
+                service: value_as_string(&batch, 0, i),
                 handler: value_as_string(&batch, 1, i),
                 inv_count: value_as_i64(&batch, 2, i),
             });
@@ -414,15 +412,15 @@ pub async fn count_deployment_active_inv_by_method(
     Ok(output)
 }
 
-pub async fn get_components_status(
+pub async fn get_service_status(
     client: &DataFusionHttpClient,
-    components_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ComponentStatusMap> {
-    let mut status_map = ComponentStatusMap::default();
+    services_filter: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<ServiceStatusMap> {
+    let mut status_map = ServiceStatusMap::default();
 
     let query_filter = format!(
         "({})",
-        components_filter
+        services_filter
             .into_iter()
             .map(|x| format!("'{}'", x.as_ref()))
             .collect::<Vec<_>>()
@@ -444,7 +442,7 @@ pub async fn get_components_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let component = batch.column(0).as_string::<i32>().value_string(i);
+                let service = batch.column(0).as_string::<i32>().value_string(i);
                 let handler = batch.column(1).as_string::<i32>().value_string(i);
                 let num_invocations = batch
                     .column(2)
@@ -463,7 +461,7 @@ pub async fn get_components_status(
                     oldest_at,
                     oldest_invocation,
                 };
-                status_map.set_handler_stats(&component, &handler, InvocationState::Pending, stats);
+                status_map.set_handler_stats(&service, &handler, InvocationState::Pending, stats);
             }
         }
     }
@@ -476,7 +474,8 @@ pub async fn get_components_status(
                 ss.component,
                 ss.handler,
                 CASE
-                 WHEN ss.status = 'inboxed' THEN 'inboxed'
+                 WHEN ss.status = 'inboxed' THEN 'pending'
+                 WHEN ss.status = 'completed' THEN 'completed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -495,7 +494,7 @@ pub async fn get_components_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let component = value_as_string(&batch, 0, i);
+                let service = value_as_string(&batch, 0, i);
                 let handler = value_as_string(&batch, 1, i);
                 let status = value_as_string(&batch, 2, i);
 
@@ -505,7 +504,7 @@ pub async fn get_components_status(
                     oldest_invocation: value_as_string(&batch, 5, i),
                 };
 
-                status_map.set_handler_stats(&component, &handler, status.parse().unwrap(), stats);
+                status_map.set_handler_stats(&service, &handler, status.parse().unwrap(), stats);
             }
         }
     }
@@ -513,10 +512,10 @@ pub async fn get_components_status(
     Ok(status_map)
 }
 
-// Component -> Locked Keys
+// Service -> Locked Keys
 #[derive(Default)]
-pub struct ComponentHandlerLockedKeysMap {
-    components: HashMap<String, HashMap<String, LockedKeyInfo>>,
+pub struct ServiceHandlerLockedKeysMap {
+    services: HashMap<String, HashMap<String, LockedKeyInfo>>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -541,40 +540,40 @@ pub struct LockedKeyInfo {
     pub last_attempt_deployment_id: Option<String>,
 }
 
-impl ComponentHandlerLockedKeysMap {
-    fn insert(&mut self, component: &str, key: String, info: LockedKeyInfo) {
-        let locked_keys = self.components.entry(component.to_owned()).or_default();
+impl ServiceHandlerLockedKeysMap {
+    fn insert(&mut self, service: &str, key: String, info: LockedKeyInfo) {
+        let locked_keys = self.services.entry(service.to_owned()).or_default();
         locked_keys.insert(key.to_owned(), info);
     }
 
-    fn locked_key_info_mut(&mut self, component: &str, key: &str) -> &mut LockedKeyInfo {
-        let locked_keys = self.components.entry(component.to_owned()).or_default();
+    fn locked_key_info_mut(&mut self, service: &str, key: &str) -> &mut LockedKeyInfo {
+        let locked_keys = self.services.entry(service.to_owned()).or_default();
         locked_keys.entry(key.to_owned()).or_default()
     }
 
     pub fn into_inner(self) -> HashMap<String, HashMap<String, LockedKeyInfo>> {
-        self.components
+        self.services
     }
 
     pub fn is_empty(&self) -> bool {
-        self.components.is_empty()
+        self.services.is_empty()
     }
 }
 
 pub async fn get_locked_keys_status(
     client: &DataFusionHttpClient,
-    components_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ComponentHandlerLockedKeysMap> {
-    let mut key_map = ComponentHandlerLockedKeysMap::default();
-    let quoted_component_names = components_filter
+    services_filter: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<ServiceHandlerLockedKeysMap> {
+    let mut key_map = ServiceHandlerLockedKeysMap::default();
+    let quoted_service_names = services_filter
         .into_iter()
         .map(|x| format!("'{}'", x.as_ref()))
         .collect::<Vec<_>>();
-    if quoted_component_names.is_empty() {
+    if quoted_service_names.is_empty() {
         return Ok(key_map);
     }
 
-    let query_filter = format!("({})", quoted_component_names.join(","));
+    let query_filter = format!("({})", quoted_service_names.join(","));
 
     // Inbox analysis (pending invocations)....
     {
@@ -593,7 +592,7 @@ pub async fn get_locked_keys_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let component = batch.column(0).as_string::<i32>().value(i);
+                let service = batch.column(0).as_string::<i32>().value(i);
                 let key = value_as_string(&batch, 1, i);
                 let num_pending = value_as_i64(&batch, 2, i);
                 let oldest_pending = value_as_dt_opt(&batch, 3, i);
@@ -603,7 +602,7 @@ pub async fn get_locked_keys_status(
                     oldest_pending,
                     ..LockedKeyInfo::default()
                 };
-                key_map.insert(component, key, info);
+                key_map.insert(service, key, info);
             }
         }
     }
@@ -617,7 +616,8 @@ pub async fn get_locked_keys_status(
                 ss.handler,
                 ss.component_key,
                 CASE
-                 WHEN ss.status = 'inboxed' THEN 'inboxed'
+                 WHEN ss.status = 'inboxed' THEN 'pending'
+                 WHEN ss.status = 'completed' THEN 'completed'
                  WHEN ss.status = 'suspended' THEN 'suspended'
                  WHEN sis.in_flight THEN 'running'
                  WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
@@ -657,7 +657,7 @@ pub async fn get_locked_keys_status(
         let resp = client.run_query(query).await?;
         for batch in resp.batches {
             for i in 0..batch.num_rows() {
-                let component = value_as_string(&batch, 0, i);
+                let service = value_as_string(&batch, 0, i);
                 let key = value_as_string(&batch, 1, i);
                 let status = batch
                     .column(2)
@@ -676,7 +676,7 @@ pub async fn get_locked_keys_status(
                 let last_start = value_as_dt_opt(&batch, 11, i);
                 let num_retries = value_as_u64_opt(&batch, 12, i);
 
-                let info = key_map.locked_key_info_mut(&component, &key);
+                let info = key_map.locked_key_info_mut(&service, &key);
 
                 info.invocation_status = Some(status);
                 info.invocation_holding_lock = id;
@@ -723,11 +723,12 @@ pub async fn find_active_invocations(
             ss.handler,
             ss.component_key,
             CASE
-             WHEN ss.status = 'inboxed' THEN 'inboxed'
-             WHEN ss.status = 'suspended' THEN 'suspended'
-             WHEN sis.in_flight THEN 'running'
-             WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-             ELSE 'ready'
+                WHEN ss.status = 'inboxed' THEN 'pending'
+                WHEN ss.status = 'completed' THEN 'completed'
+                WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN sis.in_flight THEN 'running'
+                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                ELSE 'ready'
             END AS combined_status,
             ss.created_at,
             ss.modified_at,
@@ -762,9 +763,9 @@ pub async fn find_active_invocations(
                 full_count = value_as_i64(&batch, batch.num_columns() - 1, i) as usize;
             }
             let id = value_as_string(&batch, 0, i);
-            let component = value_as_string(&batch, 1, i);
+            let service = value_as_string(&batch, 1, i);
             let handler = value_as_string(&batch, 2, i);
-            let component_key = value_as_string_opt(&batch, 3, i);
+            let service_key = value_as_string_opt(&batch, 3, i);
             let status: InvocationState = value_as_string(&batch, 4, i)
                 .parse()
                 .expect("Unexpected status");
@@ -783,15 +784,15 @@ pub async fn find_active_invocations(
             let last_start = value_as_dt_opt(&batch, 12, i);
 
             let invoked_by_id = value_as_string_opt(&batch, 13, i);
-            let invoked_by_component = value_as_string_opt(&batch, 14, i);
-            let component_type = parse_component_type(&value_as_string(&batch, 15, i));
+            let invoked_by_service = value_as_string_opt(&batch, 14, i);
+            let service_type = parse_service_type(&value_as_string(&batch, 15, i));
             let deployment_id_at_latest_svc_revision = value_as_string(&batch, 16, i);
 
             let existing_pinned_deployment_id = value_as_string_opt(&batch, 17, i);
             let trace_id = value_as_string_opt(&batch, 18, i);
 
-            let key = if component_type == ComponentType::VirtualObject {
-                component_key
+            let key = if service_type == ComponentType::VirtualObject {
+                service_key
             } else {
                 None
             };
@@ -799,12 +800,12 @@ pub async fn find_active_invocations(
             let mut invocation = Invocation {
                 id,
                 status,
-                component,
+                service,
                 key,
                 handler,
                 created_at,
                 invoked_by_id,
-                invoked_by_component,
+                invoked_by_service,
                 state_modified_at,
                 num_retries,
                 next_retry_at,
@@ -833,15 +834,15 @@ pub async fn find_active_invocations(
     Ok((active, full_count))
 }
 
-pub async fn get_component_invocations(
+pub async fn get_service_invocations(
     client: &DataFusionHttpClient,
-    component: &str,
+    service: &str,
     limit_active: usize,
 ) -> Result<Vec<Invocation>> {
     // Active invocations analysis
     Ok(find_active_invocations(
         client,
-        &format!("WHERE ss.component = '{}'", component),
+        &format!("WHERE ss.component = '{}'", service),
         "",
         "ORDER BY ss.created_at DESC",
         limit_active,
@@ -850,7 +851,7 @@ pub async fn get_component_invocations(
     .0)
 }
 
-fn parse_component_type(s: &str) -> ComponentType {
+fn parse_service_type(s: &str) -> ComponentType {
     match s {
         "service" => ComponentType::Service,
         "virtual_object" => ComponentType::VirtualObject,
@@ -886,9 +887,7 @@ pub async fn get_invocation_journal(
             sj.entry_type,
             sj.completed,
             sj.invoked_id,
-            sj.invoked_component,
-            sj.invoked_handler,
-            sj.invoked_component_key,
+            sj.invoked_target,
             sj.sleep_wakeup_at
         FROM sys_journal sj
         WHERE
@@ -911,24 +910,18 @@ pub async fn get_invocation_journal(
             let entry_type = value_as_string(&batch, 1, i);
             let completed = batch.column(2).as_boolean().value(i);
             let outgoing_invocation_id = value_as_string_opt(&batch, 3, i);
-            let invoked_component = value_as_string_opt(&batch, 4, i);
-            let invoked_handler = value_as_string_opt(&batch, 5, i);
-            let invoked_component_key = value_as_string_opt(&batch, 6, i);
-            let wakeup_at = value_as_dt_opt(&batch, 7, i);
+            let outgoing_invoked_target = value_as_string_opt(&batch, 4, i);
+            let wakeup_at = value_as_dt_opt(&batch, 5, i);
 
             let entry_type = match entry_type.as_str() {
                 "Sleep" => JournalEntryType::Sleep { wakeup_at },
                 "Invoke" => JournalEntryType::Invoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_component,
-                    invoked_handler,
-                    invoked_component_key,
+                    invoked_target: outgoing_invoked_target,
                 }),
                 "BackgroundInvoke" => JournalEntryType::BackgroundInvoke(OutgoingInvoke {
                     invocation_id: outgoing_invocation_id,
-                    invoked_component,
-                    invoked_handler,
-                    invoked_component_key,
+                    invoked_target: outgoing_invoked_target,
                 }),
                 "Awakeable" => {
                     JournalEntryType::Awakeable(AwakeableIdentifier::new(my_invocation_id, index))

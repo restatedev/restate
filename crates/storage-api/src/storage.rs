@@ -674,6 +674,10 @@ pub mod v1 {
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
                     source,
+                    timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                        MillisSinceEpoch::new(value.creation_time),
+                        MillisSinceEpoch::new(value.modification_time),
+                    ),
                     response_result: value
                         .result
                         .ok_or(ConversionError::missing_field("result"))?
@@ -689,6 +693,7 @@ pub mod v1 {
                     invocation_target,
                     source,
                     idempotency_key,
+                    timestamps,
                     response_result,
                 } = value;
 
@@ -696,6 +701,8 @@ pub mod v1 {
                     invocation_target: Some(InvocationTarget::from(invocation_target)),
                     source: Some(Source::from(source)),
                     result: Some(ResponseResult::from(response_result)),
+                    creation_time: timestamps.creation_time().as_u64(),
+                    modification_time: timestamps.modification_time().as_u64(),
                     idempotency_key: Some(match idempotency_key {
                         Some(key) => {
                             invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(

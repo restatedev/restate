@@ -11,11 +11,11 @@
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 
-pub mod component_methods;
 pub mod console;
 pub mod deployments;
 pub mod invocations;
 pub mod output;
+pub mod service_handlers;
 pub mod stylesheet;
 pub mod watcher;
 

@@ -15,8 +15,8 @@ mod status;
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
-#[clap(visible_alias = "comp", alias = "component")]
-pub enum Components {
+#[clap(visible_alias = "svc", alias = "service")]
+pub enum Services {
     /// List the registered services
     List(list::List),
     /// Prints detailed information about a given service

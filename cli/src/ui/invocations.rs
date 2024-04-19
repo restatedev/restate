@@ -98,12 +98,12 @@ pub fn invocation_qualified_name(invocation: &Invocation) -> String {
     let svc = if let Some(key) = &invocation.key {
         format!(
             "[{} {} {}]",
-            invocation.component,
+            invocation.service,
             style("@").dim(),
             style(key).dim(),
         )
     } else {
-        invocation.component.to_string()
+        invocation.service.to_string()
     };
     format!("{}{}{}", svc, style("::").dim(), invocation.handler)
 }
@@ -131,7 +131,7 @@ pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationStat
         InvocationState::Running => DStyle::new().green(),
         InvocationState::Suspended => DStyle::new().dim(),
         InvocationState::BackingOff => DStyle::new().red(),
-        InvocationState::Inboxed => DStyle::new().blue(),
+        InvocationState::Completed => DStyle::new().blue(),
     };
     status_style.apply_to(status)
 }
@@ -147,7 +147,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         let invoked_by_msg = format!(
             "{} {}",
             invocation
-                .invoked_by_component
+                .invoked_by_service
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
@@ -256,10 +256,8 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
         }
         JournalEntryType::Invoke(inv) | JournalEntryType::BackgroundInvoke(inv) => {
             format!(
-                "{}{}{} {}",
-                inv.invoked_component.as_ref().unwrap(),
-                style("::").dim(),
-                inv.invoked_handler.as_ref().unwrap(),
+                "{} {}",
+                inv.invoked_target.as_ref().unwrap(),
                 inv.invocation_id.as_deref().unwrap_or(""),
             )
         }

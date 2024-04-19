@@ -28,9 +28,9 @@ use itertools::Itertools;
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
 pub struct List {
-    /// Component to list invocations for
-    #[clap(long, visible_alias = "component", value_delimiter = ',')]
-    component: Vec<String>,
+    /// Service to list invocations for
+    #[clap(long, visible_alias = "service", value_delimiter = ',')]
+    service: Vec<String>,
     /// Filter by invocation on this handler name
     #[clap(long, value_delimiter = ',')]
     handler: Vec<String>,
@@ -40,10 +40,10 @@ pub struct List {
     /// Filter by deployment ID
     #[clap(long, visible_alias = "dp", value_delimiter = ',')]
     deployment: Vec<String>,
-    /// Only list invocations on keyed components only
+    /// Only list invocations on keyed services only
     #[clap(long)]
     virtual_objects_only: bool,
-    /// Filter by invocations on this component key
+    /// Filter by invocations on this service key
     #[clap(long, value_delimiter = ',')]
     key: Vec<String>,
     /// Limit the number of results
@@ -77,13 +77,10 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         "ORDER BY ss.created_at DESC"
     };
 
-    if !opts.component.is_empty() {
+    if !opts.service.is_empty() {
         active_filters.push(format!(
             "ss.component IN ({})",
-            opts.component
-                .iter()
-                .map(|x| format!("'{}'", x))
-                .format(",")
+            opts.service.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
