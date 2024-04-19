@@ -33,7 +33,9 @@ use crate::TableKind::{
 use bytes::BytesMut;
 use codederror::CodedError;
 use restate_core::ShutdownError;
-use restate_rocksdb::{CfName, DbName, DbSpec, Owner, RocksDbManager, RocksError};
+use restate_rocksdb::{
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
+};
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
@@ -205,9 +207,7 @@ fn db_options() -> rocksdb::Options {
     db_options
 }
 
-fn cf_options() -> rocksdb::Options {
-    let mut cf_options = rocksdb::Options::default();
-    //
+fn cf_options(mut cf_options: rocksdb::Options) -> rocksdb::Options {
     // Most of the changes are highly temporal, we try to delay flushing
     // As much as we can to increase the chances to observe a deletion.
     //
@@ -247,30 +247,34 @@ impl RocksDBStorage {
             //
             // keyed by partition key + user key
             //
-            (CfName::new(cf_name(Inbox)), cf_options()),
-            (CfName::new(cf_name(State)), cf_options()),
-            (CfName::new(cf_name(InvocationStatus)), cf_options()),
-            (CfName::new(cf_name(ServiceStatus)), cf_options()),
-            (CfName::new(cf_name(Journal)), cf_options()),
-            (CfName::new(cf_name(Idempotency)), cf_options()),
+            CfName::new(cf_name(Inbox)),
+            CfName::new(cf_name(State)),
+            CfName::new(cf_name(InvocationStatus)),
+            CfName::new(cf_name(ServiceStatus)),
+            CfName::new(cf_name(Journal)),
+            CfName::new(cf_name(Idempotency)),
             //
             // keyed by partition id + suffix
             //
-            (CfName::new(cf_name(Outbox)), cf_options()),
-            (CfName::new(cf_name(Timers)), cf_options()),
+            CfName::new(cf_name(Outbox)),
+            CfName::new(cf_name(Timers)),
             // keyed by partition_id + partition_id
-            (CfName::new(cf_name(Deduplication)), cf_options()),
+            CfName::new(cf_name(Deduplication)),
             // keyed by partition_id + u64
-            (CfName::new(cf_name(PartitionStateMachine)), cf_options()),
+            CfName::new(cf_name(PartitionStateMachine)),
         ];
 
-        let db_spec = DbSpec::new_optimistic_db(
+        let db_spec = DbSpecBuilder::new(
             DbName::new(DB_NAME),
             Owner::PartitionProcessor,
             data_dir,
             db_options(),
-            cfs,
-        );
+        )
+        // At the moment, all CFs get the same options, that might change in the future.
+        .add_cf_pattern(CfPrefixPattern::ANY, cf_options)
+        .ensure_column_families(cfs)
+        .build_as_optimistic_db();
+
         // todo remove this when open_db is async
         let rdb = tokio::task::spawn_blocking(move || {
             RocksDbManager::get().open_db(updateable_opts, db_spec)

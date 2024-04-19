@@ -170,8 +170,7 @@ impl Worker {
             updateable_config
                 .clone()
                 .map_as_updateable_owned(|c| &c.worker.rocksdb),
-        ))
-        .expect("RocksDB storage creation succeeds");
+        ))?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = InvokerService::from_options(
