@@ -467,7 +467,7 @@ impl DbWatchdog {
                     .shutting_down
                     .store(true, std::sync::atomic::Ordering::Release);
                 self.manager.shutdown().await;
-                self.manager.dbs.clear();
+                self.manager.dbs.write().clear();
                 self.subscriptions.clear();
                 self.manager
                     .shutting_down
