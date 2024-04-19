@@ -20,7 +20,6 @@ pub use rock_access::*;
 use tracing::debug;
 use tracing::warn;
 
-use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,7 +39,6 @@ pub struct RocksDb {
     pub path: PathBuf,
     pub db_options: rocksdb::Options,
     flush_on_shutdown: Arc<[BoxedCfMatcher]>,
-    pub column_families: HashSet<CfName>,
     db: Arc<dyn RocksAccess + Send + Sync + 'static>,
 }
 
@@ -55,7 +53,7 @@ impl Deref for RocksDb {
 }
 
 impl RocksDb {
-    pub(crate) fn new<T>(spec: DbSpec<T>, db: Arc<T>, column_families: HashSet<CfName>) -> Self
+    pub(crate) fn new<T>(spec: DbSpec<T>, db: Arc<T>) -> Self
     where
         T: RocksAccess + Send + Sync + 'static,
     {
@@ -66,7 +64,6 @@ impl RocksDb {
             db,
             db_options: spec.db_options,
             flush_on_shutdown: spec.flush_on_shutdown.into(),
-            column_families,
         }
     }
 
@@ -76,8 +73,8 @@ impl RocksDb {
         &self.db
     }
 
-    pub fn cfs(&self) -> impl Iterator<Item = &CfName> {
-        self.column_families.iter()
+    pub fn cfs(&self) -> Vec<CfName> {
+        self.db.cfs()
     }
 
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
@@ -103,8 +100,8 @@ impl RocksDb {
         }
 
         let cfs_to_flush = self
-            .column_families
-            .iter()
+            .cfs()
+            .into_iter()
             .filter(|c| {
                 self.flush_on_shutdown
                     .iter()
@@ -124,7 +121,7 @@ impl RocksDb {
             db = %self.name,
             owner = %self.owner,
             "Numbre of column families to flush on shutdown: {}", cfs_to_flush.len());
-        if let Err(e) = self.db.flush_memtables(&cfs_to_flush, true) {
+        if let Err(e) = self.db.flush_memtables(cfs_to_flush.as_slice(), true) {
             warn!(
                 db = %self.name,
                 owner = %self.owner,
