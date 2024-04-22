@@ -143,7 +143,7 @@ mod built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::service_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -264,7 +264,7 @@ mod manual_response_built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::service_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}

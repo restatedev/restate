@@ -25,7 +25,7 @@ use restate_meta_rest_model::deployments::DeploymentId;
 use anyhow::Result;
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use chrono::{DateTime, Duration, Local, TimeZone};
-use restate_meta_rest_model::components::ComponentType;
+use restate_meta_rest_model::services::ServiceType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::InvocationId;
 
@@ -250,7 +250,7 @@ pub struct InvocationDetailed {
 pub struct Invocation {
     pub id: String,
     pub target: String,
-    pub target_service_ty: ComponentType,
+    pub target_service_ty: ServiceType,
     pub created_at: chrono::DateTime<Local>,
     // None if invoked directly (e.g. ingress)
     pub invoked_by_id: Option<String>,
@@ -398,12 +398,12 @@ pub async fn count_deployment_active_inv_by_method(
 
     let query = format!(
         "SELECT 
-            component,
-            handler,
+            target_service_name,
+            target_handler_name,
             COUNT(id) AS inv_count
             FROM sys_invocation_status
             WHERE pinned_deployment_id = '{}'
-            GROUP BY pinned_deployment_id, component, handler",
+            GROUP BY pinned_deployment_id, target_service_name, target_handler_name",
         deployment_id
     );
 
@@ -437,13 +437,13 @@ pub async fn get_service_status(
     {
         let query = format!(
             "SELECT 
-                component,
-                handler,
+                target_service_name,
+                target_handler_name,
                 COUNT(id),
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
-             FROM sys_invocation_status WHERE status == 'inboxed' AND component IN {}
-             GROUP BY component, handler",
+             FROM sys_invocation_status WHERE status == 'inboxed' AND target_service_name IN {}
+             GROUP BY target_service_name, target_handler_name",
             query_filter
         );
         let resp = client.run_query(query).await?;
@@ -478,8 +478,8 @@ pub async fn get_service_status(
         let query = format!(
             "WITH enriched_invokes AS
             (SELECT
-                ss.component,
-                ss.handler,
+                ss.target_service_name,
+                ss.target_handler_name,
                 CASE
                  WHEN ss.status = 'inboxed' THEN 'pending'
                  WHEN ss.status = 'completed' THEN 'completed'
@@ -492,10 +492,10 @@ pub async fn get_service_status(
                 ss.created_at
             FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.component IN {}
+            WHERE ss.target_service_name IN {}
             )
-            SELECT component, handler, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
-            FROM enriched_invokes GROUP BY component, handler, combined_status ORDER BY handler",
+            SELECT target_service_name, target_handler_name, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
+            FROM enriched_invokes GROUP BY target_service_name, target_handler_name, combined_status ORDER BY target_handler_name",
             query_filter
         );
         let resp = client.run_query(query).await?;
@@ -586,13 +586,13 @@ pub async fn get_locked_keys_status(
     {
         let query = format!(
             "SELECT 
-                component,
-                component_key,
+                service_name,
+                service_key,
                 COUNT(id),
                 MIN(created_at)
              FROM sys_inbox
-             WHERE component IN {}
-             GROUP BY component, component_key
+             WHERE service_name IN {}
+             GROUP BY service_name, service_key
              ORDER BY COUNT(id) DESC",
             query_filter
         );
@@ -619,9 +619,9 @@ pub async fn get_locked_keys_status(
         let query = format!(
             "WITH enriched_invokes AS
             (SELECT
-                ss.component,
-                ss.handler,
-                ss.component_key,
+                ss.target_service_name,
+                ss.target_handler_name,
+                ss.target_service_key,
                 CASE
                  WHEN ss.status = 'inboxed' THEN 'pending'
                  WHEN ss.status = 'completed' THEN 'completed'
@@ -641,14 +641,14 @@ pub async fn get_locked_keys_status(
                 sis.last_start_at
             FROM sys_invocation_status ss
             LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.status != 'inboxed' AND ss.component IN {}
+            WHERE ss.status != 'inboxed' AND ss.target_service_name IN {}
             )
             SELECT
-                component,
-                component_key,
+                target_service_name,
+                target_service_key,
                 combined_status,
                 first_value(id),
-                first_value(handler),
+                first_value(target_handler_name),
                 first_value(created_at),
                 first_value(modified_at),
                 first_value(pinned_deployment_id),
@@ -657,7 +657,7 @@ pub async fn get_locked_keys_status(
                 first_value(next_retry_at),
                 first_value(last_start_at),
                 sum(retry_count)
-            FROM enriched_invokes GROUP BY component, component_key, combined_status",
+            FROM enriched_invokes GROUP BY target_service_name, target_service_key, combined_status",
             query_filter
         );
 
@@ -811,7 +811,7 @@ pub async fn find_active_invocations(
             ss.trace_id
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-        LEFT JOIN sys_component comp ON comp.name = ss.component
+        LEFT JOIN sys_service comp ON comp.name = ss.target_service_name
         LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
         {}
         {}
@@ -880,7 +880,7 @@ pub async fn get_service_invocations(
     // Active invocations analysis
     Ok(find_active_invocations(
         client,
-        &format!("WHERE ss.component = '{}'", service),
+        &format!("WHERE ss.target_service_name = '{}'", service),
         "",
         "ORDER BY ss.created_at DESC",
         limit_active,
@@ -890,10 +890,10 @@ pub async fn get_service_invocations(
 }
 
 #[allow(dead_code)]
-fn parse_service_type(s: &str) -> ComponentType {
+fn parse_service_type(s: &str) -> ServiceType {
     match s {
-        "service" => ComponentType::Service,
-        "virtual_object" => ComponentType::VirtualObject,
+        "service" => ServiceType::Service,
+        "virtual_object" => ServiceType::VirtualObject,
         _ => panic!("Unexpected instance type"),
     }
 }

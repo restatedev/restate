@@ -35,7 +35,7 @@ async fn get_idempotency_key() {
     let invocation_id_1 = InvocationId::mock_random();
     tx.put_idempotency_metadata(
         &IdempotencyId::new(
-            "my-component".into(),
+            "my-service".into(),
             Some(Bytes::copy_from_slice(b"my-key")),
             "my-handler".into(),
             "my-idempotency-key".into(),
@@ -48,7 +48,7 @@ async fn get_idempotency_key() {
     let invocation_id_2 = InvocationId::mock_random();
     tx.put_idempotency_metadata(
         &IdempotencyId::new(
-            "my-component".into(),
+            "my-service".into(),
             Some(Bytes::copy_from_slice(b"my-key")),
             "my-handler-2".into(),
             "my-idempotency-key".into(),
@@ -62,7 +62,7 @@ async fn get_idempotency_key() {
 
     let records = engine
         .execute(
-            "SELECT * FROM sys_idempotency ORDER BY component_name, component_key, component_handler",
+            "SELECT * FROM sys_idempotency ORDER BY service_name, service_key, service_handler",
         )
         .await
         .unwrap()
@@ -77,9 +77,9 @@ async fn get_idempotency_key() {
             row!(
                 0,
                 {
-                    "component_name" => LargeStringArray: eq("my-component"),
-                    "component_key" => LargeStringArray: eq("my-key"),
-                    "component_handler" => LargeStringArray: eq("my-handler"),
+                    "service_name" => LargeStringArray: eq("my-service"),
+                    "service_key" => LargeStringArray: eq("my-key"),
+                    "service_handler" => LargeStringArray: eq("my-handler"),
                     "idempotency_key" => LargeStringArray: eq("my-idempotency-key"),
                     "invocation_id" => LargeStringArray: eq(invocation_id_1.to_string()),
                 }
@@ -87,9 +87,9 @@ async fn get_idempotency_key() {
             row!(
                 1,
                 {
-                    "component_name" => LargeStringArray: eq("my-component"),
-                    "component_key" => LargeStringArray: eq("my-key"),
-                    "component_handler" => LargeStringArray: eq("my-handler-2"),
+                    "service_name" => LargeStringArray: eq("my-service"),
+                    "service_key" => LargeStringArray: eq("my-key"),
+                    "service_handler" => LargeStringArray: eq("my-handler-2"),
                     "idempotency_key" => LargeStringArray: eq("my-idempotency-key"),
                     "invocation_id" => LargeStringArray: eq(invocation_id_2.to_string()),
                 }

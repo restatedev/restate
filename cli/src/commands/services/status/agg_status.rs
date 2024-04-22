@@ -16,7 +16,7 @@ use crate::{c_error, c_title};
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::components::ComponentType;
+use restate_meta_rest_model::services::ServiceType;
 
 pub async fn run_aggregated_status(
     env: &CliEnv,
@@ -31,13 +31,13 @@ pub async fn run_aggregated_status(
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
     progress.set_message("Fetching services status");
-    let components = metas_client
-        .get_components()
+    let services = metas_client
+        .get_services()
         .await?
         .into_body()
         .await?
-        .components;
-    if components.is_empty() {
+        .services;
+    if services.is_empty() {
         progress.finish_and_clear();
         c_error!(
             "No services were found! Services are added by registering deployments with 'restate dep register'"
@@ -45,22 +45,22 @@ pub async fn run_aggregated_status(
         return Ok(());
     }
 
-    let all_component_names: Vec<_> = components.iter().map(|x| x.name.clone()).collect();
+    let all_service_names: Vec<_> = services.iter().map(|x| x.name.clone()).collect();
 
-    let keyed: Vec<_> = components
+    let keyed: Vec<_> = services
         .iter()
-        .filter(|svc| svc.ty == ComponentType::VirtualObject)
+        .filter(|svc| svc.ty == ServiceType::VirtualObject)
         .cloned()
         .collect();
 
-    let status_map = get_service_status(&sql_client, all_component_names).await?;
+    let status_map = get_service_status(&sql_client, all_service_names).await?;
 
     let locked_keys = get_locked_keys_status(&sql_client, keyed.iter().map(|x| &x.name)).await?;
     // Render UI
     progress.finish_and_clear();
     // Render Status Table
     c_title!("📷", "Summary");
-    render_services_status(env, components, status_map).await?;
+    render_services_status(env, services, status_map).await?;
     // Render Locked Keys
     if !locked_keys.is_empty() {
         c_title!("📨", "Active Keys");

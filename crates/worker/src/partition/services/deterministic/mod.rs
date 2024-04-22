@@ -93,7 +93,7 @@ impl ServiceInvoker<'_> {
             restate_pb::PROXY_SERVICE_NAME => {
                 ProxyInvoker(self).invoke_builtin(method, argument).await
             }
-            _ => Err(InvocationError::component_not_found(
+            _ => Err(InvocationError::service_not_found(
                 self.invocation_target.service_name(),
             )),
         }

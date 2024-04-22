@@ -12,8 +12,8 @@ use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
-use restate_meta_rest_model::components::ComponentMetadata;
-use restate_meta_rest_model::deployments::ComponentNameRevPair;
+use restate_meta_rest_model::deployments::ServiceNameRevPair;
+use restate_meta_rest_model::services::ServiceMetadata;
 use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
@@ -56,9 +56,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
 
-    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
+    let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
-    let services = client.get_components().await?.into_body().await?.components;
+    let services = client.get_services().await?.into_body().await?.services;
     for service in services {
         latest_services.insert(service.name.clone(), service);
     }
@@ -67,9 +67,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
 
     let service_rev_pairs: Vec<_> = deployment
-        .components
+        .services
         .iter()
-        .map(|s| ComponentNameRevPair {
+        .map(|s| ServiceNameRevPair {
             name: s.name.clone(),
             revision: s.revision,
         })
@@ -90,8 +90,8 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
     c_println!("{}", table);
     c_println!("{}", Styled(Style::Info, "Services:"));
-    for service in deployment.components {
-        let Some(latest_component) = latest_services.get(&service.name) else {
+    for service in deployment.services {
+        let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of service, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that
             // this is happening.
@@ -108,15 +108,15 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             service.ty,
             icon_for_service_type(&service.ty),
         );
-        let latest_revision_message = if service.revision == latest_component.revision {
+        let latest_revision_message = if service.revision == latest_service.revision {
             // We are latest.
             format!("[{}]", Styled(Style::Success, "Latest"))
         } else {
             // Not latest
             format!(
                 "[Latest {} is in deployment ID {}]",
-                Styled(Style::Success, latest_component.revision),
-                latest_component.deployment_id
+                Styled(Style::Success, latest_service.revision),
+                latest_service.deployment_id
             )
         };
         c_indentln!(

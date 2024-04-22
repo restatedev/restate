@@ -17,8 +17,8 @@ use datafusion::arrow::datatypes::DataType;
 define_table!(inbox(
     partition_key: DataType::UInt64,
 
-    component: DataType::LargeUtf8,
-    component_key: DataType::LargeUtf8,
+    service_name: DataType::LargeUtf8,
+    service_key: DataType::LargeUtf8,
 
     id: DataType::LargeUtf8,
 

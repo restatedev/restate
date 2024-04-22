@@ -34,7 +34,7 @@ pub struct Edit {
     force: bool,
 
     /// service name
-    component: String,
+    service: String,
 
     /// service key
     key: String,
@@ -45,7 +45,7 @@ pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
 }
 
 async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
-    let current_state = get_current_state(env, &opts.component, &opts.key).await?;
+    let current_state = get_current_state(env, &opts.service, &opts.key).await?;
     let current_version = compute_version(&current_state);
 
     let tempdir = tempdir().context("unable to create a temporary directory")?;
@@ -61,7 +61,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
 
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.component)]);
+    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
     table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
     table.add_row(vec![Cell::new("Binary?"), Cell::new(opts.binary)]);
@@ -93,7 +93,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     } else {
         Some(current_version)
     };
-    update_state(env, version, &opts.component, &opts.key, modified_state).await?;
+    update_state(env, version, &opts.service, &opts.key, modified_state).await?;
 
     //
     // done

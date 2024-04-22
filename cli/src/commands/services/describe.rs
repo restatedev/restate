@@ -44,7 +44,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = MetasClient::new(env)?;
-    let service = client.get_component(&opts.name).await?.into_body().await?;
+    let service = client.get_service(&opts.name).await?.into_body().await?;
 
     let mut table = Table::new_styled(&env.ui_config);
     table.add_kv_row("Name:", &service.name);
@@ -90,7 +90,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .filter_map(|e| {
             // endpoints that serve the same service.
             let service_match: Vec<_> = e
-                .components
+                .services
                 .iter()
                 .filter(|s| s.name == service_name && s.revision != latest_rev)
                 .collect();
@@ -107,7 +107,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
             service_match
                 .first()
-                .map(|component_match| (e.id, e.deployment, component_match.revision))
+                .map(|service_match| (e.id, e.deployment, service_match.revision))
         })
         .collect();
 

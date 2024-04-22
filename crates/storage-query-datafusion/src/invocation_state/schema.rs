@@ -17,9 +17,11 @@ use datafusion::arrow::datatypes::DataType;
 define_table!(state(
     partition_key: DataType::UInt64,
     id: DataType::LargeUtf8,
+
     in_flight: DataType::Boolean,
     retry_count: DataType::UInt64,
     last_start_at: DataType::Date64,
+
     // The deployment that was selected in the last invocation attempt. This is
     // guaranteed to be set unlike in `sys_status` table which require that the
     // deployment to be committed before it is set.

@@ -22,7 +22,7 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{task_center, MetadataWriter, TaskKind};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_service_protocol::discovery::ComponentDiscovery;
+use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::config::{IngressOptions, UpdateableConfiguration};
 use restate_types::retries::RetryPolicy;
 
@@ -62,13 +62,13 @@ impl AdminRole {
         );
         let client =
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
-        let component_discovery = ComponentDiscovery::new(retry_policy, client);
+        let service_discovery = ServiceDiscovery::new(retry_policy, client);
 
         let admin = AdminService::new(
             metadata_writer,
             metadata_store_client,
             config.ingress.clone(),
-            component_discovery,
+            service_discovery,
         );
 
         Ok(AdminRole {

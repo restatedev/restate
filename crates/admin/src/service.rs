@@ -23,7 +23,7 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{cancellation_watcher, task_center, MetadataWriter};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::SubscriptionValidator;
-use restate_service_protocol::discovery::ComponentDiscovery;
+use restate_service_protocol::discovery::ServiceDiscovery;
 
 use crate::schema_registry::SchemaRegistry;
 use crate::Error;
@@ -45,13 +45,13 @@ where
         metadata_writer: MetadataWriter,
         metadata_store_client: MetadataStoreClient,
         subscription_validator: V,
-        component_discovery: ComponentDiscovery,
+        service_discovery: ServiceDiscovery,
     ) -> Self {
         Self {
             schema_registry: SchemaRegistry::new(
                 metadata_store_client,
                 metadata_writer,
-                component_discovery,
+                service_discovery,
                 subscription_validator,
             ),
         }

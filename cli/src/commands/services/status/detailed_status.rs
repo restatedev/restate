@@ -19,11 +19,11 @@ use crate::ui::invocations::render_invocation_compact;
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::components::ComponentType;
+use restate_meta_rest_model::services::ServiceType;
 
 pub async fn run_detailed_status(
     env: &CliEnv,
-    component_name: &str,
+    service_name: &str,
     opts: &Status,
     metas_client: MetasClient,
     sql_client: DataFusionHttpClient,
@@ -35,26 +35,26 @@ pub async fn run_detailed_status(
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
     progress.set_message("Fetching service status");
-    let component = metas_client
-        .get_component(component_name)
+    let service = metas_client
+        .get_service(service_name)
         .await?
         .into_body()
         .await?;
 
-    let is_object = component.ty == ComponentType::VirtualObject;
+    let is_object = service.ty == ServiceType::VirtualObject;
 
     // Print summary table first.
-    let status_map = get_service_status(&sql_client, vec![component_name]).await?;
+    let status_map = get_service_status(&sql_client, vec![service_name]).await?;
     let active =
-        get_service_invocations(&sql_client, component_name, opts.sample_invocations_limit).await?;
+        get_service_invocations(&sql_client, service_name, opts.sample_invocations_limit).await?;
     progress.finish_and_clear();
 
     // Render Summary
     c_title!("📷", "Summary");
-    render_services_status(env, vec![component], status_map).await?;
+    render_services_status(env, vec![service], status_map).await?;
 
     if is_object {
-        let locked_keys = get_locked_keys_status(&sql_client, vec![component_name]).await?;
+        let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
         if !locked_keys.is_empty() {
             c_title!("📨", "Active Keys");
             render_locked_keys(env, locked_keys, opts.locked_keys_limit).await?;

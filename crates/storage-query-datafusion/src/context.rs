@@ -19,8 +19,8 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use restate_invoker_api::StatusHandle;
-use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::deployment::DeploymentResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::config::QueryEngineOptions;
 
@@ -50,7 +50,7 @@ impl QueryContext {
         rocksdb: RocksDBStorage,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
-            + ComponentMetadataResolver
+            + ServiceMetadataResolver
             + Send
             + Sync
             + Debug
@@ -63,13 +63,13 @@ impl QueryContext {
             options.query_parallelism,
         );
         crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
-        crate::virtual_object_status::register_self(&ctx, rocksdb.clone())?;
+        crate::keyed_service_status::register_self(&ctx, rocksdb.clone())?;
         crate::state::register_self(&ctx, rocksdb.clone())?;
         crate::journal::register_self(&ctx, rocksdb.clone())?;
         crate::invocation_state::register_self(&ctx, status)?;
         crate::inbox::register_self(&ctx, rocksdb.clone())?;
         crate::deployment::register_self(&ctx, schemas.clone())?;
-        crate::component::register_self(&ctx, schemas)?;
+        crate::service::register_self(&ctx, schemas)?;
         crate::idempotency::register_self(&ctx, rocksdb)?;
 
         Ok(ctx)

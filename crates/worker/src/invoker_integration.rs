@@ -16,7 +16,7 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    ComponentType, HandlerType, InvocationTarget, ServiceInvocationSpanContext, SpanRelation,
+    HandlerType, InvocationTarget, ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
@@ -65,11 +65,11 @@ where
             .schemas
             .resolve_latest_invocation_target(&request.service_name, &request.method_name)
         {
-            Some(meta) => match meta.component_ty {
-                ComponentType::Service => {
+            Some(meta) => match meta.service_ty {
+                ServiceType::Service => {
                     InvocationTarget::service(request.service_name, request.method_name)
                 }
-                ComponentType::VirtualObject => InvocationTarget::virtual_object(
+                ServiceType::VirtualObject => InvocationTarget::virtual_object(
                     request.service_name.clone(),
                     ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
                         InvocationError::from(anyhow!(
@@ -81,7 +81,7 @@ where
                 ),
             },
             None => {
-                return Err(InvocationError::component_handler_not_found(
+                return Err(InvocationError::service_handler_not_found(
                     &request.service_name,
                     &request.method_name,
                 ))
@@ -231,7 +231,7 @@ where
 #[inline]
 fn can_read_state(
     entry_type: &EntryType,
-    service_type: &ComponentType,
+    service_type: &ServiceType,
 ) -> Result<(), InvocationError> {
     if !service_type.has_state() {
         return Err(InvocationError::new(
@@ -248,7 +248,7 @@ fn can_read_state(
 #[inline]
 fn can_write_state(
     entry_type: &EntryType,
-    service_type: &ComponentType,
+    service_type: &ServiceType,
     handler_type: Option<HandlerType>,
 ) -> Result<(), InvocationError> {
     can_read_state(entry_type, service_type)?;

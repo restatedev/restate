@@ -64,7 +64,7 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 #[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
     #[error("no deployment was found to process the invocation")]
-    NoDeploymentForComponent,
+    NoDeploymentForService,
     #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
     UnknownDeployment(DeploymentId),
     #[error("unexpected http status code: {0}")]
@@ -406,8 +406,8 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
-                    .resolve_latest_deployment_for_component(self.invocation_target.service_name())
-                    .ok_or(InvocationTaskError::NoDeploymentForComponent));
+                    .resolve_latest_deployment_for_service(self.invocation_target.service_name())
+                    .ok_or(InvocationTaskError::NoDeploymentForService));
                 (deployment, /* has_changed= */ true)
             };
 

@@ -20,8 +20,8 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcher};
-use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::invocation_target::InvocationTargetResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::config::IngressOptions;
 use std::convert::Infallible;
 use std::future::Future;
@@ -65,7 +65,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher> {
 
 impl<Schemas> HyperServerIngress<Schemas, IngressDispatcher>
 where
-    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
@@ -86,7 +86,7 @@ where
 
 impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(

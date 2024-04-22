@@ -11,24 +11,22 @@
 pub mod error;
 mod updater;
 
-use crate::schema_registry::error::{ComponentError, SchemaError, SchemaRegistryError};
+use crate::schema_registry::error::{SchemaError, SchemaRegistryError, ServiceError};
 use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{metadata, MetadataWriter};
 use restate_schema::Schema;
-use restate_schema_api::component::{
-    ComponentMetadata, ComponentMetadataResolver, HandlerMetadata,
-};
 use restate_schema_api::deployment::{
     DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
 };
+use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use restate_schema_api::subscription::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
 use restate_service_client::Endpoint;
-use restate_service_protocol::discovery::{ComponentDiscovery, DiscoverEndpoint};
-use restate_types::identifiers::{ComponentRevision, DeploymentId, SubscriptionId};
+use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
+use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -64,7 +62,7 @@ impl ApplyMode {
 }
 
 #[derive(Debug, Clone)]
-pub enum ModifyComponentChange {
+pub enum ModifyServiceChange {
     Public(bool),
     IdempotencyRetention(Duration),
 }
@@ -75,7 +73,7 @@ pub enum ModifyComponentChange {
 pub struct SchemaRegistry<V> {
     metadata_store_client: MetadataStoreClient,
     metadata_writer: MetadataWriter,
-    component_discovery: ComponentDiscovery,
+    service_discovery: ServiceDiscovery,
     subscription_validator: V,
 }
 
@@ -83,13 +81,13 @@ impl<V> SchemaRegistry<V> {
     pub fn new(
         metadata_store_client: MetadataStoreClient,
         metadata_writer: MetadataWriter,
-        component_discovery: ComponentDiscovery,
+        service_discovery: ServiceDiscovery,
         subscription_validator: V,
     ) -> Self {
         Self {
             metadata_writer,
             metadata_store_client,
-            component_discovery,
+            service_discovery,
             subscription_validator,
         }
     }
@@ -99,15 +97,12 @@ impl<V> SchemaRegistry<V> {
         discover_endpoint: DiscoverEndpoint,
         force: Force,
         apply_mode: ApplyMode,
-    ) -> Result<(DeploymentId, Vec<ComponentMetadata>), SchemaRegistryError> {
+    ) -> Result<(DeploymentId, Vec<ServiceMetadata>), SchemaRegistryError> {
         // The number of concurrent discovery calls is bound by the number of concurrent
         // register_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
         // ensures that only a limited number of discover calls per endpoint are running.
-        let discovered_metadata = self
-            .component_discovery
-            .discover(&discover_endpoint)
-            .await?;
+        let discovered_metadata = self.service_discovery.discover(&discover_endpoint).await?;
 
         let deployment_metadata = match discover_endpoint.into_inner() {
             (Endpoint::Http(uri, _), headers) => DeploymentMetadata::new_http(
@@ -120,7 +115,7 @@ impl<V> SchemaRegistry<V> {
             }
         };
 
-        let (id, components) = if !apply_mode.should_apply() {
+        let (id, services) = if !apply_mode.should_apply() {
             let mut updater = SchemaUpdater::from(metadata().schema().deref().clone());
 
             // suppress logging output in case of a dry run
@@ -128,17 +123,17 @@ impl<V> SchemaRegistry<V> {
                 updater.add_deployment(
                     None,
                     deployment_metadata,
-                    discovered_metadata.components,
+                    discovered_metadata.services,
                     force.force_enabled(),
                 )
             })?;
 
             let schema_information = updater.into_inner();
-            let (_, components) = schema_information
-                .get_deployment_and_components(&id)
+            let (_, services) = schema_information
+                .get_deployment_and_services(&id)
                 .expect("deployment was just added");
 
-            (id, components)
+            (id, services)
         } else {
             let mut new_deployment_id = None;
             let schema_information = self
@@ -152,7 +147,7 @@ impl<V> SchemaRegistry<V> {
                         new_deployment_id = Some(updater.add_deployment(
                             None,
                             deployment_metadata.clone(),
-                            discovered_metadata.components.clone(),
+                            discovered_metadata.services.clone(),
                             force.force_enabled(),
                         )?);
                         Ok(updater.into_inner())
@@ -161,16 +156,16 @@ impl<V> SchemaRegistry<V> {
                 .await?;
 
             let new_deployment_id = new_deployment_id.expect("deployment was just added");
-            let (_, components) = schema_information
-                .get_deployment_and_components(&new_deployment_id)
+            let (_, services) = schema_information
+                .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
 
             self.metadata_writer.update(schema_information).await?;
 
-            (new_deployment_id, components)
+            (new_deployment_id, services)
         };
 
-        Ok((id, components))
+        Ok((id, services))
     }
 
     pub async fn delete_deployment(
@@ -201,11 +196,11 @@ impl<V> SchemaRegistry<V> {
         Ok(())
     }
 
-    pub async fn modify_component(
+    pub async fn modify_service(
         &self,
-        component_name: String,
-        changes: Vec<ModifyComponentChange>,
-    ) -> Result<ComponentMetadata, SchemaRegistryError> {
+        service_name: String,
+        changes: Vec<ModifyServiceChange>,
+    ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let schema_information = self
             .metadata_store_client
             .read_modify_write(
@@ -214,15 +209,15 @@ impl<V> SchemaRegistry<V> {
                     let schema_information = schema_information.unwrap_or_default();
 
                     if schema_information
-                        .resolve_latest_component(&component_name)
+                        .resolve_latest_service(&service_name)
                         .is_some()
                     {
                         let mut updater = SchemaUpdater::from(schema_information);
-                        updater.modify_component(component_name.clone(), changes.clone());
+                        updater.modify_service(service_name.clone(), changes.clone());
                         Ok(updater.into_inner())
                     } else {
                         Err(SchemaError::NotFound(format!(
-                            "component with name '{component_name}'"
+                            "service with name '{service_name}'"
                         )))
                     }
                 },
@@ -230,8 +225,8 @@ impl<V> SchemaRegistry<V> {
             .await?;
 
         let response = schema_information
-            .resolve_latest_component(&component_name)
-            .expect("component was just modified");
+            .resolve_latest_service(&service_name)
+            .expect("service was just modified");
 
         self.metadata_writer.update(schema_information).await?;
 
@@ -270,47 +265,45 @@ impl<V> SchemaRegistry<V> {
         Ok(())
     }
 
-    pub fn list_components(&self) -> Vec<ComponentMetadata> {
-        metadata().schema().list_components()
+    pub fn list_services(&self) -> Vec<ServiceMetadata> {
+        metadata().schema().list_services()
     }
 
-    pub fn get_component(&self, component_name: impl AsRef<str>) -> Option<ComponentMetadata> {
-        metadata()
-            .schema()
-            .resolve_latest_component(&component_name)
+    pub fn get_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
+        metadata().schema().resolve_latest_service(&service_name)
     }
 
     pub fn get_deployment(
         &self,
         deployment_id: DeploymentId,
-    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
         metadata()
             .schema()
-            .get_deployment_and_components(&deployment_id)
+            .get_deployment_and_services(&deployment_id)
     }
 
-    pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+    pub fn list_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         metadata().schema().get_deployments()
     }
 
-    pub fn list_component_handlers(
+    pub fn list_service_handlers(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
     ) -> Option<Vec<HandlerMetadata>> {
         metadata()
             .schema()
-            .resolve_latest_component(&component_name)
+            .resolve_latest_service(&service_name)
             .map(|m| m.handlers)
     }
 
-    pub fn get_component_handler(
+    pub fn get_service_handler(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<HandlerMetadata> {
         metadata()
             .schema()
-            .resolve_latest_component(&component_name)
+            .resolve_latest_service(&service_name)
             .and_then(|m| {
                 m.handlers
                     .into_iter()
@@ -367,38 +360,38 @@ where
     }
 }
 
-/// Newtype for component names
+/// Newtype for service names
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
 #[display(fmt = "{}", _0)]
-pub struct ComponentName(String);
+pub struct ServiceName(String);
 
-impl TryFrom<String> for ComponentName {
-    type Error = ComponentError;
+impl TryFrom<String> for ServiceName {
+    type Error = ServiceError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.to_lowercase().starts_with("restate")
             || value.to_lowercase().eq_ignore_ascii_case("openapi")
         {
-            Err(ComponentError::ReservedName(value))
+            Err(ServiceError::ReservedName(value))
         } else {
-            Ok(ComponentName(value))
+            Ok(ServiceName(value))
         }
     }
 }
 
-impl AsRef<str> for ComponentName {
+impl AsRef<str> for ServiceName {
     fn as_ref(&self) -> &str {
         &self.0
     }
 }
 
-impl ComponentName {
+impl ServiceName {
     fn into_inner(self) -> String {
         self.0
     }
 }
 
-impl Borrow<String> for ComponentName {
+impl Borrow<String> for ServiceName {
     fn borrow(&self) -> &String {
         &self.0
     }

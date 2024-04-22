@@ -34,13 +34,11 @@ pub mod schema {
 
     include!(concat!(env!("OUT_DIR"), "/deployment.rs"));
 
-    impl From<ComponentType> for restate_types::invocation::ComponentType {
-        fn from(value: ComponentType) -> Self {
+    impl From<ServiceType> for restate_types::invocation::ServiceType {
+        fn from(value: ServiceType) -> Self {
             match value {
-                ComponentType::VirtualObject => {
-                    restate_types::invocation::ComponentType::VirtualObject
-                }
-                ComponentType::Service => restate_types::invocation::ComponentType::Service,
+                ServiceType::VirtualObject => restate_types::invocation::ServiceType::VirtualObject,
+                ServiceType::Service => restate_types::invocation::ServiceType::Service,
             }
         }
     }
@@ -73,7 +71,7 @@ impl DiscoverEndpoint {
 #[derive(Debug)]
 pub struct DiscoveredMetadata {
     pub protocol_type: ProtocolType,
-    pub components: Vec<schema::Component>,
+    pub services: Vec<schema::Service>,
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -119,12 +117,12 @@ impl DiscoveryError {
 }
 
 #[derive(Debug, Clone)]
-pub struct ComponentDiscovery {
+pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
     client: ServiceClient,
 }
 
-impl ComponentDiscovery {
+impl ServiceDiscovery {
     pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
         Self {
             retry_policy,
@@ -133,7 +131,7 @@ impl ComponentDiscovery {
     }
 }
 
-impl ComponentDiscovery {
+impl ServiceDiscovery {
     pub async fn discover(
         &self,
         endpoint: &DiscoverEndpoint,
@@ -173,7 +171,7 @@ impl ComponentDiscovery {
 
         Ok(DiscoveredMetadata {
             protocol_type,
-            components: response.components,
+            services: response.services,
         })
     }
 

@@ -28,9 +28,9 @@ pub(crate) fn append_inbox_row(
         let mut row = builder.row();
         row.partition_key(invocation_id.partition_key());
 
-        row.component(&service_id.service_name);
+        row.service_name(&service_id.service_name);
 
-        row.component_key(&service_id.key);
+        row.service_key(&service_id.key);
 
         if row.is_id_defined() {
             row.id(format_using(output, &invocation_id));

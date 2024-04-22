@@ -24,7 +24,7 @@ pub(crate) enum HandlerError {
     #[error(
         "bad path, expected either /:service-name/:handler or /:object-name/:object-key/:handler"
     )]
-    BadComponentPath,
+    BadServicePath,
     #[error(
         "bad path, expected either /restate/awakeables/:id/resolve or /restate/awakeables/:id/reject"
     )]
@@ -39,8 +39,8 @@ pub(crate) enum HandlerError {
     BadDelaySecDuration(std::num::ParseIntError),
     #[error("bad path, cannot decode key: {0:?}")]
     UrlDecodingError(string::FromUtf8Error),
-    #[error("the invoked component is not public")]
-    PrivateComponent,
+    #[error("the invoked service is not public")]
+    PrivateService,
     #[error("cannot read body: {0:?}")]
     Body(anyhow::Error),
     #[error("unavailable")]
@@ -78,8 +78,8 @@ impl HandlerError {
     ) -> Response<B> {
         let status_code = match &self {
             HandlerError::NotFound => StatusCode::NOT_FOUND,
-            HandlerError::BadComponentPath
-            | HandlerError::PrivateComponent
+            HandlerError::BadServicePath
+            | HandlerError::PrivateService
             | HandlerError::UrlDecodingError(_)
             | HandlerError::BadDelayDuration(_)
             | HandlerError::BadDelaySecDuration(_)

@@ -17,7 +17,7 @@ use restate_core::TestCoreEnv;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_service_protocol::discovery::ComponentDiscovery;
+use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::arc_util::Constant;
 use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
@@ -98,7 +98,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         config.admin.bind_address.port()
     );
 
-    // We start the Meta component, then download the openapi schema generated
+    // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let bifrost = node_env
         .tc
@@ -109,7 +109,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         node_env.metadata_writer.clone(),
         node_env.metadata_store_client.clone(),
         Mock,
-        ComponentDiscovery::new(
+        ServiceDiscovery::new(
             RetryPolicy::default(),
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
                 .unwrap(),

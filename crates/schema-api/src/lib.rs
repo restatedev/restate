@@ -15,11 +15,11 @@ pub mod invocation_target;
 
 #[cfg(feature = "deployment")]
 pub mod deployment {
-    use crate::component::ComponentMetadata;
+    use crate::service::ServiceMetadata;
     use bytestring::ByteString;
     use http::header::{HeaderName, HeaderValue};
     use http::Uri;
-    use restate_types::identifiers::{ComponentRevision, DeploymentId, LambdaARN};
+    use restate_types::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
     use restate_types::time::MillisSinceEpoch;
     use std::collections::HashMap;
     use std::fmt;
@@ -167,19 +167,19 @@ pub mod deployment {
     }
 
     pub trait DeploymentResolver {
-        fn resolve_latest_deployment_for_component(
+        fn resolve_latest_deployment_for_service(
             &self,
-            component_name: impl AsRef<str>,
+            service_name: impl AsRef<str>,
         ) -> Option<Deployment>;
 
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
 
-        fn get_deployment_and_components(
+        fn get_deployment_and_services(
             &self,
             deployment_id: &DeploymentId,
-        ) -> Option<(Deployment, Vec<ComponentMetadata>)>;
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
-        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)>;
+        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
     }
 
     #[cfg(feature = "mocks")]
@@ -220,28 +220,24 @@ pub mod deployment {
         }
 
         impl MockDeploymentMetadataRegistry {
-            pub fn mock_component(&mut self, component: &str) {
-                self.mock_component_with_metadata(component, Deployment::mock());
+            pub fn mock_service(&mut self, service: &str) {
+                self.mock_service_with_metadata(service, Deployment::mock());
             }
 
-            pub fn mock_component_with_metadata(
-                &mut self,
-                component: &str,
-                deployment: Deployment,
-            ) {
+            pub fn mock_service_with_metadata(&mut self, service: &str, deployment: Deployment) {
                 self.latest_deployment
-                    .insert(component.to_string(), deployment.id);
+                    .insert(service.to_string(), deployment.id);
                 self.deployments.insert(deployment.id, deployment.metadata);
             }
         }
 
         impl DeploymentResolver for MockDeploymentMetadataRegistry {
-            fn resolve_latest_deployment_for_component(
+            fn resolve_latest_deployment_for_service(
                 &self,
-                component_name: impl AsRef<str>,
+                service_name: impl AsRef<str>,
             ) -> Option<Deployment> {
                 self.latest_deployment
-                    .get(component_name.as_ref())
+                    .get(service_name.as_ref())
                     .and_then(|deployment_id| self.get_deployment(deployment_id))
             }
 
@@ -255,10 +251,10 @@ pub mod deployment {
                     })
             }
 
-            fn get_deployment_and_components(
+            fn get_deployment_and_services(
                 &self,
                 deployment_id: &DeploymentId,
-            ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
+            ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
                 self.deployments
                     .get(deployment_id)
                     .cloned()
@@ -273,7 +269,7 @@ pub mod deployment {
                     })
             }
 
-            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+            fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
                 self.deployments
                     .iter()
                     .map(|(id, metadata)| {
@@ -291,44 +287,44 @@ pub mod deployment {
     }
 }
 
-#[cfg(feature = "component")]
-pub mod component {
-    use restate_types::identifiers::{ComponentRevision, DeploymentId};
-    use restate_types::invocation::{ComponentType, HandlerType};
+#[cfg(feature = "service")]
+pub mod service {
+    use restate_types::identifiers::{DeploymentId, ServiceRevision};
+    use restate_types::invocation::{HandlerType, ServiceType};
 
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub struct ComponentMetadata {
+    pub struct ServiceMetadata {
         /// # Name
         ///
-        /// Fully qualified name of the component
+        /// Fully qualified name of the service
         pub name: String,
 
         pub handlers: Vec<HandlerMetadata>,
 
-        pub ty: ComponentType,
+        pub ty: ServiceType,
 
         /// # Deployment Id
         ///
-        /// Deployment exposing the latest revision of the component.
+        /// Deployment exposing the latest revision of the service.
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         pub deployment_id: DeploymentId,
 
         /// # Revision
         ///
-        /// Latest revision of the component.
-        pub revision: ComponentRevision,
+        /// Latest revision of the service.
+        pub revision: ServiceRevision,
 
         /// # Public
         ///
-        /// If true, the component can be invoked through the ingress.
-        /// If false, the component can be invoked only from another Restate service.
+        /// If true, the service can be invoked through the ingress.
+        /// If false, the service can be invoked only from another Restate service.
         pub public: bool,
 
         /// # Idempotency retention
         ///
-        /// The retention duration of idempotent requests for this component.
+        /// The retention duration of idempotent requests for this service.
         #[cfg_attr(
             feature = "serde",
             serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
@@ -356,19 +352,14 @@ pub mod component {
         pub output_description: String,
     }
 
-    /// This API will return components registered by the user.
-    pub trait ComponentMetadataResolver {
-        fn resolve_latest_component(
-            &self,
-            component_name: impl AsRef<str>,
-        ) -> Option<ComponentMetadata>;
+    /// This API will return services registered by the user.
+    pub trait ServiceMetadataResolver {
+        fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
 
-        fn resolve_latest_component_type(
-            &self,
-            component_name: impl AsRef<str>,
-        ) -> Option<ComponentType>;
+        fn resolve_latest_service_type(&self, service_name: impl AsRef<str>)
+            -> Option<ServiceType>;
 
-        fn list_components(&self) -> Vec<ComponentMetadata>;
+        fn list_services(&self) -> Vec<ServiceMetadata>;
     }
 
     #[cfg(feature = "mocks")]
@@ -379,36 +370,36 @@ pub mod component {
         use std::collections::HashMap;
 
         #[derive(Debug, Default, Clone)]
-        pub struct MockComponentMetadataResolver(HashMap<String, ComponentMetadata>);
+        pub struct MockServiceMetadataResolver(HashMap<String, ServiceMetadata>);
 
-        impl MockComponentMetadataResolver {
-            pub fn add(&mut self, component_metadata: ComponentMetadata) {
+        impl MockServiceMetadataResolver {
+            pub fn add(&mut self, service_metadata: ServiceMetadata) {
                 self.0
-                    .insert(component_metadata.name.clone(), component_metadata);
+                    .insert(service_metadata.name.clone(), service_metadata);
             }
         }
 
-        impl ComponentMetadataResolver for MockComponentMetadataResolver {
-            fn resolve_latest_component(
+        impl ServiceMetadataResolver for MockServiceMetadataResolver {
+            fn resolve_latest_service(
                 &self,
-                component_name: impl AsRef<str>,
-            ) -> Option<ComponentMetadata> {
-                self.0.get(component_name.as_ref()).cloned()
+                service_name: impl AsRef<str>,
+            ) -> Option<ServiceMetadata> {
+                self.0.get(service_name.as_ref()).cloned()
             }
 
-            fn resolve_latest_component_type(
+            fn resolve_latest_service_type(
                 &self,
-                component_name: impl AsRef<str>,
-            ) -> Option<ComponentType> {
-                self.0.get(component_name.as_ref()).map(|c| c.ty)
+                service_name: impl AsRef<str>,
+            ) -> Option<ServiceType> {
+                self.0.get(service_name.as_ref()).map(|c| c.ty)
             }
 
-            fn list_components(&self) -> Vec<ComponentMetadata> {
+            fn list_services(&self) -> Vec<ServiceMetadata> {
                 self.0.values().cloned().collect()
             }
         }
 
-        impl ComponentMetadata {
+        impl ServiceMetadata {
             pub fn mock_service(
                 name: impl AsRef<str>,
                 handlers: impl IntoIterator<Item = impl AsRef<str>>,
@@ -424,7 +415,7 @@ pub mod component {
                             output_description: "any".to_string(),
                         })
                         .collect(),
-                    ty: ComponentType::Service,
+                    ty: ServiceType::Service,
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
@@ -447,7 +438,7 @@ pub mod component {
                             output_description: "any".to_string(),
                         })
                         .collect(),
-                    ty: ComponentType::VirtualObject,
+                    ty: ServiceType::VirtualObject,
                     deployment_id: Default::default(),
                     revision: 0,
                     public: true,
@@ -504,11 +495,11 @@ pub mod subscription {
         }
     }
 
-    /// Specialized version of [super::component::ComponentType]
+    /// Specialized version of [super::service::ServiceType]
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum EventReceiverComponentType {
+    pub enum EventReceiverServiceType {
         VirtualObject {
             // If true, event.ordering_key is the key, otherwise event.key is the key
             ordering_key_is_key: bool,
@@ -520,18 +511,18 @@ pub mod subscription {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum Sink {
-        Component {
+        Service {
             name: String,
             handler: String,
-            ty: EventReceiverComponentType,
+            ty: EventReceiverServiceType,
         },
     }
 
     impl fmt::Display for Sink {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Sink::Component { name, handler, .. } => {
-                    write!(f, "component://{}/{}", name, handler)
+                Sink::Service { name, handler, .. } => {
+                    write!(f, "service://{}/{}", name, handler)
                 }
             }
         }
@@ -687,10 +678,10 @@ pub mod subscription {
                         topic: "my-topic".to_string(),
                         ordering_key_format: Default::default(),
                     },
-                    sink: Sink::Component {
+                    sink: Sink::Service {
                         name: "MySvc".to_string(),
                         handler: "MyMethod".to_string(),
-                        ty: EventReceiverComponentType::Service,
+                        ty: EventReceiverServiceType::Service,
                     },
                     metadata: Default::default(),
                 }

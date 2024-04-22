@@ -18,16 +18,16 @@ use hyper::http::HeaderValue;
 use hyper::{Request, Response};
 use path_parsing::RequestType;
 use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_schema_api::component::ComponentMetadataResolver;
 use restate_schema_api::invocation_target::InvocationTargetResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 
 mod awakeables;
-mod component_handler;
 mod error;
 mod health;
 mod path_parsing;
+mod service_handler;
 #[cfg(test)]
 mod tests;
 mod tracing;
@@ -51,7 +51,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
 
 impl<Schemas, Dispatcher, Body> tower::Service<Request<Body>> for Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,
@@ -79,8 +79,8 @@ where
                 RequestType::Awakeable(awakeable_request) => {
                     this.handle_awakeable(req, awakeable_request).await
                 }
-                RequestType::Component(component_request) => {
-                    this.handle_component_request(req, component_request).await
+                RequestType::Service(service_request) => {
+                    this.handle_service_request(req, service_request).await
                 }
             }
         }

@@ -15,11 +15,11 @@ use restate_schema_api::invocation_target::{InvocationTargetMetadata, Invocation
 impl InvocationTargetResolver for Schema {
     fn resolve_latest_invocation_target(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata> {
-        self.use_component_schema(component_name.as_ref(), |component_schemas| {
-            component_schemas
+        self.use_service_schema(service_name.as_ref(), |service_schemas| {
+            service_schemas
                 .handlers
                 .get(handler_name.as_ref())
                 .map(|handler_schemas| handler_schemas.target_meta.clone())
@@ -31,11 +31,11 @@ impl InvocationTargetResolver for Schema {
 impl InvocationTargetResolver for UpdateableSchema {
     fn resolve_latest_invocation_target(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata> {
         self.0
             .load()
-            .resolve_latest_invocation_target(component_name, handler_name)
+            .resolve_latest_invocation_target(service_name, handler_name)
     }
 }

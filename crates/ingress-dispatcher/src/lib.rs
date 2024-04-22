@@ -13,7 +13,7 @@ use bytestring::ByteString;
 use prost::Message;
 use restate_core::metadata;
 use restate_pb::restate::internal::Event;
-use restate_schema_api::subscription::{EventReceiverComponentType, Sink, Subscription};
+use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{IdempotencyId, InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     HandlerType, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation,
@@ -171,13 +171,13 @@ impl IngressDispatcherRequest {
             (None, IngressRequestMode::FireAndForget)
         };
         let (invocation_target, argument) = match subscription.sink() {
-            Sink::Component {
+            Sink::Service {
                 ref name,
                 ref handler,
                 ty,
             } => {
                 let target_invocation_target = match ty {
-                    EventReceiverComponentType::VirtualObject {
+                    EventReceiverServiceType::VirtualObject {
                         ordering_key_is_key,
                     } => InvocationTarget::virtual_object(
                         &**name,
@@ -192,7 +192,7 @@ impl IngressDispatcherRequest {
                         // TODO this is temporary, See https://github.com/restatedev/restate/issues/1423
                         HandlerType::Exclusive,
                     ),
-                    EventReceiverComponentType::Service => {
+                    EventReceiverServiceType::Service => {
                         InvocationTarget::service(&**name, &**handler)
                     }
                 };

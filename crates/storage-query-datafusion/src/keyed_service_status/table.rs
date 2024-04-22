@@ -8,85 +8,86 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::ComponentBuilder;
-
-use crate::component::row::append_component_row;
-use crate::context::QueryContext;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_schema_api::component::{ComponentMetadata, ComponentMetadataResolver};
-use restate_types::identifiers::PartitionKey;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
+
+use crate::context::QueryContext;
+use crate::generic_table::{GenericTableProvider, RangeScanner};
+use crate::keyed_service_status::row::append_virtual_object_status_row;
+use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
+use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use datafusion::physical_plan::SendableRecordBatchStream;
+pub use datafusion_expr::UserDefinedLogicalNode;
+use restate_storage_rocksdb::service_status_table::OwnedVirtualObjectStatusRow;
+use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    resolver: impl ComponentMetadataResolver + Send + Sync + Debug + 'static,
+    storage: RocksDBStorage,
 ) -> datafusion::common::Result<()> {
-    let component_table = GenericTableProvider::new(
-        ComponentBuilder::schema(),
-        Arc::new(ComponentMetadataScanner(resolver)),
+    let status_table = GenericTableProvider::new(
+        KeyedServiceStatusBuilder::schema(),
+        Arc::new(VirtualObjectStatusScanner(storage)),
     );
 
     ctx.as_ref()
-        .register_table("sys_component", Arc::new(component_table))
+        .register_table("sys_keyed_service_status", Arc::new(status_table))
         .map(|_| ())
 }
 
 #[derive(Debug, Clone)]
-struct ComponentMetadataScanner<SMR>(SMR);
+struct VirtualObjectStatusScanner(RocksDBStorage);
 
-/// TODO This trait makes little sense for sys_service,
-///  but it's fine nevertheless as the caller always uses the full range
-impl<SMR: ComponentMetadataResolver + Debug + Sync + Send + 'static> RangeScanner
-    for ComponentMetadataScanner<SMR>
-{
+impl RangeScanner for VirtualObjectStatusScanner {
     fn scan(
         &self,
-        _range: RangeInclusive<PartitionKey>,
+        range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) -> SendableRecordBatchStream {
+        let db = self.0.clone();
         let schema = projection.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
-
-        let rows = self.0.list_components();
-        stream_builder.spawn(async move {
-            for_each_state(schema, tx, rows).await;
+        let background_task = move || {
+            let rows = db.all_virtual_object_status(range);
+            for_each_status(schema, tx, rows);
             Ok(())
-        });
+        };
+        stream_builder.spawn_blocking(background_task);
         stream_builder.build()
     }
 }
 
-async fn for_each_state(
+fn for_each_status<'a, I>(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: Vec<ComponentMetadata>,
-) {
-    let mut builder = ComponentBuilder::new(schema.clone());
+    rows: I,
+) where
+    I: Iterator<Item = OwnedVirtualObjectStatusRow> + 'a,
+{
+    let mut builder = KeyedServiceStatusBuilder::new(schema.clone());
     let mut temp = String::new();
-    for component in rows {
-        append_component_row(&mut builder, &mut temp, component);
+    for row in rows {
+        append_virtual_object_status_row(&mut builder, &mut temp, row);
         if builder.full() {
             let batch = builder.finish();
-            if tx.send(Ok(batch)).await.is_err() {
+            if tx.blocking_send(Ok(batch)).is_err() {
                 // not sure what to do here?
                 // the other side has hung up on us.
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = ComponentBuilder::new(schema.clone());
+            builder = KeyedServiceStatusBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {
         let result = builder.finish();
-        let _ = tx.send(Ok(result)).await;
+        let _ = tx.blocking_send(Ok(result));
     }
 }

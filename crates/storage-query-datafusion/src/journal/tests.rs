@@ -86,7 +86,7 @@ async fn get_entries() {
 
     let records = engine
         .execute(
-            "SELECT invocation_id, index, entry_type, name, invoked_id, invoked_target FROM sys_journal ORDER BY invocation_id, index",
+            "SELECT id, index, entry_type, name, invoked_id, invoked_target FROM sys_journal ORDER BY id, index",
         )
         .await
         .unwrap()
@@ -101,7 +101,7 @@ async fn get_entries() {
             row!(
                 0,
                 {
-                    "invocation_id" => LargeStringArray: eq(journal_invocation_id.to_string()),
+                    "id" => LargeStringArray: eq(journal_invocation_id.to_string()),
                     "index" => UInt32Array: eq(0),
                     "entry_type" => LargeStringArray: eq(EntryType::Input.to_string()),
                 }
@@ -109,7 +109,7 @@ async fn get_entries() {
             row!(
                 1,
                 {
-                    "invocation_id" => LargeStringArray: eq(journal_invocation_id.to_string()),
+                    "id" => LargeStringArray: eq(journal_invocation_id.to_string()),
                     "index" => UInt32Array: eq(1),
                     "entry_type" => LargeStringArray: eq(EntryType::Invoke.to_string()),
                     "invoked_id" => LargeStringArray: eq(invoked_invocation_id.to_string()),
@@ -119,7 +119,7 @@ async fn get_entries() {
             row!(
                 2,
                 {
-                    "invocation_id" => LargeStringArray: eq(journal_invocation_id.to_string()),
+                    "id" => LargeStringArray: eq(journal_invocation_id.to_string()),
                     "index" => UInt32Array: eq(2),
                     "entry_type" => LargeStringArray: eq(EntryType::SideEffect.to_string()),
                     "name" => LargeStringArray: eq("my-side-effect")

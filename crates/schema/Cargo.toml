@@ -11,7 +11,7 @@ publish = false
 test-util = ["dep:restate-test-util"]
 
 [dependencies]
-restate-schema-api = { workspace = true, features = ["component", "deployment", "subscription", "invocation_target", "serde"] }
+restate-schema-api = { workspace = true, features = ["service", "deployment", "subscription", "invocation_target", "serde"] }
 restate-types = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 

@@ -84,8 +84,8 @@ async fn join_invocation_tables_with_error() {
         .execute(
             "SELECT
                 pps.id,
-                pps.component,
-                pps.handler,
+                pps.target_service_name,
+                pps.target_handler_name,
                 is.last_failure,
                 is.last_failure_related_entry_index,
                 is.last_failure_related_entry_name,
@@ -108,8 +108,8 @@ async fn join_invocation_tables_with_error() {
             0,
             {
                 "id" => LargeStringArray: eq(invocation_id.to_string()),
-                "component" => LargeStringArray: eq(invocation_target.service_name().to_string()),
-                "handler" => LargeStringArray: eq(invocation_target.handler_name().to_string()),
+                "target_service_name" => LargeStringArray: eq(invocation_target.service_name().to_string()),
+                "target_handler_name" => LargeStringArray: eq(invocation_target.handler_name().to_string()),
                 "last_failure" => LargeStringArray: eq(invocation_error.to_string()),
                 "last_failure_related_entry_index" => UInt64Array: eq(1),
                 "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),

@@ -21,14 +21,14 @@ use http_body_util::Full;
 use prost::Message;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
-use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationTarget, ResponseResult, SpanRelation};
 use tracing::{info, trace, warn, Instrument};
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_awakeable<B: http_body::Body>(
