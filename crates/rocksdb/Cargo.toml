@@ -26,6 +26,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+metrics = {workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
 rayon = { workspace = true }

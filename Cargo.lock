@@ -5846,6 +5846,7 @@ dependencies = [
  "derive_more",
  "futures",
  "futures-util",
+ "metrics",
  "once_cell",
  "parking_lot",
  "rayon",
