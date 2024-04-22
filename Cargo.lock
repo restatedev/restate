@@ -6309,7 +6309,6 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-channel",
- "bincode",
  "bytes",
  "bytestring",
  "codederror",

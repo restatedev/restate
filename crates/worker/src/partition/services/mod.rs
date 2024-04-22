@@ -84,29 +84,6 @@ impl<T: prost::Message + Default> StateSerde for Protobuf<T> {
     }
 }
 
-#[derive(Debug)]
-struct Bincode<T>(PhantomData<T>);
-
-impl<T: serde::Serialize + for<'de> serde::Deserialize<'de>> StateSerde for Bincode<T> {
-    type MaterializedType = T;
-
-    fn decode(buf: Bytes) -> Result<Self::MaterializedType, anyhow::Error> {
-        let (value, _) = bincode::serde::decode_from_slice(
-            &buf,
-            bincode::config::standard().with_variable_int_encoding(),
-        )?;
-        Ok(value)
-    }
-
-    fn encode(v: &Self::MaterializedType) -> Result<Bytes, anyhow::Error> {
-        Ok(bincode::serde::encode_to_vec(
-            v,
-            bincode::config::standard().with_variable_int_encoding(),
-        )?
-        .into())
-    }
-}
-
 #[derive(Clone, Debug)]
 struct StateKey<Serde>(Cow<'static, str>, PhantomData<Serde>);
 
@@ -119,12 +96,6 @@ impl StateKey<Raw> {
 
 impl<T> StateKey<Protobuf<T>> {
     pub const fn new_pb(name: &'static str) -> StateKey<Protobuf<T>> {
-        Self(Cow::Borrowed(name), PhantomData)
-    }
-}
-
-impl<T> StateKey<Bincode<T>> {
-    pub const fn new_bincode(name: &'static str) -> StateKey<Bincode<T>> {
         Self(Cow::Borrowed(name), PhantomData)
     }
 }
