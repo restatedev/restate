@@ -30,7 +30,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
@@ -208,14 +208,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     }
 
     let discovered_service_names = dry_run_result
-        .components
+        .services
         .iter()
         .map(|service| service.name.clone())
         .collect::<HashSet<_>>();
 
     // Services found in this discovery
     let (added, updated): (Vec<_>, Vec<_>) = dry_run_result
-        .components
+        .services
         .iter()
         .partition(|svc| svc.revision == 1);
 
@@ -260,21 +260,16 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
-        let mut existing_services: HashMap<String, ComponentMetadata> = HashMap::new();
-        for component in &updated {
+        let mut existing_services: HashMap<String, ServiceMetadata> = HashMap::new();
+        for service in &updated {
             // Get the current service information by querying the server.
             progress.set_message(format!(
                 "Fetching information about service '{}'",
-                component.name,
+                service.name,
             ));
-            match client
-                .get_component(&component.name)
-                .await?
-                .into_body()
-                .await
-            {
+            match client.get_service(&service.name).await?.into_body().await {
                 Ok(service_metadata) => {
-                    existing_services.insert(component.name.clone(), service_metadata);
+                    existing_services.insert(service.name.clone(), service_metadata);
                 }
                 Err(e) => {
                     // Let the spinner pause to print the error.
@@ -282,7 +277,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                         c_eprintln!(
                         "Warning: Couldn't fetch information about service {} from Restate server. \
                          We will not be able to show the detailed changes for this service.",
-                        component.name,
+                        service.name,
                     );
                         c_error!("{}", e);
                     });
@@ -345,7 +340,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     if let Some(existing_endpoint) = existing_deployment {
         // The following services will be removed/forgotten:
         let services_removed = existing_endpoint
-            .components
+            .services
             .iter()
             .filter(|service| !discovered_service_names.contains(&service.name))
             .collect::<Vec<_>>();
@@ -388,7 +383,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     c_success!("DEPLOYMENT:");
     let mut table = Table::new_styled(&env.ui_config);
     table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in dry_run_result.components {
+    for svc in dry_run_result.services {
         table.add_row(vec![svc.name, svc.revision.to_string()]);
     }
     c_println!("{}", table);

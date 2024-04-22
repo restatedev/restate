@@ -973,7 +973,7 @@ pub mod v1 {
                     .collect();
 
                 Ok(restate_types::state_mut::ExternalStateMutation {
-                    component_id: service_id,
+                    service_id: service_id,
                     version: state_mutation.version,
                     state,
                 })
@@ -982,7 +982,7 @@ pub mod v1 {
 
         impl From<restate_types::state_mut::ExternalStateMutation> for StateMutation {
             fn from(state_mutation: restate_types::state_mut::ExternalStateMutation) -> Self {
-                let service_id = ServiceId::from(state_mutation.component_id);
+                let service_id = ServiceId::from(state_mutation.service_id);
                 let kv_pairs = state_mutation
                     .state
                     .into_iter()

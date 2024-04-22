@@ -9,29 +9,29 @@
 // by the Apache License, Version 2.0.
 
 use super::{Schema, UpdateableSchema};
-use restate_schema_api::component::ComponentMetadata;
 use restate_schema_api::deployment::{Deployment, DeploymentMetadata, DeploymentResolver};
-use restate_types::identifiers::{ComponentRevision, DeploymentId};
+use restate_schema_api::service::ServiceMetadata;
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeploymentSchemas {
     pub metadata: DeploymentMetadata,
 
-    // We need to store ComponentMetadata here only for queries
+    // We need to store ServiceMetadata here only for queries
     // We could optimize the memory impact of this by reading these info from disk
-    pub components: Vec<ComponentMetadata>,
+    pub services: Vec<ServiceMetadata>,
 }
 
 impl DeploymentResolver for Schema {
-    fn resolve_latest_deployment_for_component(
+    fn resolve_latest_deployment_for_service(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
     ) -> Option<Deployment> {
-        let component = self.components.get(component_name.as_ref())?;
+        let service = self.services.get(service_name.as_ref())?;
         self.deployments
-            .get(&component.location.latest_deployment)
+            .get(&service.location.latest_deployment)
             .map(|schemas| Deployment {
-                id: component.location.latest_deployment,
+                id: service.location.latest_deployment,
                 metadata: schemas.metadata.clone(),
             })
     }
@@ -45,22 +45,22 @@ impl DeploymentResolver for Schema {
             })
     }
 
-    fn get_deployment_and_components(
+    fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
         self.deployments.get(deployment_id).map(|schemas| {
             (
                 Deployment {
                     id: *deployment_id,
                     metadata: schemas.metadata.clone(),
                 },
-                schemas.components.clone(),
+                schemas.services.clone(),
             )
         })
     }
 
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         self.deployments
             .iter()
             .map(|(deployment_id, schemas)| {
@@ -70,7 +70,7 @@ impl DeploymentResolver for Schema {
                         metadata: schemas.metadata.clone(),
                     },
                     schemas
-                        .components
+                        .services
                         .iter()
                         .map(|s| (s.name.clone(), s.revision))
                         .collect(),
@@ -81,27 +81,27 @@ impl DeploymentResolver for Schema {
 }
 
 impl DeploymentResolver for UpdateableSchema {
-    fn resolve_latest_deployment_for_component(
+    fn resolve_latest_deployment_for_service(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
     ) -> Option<Deployment> {
         self.0
             .load()
-            .resolve_latest_deployment_for_component(component_name)
+            .resolve_latest_deployment_for_service(service_name)
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
         self.0.load().get_deployment(deployment_id)
     }
 
-    fn get_deployment_and_components(
+    fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
-        self.0.load().get_deployment_and_components(deployment_id)
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+        self.0.load().get_deployment_and_services(deployment_id)
     }
 
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         self.0.load().get_deployments()
     }
 }

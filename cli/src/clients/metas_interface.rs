@@ -12,14 +12,14 @@ use std::fmt::Display;
 use super::metas_client::Envelope;
 use super::MetasClient;
 
-use restate_meta_rest_model::components::*;
 use restate_meta_rest_model::deployments::*;
+use restate_meta_rest_model::services::*;
 
 pub trait MetaClientInterface {
     /// Check if the meta service is healthy by invoking /health
     async fn health(&self) -> reqwest::Result<Envelope<()>>;
-    async fn get_components(&self) -> reqwest::Result<Envelope<ListComponentsResponse>>;
-    async fn get_component(&self, name: &str) -> reqwest::Result<Envelope<ComponentMetadata>>;
+    async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
+    async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
     async fn get_deployment<D: Display>(
         &self,
@@ -37,7 +37,7 @@ pub trait MetaClientInterface {
     async fn patch_state(
         &self,
         service: &str,
-        req: ModifyComponentStateRequest,
+        req: ModifyServiceStateRequest,
     ) -> reqwest::Result<Envelope<()>>;
 }
 
@@ -47,15 +47,15 @@ impl MetaClientInterface for MetasClient {
         self.run(reqwest::Method::GET, url).await
     }
 
-    async fn get_components(&self) -> reqwest::Result<Envelope<ListComponentsResponse>> {
-        let url = self.base_url.join("/components").expect("Bad url!");
+    async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>> {
+        let url = self.base_url.join("/services").expect("Bad url!");
         self.run(reqwest::Method::GET, url).await
     }
 
-    async fn get_component(&self, name: &str) -> reqwest::Result<Envelope<ComponentMetadata>> {
+    async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>> {
         let url = self
             .base_url
-            .join(&format!("/components/{}", name))
+            .join(&format!("/services/{}", name))
             .expect("Bad url!");
 
         self.run(reqwest::Method::GET, url).await
@@ -113,11 +113,11 @@ impl MetaClientInterface for MetasClient {
     async fn patch_state(
         &self,
         service: &str,
-        req: ModifyComponentStateRequest,
+        req: ModifyServiceStateRequest,
     ) -> reqwest::Result<Envelope<()>> {
         let url = self
             .base_url
-            .join(&format!("/components/{service}/state"))
+            .join(&format!("/services/{service}/state"))
             .expect("Bad url!");
 
         self.run_with_body(reqwest::Method::POST, url, req).await

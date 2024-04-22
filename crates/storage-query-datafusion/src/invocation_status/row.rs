@@ -15,7 +15,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{ComponentType, Source, TraceId};
+use restate_types::invocation::{ServiceType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -27,17 +27,17 @@ pub(crate) fn append_invocation_status_row(
 
     row.partition_key(status_row.partition_key);
     if let Some(invocation_target) = status_row.invocation_status.invocation_target() {
-        row.component(invocation_target.service_name());
+        row.target_service_name(invocation_target.service_name());
         if let Some(key) = invocation_target.key() {
-            row.component_key(key);
+            row.target_service_key(key);
         }
-        row.handler(invocation_target.handler_name());
+        row.target_handler_name(invocation_target.handler_name());
         if row.is_target_defined() {
             row.target(format_using(output, &invocation_target));
         }
         row.target_service_ty(match invocation_target.service_ty() {
-            ComponentType::Service => "service",
-            ComponentType::VirtualObject => "virtual_object",
+            ServiceType::Service => "service",
+            ServiceType::VirtualObject => "virtual_object",
         });
     }
 
@@ -99,8 +99,8 @@ fn fill_in_flight_invocation_metadata(
 fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, source: Source) {
     match source {
         Source::Service(invocation_id, invocation_target) => {
-            row.invoked_by("component");
-            row.invoked_by_component(invocation_target.service_name());
+            row.invoked_by("service");
+            row.invoked_by_service_name(invocation_target.service_name());
             if row.is_invoked_by_id_defined() {
                 row.invoked_by_id(format_using(output, &invocation_id));
             }

@@ -18,66 +18,59 @@ use restate_core::task_center;
 use restate_invoker_api::status_handle::mocks::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
 use restate_rocksdb::RocksDbManager;
-use restate_schema_api::component::mocks::MockComponentMetadataResolver;
-use restate_schema_api::component::{ComponentMetadata, ComponentMetadataResolver};
 use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
+use restate_schema_api::service::mocks::MockServiceMetadataResolver;
+use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
-use restate_types::identifiers::{ComponentRevision, DeploymentId};
-use restate_types::invocation::ComponentType;
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
+use restate_types::invocation::ServiceType;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
-    pub(crate) MockComponentMetadataResolver,
+    pub(crate) MockServiceMetadataResolver,
     pub(crate) MockDeploymentMetadataRegistry,
 );
 
-impl ComponentMetadataResolver for MockSchemas {
-    fn resolve_latest_component(
-        &self,
-        component_name: impl AsRef<str>,
-    ) -> Option<ComponentMetadata> {
-        self.0.resolve_latest_component(component_name)
+impl ServiceMetadataResolver for MockSchemas {
+    fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
+        self.0.resolve_latest_service(service_name)
     }
 
-    fn resolve_latest_component_type(
-        &self,
-        component_name: impl AsRef<str>,
-    ) -> Option<ComponentType> {
-        self.0.resolve_latest_component_type(component_name)
+    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
+        self.0.resolve_latest_service_type(service_name)
     }
 
-    fn list_components(&self) -> Vec<ComponentMetadata> {
-        self.0.list_components()
+    fn list_services(&self) -> Vec<ServiceMetadata> {
+        self.0.list_services()
     }
 }
 
 impl DeploymentResolver for MockSchemas {
-    fn resolve_latest_deployment_for_component(
+    fn resolve_latest_deployment_for_service(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
     ) -> Option<Deployment> {
-        self.1
-            .resolve_latest_deployment_for_component(component_name)
+        self.1.resolve_latest_deployment_for_service(service_name)
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
         self.1.get_deployment(deployment_id)
     }
 
-    fn get_deployment_and_components(
+    fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ComponentMetadata>)> {
-        self.1.get_deployment_and_components(deployment_id)
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+        self.1.get_deployment_and_services(deployment_id)
     }
 
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ComponentRevision)>)> {
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
         self.1.get_deployments()
     }
 }
@@ -88,7 +81,7 @@ impl MockQueryEngine {
     pub async fn create_with(
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
-            + ComponentMetadataResolver
+            + ServiceMetadataResolver
             + Send
             + Sync
             + Debug

@@ -20,7 +20,7 @@ use std::fmt::{Display, Formatter};
 /// represents an external request to mutate a user's state.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExternalStateMutation {
-    pub component_id: ServiceId,
+    pub service_id: ServiceId,
     pub version: Option<String>,
     pub state: HashMap<Bytes, Bytes>,
 }

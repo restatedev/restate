@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::component_handler::*;
 use super::health::HealthResponse;
 use super::mocks::*;
+use super::service_handler::*;
 use super::ConnectInfo;
 use super::Handler;
 
@@ -28,7 +28,7 @@ use restate_schema_api::invocation_target::{
 };
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::{ComponentType, HandlerType, Header, Idempotency, ResponseResult};
+use restate_types::invocation::{HandlerType, Header, Idempotency, ResponseResult, ServiceType};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -102,14 +102,14 @@ async fn call_service_with_get() {
 
     let response = handle_with_schemas(
         req,
-        MockSchemas::default().with_component_and_target(
+        MockSchemas::default().with_service_and_target(
             "greeter.Greeter",
             "greet",
             InvocationTargetMetadata {
                 input_rules: InputRules {
                     input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
                 },
-                ..InvocationTargetMetadata::mock(ComponentType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
             },
         ),
         |ingress_req| {
@@ -426,7 +426,7 @@ async fn bad_path_virtual_object() {
 
 #[tokio::test]
 #[traced_test]
-async fn unknown_component() {
+async fn unknown_service() {
     let response = handle(
         hyper::Request::get(
             "http://localhost/whatevernotexistingservice/whatevernotexistinghandler",
@@ -459,12 +459,12 @@ async fn private_service() {
         hyper::Request::get("http://localhost/greeter.GreeterPrivate/greet")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        MockSchemas::default().with_component_and_target(
+        MockSchemas::default().with_service_and_target(
             "greeter.GreeterPrivate",
             "greet",
             InvocationTargetMetadata {
                 public: false,
-                ..InvocationTargetMetadata::mock(ComponentType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
             },
         ),
         request_handler_not_reached,
@@ -481,7 +481,7 @@ async fn invalid_input() {
             .header("content-type", "application/cbor")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        MockSchemas::default().with_component_and_target(
+        MockSchemas::default().with_service_and_target(
             "greeter.Greeter",
             "greet",
             InvocationTargetMetadata {
@@ -493,7 +493,7 @@ async fn invalid_input() {
                         ),
                     }],
                 },
-                ..InvocationTargetMetadata::mock(ComponentType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
             },
         ),
         request_handler_not_reached,
@@ -505,7 +505,7 @@ async fn invalid_input() {
 #[tokio::test]
 #[traced_test]
 async fn set_custom_content_type_on_response() {
-    let mock_schemas = MockSchemas::default().with_component_and_target(
+    let mock_schemas = MockSchemas::default().with_service_and_target(
         "greeter.Greeter",
         "greet",
         InvocationTargetMetadata {
@@ -516,7 +516,7 @@ async fn set_custom_content_type_on_response() {
                     has_json_schema: false,
                 },
             },
-            ..InvocationTargetMetadata::mock(ComponentType::Service, HandlerType::Shared)
+            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
         },
     );
     let req = hyper::Request::builder()
@@ -552,7 +552,7 @@ async fn set_custom_content_type_on_response() {
 #[tokio::test]
 #[traced_test]
 async fn set_custom_content_type_on_empty_response() {
-    let mock_schemas = MockSchemas::default().with_component_and_target(
+    let mock_schemas = MockSchemas::default().with_service_and_target(
         "greeter.Greeter",
         "greet",
         InvocationTargetMetadata {
@@ -563,7 +563,7 @@ async fn set_custom_content_type_on_empty_response() {
                     has_json_schema: false,
                 },
             },
-            ..InvocationTargetMetadata::mock(ComponentType::Service, HandlerType::Shared)
+            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
         },
     );
     let req = hyper::Request::builder()

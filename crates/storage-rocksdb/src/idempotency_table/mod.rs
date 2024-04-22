@@ -30,9 +30,9 @@ define_table_key!(
     KeyKind::Idempotency,
     IdempotencyKey(
         partition_key: PartitionKey,
-        component_name: ByteString,
-        component_key: Bytes,
-        component_handler: ByteString,
+        service_name: ByteString,
+        service_key: Bytes,
+        service_handler: ByteString,
         idempotency_key: ByteString
     )
 );
@@ -40,15 +40,15 @@ define_table_key!(
 fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
     IdempotencyKey::default()
         .partition_key(idempotency_id.partition_key())
-        .component_name(idempotency_id.component_name.clone())
-        .component_key(
+        .service_name(idempotency_id.service_name.clone())
+        .service_key(
             idempotency_id
-                .component_key
+                .service_key
                 .as_ref()
                 .cloned()
                 .unwrap_or_default(),
         )
-        .component_handler(idempotency_id.component_handler.clone())
+        .service_handler(idempotency_id.service_handler.clone())
         .idempotency_key(idempotency_id.idempotency_key.clone())
 }
 
@@ -71,9 +71,9 @@ fn all_idempotency_metadata<S: StorageAccess>(
 
         Ok((
             IdempotencyId::new(
-                key.component_name_ok_or()?.clone(),
-                key.component_key.clone(),
-                key.component_handler_ok_or()?.clone(),
+                key.service_name_ok_or()?.clone(),
+                key.service_key.clone(),
+                key.service_handler_ok_or()?.clone(),
                 key.idempotency_key_ok_or()?.clone(),
             ),
             idempotency_metadata,

@@ -79,21 +79,21 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
 
     if !opts.service.is_empty() {
         active_filters.push(format!(
-            "ss.component IN ({})",
+            "ss.target_service_name IN ({})",
             opts.service.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.handler.is_empty() {
         active_filters.push(format!(
-            "ss.handler IN ({})",
+            "ss.target_handler_name IN ({})",
             opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
         active_filters.push(format!(
-            "ss.component_key IN ({})",
+            "ss.target_service_key IN ({})",
             opts.key.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }

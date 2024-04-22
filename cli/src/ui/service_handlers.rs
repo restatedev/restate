@@ -12,8 +12,8 @@ use super::console::{Icon, StyledTable};
 use crate::app::UiConfig;
 
 use comfy_table::{Cell, Color, Table};
-use restate_meta_rest_model::components::ComponentType;
 use restate_meta_rest_model::handlers::HandlerMetadata;
+use restate_meta_rest_model::services::ServiceType;
 
 pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);
@@ -75,10 +75,10 @@ pub fn create_service_handlers_table_diff(
     table
 }
 
-pub fn icon_for_service_type(svc_type: &ComponentType) -> Icon {
+pub fn icon_for_service_type(svc_type: &ServiceType) -> Icon {
     match svc_type {
-        ComponentType::Service => Icon("", ""),
-        ComponentType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "keyed"),
+        ServiceType::Service => Icon("", ""),
+        ServiceType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "keyed"),
     }
 }
 

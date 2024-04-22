@@ -16,44 +16,42 @@ use axum::Json;
 use okapi_operation::*;
 use restate_meta_rest_model::handlers::*;
 
-/// List discovered handlers for component
+/// List discovered handlers for service
 #[openapi(
-    summary = "List component handlers",
-    description = "List all the handlers of the given component.",
-    operation_id = "list_component_handlers",
-    tags = "component_handler",
+    summary = "List service handlers",
+    description = "List all the handlers of the given service.",
+    operation_id = "list_service_handlers",
+    tags = "service_handler",
     parameters(path(
-        name = "component",
-        description = "Fully qualified component name.",
+        name = "service",
+        description = "Fully qualified service name.",
         schema = "std::string::String"
     ))
 )]
-pub async fn list_component_handlers<V>(
+pub async fn list_service_handlers<V>(
     State(state): State<AdminServiceState<V>>,
-    Path(component_name): Path<String>,
-) -> Result<Json<ListComponentHandlersResponse>, MetaApiError> {
+    Path(service_name): Path<String>,
+) -> Result<Json<ListServiceHandlersResponse>, MetaApiError> {
     match state
         .task_center
-        .run_in_scope_sync("list-component-handlers", None, || {
-            state
-                .schema_registry
-                .list_component_handlers(&component_name)
+        .run_in_scope_sync("list-service-handlers", None, || {
+            state.schema_registry.list_service_handlers(&service_name)
         }) {
-        Some(handlers) => Ok(ListComponentHandlersResponse { handlers }.into()),
-        None => Err(MetaApiError::ComponentNotFound(component_name)),
+        Some(handlers) => Ok(ListServiceHandlersResponse { handlers }.into()),
+        None => Err(MetaApiError::ServiceNotFound(service_name)),
     }
 }
 
-/// Get a handler of a component
+/// Get a handler of a service
 #[openapi(
-    summary = "Get component handler",
-    description = "Get the handler of a component",
-    operation_id = "get_component_handler",
-    tags = "component_handler",
+    summary = "Get service handler",
+    description = "Get the handler of a service",
+    operation_id = "get_service_handler",
+    tags = "service_handler",
     parameters(
         path(
-            name = "component",
-            description = "Fully qualified component name.",
+            name = "service",
+            description = "Fully qualified service name.",
             schema = "std::string::String"
         ),
         path(
@@ -63,20 +61,20 @@ pub async fn list_component_handlers<V>(
         )
     )
 )]
-pub async fn get_component_handler<V>(
+pub async fn get_service_handler<V>(
     State(state): State<AdminServiceState<V>>,
-    Path((component_name, handler_name)): Path<(String, String)>,
+    Path((service_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError> {
     match state
         .task_center
-        .run_in_scope_sync("get-component-handler", None, || {
+        .run_in_scope_sync("get-service-handler", None, || {
             state
                 .schema_registry
-                .get_component_handler(&component_name, &handler_name)
+                .get_service_handler(&service_name, &handler_name)
         }) {
         Some(metadata) => Ok(metadata.into()),
         _ => Err(MetaApiError::HandlerNotFound {
-            component_name,
+            service_name,
             handler_name,
         }),
     }

@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::schema_registry::error::{
-    ComponentError, DeploymentError, SchemaError, SubscriptionError,
+    DeploymentError, SchemaError, ServiceError, SubscriptionError,
 };
-use crate::schema_registry::{ComponentName, ModifyComponentChange};
+use crate::schema_registry::{ModifyServiceChange, ServiceName};
 use http::{HeaderValue, Uri};
-use restate_schema::component::{ComponentLocation, ComponentSchemas, HandlerSchemas};
 use restate_schema::deployment::DeploymentSchemas;
+use restate_schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
 use restate_schema::Schema;
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
@@ -22,11 +22,11 @@ use restate_schema_api::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION,
 };
 use restate_schema_api::subscription::{
-    EventReceiverComponentType, Sink, Source, Subscription, SubscriptionValidator,
+    EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
 };
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::invocation::{ComponentType, HandlerType};
+use restate_types::invocation::{HandlerType, ServiceType};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -63,17 +63,14 @@ impl SchemaUpdater {
         &mut self,
         requested_deployment_id: Option<DeploymentId>,
         deployment_metadata: DeploymentMetadata,
-        components: Vec<schema::Component>,
+        services: Vec<schema::Service>,
         force: bool,
     ) -> Result<DeploymentId, SchemaError> {
         let deployment_id: Option<DeploymentId>;
 
-        let proposed_components: HashMap<_, _> = components
+        let proposed_services: HashMap<_, _> = services
             .into_iter()
-            .map(|c| {
-                ComponentName::try_from(c.fully_qualified_component_name.to_string())
-                    .map(|name| (name, c))
-            })
+            .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Did we find an existing deployment with same id or with a conflicting endpoint url?
@@ -84,7 +81,7 @@ impl SchemaUpdater {
                     .find_existing_deployment_by_endpoint(&deployment_metadata.ty)
             });
 
-        let mut components_to_remove = Vec::default();
+        let mut services_to_remove = Vec::default();
 
         if let Some((existing_deployment_id, existing_deployment)) = found_existing_deployment {
             if requested_deployment_id.is_some_and(|dp| &dp != existing_deployment_id) {
@@ -99,16 +96,16 @@ impl SchemaUpdater {
             if force {
                 deployment_id = Some(*existing_deployment_id);
 
-                for component in &existing_deployment.components {
-                    // If a component is not available anymore in the new deployment, we need to remove it
-                    if !proposed_components.contains_key(&component.name) {
+                for service in &existing_deployment.services {
+                    // If a service is not available anymore in the new deployment, we need to remove it
+                    if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
                             restate.deployment.address = %deployment_metadata.address_display(),
-                            "Going to remove component {} due to a forced deployment update",
-                            component.name
+                            "Going to remove service {} due to a forced deployment update",
+                            service.name
                         );
-                        components_to_remove.push(component.name.clone());
+                        services_to_remove.push(service.name.clone());
                     }
                 }
             } else {
@@ -124,27 +121,25 @@ impl SchemaUpdater {
         // We must have a deployment id by now, either a new or existing one.
         let deployment_id = deployment_id.unwrap();
 
-        let mut components_to_add = HashMap::with_capacity(proposed_components.len());
+        let mut services_to_add = HashMap::with_capacity(proposed_services.len());
 
-        // Compute component schemas
-        for (component_name, component) in proposed_components {
-            let component_type = ComponentType::from(component.component_type);
+        // Compute service schemas
+        for (service_name, service) in proposed_services {
+            let service_type = ServiceType::from(service.ty);
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                component_type,
-                component
+                service_type,
+                service
                     .handlers
                     .into_iter()
-                    .map(|h| DiscoveredHandlerMetadata::from_schema(component_type, h))
+                    .map(|h| DiscoveredHandlerMetadata::from_schema(service_type, h))
                     .collect::<Result<Vec<_>, _>>()?,
             );
 
             // For the time being when updating we overwrite existing data
-            let component_schema = if let Some(existing_component) = self
-                .schema_information
-                .components
-                .get(component_name.as_ref())
+            let service_schema = if let Some(existing_service) =
+                self.schema_information.services.get(service_name.as_ref())
             {
-                let removed_handlers: Vec<String> = existing_component
+                let removed_handlers: Vec<String> = existing_service
                     .handlers
                     .keys()
                     .filter(|name| !handlers.contains_key(*name))
@@ -156,52 +151,52 @@ impl SchemaUpdater {
                         warn!(
                             restate.deployment.id = %deployment_id,
                             restate.deployment.address = %deployment_metadata.address_display(),
-                            "Going to remove the following methods from component type {} due to a forced deployment update: {:?}.",
-                            component.fully_qualified_component_name.as_str(),
+                            "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
+                            service.name.as_str(),
                             removed_handlers
                         );
                     } else {
-                        return Err(SchemaError::Component(ComponentError::RemovedHandlers(
-                            component_name,
+                        return Err(SchemaError::Service(ServiceError::RemovedHandlers(
+                            service_name,
                             removed_handlers,
                         )));
                     }
                 }
 
-                if existing_component.ty != component_type {
+                if existing_service.ty != service_type {
                     if force {
                         warn!(
                             restate.deployment.id = %deployment_id,
                             restate.deployment.address = %deployment_metadata.address_display(),
-                            "Going to overwrite component type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
-                            component_name,
-                            existing_component.ty,
-                            component_type
+                            "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                            service_name,
+                            existing_service.ty,
+                            service_type
                         );
                     } else {
-                        return Err(SchemaError::Component(ComponentError::DifferentType(
-                            component_name,
+                        return Err(SchemaError::Service(ServiceError::DifferentType(
+                            service_name,
                         )));
                     }
                 }
 
                 info!(
-                    rpc.service = %component_name,
-                    "Overwriting existing component schemas"
+                    rpc.service = %service_name,
+                    "Overwriting existing service schemas"
                 );
-                let mut component_schemas = existing_component.clone();
-                component_schemas.revision = existing_component.revision.wrapping_add(1);
-                component_schemas.ty = component_type;
-                component_schemas.handlers = handlers;
-                component_schemas.location.latest_deployment = deployment_id;
+                let mut service_schemas = existing_service.clone();
+                service_schemas.revision = existing_service.revision.wrapping_add(1);
+                service_schemas.ty = service_type;
+                service_schemas.handlers = handlers;
+                service_schemas.location.latest_deployment = deployment_id;
 
-                component_schemas
+                service_schemas
             } else {
-                ComponentSchemas {
+                ServiceSchemas {
                     revision: 1,
                     handlers,
-                    ty: component_type,
-                    location: ComponentLocation {
+                    ty: service_type,
+                    location: ServiceLocation {
                         latest_deployment: deployment_id,
                         public: true,
                     },
@@ -209,21 +204,19 @@ impl SchemaUpdater {
                 }
             };
 
-            components_to_add.insert(component_name, component_schema);
+            services_to_add.insert(service_name, service_schema);
         }
 
-        for component_to_remove in components_to_remove {
-            self.schema_information
-                .components
-                .remove(&component_to_remove);
+        for service_to_remove in services_to_remove {
+            self.schema_information.services.remove(&service_to_remove);
         }
 
-        let components_metadata = components_to_add
+        let services_metadata = services_to_add
             .into_iter()
             .map(|(name, schema)| {
-                let metadata = schema.as_component_metadata(name.clone().into_inner());
+                let metadata = schema.as_service_metadata(name.clone().into_inner());
                 self.schema_information
-                    .components
+                    .services
                     .insert(name.into_inner(), schema);
                 metadata
             })
@@ -232,7 +225,7 @@ impl SchemaUpdater {
         self.schema_information.deployments.insert(
             deployment_id,
             DeploymentSchemas {
-                components: components_metadata,
+                services: services_metadata,
                 metadata: deployment_metadata,
             },
         );
@@ -244,17 +237,15 @@ impl SchemaUpdater {
 
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
         if let Some(deployment) = self.schema_information.deployments.remove(&deployment_id) {
-            for component_metadata in deployment.components {
+            for service_metadata in deployment.services {
                 match self
                     .schema_information
-                    .components
-                    .entry(component_metadata.name)
+                    .services
+                    .entry(service_metadata.name)
                 {
-                    // we need to check for the right revision in the component has been overwritten
+                    // we need to check for the right revision in the service has been overwritten
                     // by a different deployment.
-                    Entry::Occupied(entry)
-                        if entry.get().revision == component_metadata.revision =>
-                    {
+                    Entry::Occupied(entry) if entry.get().revision == service_metadata.revision => {
                         entry.remove();
                     }
                     _ => {}
@@ -311,42 +302,42 @@ impl SchemaUpdater {
 
         // Parse sink
         let sink = match sink.scheme_str() {
-            Some("component") => {
-                let component_name = sink
+            Some("service") => {
+                let service_name = sink
                     .authority()
                     .ok_or_else(|| {
-                        SchemaError::Subscription(SubscriptionError::InvalidComponentSinkAuthority(
+                        SchemaError::Subscription(SubscriptionError::InvalidServiceSinkAuthority(
                             sink.clone(),
                         ))
                     })?
                     .as_str();
                 let handler_name = &sink.path()[1..];
 
-                // Retrieve component and handler in the schema registry
-                let component_schemas = self
+                // Retrieve service and handler in the schema registry
+                let service_schemas = self
                     .schema_information
-                    .components
-                    .get(component_name)
+                    .services
+                    .get(service_name)
                     .ok_or_else(|| {
-                        SchemaError::Subscription(SubscriptionError::SinkComponentNotFound(
+                        SchemaError::Subscription(SubscriptionError::SinkServiceNotFound(
                             sink.clone(),
                         ))
                     })?;
-                if !component_schemas.handlers.contains_key(handler_name) {
+                if !service_schemas.handlers.contains_key(handler_name) {
                     return Err(SchemaError::Subscription(
-                        SubscriptionError::SinkComponentNotFound(sink),
+                        SubscriptionError::SinkServiceNotFound(sink),
                     ));
                 }
 
-                let ty = match component_schemas.ty {
-                    ComponentType::VirtualObject => EventReceiverComponentType::VirtualObject {
+                let ty = match service_schemas.ty {
+                    ServiceType::VirtualObject => EventReceiverServiceType::VirtualObject {
                         ordering_key_is_key: false,
                     },
-                    ComponentType::Service => EventReceiverComponentType::Service,
+                    ServiceType::Service => EventReceiverServiceType::Service,
                 };
 
-                Sink::Component {
-                    name: component_name.to_owned(),
+                Sink::Service {
+                    name: service_name.to_owned(),
                     handler: handler_name.to_owned(),
                     ty,
                 }
@@ -386,17 +377,17 @@ impl SchemaUpdater {
         }
     }
 
-    pub fn modify_component(&mut self, name: String, changes: Vec<ModifyComponentChange>) {
-        if let Some(schemas) = self.schema_information.components.get_mut(&name) {
+    pub fn modify_service(&mut self, name: String, changes: Vec<ModifyServiceChange>) {
+        if let Some(schemas) = self.schema_information.services.get_mut(&name) {
             for command in changes {
                 match command {
-                    ModifyComponentChange::Public(new_public_value) => {
+                    ModifyServiceChange::Public(new_public_value) => {
                         schemas.location.public = new_public_value;
                         for h in schemas.handlers.values_mut() {
                             h.target_meta.public = new_public_value;
                         }
                     }
-                    ModifyComponentChange::IdempotencyRetention(new_idempotency_retention) => {
+                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
                         schemas.idempotency_retention = new_idempotency_retention;
                         for h in schemas.handlers.values_mut() {
                             h.target_meta.idempotency_retention = new_idempotency_retention;
@@ -420,11 +411,11 @@ struct DiscoveredHandlerMetadata {
 
 impl DiscoveredHandlerMetadata {
     fn from_schema(
-        component_type: ComponentType,
+        service_type: ServiceType,
         handler: schema::Handler,
-    ) -> Result<Self, ComponentError> {
+    ) -> Result<Self, ServiceError> {
         let handler_type = match handler.handler_type {
-            None => HandlerType::default_for_component_type(component_type),
+            None => HandlerType::default_for_service_type(service_type),
             Some(schema::HandlerType::Exclusive) => HandlerType::Exclusive,
             Some(schema::HandlerType::Shared) => HandlerType::Shared,
         };
@@ -448,7 +439,7 @@ impl DiscoveredHandlerMetadata {
     fn input_rules_from_schema(
         handler_name: &str,
         schema: schema::InputPayload,
-    ) -> Result<InputRules, ComponentError> {
+    ) -> Result<InputRules, ServiceError> {
         let required = schema.required.unwrap_or(false);
 
         let mut input_validation_rules = vec![];
@@ -463,7 +454,7 @@ impl DiscoveredHandlerMetadata {
             .content_type
             .map(|s| {
                 s.parse()
-                    .map_err(|e| ComponentError::BadInputContentType(handler_name.to_owned(), e))
+                    .map_err(|e| ServiceError::BadInputContentType(handler_name.to_owned(), e))
             })
             .transpose()?
             .unwrap_or_default();
@@ -480,12 +471,12 @@ impl DiscoveredHandlerMetadata {
 
     fn output_rules_from_schema(
         schema: schema::OutputPayload,
-    ) -> Result<OutputRules, ComponentError> {
+    ) -> Result<OutputRules, ServiceError> {
         Ok(if let Some(ct) = schema.content_type {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_str(&ct)
-                        .map_err(|e| ComponentError::BadOutputContentType(ct, e))?,
+                        .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
                 },
@@ -498,7 +489,7 @@ impl DiscoveredHandlerMetadata {
     }
 
     fn compute_handlers(
-        component_ty: ComponentType,
+        service_ty: ServiceType,
         handlers: Vec<DiscoveredHandlerMetadata>,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
@@ -510,7 +501,7 @@ impl DiscoveredHandlerMetadata {
                         target_meta: InvocationTargetMetadata {
                             public: true,
                             idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                            component_ty,
+                            service_ty,
                             handler_ty: handler.ty,
                             input_rules: handler.input,
                             output_rules: handler.output,
@@ -526,8 +517,8 @@ impl DiscoveredHandlerMetadata {
 mod tests {
     use super::*;
 
-    use restate_schema_api::component::ComponentMetadataResolver;
     use restate_schema_api::deployment::{Deployment, DeploymentResolver};
+    use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::{assert, assert_eq, let_assert};
 
     use restate_types::Versioned;
@@ -536,10 +527,10 @@ mod tests {
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
     const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
 
-    fn greeter_service() -> schema::Component {
-        schema::Component {
-            component_type: schema::ComponentType::Service,
-            fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
+    fn greeter_service() -> schema::Service {
+        schema::Service {
+            ty: schema::ServiceType::Service,
+            name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
                 handler_type: None,
@@ -549,10 +540,10 @@ mod tests {
         }
     }
 
-    fn greeter_virtual_object() -> schema::Component {
-        schema::Component {
-            component_type: schema::ComponentType::VirtualObject,
-            fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
+    fn greeter_virtual_object() -> schema::Service {
+        schema::Service {
+            ty: schema::ServiceType::VirtualObject,
+            name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
                 handler_type: None,
@@ -562,10 +553,10 @@ mod tests {
         }
     }
 
-    fn another_greeter_service() -> schema::Component {
-        schema::Component {
-            component_type: schema::ComponentType::Service,
-            fully_qualified_component_name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
+    fn another_greeter_service() -> schema::Service {
+        schema::Service {
+            ty: schema::ServiceType::Service,
+            name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "another_greeter".parse().unwrap(),
                 handler_type: None,
@@ -597,9 +588,9 @@ mod tests {
         let schema = updater.into_inner();
 
         assert!(initial_version < schema.version());
-        schema.assert_component_revision(GREETER_SERVICE_NAME, 1);
-        schema.assert_component_deployment(GREETER_SERVICE_NAME, deployment_id);
-        schema.assert_component_handler(GREETER_SERVICE_NAME, "greet");
+        schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id);
+        schema.assert_service_handler(GREETER_SERVICE_NAME, "greet");
     }
 
     #[test]
@@ -621,9 +612,9 @@ mod tests {
 
         let schemas = updater.into_inner();
 
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
         assert!(schemas
-            .resolve_latest_component(ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
 
         updater = schemas.into();
@@ -637,10 +628,10 @@ mod tests {
             .unwrap();
         let schemas = updater.into_inner();
 
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
-        schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
-        schemas.assert_component_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_2.id);
-        schemas.assert_component_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+        schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_2.id);
+        schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
     }
 
     /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
@@ -658,18 +649,18 @@ mod tests {
 
         let schemas = updater.into_inner();
 
-        assert!(schemas.assert_component(GREETER_SERVICE_NAME).public);
+        assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
 
         let version_before_modification = schemas.version();
         updater = SchemaUpdater::from(schemas);
-        updater.modify_component(
+        updater.modify_service(
             GREETER_SERVICE_NAME.to_owned(),
-            vec![ModifyComponentChange::Public(false)],
+            vec![ModifyServiceChange::Public(false)],
         );
         let schemas = updater.into_inner();
 
         assert!(version_before_modification < schemas.version());
-        assert!(!schemas.assert_component(GREETER_SERVICE_NAME).public);
+        assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
 
         updater = SchemaUpdater::from(schemas);
         updater.add_deployment(
@@ -680,7 +671,7 @@ mod tests {
         )?;
 
         let schemas = updater.into_inner();
-        assert!(!schemas.assert_component(GREETER_SERVICE_NAME).public);
+        assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
 
         Ok(())
     }
@@ -708,7 +699,7 @@ mod tests {
                 .unwrap();
             let schemas = updater.into_inner();
 
-            schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+            schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
 
             let compute_result = SchemaUpdater::from(schemas).add_deployment(
                 Some(deployment_2.id),
@@ -717,8 +708,8 @@ mod tests {
                 false,
             );
 
-            assert!(let &SchemaError::Component(
-                ComponentError::DifferentType(_)
+            assert!(let &SchemaError::Service(
+                ServiceError::DifferentType(_)
             ) = compute_result.unwrap_err());
         }
     }
@@ -738,8 +729,8 @@ mod tests {
             .unwrap();
 
         let schemas = updater.into_inner();
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment.id);
-        schemas.assert_component_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
+        schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
         updater = SchemaUpdater::from(schemas);
         updater
@@ -753,9 +744,9 @@ mod tests {
 
         let schemas = updater.into_inner();
 
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment.id);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
         assert!(schemas
-            .resolve_latest_component(ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
     }
 
@@ -840,21 +831,21 @@ mod tests {
             .unwrap();
         let schemas = updater.into_inner();
 
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
-        schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
-        schemas.assert_component_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
-        schemas.assert_component_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+        schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
+        schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 
         let version_before_removal = schemas.version();
         updater = schemas.into();
         updater.remove_deployment(deployment_1.id);
         let schemas = updater.into_inner();
 
-        schemas.assert_component_deployment(GREETER_SERVICE_NAME, deployment_2.id);
-        schemas.assert_component_revision(GREETER_SERVICE_NAME, 2);
+        schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+        schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
         assert!(version_before_removal < schemas.version());
         assert!(schemas
-            .resolve_latest_component(ANOTHER_GREETER_SERVICE_NAME)
+            .resolve_latest_service(ANOTHER_GREETER_SERVICE_NAME)
             .is_none());
         assert!(schemas.get_deployment(&deployment_1.id).is_none());
     }
@@ -865,10 +856,10 @@ mod tests {
         use restate_test_util::{check, let_assert};
         use test_log::test;
 
-        fn greeter_v1_service() -> schema::Component {
-            schema::Component {
-                component_type: schema::ComponentType::Service,
-                fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
+        fn greeter_v1_service() -> schema::Service {
+            schema::Service {
+                ty: schema::ServiceType::Service,
+                name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
                     schema::Handler {
                         name: "greet".parse().unwrap(),
@@ -886,10 +877,10 @@ mod tests {
             }
         }
 
-        fn greeter_v2_service() -> schema::Component {
-            schema::Component {
-                component_type: schema::ComponentType::Service,
-                fully_qualified_component_name: GREETER_SERVICE_NAME.parse().unwrap(),
+        fn greeter_v2_service() -> schema::Service {
+            schema::Service {
+                ty: schema::ServiceType::Service,
+                name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![schema::Handler {
                     name: "greet".parse().unwrap(),
                     handler_type: None,
@@ -915,7 +906,7 @@ mod tests {
                 )
                 .unwrap();
             let schemas = updater.into_inner();
-            schemas.assert_component_revision(GREETER_SERVICE_NAME, 1);
+            schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
             updater = schemas.into();
             let rejection = updater
@@ -928,10 +919,10 @@ mod tests {
                 .unwrap_err();
 
             let schemas = updater.into_inner();
-            schemas.assert_component_revision(GREETER_SERVICE_NAME, 1); // unchanged
+            schemas.assert_service_revision(GREETER_SERVICE_NAME, 1); // unchanged
 
             let_assert!(
-                SchemaError::Component(ComponentError::RemovedHandlers(service, missing_methods)) =
+                SchemaError::Service(ServiceError::RemovedHandlers(service, missing_methods)) =
                     rejection
             );
             check!(service.as_ref() == GREETER_SERVICE_NAME);

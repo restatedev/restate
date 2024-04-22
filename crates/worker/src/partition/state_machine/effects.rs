@@ -589,7 +589,7 @@ impl Effect {
                 debug_if_leader!(
                     is_leader,
                     "Effect: Mutate state for service id '{:?}'",
-                    &state_mutation.component_id
+                    &state_mutation.service_id
                 );
             }
             Effect::StoreCompletedInvocation { invocation_id, .. } => {

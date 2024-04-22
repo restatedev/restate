@@ -10,12 +10,12 @@ publish = false
 [features]
 default = []
 
-deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "component"]
+deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "service"]
 mocks = []
 serde = ["dep:serde", "dep:serde_with", "dep:restate-serde-util"]
 serde_schema = ["serde", "dep:schemars", "restate-types?/schemars", "restate-serde-util?/schema"]
-component = ["dep:bytes", "dep:restate-types", "dep:humantime"]
-invocation_target = ["component", "dep:bytes", "dep:restate-types", "dep:thiserror", "dep:http", "dep:restate-serde-util", "dep:bytestring", "dep:itertools"]
+service = ["dep:bytes", "dep:restate-types", "dep:humantime"]
+invocation_target = ["service", "dep:bytes", "dep:restate-types", "dep:thiserror", "dep:http", "dep:restate-serde-util", "dep:bytestring", "dep:itertools"]
 subscription = ["dep:anyhow", "dep:restate-types", "dep:tracing", "dep:thiserror"]
 
 [dependencies]

@@ -14,19 +14,19 @@ use crate::handler::error::HandlerError;
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
 use http_body_util::Full;
-use restate_schema_api::component::ComponentMetadataResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HealthResponse {
-    components: Vec<String>,
+    services: Vec<String>,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + Send + Sync + 'static,
 {
     pub(crate) fn handle_health<B: http_body::Body>(
         &self,
@@ -36,9 +36,9 @@ where
             return Err(HandlerError::MethodNotAllowed);
         }
         let response = HealthResponse {
-            components: self
+            services: self
                 .schemas
-                .list_components()
+                .list_services()
                 .into_iter()
                 .map(|c| c.name)
                 .collect(),

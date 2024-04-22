@@ -14,28 +14,28 @@ use std::collections::HashMap;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::component::{ComponentMetadata, HandlerMetadata};
-pub use restate_types::identifiers::ComponentRevision;
-pub use restate_types::invocation::ComponentType;
+pub use restate_schema_api::service::{HandlerMetadata, ServiceMetadata};
+pub use restate_types::identifiers::ServiceRevision;
+pub use restate_types::invocation::ServiceType;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ListComponentsResponse {
-    pub components: Vec<ComponentMetadata>,
+pub struct ListServicesResponse {
+    pub services: Vec<ServiceMetadata>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModifyComponentRequest {
+pub struct ModifyServiceRequest {
     /// # Public
     ///
-    /// If true, the component can be invoked through the ingress.
-    /// If false, the component can be invoked only from another Restate service.
+    /// If true, the service can be invoked through the ingress.
+    /// If false, the service can be invoked only from another Restate service.
     #[serde(default)]
     pub public: Option<bool>,
     /// # Idempotency retention
     ///
-    /// Modify the retention of idempotent requests for this component.
+    /// Modify the retention of idempotent requests for this service.
     #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<humantime::Duration>,
@@ -43,14 +43,14 @@ pub struct ModifyComponentRequest {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ModifyComponentStateRequest {
+pub struct ModifyServiceStateRequest {
     /// # Version
     ///
     /// If set, the latest version of the state is compared with this value and the operation will fail
     /// when the versions differ.
     pub version: Option<String>,
 
-    /// # Component key
+    /// # Service key
     ///
     /// To what virtual object key to apply this change
     pub object_key: String,

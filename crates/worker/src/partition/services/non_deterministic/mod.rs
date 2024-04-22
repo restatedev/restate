@@ -79,8 +79,8 @@ impl ServiceInvoker {
 
         #[allow(clippy::match_single_binding)]
         let result = match invocation_target.service_name() {
-            // Add here the built-in components
-            _ => Err(InvocationError::component_not_found(
+            // Add here the built-in services
+            _ => Err(InvocationError::service_not_found(
                 invocation_target.service_name(),
             )),
         };

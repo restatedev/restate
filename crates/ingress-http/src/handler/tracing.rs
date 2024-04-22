@@ -31,7 +31,7 @@ pub(crate) fn prepare_tracing_span<B>(
     // Create the ingress span and attach it to the next async block.
     // This span is committed once the async block terminates, recording the execution time of the invocation.
     // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
-    // which is used by the Restate components to correctly link to a single parent span
+    // which is used by the Restate services to correctly link to a single parent span
     // to commit intermediate results of the processing.
     let ingress_span = info_span!(
         "ingress_invoke",

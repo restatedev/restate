@@ -8,17 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::ComponentBuilder;
+use super::schema::ServiceBuilder;
 
 use crate::table_util::format_using;
-use restate_schema_api::component::ComponentMetadata;
-use restate_types::invocation::ComponentType;
+use restate_schema_api::service::ServiceMetadata;
+use restate_types::invocation::ServiceType;
 
 #[inline]
-pub(crate) fn append_component_row(
-    builder: &mut ComponentBuilder,
+pub(crate) fn append_service_row(
+    builder: &mut ServiceBuilder,
     output: &mut String,
-    service_metadata: ComponentMetadata,
+    service_metadata: ServiceMetadata,
 ) {
     let mut row = builder.row();
     row.name(service_metadata.name);
@@ -26,7 +26,7 @@ pub(crate) fn append_component_row(
     row.public(service_metadata.public);
     row.deployment_id(format_using(output, &service_metadata.deployment_id));
     row.ty(match service_metadata.ty {
-        ComponentType::Service => "service",
-        ComponentType::VirtualObject => "virtual_object",
+        ServiceType::Service => "service",
+        ServiceType::VirtualObject => "virtual_object",
     })
 }

@@ -22,8 +22,8 @@ use crate::ui::watcher::Watch;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
-use restate_meta_rest_model::components::HandlerMetadata;
 use restate_meta_rest_model::deployments::DeploymentResponse;
+use restate_meta_rest_model::services::HandlerMetadata;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -48,9 +48,9 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::MetasClient::new(env)?;
-    let defs = client.get_components().await?.into_body().await?;
+    let defs = client.get_services().await?.into_body().await?;
 
-    if defs.components.is_empty() {
+    if defs.services.is_empty() {
         c_error!(
             "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
@@ -81,7 +81,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     }
     table.set_styled_header(header);
 
-    for svc in defs.components {
+    for svc in defs.services {
         if list_opts.public_only && !svc.public {
             // Skip non-public services if users chooses to.
             continue;

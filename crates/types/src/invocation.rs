@@ -31,14 +31,14 @@ pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum ComponentType {
+pub enum ServiceType {
     Service,
     VirtualObject,
 }
 
-impl ComponentType {
+impl ServiceType {
     pub fn is_keyed(&self) -> bool {
-        matches!(self, ComponentType::VirtualObject)
+        matches!(self, ServiceType::VirtualObject)
     }
 
     pub fn has_state(&self) -> bool {
@@ -46,7 +46,7 @@ impl ComponentType {
     }
 }
 
-impl fmt::Display for ComponentType {
+impl fmt::Display for ServiceType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, f)
     }
@@ -60,10 +60,10 @@ pub enum HandlerType {
 }
 
 impl HandlerType {
-    pub fn default_for_component_type(component_type: ComponentType) -> Self {
-        match component_type {
-            ComponentType::Service => HandlerType::Shared,
-            ComponentType::VirtualObject => HandlerType::Exclusive,
+    pub fn default_for_service_type(service_type: ServiceType) -> Self {
+        match service_type {
+            ServiceType::Service => HandlerType::Shared,
+            ServiceType::VirtualObject => HandlerType::Exclusive,
         }
     }
 }
@@ -140,10 +140,10 @@ impl InvocationTarget {
         }
     }
 
-    pub fn service_ty(&self) -> ComponentType {
+    pub fn service_ty(&self) -> ServiceType {
         match self {
-            InvocationTarget::Service { .. } => ComponentType::Service,
-            InvocationTarget::VirtualObject { .. } => ComponentType::VirtualObject,
+            InvocationTarget::Service { .. } => ServiceType::Service,
+            InvocationTarget::VirtualObject { .. } => ServiceType::VirtualObject,
         }
     }
 

@@ -16,7 +16,7 @@ options_schema = ["dep:schemars"]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
-restate-schema-api = { workspace = true, features = ["component", "invocation_target"]}
+restate-schema-api = { workspace = true, features = ["service", "invocation_target"]}
 restate-types = { workspace = true }
 
 # To invoke the awakeables built-in service

@@ -12,8 +12,8 @@ use super::Handler;
 use super::HandlerError;
 
 use http::Uri;
-use restate_schema_api::component::ComponentMetadataResolver;
-use restate_types::invocation::ComponentType;
+use restate_schema_api::service::ServiceMetadataResolver;
+use restate_types::invocation::ServiceType;
 use std::collections::VecDeque;
 
 pub(crate) enum AwakeableRequestType {
@@ -51,34 +51,32 @@ pub(crate) enum InvokeType {
     Send,
 }
 
-pub(crate) struct ComponentRequestType {
+pub(crate) struct ServiceRequestType {
     pub(crate) name: String,
     pub(crate) handler: String,
     pub(crate) target: TargetType,
     pub(crate) invoke_ty: InvokeType,
 }
 
-impl ComponentRequestType {
+impl ServiceRequestType {
     fn from_path_chunks<Schemas>(
         mut path_parts: VecDeque<&str>,
-        component_name: String,
+        service_name: String,
         schemas: &Schemas,
     ) -> Result<Self, HandlerError>
     where
-        Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+        Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
     {
-        // We need to query the component type before continuing to parse
+        // We need to query the service type before continuing to parse
         let ct = schemas
-            .resolve_latest_component_type(&component_name)
+            .resolve_latest_service_type(&service_name)
             .ok_or(HandlerError::NotFound)?;
 
         let target_type = match ct {
-            ComponentType::Service => TargetType::Service,
-            ComponentType::VirtualObject => TargetType::VirtualObject {
+            ServiceType::Service => TargetType::Service,
+            ServiceType::VirtualObject => TargetType::VirtualObject {
                 key: urlencoding::decode(
-                    path_parts
-                        .pop_front()
-                        .ok_or(HandlerError::BadComponentPath)?,
+                    path_parts.pop_front().ok_or(HandlerError::BadServicePath)?,
                 )
                 .map_err(HandlerError::UrlDecodingError)?
                 .into_owned(),
@@ -87,7 +85,7 @@ impl ComponentRequestType {
 
         let handler = path_parts
             .pop_front()
-            .ok_or(HandlerError::BadComponentPath)?
+            .ok_or(HandlerError::BadServicePath)?
             .to_owned();
 
         let last_segment = path_parts.pop_front();
@@ -95,15 +93,15 @@ impl ComponentRequestType {
         let invoke_ty = match last_segment {
             None => InvokeType::Call,
             Some("send") => InvokeType::Send,
-            Some(_) => return Err(HandlerError::BadComponentPath),
+            Some(_) => return Err(HandlerError::BadServicePath),
         };
 
         if !path_parts.is_empty() {
-            return Err(HandlerError::BadComponentPath);
+            return Err(HandlerError::BadServicePath);
         }
 
         Ok(Self {
-            name: component_name,
+            name: service_name,
             handler,
             target: target_type,
             invoke_ty,
@@ -115,12 +113,12 @@ pub(crate) enum RequestType {
     Health,
     OpenAPI,
     Awakeable(AwakeableRequestType),
-    Component(ComponentRequestType),
+    Service(ServiceRequestType),
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(crate) fn parse_path(&self, uri: &Uri) -> Result<RequestType, HandlerError> {
@@ -137,13 +135,11 @@ where
                 _ => Err(HandlerError::NotFound),
             },
             "openapi" => Ok(RequestType::OpenAPI),
-            segment => Ok(RequestType::Component(
-                ComponentRequestType::from_path_chunks(
-                    path_parts,
-                    segment.to_owned(),
-                    &self.schemas,
-                )?,
-            )),
+            segment => Ok(RequestType::Service(ServiceRequestType::from_path_chunks(
+                path_parts,
+                segment.to_owned(),
+                &self.schemas,
+            )?)),
         }
     }
 }

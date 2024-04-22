@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Restate uses many identifiers to uniquely identify its components and entities.
+//! Restate uses many identifiers to uniquely identify its services and entities.
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -317,7 +317,7 @@ impl WithPartitionKey for ServiceId {
 }
 
 /// InvocationId is a unique identifier of the invocation,
-/// including enough routing information for the network component
+/// including enough routing information for the network service
 /// to route requests to the correct partition processors.
 #[derive(
     Eq,
@@ -429,7 +429,7 @@ impl TryFrom<&[u8]> for InvocationId {
 impl From<EncodedInvocationId> for InvocationId {
     fn from(encoded_id: EncodedInvocationId) -> Self {
         // This optimizes nicely by the compiler. We unwrap because array length is guaranteed to
-        // fit both components according to EncodedInvocatioId type definition.
+        // fit both services according to EncodedInvocatioId type definition.
         let partition_key_bytes = encoded_id[..size_of::<PartitionKey>()].try_into().unwrap();
         let partition_key = PartitionKey::from_be_bytes(partition_key_bytes);
 
@@ -487,12 +487,12 @@ impl FromStr for InvocationId {
 
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyId {
-    /// Identifies the invoked component
-    pub component_name: ByteString,
-    /// Component key, if any
-    pub component_key: Option<Bytes>,
-    /// Identifies the invoked component handler
-    pub component_handler: ByteString,
+    /// Identifies the invoked service
+    pub service_name: ByteString,
+    /// Service key, if any
+    pub service_key: Option<Bytes>,
+    /// Identifies the invoked service handler
+    pub service_handler: ByteString,
     /// The user supplied idempotency_key
     pub idempotency_key: ByteString,
 
@@ -501,17 +501,17 @@ pub struct IdempotencyId {
 
 impl IdempotencyId {
     pub fn new(
-        component_name: ByteString,
-        component_key: Option<Bytes>,
-        component_handler: ByteString,
+        service_name: ByteString,
+        service_key: Option<Bytes>,
+        service_handler: ByteString,
         idempotency_key: ByteString,
     ) -> Self {
         // The ownership model for idempotent invocations is the following:
         //
-        // * For components without key, the partition key is the hash(idempotency key).
+        // * For services without key, the partition key is the hash(idempotency key).
         //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
-        // * For components with key, the partition key is the hash(component key), this due to the virtual object locking requirement.
-        let partition_key = component_key
+        // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
+        let partition_key = service_key
             .as_ref()
             .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
             .unwrap_or_else(|| {
@@ -519,9 +519,9 @@ impl IdempotencyId {
             });
 
         Self {
-            component_name,
-            component_key,
-            component_handler,
+            service_name,
+            service_key,
+            service_handler,
             idempotency_key,
             partition_key,
         }
@@ -533,9 +533,9 @@ impl IdempotencyId {
         idempotency_key: ByteString,
     ) -> Self {
         IdempotencyId {
-            component_name: invocation_target.handler_name().clone(),
-            component_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
-            component_handler: invocation_target.handler_name().clone(),
+            service_name: invocation_target.handler_name().clone(),
+            service_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
+            service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
             partition_key: invocation_id.partition_key(),
         }
@@ -549,7 +549,7 @@ impl WithPartitionKey for IdempotencyId {
 }
 
 /// Incremental id defining the service revision.
-pub type ComponentRevision = u32;
+pub type ServiceRevision = u32;
 
 mod partitioner {
     use super::PartitionKey;
@@ -761,14 +761,14 @@ mod mocks {
     impl IdempotencyId {
         pub const fn unkeyed(
             partition_key: PartitionKey,
-            component_name: &'static str,
-            component_handler: &'static str,
+            service_name: &'static str,
+            service_handler: &'static str,
             idempotency_key: &'static str,
         ) -> Self {
             Self {
-                component_name: ByteString::from_static(component_name),
-                component_key: None,
-                component_handler: ByteString::from_static(component_handler),
+                service_name: ByteString::from_static(service_name),
+                service_key: None,
+                service_handler: ByteString::from_static(service_handler),
                 idempotency_key: ByteString::from_static(idempotency_key),
                 partition_key,
             }

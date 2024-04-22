@@ -10,12 +10,12 @@
 
 //! This module implements the Meta API endpoint.
 
-mod components;
 mod deployments;
 mod error;
 mod handlers;
 mod health;
 mod invocations;
+mod services;
 mod subscriptions;
 
 use codederror::CodedError;
@@ -50,29 +50,26 @@ where
             "/deployments/:deployment",
             delete(openapi_handler!(deployments::delete_deployment)),
         )
+        .route("/services", get(openapi_handler!(services::list_services)))
         .route(
-            "/components",
-            get(openapi_handler!(components::list_components)),
+            "/services/:service",
+            get(openapi_handler!(services::get_service)),
         )
         .route(
-            "/components/:component",
-            get(openapi_handler!(components::get_component)),
+            "/services/:service",
+            patch(openapi_handler!(services::modify_service)),
         )
         .route(
-            "/components/:component",
-            patch(openapi_handler!(components::modify_component)),
+            "/services/:service/state",
+            post(openapi_handler!(services::modify_service_state)),
         )
         .route(
-            "/components/:component/state",
-            post(openapi_handler!(components::modify_component_state)),
+            "/services/:service/handlers",
+            get(openapi_handler!(handlers::list_service_handlers)),
         )
         .route(
-            "/components/:component/handlers",
-            get(openapi_handler!(handlers::list_component_handlers)),
-        )
-        .route(
-            "/components/:component/handlers/:handler",
-            get(openapi_handler!(handlers::get_component_handler)),
+            "/services/:service/handlers/:handler",
+            get(openapi_handler!(handlers::get_service_handler)),
         )
         .route(
             "/invocations/:invocation_id",

@@ -17,9 +17,9 @@ use datafusion::arrow::datatypes::DataType;
 define_table!(idempotency(
     partition_key: DataType::UInt64,
 
-    component_name: DataType::LargeUtf8,
-    component_key: DataType::LargeUtf8,
-    component_handler: DataType::LargeUtf8,
+    service_name: DataType::LargeUtf8,
+    service_key: DataType::LargeUtf8,
+    service_handler: DataType::LargeUtf8,
     idempotency_key: DataType::LargeUtf8,
 
     invocation_id: DataType::LargeUtf8

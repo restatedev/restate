@@ -28,7 +28,7 @@ use anyhow::Result;
 use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
@@ -63,7 +63,7 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
 
 async fn render_services_status(
     env: &CliEnv,
-    services: Vec<ComponentMetadata>,
+    services: Vec<ServiceMetadata>,
     status_map: ServiceStatusMap,
 ) -> Result<()> {
     let empty = ServiceStatus::default();
@@ -118,7 +118,7 @@ fn render_handler_state_stats(
 
 async fn render_handlers_status(
     table: &mut Table,
-    svc: ComponentMetadata,
+    svc: ServiceMetadata,
     svc_status: &ServiceStatus,
 ) -> Result<()> {
     for handler in svc.handlers {

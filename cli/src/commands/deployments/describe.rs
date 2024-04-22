@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::components::ComponentMetadata;
-use restate_meta_rest_model::deployments::ComponentNameRevPair;
+use restate_meta_rest_model::deployments::ServiceNameRevPair;
+use restate_meta_rest_model::services::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
@@ -49,9 +49,9 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = MetasClient::new(env)?;
 
-    let mut latest_services: HashMap<String, ComponentMetadata> = HashMap::new();
+    let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
-    let services = client.get_components().await?.into_body().await?.components;
+    let services = client.get_services().await?.into_body().await?.services;
     for service in services {
         latest_services.insert(service.name.clone(), service);
     }
@@ -67,9 +67,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 
     let service_rev_pairs: Vec<_> = deployment
-        .components
+        .services
         .iter()
-        .map(|s| ComponentNameRevPair {
+        .map(|s| ServiceNameRevPair {
             name: s.name.clone(),
             revision: s.revision,
         })
@@ -96,7 +96,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     c_println!();
 
     c_title!("🤖", "Services");
-    for service in deployment.components {
+    for service in deployment.services {
         let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of services, something is off. A
             // deployment cannot remove services defined by other deployment, so we should warn that

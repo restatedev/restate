@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::path_parsing::{ComponentRequestType, InvokeType, TargetType};
+use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
 use super::tracing::prepare_tracing_span;
 use super::HandlerError;
 use super::{Handler, APPLICATION_JSON};
@@ -52,29 +52,29 @@ where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
-    pub(crate) async fn handle_component_request<B: http_body::Body>(
+    pub(crate) async fn handle_service_request<B: http_body::Body>(
         self,
         req: Request<B>,
-        component_request: ComponentRequestType,
+        service_request: ServiceRequestType,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
         let start_time = Instant::now();
 
-        let ComponentRequestType {
-            name: component_name,
+        let ServiceRequestType {
+            name: service_name,
             handler: handler_name,
             target,
             invoke_ty,
-        } = component_request;
+        } = service_request;
 
         let invocation_target_meta = if let Some(invocation_target) = self
             .schemas
-            .resolve_latest_invocation_target(&component_name, &handler_name)
+            .resolve_latest_invocation_target(&service_name, &handler_name)
         {
             if !invocation_target.public {
-                return Err(HandlerError::PrivateComponent);
+                return Err(HandlerError::PrivateService);
             }
             invocation_target
         } else {
@@ -88,16 +88,16 @@ where
         // Craft Invocation Target and Id
         let invocation_target = if let TargetType::VirtualObject { key } = target {
             InvocationTarget::virtual_object(
-                &*component_name,
+                &*service_name,
                 key,
                 &*handler_name,
                 invocation_target_meta.handler_ty,
             )
         } else {
-            InvocationTarget::service(&*component_name, &*handler_name)
+            InvocationTarget::service(&*service_name, &*handler_name)
         };
         let invocation_id = if let Some(ref idempotency) = idempotency {
-            // We need this to make sure the internal components will deliver correctly this idempotent invocation always
+            // We need this to make sure the internal services will deliver correctly this idempotent invocation always
             //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
             //  https://github.com/restatedev/restate/issues/1329
             InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency.key)
@@ -152,7 +152,7 @@ where
                     if delay.is_some() {
                         return Err(HandlerError::UnsupportedDelay);
                     }
-                    Self::handle_component_call(
+                    Self::handle_service_call(
                         invocation_id,
                         invocation_target,
                         idempotency,
@@ -165,7 +165,7 @@ where
                     .await
                 }
                 InvokeType::Send => {
-                    Self::handle_component_send(
+                    Self::handle_service_send(
                         invocation_id,
                         invocation_target,
                         idempotency,
@@ -186,7 +186,7 @@ where
         // change this in the _near_ future.
         histogram!(
             INGRESS_REQUEST_DURATION,
-            "rpc.service" => component_name.clone(),
+            "rpc.service" => service_name.clone(),
             "rpc.method" => handler_name.clone(),
         )
         .record(start_time.elapsed());
@@ -194,7 +194,7 @@ where
         counter!(
             INGRESS_REQUESTS,
             "status" => REQUEST_COMPLETED,
-            "rpc.service" => component_name,
+            "rpc.service" => service_name,
             "rpc.method" => handler_name,
         )
         .increment(1);
@@ -202,7 +202,7 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn handle_component_call(
+    async fn handle_service_call(
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,
@@ -275,7 +275,7 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn handle_component_send(
+    async fn handle_service_send(
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         idempotency: Option<Idempotency>,

@@ -380,7 +380,7 @@ where
         effects: &mut Effects,
     ) -> Result<(), Error> {
         let service_status = state
-            .get_virtual_object_status(&mutation.component_id)
+            .get_virtual_object_status(&mutation.service_id)
             .await?;
 
         match service_status {

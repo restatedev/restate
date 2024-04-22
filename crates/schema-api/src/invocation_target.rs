@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
-use restate_types::invocation::{ComponentType, HandlerType};
+use restate_types::invocation::{HandlerType, ServiceType};
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 
 pub struct InvocationTargetMetadata {
     pub public: bool,
     pub idempotency_retention: Duration,
-    pub component_ty: ComponentType,
+    pub service_ty: ServiceType,
     pub handler_ty: HandlerType,
     pub input_rules: InputRules,
     pub output_rules: OutputRules,
@@ -31,10 +31,10 @@ pub struct InvocationTargetMetadata {
 
 /// This API resolves invocation targets.
 pub trait InvocationTargetResolver {
-    /// Returns None if the component handler doesn't exist, Some(basic_component_metadata) otherwise.
+    /// Returns None if the service handler doesn't exist, Some(basic_service_metadata) otherwise.
     fn resolve_latest_invocation_target(
         &self,
-        component_name: impl AsRef<str>,
+        service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata>;
 }
@@ -368,20 +368,20 @@ pub mod mocks {
     use std::collections::HashMap;
 
     #[derive(Debug, Clone)]
-    pub struct MockComponent(HashMap<String, InvocationTargetMetadata>);
+    pub struct MockService(HashMap<String, InvocationTargetMetadata>);
 
     #[derive(Debug, Default, Clone)]
-    pub struct MockInvocationTargetResolver(HashMap<String, MockComponent>);
+    pub struct MockInvocationTargetResolver(HashMap<String, MockService>);
 
     impl MockInvocationTargetResolver {
         pub fn add(
             &mut self,
-            component_name: &str,
+            service_name: &str,
             handlers: impl IntoIterator<Item = (impl ToString, InvocationTargetMetadata)>,
         ) {
             self.0.insert(
-                component_name.to_owned(),
-                MockComponent(
+                service_name.to_owned(),
+                MockService(
                     handlers
                         .into_iter()
                         .map(|(s, i)| (s.to_string(), i))
@@ -394,21 +394,21 @@ pub mod mocks {
     impl InvocationTargetResolver for MockInvocationTargetResolver {
         fn resolve_latest_invocation_target(
             &self,
-            component_name: impl AsRef<str>,
+            service_name: impl AsRef<str>,
             handler_name: impl AsRef<str>,
         ) -> Option<InvocationTargetMetadata> {
             self.0
-                .get(component_name.as_ref())
+                .get(service_name.as_ref())
                 .and_then(|c| c.0.get(handler_name.as_ref()).cloned())
         }
     }
 
     impl InvocationTargetMetadata {
-        pub fn mock(component_ty: ComponentType, handler_ty: HandlerType) -> Self {
+        pub fn mock(service_ty: ServiceType, handler_ty: HandlerType) -> Self {
             Self {
                 public: true,
                 idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                component_ty,
+                service_ty,
                 handler_ty,
                 input_rules: Default::default(),
                 output_rules: Default::default(),

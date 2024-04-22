@@ -134,21 +134,21 @@ impl InvocationError {
         }
     }
 
-    pub fn component_not_found(component: impl fmt::Display) -> Self {
+    pub fn service_not_found(service: impl fmt::Display) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Component '{}' not found. Check whether the deployment containing the component is registered.", component)),
+            message: Cow::Owned(format!("Service '{}' not found. Check whether the deployment containing the service is registered.", service)),
             description: None,
         }
     }
 
-    pub fn component_handler_not_found(
-        component: impl fmt::Display,
+    pub fn service_handler_not_found(
+        service: impl fmt::Display,
         handler: impl fmt::Display,
     ) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Component handler '{}/{}' not found. Check whether you've registered the correct version of your component.", component, handler)),
+            message: Cow::Owned(format!("Service handler '{}/{}' not found. Check whether you've registered the correct version of your service.", service, handler)),
             description: None,
         }
     }

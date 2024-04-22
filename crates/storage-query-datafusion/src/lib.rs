@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 mod analyzer;
-mod component;
 pub mod context;
 mod deployment;
 mod generic_table;
@@ -18,11 +17,12 @@ mod inbox;
 mod invocation_state;
 mod invocation_status;
 mod journal;
+mod keyed_service_status;
 mod physical_optimizer;
+mod service;
 mod state;
 mod table_macro;
 mod table_util;
-mod virtual_object_status;
 
 pub use context::BuildError;
 

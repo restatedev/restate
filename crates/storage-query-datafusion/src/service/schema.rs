@@ -14,9 +14,12 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(virtual_object_status(
-    partition_key: DataType::UInt64,
+define_table!(service(
     name: DataType::LargeUtf8,
-    key: DataType::LargeUtf8,
-    invocation_id: DataType::LargeUtf8,
+    revision: DataType::UInt64,
+
+    public: DataType::Boolean,
+
+    ty: DataType::LargeUtf8,
+    deployment_id: DataType::LargeUtf8,
 ));

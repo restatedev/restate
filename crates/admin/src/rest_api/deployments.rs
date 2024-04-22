@@ -13,14 +13,10 @@ use crate::state::AdminServiceState;
 
 use crate::rest_api::log_error;
 use crate::schema_registry::{ApplyMode, Force};
-use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
-use okapi_operation::anyhow::Error;
-use okapi_operation::okapi::openapi3::{MediaType, Responses};
-use okapi_operation::okapi::Map;
 use okapi_operation::*;
 use restate_meta_rest_model::deployments::*;
 use restate_service_client::Endpoint;
@@ -31,7 +27,7 @@ use serde::Deserialize;
 /// Create deployment and return discovered services.
 #[openapi(
     summary = "Create deployment",
-    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the components exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
     operation_id = "create_deployment",
     tags = "deployment",
     responses(
@@ -91,7 +87,7 @@ pub async fn create_deployment<V>(
         ApplyMode::Apply
     };
 
-    let (id, components) = state
+    let (id, services) = state
         .task_center
         .run_in_scope("create-deployment", None, async {
             log_error(
@@ -103,7 +99,7 @@ pub async fn create_deployment<V>(
         })
         .await?;
 
-    let response_body = RegisterDeploymentResponse { id, components };
+    let response_body = RegisterDeploymentResponse { id, services };
 
     Ok((
         StatusCode::CREATED,
@@ -131,7 +127,7 @@ pub async fn get_deployment<V>(
     State(state): State<AdminServiceState<V>>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (deployment, components) = state
+    let (deployment, services) = state
         .task_center
         .run_in_scope_sync("get-deployment", None, || {
             state.schema_registry.get_deployment(deployment_id)
@@ -141,7 +137,7 @@ pub async fn get_deployment<V>(
     Ok(DetailedDeploymentResponse {
         id: deployment.id,
         deployment: deployment.metadata.into(),
-        components,
+        services,
     }
     .into())
 }
@@ -165,9 +161,9 @@ pub async fn list_deployments<V>(
         .map(|(deployment, services)| DeploymentResponse {
             id: deployment.id,
             deployment: deployment.metadata.into(),
-            components: services
+            services: services
                 .into_iter()
-                .map(|(name, revision)| ComponentNameRevPair { name, revision })
+                .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
         })
         .collect();
@@ -226,36 +222,5 @@ pub async fn delete_deployment<V>(
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
-    }
-}
-
-pub struct ProtoBytes(Bytes);
-
-impl IntoResponse for ProtoBytes {
-    fn into_response(self) -> Response {
-        (
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/x-protobuf"),
-            )],
-            self.0,
-        )
-            .into_response()
-    }
-}
-
-impl ToMediaTypes for ProtoBytes {
-    fn generate(_components: &mut Components) -> Result<Map<String, MediaType>, anyhow::Error> {
-        Ok(okapi::map! {
-            "application/x-protobuf".into() => {
-                MediaType { ..Default::default() }
-            }
-        })
-    }
-}
-
-impl ToResponses for ProtoBytes {
-    fn generate(_components: &mut Components) -> Result<Responses, Error> {
-        Ok(Responses::default())
     }
 }

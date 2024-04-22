@@ -31,22 +31,22 @@ fn main() -> std::io::Result<()> {
     // Patch schema for https://github.com/oxidecomputer/typify/issues/531
     // We can get rid of this once the issue in typify is solved.
     Pointer::parse(
-        "#/properties/components/items/properties/handlers/items/properties/input/default",
+        "#/properties/services/items/properties/handlers/items/properties/input/default",
     )
     .unwrap()
     .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/components/items/properties/handlers/items/properties/input/examples",
+        "#/properties/services/items/properties/handlers/items/properties/input/examples",
     )
     .unwrap()
     .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/components/items/properties/handlers/items/properties/output/default",
+        "#/properties/services/items/properties/handlers/items/properties/output/default",
     )
     .unwrap()
     .delete(&mut parsed_content);
     Pointer::parse(
-        "#/properties/components/items/properties/handlers/items/properties/output/examples",
+        "#/properties/services/items/properties/handlers/items/properties/output/examples",
     )
     .unwrap()
     .delete(&mut parsed_content);

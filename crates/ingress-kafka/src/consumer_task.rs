@@ -20,7 +20,7 @@ use restate_ingress_dispatcher::{
 };
 use restate_pb::restate::internal::Event;
 use restate_schema_api::subscription::{
-    EventReceiverComponentType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
+    EventReceiverServiceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
 };
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::SpanRelation;
@@ -68,8 +68,8 @@ impl DeduplicationId for KafkaDeduplicationId {
                     ordering_key_format: KafkaOrderingKeyFormat::ConsumerGroupTopicPartition,
                     ..
                 },
-                Sink::Component {
-                    ty: EventReceiverComponentType::VirtualObject {
+                Sink::Service {
+                    ty: EventReceiverServiceType::VirtualObject {
                         ordering_key_is_key: true,
                     },
                     ..

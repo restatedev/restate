@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::schema_registry::error::{
-    ComponentError, DeploymentError, SchemaError, SchemaRegistryError,
+    DeploymentError, SchemaError, SchemaRegistryError, ServiceError,
 };
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -32,13 +32,11 @@ pub enum MetaApiError {
     InvalidField(&'static str, String),
     #[error("The requested deployment '{0}' does not exist")]
     DeploymentNotFound(DeploymentId),
-    #[error("The requested component '{0}' does not exist")]
-    ComponentNotFound(String),
-    #[error(
-        "The requested handler '{handler_name}' on component '{component_name}' does not exist"
-    )]
+    #[error("The requested service '{0}' does not exist")]
+    ServiceNotFound(String),
+    #[error("The requested handler '{handler_name}' on service '{service_name}' does not exist")]
     HandlerNotFound {
-        component_name: String,
+        service_name: String,
         handler_name: String,
     },
     #[error("The requested subscription '{0}' does not exist")]
@@ -66,7 +64,7 @@ struct ErrorDescriptionResponse {
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
-            MetaApiError::ComponentNotFound(_)
+            MetaApiError::ServiceNotFound(_)
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
@@ -74,12 +72,12 @@ impl IntoResponse for MetaApiError {
             MetaApiError::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Override(_)
-                | SchemaError::Component(ComponentError::DifferentType { .. })
-                | SchemaError::Component(ComponentError::RemovedHandlers { .. })
+                | SchemaError::Service(ServiceError::DifferentType { .. })
+                | SchemaError::Service(ServiceError::RemovedHandlers { .. })
                 | SchemaError::Deployment(DeploymentError::IncorrectId { .. }) => {
                     StatusCode::CONFLICT
                 }
-                SchemaError::Component(_) => StatusCode::BAD_REQUEST,
+                SchemaError::Service(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
             _ => StatusCode::INTERNAL_SERVER_ERROR,
