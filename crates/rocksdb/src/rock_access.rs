@@ -31,7 +31,13 @@ pub trait RocksAccess {
     ) -> Result<Self, RocksError>
     where
         Self: Sized;
-
+    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>>;
+    // Transitional hack until we remove the usage of transaction db
+    // todo: remove when we remove optimistic transaction db
+    fn as_raw_db(&self) -> &rocksdb::DB;
+    // Transitional hack until we remove the usage of transaction db
+    // todo: remove when we remove optimistic transaction db
+    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB;
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError>;
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError>;
     fn cancel_all_background_work(&self, wait: bool);
@@ -48,6 +54,19 @@ pub trait RocksAccess {
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     ) -> Result<(), RocksError>;
     fn cfs(&self) -> Vec<CfName>;
+
+    fn write_batch(
+        &self,
+        batch: &rocksdb::WriteBatch,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error>;
+
+    // rust-rocksdb's interface is pita. Hopefully we remove the usage of transaction db soon.
+    fn write_tx_batch(
+        &self,
+        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error>;
 }
 
 fn prepare_cf_options(
@@ -120,6 +139,17 @@ impl RocksAccess for rocksdb::DB {
             .map_err(RocksError::from_rocksdb_error)
     }
 
+    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
+        self.cf_handle(cf)
+    }
+
+    fn as_raw_db(&self) -> &rocksdb::DB {
+        self
+    }
+    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB {
+        unreachable!()
+    }
+
     fn open_cf(
         &self,
         name: CfName,
@@ -171,6 +201,22 @@ impl RocksAccess for rocksdb::DB {
     fn cfs(&self) -> Vec<CfName> {
         self.cf_names().into_iter().map(CfName::from).collect()
     }
+
+    fn write_batch(
+        &self,
+        batch: &rocksdb::WriteBatch,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        self.write_opt(batch, write_options)
+    }
+
+    fn write_tx_batch(
+        &self,
+        _batch: &rocksdb::WriteBatchWithTransaction<true>,
+        _write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        unreachable!("not possible to perform tx commits on non-tx db")
+    }
 }
 
 impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
@@ -206,6 +252,17 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
             descriptors,
         )
         .map_err(RocksError::from_rocksdb_error)
+    }
+
+    fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
+        self.cf_handle(cf)
+    }
+
+    fn as_raw_db(&self) -> &rocksdb::DB {
+        unreachable!()
+    }
+    fn as_raw_optimistic_tx_db(&self) -> &rocksdb::OptimisticTransactionDB {
+        self
     }
 
     fn open_cf(
@@ -258,5 +315,21 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
 
     fn cfs(&self) -> Vec<CfName> {
         self.cf_names().into_iter().map(CfName::from).collect()
+    }
+
+    fn write_batch(
+        &self,
+        _batch: &rocksdb::WriteBatch,
+        _write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        unreachable!("not possible to perform non-tx commits tx db")
+    }
+
+    fn write_tx_batch(
+        &self,
+        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        self.write_opt(batch, write_options)
     }
 }
