@@ -36,6 +36,8 @@ pub struct ModifyServiceRequest {
     /// # Idempotency retention
     ///
     /// Modify the retention of idempotent requests for this service.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<humantime::Duration>,
