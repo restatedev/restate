@@ -18,7 +18,7 @@ use bytestring::ByteString;
 use restate_types::errors::GenericError;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use restate_types::{Version, Versioned};
+use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
@@ -56,6 +56,8 @@ impl VersionedValue {
         Self { version, value }
     }
 }
+
+flexbuffers_storage_encode_decode!(VersionedValue);
 
 /// Preconditions for the write operations of the [`MetadataStore`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

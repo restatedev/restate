@@ -67,7 +67,7 @@ pub struct StorageCodec;
 
 impl StorageCodec {
     pub fn encode<T: StorageEncode, B: BufMut>(
-        value: &T,
+        value: T,
         buf: &mut B,
     ) -> Result<(), StorageEncodeError> {
         // write codec

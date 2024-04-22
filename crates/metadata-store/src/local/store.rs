@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{BufMut, BytesMut};
 use bytestring::ByteString;
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
@@ -18,11 +18,11 @@ use restate_rocksdb::{
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
-use restate_types::errors::GenericError;
+use restate_types::storage::{
+    StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, Options, WriteOptions, DB};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -67,8 +67,10 @@ pub enum Error {
     FailedPrecondition(String),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
-    #[error("codec error: {0}")]
-    Codec(GenericError),
+    #[error("encode error: {0}")]
+    Encode(#[from] StorageEncodeError),
+    #[error("decode error: {0}")]
+    Decode(#[from] StorageDecodeError),
 }
 
 impl Error {
@@ -99,6 +101,7 @@ pub struct LocalMetadataStore {
     db: Arc<DB>,
     write_opts: WriteOptions,
     request_rx: RequestReceiver,
+    buffer: BytesMut,
 
     // for creating other senders
     request_tx: RequestSender,
@@ -129,6 +132,7 @@ impl LocalMetadataStore {
         Ok(Self {
             db,
             write_opts: Self::default_write_options(),
+            buffer: BytesMut::default(),
             request_rx,
             request_tx,
         })
@@ -172,7 +176,7 @@ impl LocalMetadataStore {
             .expect("KV_PAIRS column family exists")
     }
 
-    async fn handle_request(&self, request: MetadataStoreRequest) {
+    async fn handle_request(&mut self, request: MetadataStoreRequest) {
         trace!("Handle request '{:?}'", request);
 
         match request {
@@ -233,7 +237,7 @@ impl LocalMetadataStore {
     }
 
     fn put(
-        &self,
+        &mut self,
         key: &ByteString,
         value: &VersionedValue,
         precondition: Precondition,
@@ -259,11 +263,13 @@ impl LocalMetadataStore {
         }
     }
 
-    fn write_versioned_kv_pair(&self, key: &ByteString, value: &VersionedValue) -> Result<()> {
+    fn write_versioned_kv_pair(&mut self, key: &ByteString, value: &VersionedValue) -> Result<()> {
+        self.buffer.clear();
+        Self::encode(value, &mut self.buffer)?;
+
         let cf_handle = self.kv_cf_handle();
-        let versioned_value = Self::encode(value)?;
         self.db
-            .put_cf_opt(&cf_handle, key, versioned_value, &self.write_opts)?;
+            .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &self.write_opts)?;
         Ok(())
     }
 
@@ -299,18 +305,14 @@ impl LocalMetadataStore {
             .map_err(Into::into)
     }
 
-    fn encode<T: Serialize>(value: T) -> Result<Bytes> {
-        // todo: Add version information
-        bincode::serde::encode_to_vec(value, bincode::config::standard())
-            .map(Into::into)
-            .map_err(|err| Error::Codec(err.into()))
+    fn encode<T: StorageEncode, B: BufMut>(value: T, buf: &mut B) -> Result<()> {
+        StorageCodec::encode(value, buf)?;
+        Ok(())
     }
 
-    fn decode<T: DeserializeOwned>(bytes: impl AsRef<[u8]>) -> Result<T> {
-        // todo: Add version information
-        bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
-            .map(|(value, _)| value)
-            .map_err(|err| Error::Codec(err.into()))
+    fn decode<T: StorageDecode>(buf: impl AsRef<[u8]>) -> Result<T> {
+        let value = StorageCodec::decode(&mut buf.as_ref())?;
+        Ok(value)
     }
 
     fn log_error<T>(result: &Result<T>, request: &str) {

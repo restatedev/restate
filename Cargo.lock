@@ -5633,7 +5633,6 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
  "bytes",
  "bytestring",
  "codederror",
