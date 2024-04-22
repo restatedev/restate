@@ -28,3 +28,6 @@ pub use context::BuildError;
 
 #[cfg(test)]
 pub(crate) mod mocks;
+
+#[cfg(test)]
+mod tests;
