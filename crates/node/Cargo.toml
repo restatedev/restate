@@ -41,7 +41,6 @@ arc-swap = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
-bincode = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }

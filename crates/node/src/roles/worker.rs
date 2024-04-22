@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bincode::error::DecodeError;
 use restate_types::config::UpdateableConfiguration;
 use std::time::Duration;
 
@@ -48,9 +47,6 @@ pub enum WorkerRoleError {
     #[error("failed to attach to cluster at '{0}': {1}")]
     #[code(unknown)]
     Attachment(AdvertisedAddress, tonic::Status),
-    #[error("codec error: {0}")]
-    #[code(unknown)]
-    Codec(#[from] DecodeError),
     #[error(transparent)]
     #[code(unknown)]
     Shutdown(#[from] ShutdownError),
@@ -61,9 +57,6 @@ pub enum SchemaError {
     #[error("failed to fetch schema updates: {0}")]
     #[code(unknown)]
     Fetch(#[from] tonic::Status),
-    #[error("failed decoding grpc payload: {0}")]
-    #[code(unknown)]
-    Decode(#[from] bincode::error::DecodeError),
     #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
     Subscription(#[from] restate_worker::WorkerHandleError),

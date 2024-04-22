@@ -5713,7 +5713,6 @@ dependencies = [
  "arrow-flight",
  "async-trait",
  "axum",
- "bincode",
  "bytes",
  "codederror",
  "datafusion",

@@ -11,15 +11,11 @@
 mod network_server;
 mod roles;
 
-use bincode::error::{DecodeError, EncodeError};
-use bytes::Bytes;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
 use restate_network::Networking;
 use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::future::Future;
 use std::time::Duration;
 
@@ -496,17 +492,4 @@ impl Node {
             })
             .await
     }
-}
-
-/// Helper function for default encoding of values.
-pub fn encode_default<T: Serialize>(value: T) -> Result<Bytes, EncodeError> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map(Into::into)
-        .map_err(Into::into)
-}
-
-pub fn decode_default<T: DeserializeOwned>(bytes: Bytes) -> Result<T, DecodeError> {
-    bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
-        .map(|(value, _)| value)
-        .map_err(Into::into)
 }
