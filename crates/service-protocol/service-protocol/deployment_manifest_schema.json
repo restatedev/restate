@@ -41,7 +41,7 @@
                   "type": "string",
                   "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9_]*$"
                 },
-                "handlerType": {
+                "ty": {
                   "title": "HandlerType",
                   "enum": ["EXCLUSIVE", "SHARED"],
                   "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object. This should be unset for Services."
