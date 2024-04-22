@@ -105,7 +105,7 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+pub enum EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult> {
     Input,
     Output,
     GetState {
@@ -120,12 +120,12 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     Sleep {
         is_completed: bool,
     },
-    Invoke {
+    Call {
         is_completed: bool,
-        enrichment_result: Option<InvokeEnrichmentResult>,
+        enrichment_result: Option<CallEnrichmentResult>,
     },
-    BackgroundInvoke {
-        enrichment_result: InvokeEnrichmentResult,
+    OneWayCall {
+        enrichment_result: CallEnrichmentResult,
     },
     Awakeable {
         is_completed: bool,
@@ -133,7 +133,7 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     CompleteAwakeable {
         enrichment_result: AwakeableEnrichmentResult,
     },
-    SideEffect,
+    Run,
     Custom {
         code: u16,
     },
@@ -152,11 +152,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::ClearAllState => None,
             EntryHeader::GetStateKeys { is_completed, .. } => Some(*is_completed),
             EntryHeader::Sleep { is_completed, .. } => Some(*is_completed),
-            EntryHeader::Invoke { is_completed, .. } => Some(*is_completed),
-            EntryHeader::BackgroundInvoke { .. } => None,
+            EntryHeader::Call { is_completed, .. } => Some(*is_completed),
+            EntryHeader::OneWayCall { .. } => None,
             EntryHeader::Awakeable { is_completed, .. } => Some(*is_completed),
             EntryHeader::CompleteAwakeable { .. } => None,
-            EntryHeader::SideEffect { .. } => None,
+            EntryHeader::Run { .. } => None,
             EntryHeader::Custom { .. } => None,
         }
     }
@@ -171,11 +171,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetStateKeys { is_completed, .. } => *is_completed = true,
             EntryHeader::ClearAllState => {}
             EntryHeader::Sleep { is_completed, .. } => *is_completed = true,
-            EntryHeader::Invoke { is_completed, .. } => *is_completed = true,
-            EntryHeader::BackgroundInvoke { .. } => {}
+            EntryHeader::Call { is_completed, .. } => *is_completed = true,
+            EntryHeader::OneWayCall { .. } => {}
             EntryHeader::Awakeable { is_completed, .. } => *is_completed = true,
             EntryHeader::CompleteAwakeable { .. } => {}
-            EntryHeader::SideEffect { .. } => {}
+            EntryHeader::Run { .. } => {}
             EntryHeader::Custom { .. } => {}
         }
     }
@@ -190,11 +190,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetStateKeys { .. } => EntryType::GetStateKeys,
             EntryHeader::ClearAllState => EntryType::ClearAllState,
             EntryHeader::Sleep { .. } => EntryType::Sleep,
-            EntryHeader::Invoke { .. } => EntryType::Invoke,
-            EntryHeader::BackgroundInvoke { .. } => EntryType::BackgroundInvoke,
+            EntryHeader::Call { .. } => EntryType::Call,
+            EntryHeader::OneWayCall { .. } => EntryType::OneWayCall,
             EntryHeader::Awakeable { .. } => EntryType::Awakeable,
             EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
-            EntryHeader::SideEffect { .. } => EntryType::SideEffect,
+            EntryHeader::Run { .. } => EntryType::Run,
             EntryHeader::Custom { .. } => EntryType::Custom,
         }
     }
@@ -211,18 +211,18 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             }
             EntryHeader::ClearAllState => EntryHeader::ClearAllState,
             EntryHeader::Sleep { is_completed } => EntryHeader::Sleep { is_completed },
-            EntryHeader::Invoke { is_completed, .. } => EntryHeader::Invoke {
+            EntryHeader::Call { is_completed, .. } => EntryHeader::Call {
                 is_completed,
                 enrichment_result: None,
             },
-            EntryHeader::BackgroundInvoke { .. } => EntryHeader::BackgroundInvoke {
+            EntryHeader::OneWayCall { .. } => EntryHeader::OneWayCall {
                 enrichment_result: (),
             },
             EntryHeader::Awakeable { is_completed } => EntryHeader::Awakeable { is_completed },
             EntryHeader::CompleteAwakeable { .. } => EntryHeader::CompleteAwakeable {
                 enrichment_result: (),
             },
-            EntryHeader::SideEffect { .. } => EntryHeader::SideEffect {},
+            EntryHeader::Run { .. } => EntryHeader::Run {},
             EntryHeader::Custom { code } => EntryHeader::Custom { code },
         }
     }

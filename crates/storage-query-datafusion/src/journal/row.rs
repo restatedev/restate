@@ -57,11 +57,11 @@ pub(crate) fn append_journal_row(
             }
 
             match &entry.header() {
-                EnrichedEntryHeader::Invoke {
+                EnrichedEntryHeader::Call {
                     enrichment_result: Some(enrichment_result),
                     ..
                 }
-                | EnrichedEntryHeader::BackgroundInvoke {
+                | EnrichedEntryHeader::OneWayCall {
                     enrichment_result, ..
                 } => {
                     if row.is_invoked_id_defined() {

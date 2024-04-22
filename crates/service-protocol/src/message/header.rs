@@ -193,11 +193,11 @@ impl TryFrom<MessageType> for EntryType {
             MessageType::GetStateKeysEntry => Ok(EntryType::GetStateKeys),
             MessageType::ClearAllStateEntry => Ok(EntryType::ClearAllState),
             MessageType::SleepEntry => Ok(EntryType::Sleep),
-            MessageType::InvokeEntry => Ok(EntryType::Invoke),
-            MessageType::BackgroundInvokeEntry => Ok(EntryType::BackgroundInvoke),
+            MessageType::InvokeEntry => Ok(EntryType::Call),
+            MessageType::BackgroundInvokeEntry => Ok(EntryType::OneWayCall),
             MessageType::AwakeableEntry => Ok(EntryType::Awakeable),
             MessageType::CompleteAwakeableEntry => Ok(EntryType::CompleteAwakeable),
-            MessageType::SideEffectEntry => Ok(EntryType::SideEffect),
+            MessageType::SideEffectEntry => Ok(EntryType::Run),
             MessageType::CustomEntry(_) => Ok(EntryType::Custom),
             MessageType::Start
             | MessageType::Completion

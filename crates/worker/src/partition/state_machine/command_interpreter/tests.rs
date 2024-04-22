@@ -551,9 +551,9 @@ async fn kill_call_tree() -> Result<(), Error> {
 
 fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::Invoke {
+        EnrichedEntryHeader::Call {
             is_completed: true,
-            enrichment_result: Some(InvokeEnrichmentResult {
+            enrichment_result: Some(CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
                 span_context: ServiceInvocationSpanContext::empty(),
@@ -565,8 +565,8 @@ fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
 
 fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::BackgroundInvoke {
-            enrichment_result: InvokeEnrichmentResult {
+        EnrichedEntryHeader::OneWayCall {
+            enrichment_result: CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
                 span_context: ServiceInvocationSpanContext::empty(),
@@ -578,9 +578,9 @@ fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
 
 fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::Invoke {
+        EnrichedEntryHeader::Call {
             is_completed: false,
-            enrichment_result: Some(InvokeEnrichmentResult {
+            enrichment_result: Some(CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
                 span_context: ServiceInvocationSpanContext::empty(),

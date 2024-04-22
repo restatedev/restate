@@ -56,7 +56,7 @@ async fn join_invocation_tables_with_error() {
                             doc_error_code: None,
                             related_entry_index: Some(1),
                             related_entry_name: Some("my-side-effect".to_string()),
-                            related_entry_type: Some(EntryType::SideEffect),
+                            related_entry_type: Some(EntryType::Run),
                         }),
                         next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
                         last_attempt_deployment_id: Some(DeploymentId::new()),
@@ -113,7 +113,7 @@ async fn join_invocation_tables_with_error() {
                 "last_failure" => LargeStringArray: eq(invocation_error.to_string()),
                 "last_failure_related_entry_index" => UInt64Array: eq(1),
                 "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),
-                "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::SideEffect.to_string()),
+                "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
                 "last_attempt_server" => LargeStringArray: eq("restate-sdk-java/0.8.0"),
             }
         ))

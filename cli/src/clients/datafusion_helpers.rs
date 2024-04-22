@@ -192,7 +192,7 @@ pub enum JournalEntryType {
         wakeup_at: Option<chrono::DateTime<Local>>,
     },
     Call(OutgoingInvoke),
-    Send(OutgoingInvoke),
+    OneWayCall(OutgoingInvoke),
     Awakeable(AwakeableIdentifier),
     GetState,
     SetState,
@@ -217,7 +217,7 @@ impl JournalEntryType {
             self,
             JournalEntryType::Sleep { .. }
                 | JournalEntryType::Call(_)
-                | JournalEntryType::Send(_)
+                | JournalEntryType::OneWayCall(_)
                 | JournalEntryType::Awakeable(_)
                 | JournalEntryType::SideEffect
         )
@@ -229,7 +229,7 @@ impl Display for JournalEntryType {
         match self {
             JournalEntryType::Sleep { .. } => write!(f, "Sleep"),
             JournalEntryType::Call(_) => write!(f, "Call"),
-            JournalEntryType::Send(_) => write!(f, "Send"),
+            JournalEntryType::OneWayCall(_) => write!(f, "Send"),
             JournalEntryType::Awakeable(_) => write!(f, "Awakeable"),
             JournalEntryType::GetState => write!(f, "GetState"),
             JournalEntryType::SetState => write!(f, "SetState"),
@@ -959,11 +959,11 @@ pub async fn get_invocation_journal(
                 "Sleep" => JournalEntryType::Sleep {
                     wakeup_at: row.sleep_wakeup_at.map(Into::into),
                 },
-                "Invoke" => JournalEntryType::Call(OutgoingInvoke {
+                "Call" => JournalEntryType::Call(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
-                "BackgroundInvoke" => JournalEntryType::Send(OutgoingInvoke {
+                "OneWayCall" => JournalEntryType::OneWayCall(OutgoingInvoke {
                     invocation_id: row.invoked_id,
                     invoked_target: row.invoked_target,
                 }),
@@ -973,7 +973,7 @@ pub async fn get_invocation_journal(
                 "GetState" => JournalEntryType::GetState,
                 "SetState" => JournalEntryType::SetState,
                 "ClearState" => JournalEntryType::ClearState,
-                "SideEffect" => JournalEntryType::SideEffect,
+                "Run" => JournalEntryType::SideEffect,
                 t => JournalEntryType::Other(t.to_owned()),
             };
 

@@ -14,12 +14,12 @@ use super::*;
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 
-pub type EnrichedEntryHeader = EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>;
-pub type EnrichedRawEntry = RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>;
+pub type EnrichedEntryHeader = EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult>;
+pub type EnrichedRawEntry = RawEntry<CallEnrichmentResult, AwakeableEnrichmentResult>;
 
 /// Result of the target service resolution
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct InvokeEnrichmentResult {
+pub struct CallEnrichmentResult {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
 
