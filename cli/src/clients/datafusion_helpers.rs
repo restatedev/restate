@@ -442,7 +442,8 @@ pub async fn get_service_status(
                 COUNT(id),
                 MIN(created_at),
                 FIRST_VALUE(id ORDER BY created_at ASC)
-             FROM sys_invocation_status WHERE status == 'inboxed' AND target_service_name IN {}
+             FROM sys_invocation_status
+             WHERE status == 'inboxed' AND target_service_name IN {}
              GROUP BY target_service_name, target_handler_name",
             query_filter
         );
@@ -476,26 +477,18 @@ pub async fn get_service_status(
     // Active invocations analysis
     {
         let query = format!(
-            "WITH enriched_invokes AS
-            (SELECT
-                ss.target_service_name,
-                ss.target_handler_name,
-                CASE
-                 WHEN ss.status = 'inboxed' THEN 'pending'
-                 WHEN ss.status = 'completed' THEN 'completed'
-                 WHEN ss.status = 'suspended' THEN 'suspended'
-                 WHEN sis.in_flight THEN 'running'
-                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                 ELSE 'ready'
-                END AS combined_status,
-                ss.id,
-                ss.created_at
-            FROM sys_invocation_status ss
-            LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.target_service_name IN {}
-            )
-            SELECT target_service_name, target_handler_name, combined_status, COUNT(id), MIN(created_at), FIRST_VALUE(id ORDER BY created_at ASC)
-            FROM enriched_invokes GROUP BY target_service_name, target_handler_name, combined_status ORDER BY target_handler_name",
+            "
+            SELECT
+                target_service_name,
+                target_handler_name,
+                status,
+                COUNT(id),
+                MIN(created_at),
+                FIRST_VALUE(id ORDER BY created_at ASC)
+            FROM sys_invocation
+            WHERE target_service_name IN {}
+            GROUP BY target_service_name, target_handler_name, status
+            ORDER BY target_handler_name",
             query_filter
         );
         let resp = client.run_query(query).await?;
@@ -617,36 +610,11 @@ pub async fn get_locked_keys_status(
     // Active invocations analysis
     {
         let query = format!(
-            "WITH enriched_invokes AS
-            (SELECT
-                ss.target_service_name,
-                ss.target_handler_name,
-                ss.target_service_key,
-                CASE
-                 WHEN ss.status = 'inboxed' THEN 'pending'
-                 WHEN ss.status = 'completed' THEN 'completed'
-                 WHEN ss.status = 'suspended' THEN 'suspended'
-                 WHEN sis.in_flight THEN 'running'
-                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                 ELSE 'ready'
-                END AS combined_status,
-                ss.id,
-                ss.created_at,
-                ss.modified_at,
-                ss.pinned_deployment_id,
-                sis.retry_count,
-                sis.last_failure,
-                sis.last_attempt_deployment_id,
-                sis.next_retry_at,
-                sis.last_start_at
-            FROM sys_invocation_status ss
-            LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-            WHERE ss.status != 'inboxed' AND ss.target_service_name IN {}
-            )
+            "
             SELECT
                 target_service_name,
                 target_service_key,
-                combined_status,
+                status,
                 first_value(id),
                 first_value(target_handler_name),
                 first_value(created_at),
@@ -657,7 +625,9 @@ pub async fn get_locked_keys_status(
                 first_value(next_retry_at),
                 first_value(last_start_at),
                 sum(retry_count)
-            FROM enriched_invokes GROUP BY target_service_name, target_service_key, combined_status",
+            FROM sys_invocation
+            WHERE status != 'pending' AND target_service_name IN {}
+            GROUP BY target_service_name, target_service_key, status",
             query_filter
         );
 
@@ -750,7 +720,7 @@ struct InvocationRowResult {
     id: Option<String>,
     target: Option<String>,
     target_service_ty: Option<String>,
-    combined_status: String,
+    status: String,
     created_at: Option<RestateDateTime>,
     modified_at: Option<RestateDateTime>,
     pinned_deployment_id: Option<String>,
@@ -782,37 +752,29 @@ pub async fn find_active_invocations(
     let query = format!(
         "WITH enriched_invocations AS
         (SELECT
-            ss.id,
-            ss.target,
-            ss.target_service_ty,
-            CASE
-                WHEN ss.status = 'inboxed' THEN 'pending'
-                WHEN ss.status = 'completed' THEN 'completed'
-                WHEN ss.status = 'suspended' THEN 'suspended'
-                WHEN sis.in_flight THEN 'running'
-                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                ELSE 'ready'
-            END AS combined_status,
-            ss.created_at,
-            ss.modified_at,
-            ss.pinned_deployment_id,
-            sis.retry_count,
-            sis.last_failure,
-            sis.last_failure_related_entry_index,
-            sis.last_failure_related_entry_name,
-            sis.last_failure_related_entry_type,
-            sis.last_attempt_deployment_id,
-            sis.next_retry_at,
-            sis.last_start_at,
-            ss.invoked_by_id,
-            ss.invoked_by_target,
-            comp.deployment_id as comp_latest_deployment,
+            inv.id,
+            inv.target,
+            inv.target_service_ty,
+            inv.status,
+            inv.created_at,
+            inv.modified_at,
+            inv.pinned_deployment_id,
+            inv.retry_count,
+            inv.last_failure,
+            inv.last_failure_related_entry_index,
+            inv.last_failure_related_entry_name,
+            inv.last_failure_related_entry_type,
+            inv.last_attempt_deployment_id,
+            inv.next_retry_at,
+            inv.last_start_at,
+            inv.invoked_by_id,
+            inv.invoked_by_target,
+            svc.deployment_id as comp_latest_deployment,
             dp.id as known_deployment_id,
-            ss.trace_id
-        FROM sys_invocation_status ss
-        LEFT JOIN sys_invocation_state sis ON ss.id = sis.id
-        LEFT JOIN sys_service comp ON comp.name = ss.target_service_name
-        LEFT JOIN sys_deployment dp ON dp.id = ss.pinned_deployment_id
+            inv.trace_id
+        FROM sys_invocation inv
+        LEFT JOIN sys_service svc ON svc.name = inv.target_service_name
+        LEFT JOIN sys_deployment dp ON dp.id = inv.pinned_deployment_id
         {}
         {}
         )
@@ -825,7 +787,7 @@ pub async fn find_active_invocations(
         .run_query_and_map_results::<InvocationRowResult>(query)
         .await?;
     for row in rows {
-        let status = row.combined_status.parse().expect("Unexpected status");
+        let status = row.status.parse().expect("Unexpected status");
 
         // Running duration
         let last_start: Option<DateTime<Local>> = row.last_start_at.map(Into::into);
@@ -880,9 +842,9 @@ pub async fn get_service_invocations(
     // Active invocations analysis
     Ok(find_active_invocations(
         client,
-        &format!("WHERE ss.target_service_name = '{}'", service),
+        &format!("WHERE inv.target_service_name = '{}'", service),
         "",
-        "ORDER BY ss.created_at DESC",
+        "ORDER BY inv.created_at DESC",
         limit_active,
     )
     .await?
@@ -904,7 +866,7 @@ pub async fn get_invocation(
 ) -> Result<Option<Invocation>> {
     Ok(find_active_invocations(
         client,
-        &format!("WHERE ss.id = '{}'", invocation_id),
+        &format!("WHERE inv.id = '{}'", invocation_id),
         "",
         "",
         1,
@@ -942,7 +904,7 @@ pub async fn get_invocation_journal(
             sj.name
         FROM sys_journal sj
         WHERE
-            sj.invocation_id = '{}'
+            sj.id = '{}'
         ORDER BY index DESC
         LIMIT {}",
         invocation_id, JOURNAL_QUERY_LIMIT,

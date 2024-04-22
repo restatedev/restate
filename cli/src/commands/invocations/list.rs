@@ -72,34 +72,34 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
-        "ORDER BY ss.created_at ASC"
+        "ORDER BY inv.created_at ASC"
     } else {
-        "ORDER BY ss.created_at DESC"
+        "ORDER BY inv.created_at DESC"
     };
 
     if !opts.service.is_empty() {
         active_filters.push(format!(
-            "ss.target_service_name IN ({})",
+            "inv.target_service_name IN ({})",
             opts.service.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.handler.is_empty() {
         active_filters.push(format!(
-            "ss.target_handler_name IN ({})",
+            "inv.target_handler_name IN ({})",
             opts.handler.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if !opts.key.is_empty() {
         active_filters.push(format!(
-            "ss.target_service_key IN ({})",
+            "inv.target_service_key IN ({})",
             opts.key.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }
 
     if opts.virtual_objects_only {
-        active_filters.push("comp.ty = 'virtual_object'".to_owned());
+        active_filters.push("svc.ty = 'virtual_object'".to_owned());
     }
 
     if opts.zombie {
@@ -110,7 +110,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     // Only makes sense when querying active invocations;
     if !opts.deployment.is_empty() {
         active_filters.push(format!(
-            "(ss.pinned_deployment_id IN ({0}) OR sis.last_attempt_deployment_id IN ({0}))",
+            "(inv.pinned_deployment_id IN ({0}) OR inv.last_attempt_deployment_id IN ({0}))",
             opts.deployment.iter().map(|x| format!("'{}'", x)).join(",")
         ));
     }
@@ -118,7 +118,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     // This is a post-filter as we filter by calculated column
     if !statuses.is_empty() {
         post_filters.push(format!(
-            "combined_status IN ({})",
+            "status IN ({})",
             statuses.iter().map(|x| format!("'{}'", x)).format(",")
         ));
     }

@@ -28,9 +28,9 @@ define_table!(state(
     last_attempt_deployment_id: DataType::LargeUtf8,
     last_attempt_server: DataType::LargeUtf8,
     next_retry_at: DataType::Date64,
-    last_failure: DataType::LargeUtf8,
-    last_error_code: DataType::LargeUtf8,
 
+    last_failure: DataType::LargeUtf8,
+    last_failure_error_code: DataType::LargeUtf8,
     last_failure_related_entry_index: DataType::UInt64,
     last_failure_related_entry_name: DataType::LargeUtf8,
     last_failure_related_entry_type: DataType::LargeUtf8,

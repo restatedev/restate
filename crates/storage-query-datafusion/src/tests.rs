@@ -30,7 +30,7 @@ use restate_types::journal::EntryType;
 use std::time::{Duration, SystemTime};
 
 #[tokio::test]
-async fn join_invocation_tables_with_error() {
+async fn query_sys_invocation() {
     let invocation_id = InvocationId::mock_random();
     let invocation_target = InvocationTarget::service("MySvc", "MyMethod");
     let invocation_error = InvocationError::internal("my error");
@@ -83,16 +83,15 @@ async fn join_invocation_tables_with_error() {
     let records = engine
         .execute(
             "SELECT
-                pps.id,
-                pps.target_service_name,
-                pps.target_handler_name,
-                is.last_failure,
-                is.last_failure_related_entry_index,
-                is.last_failure_related_entry_name,
-                is.last_failure_related_entry_type,
-                is.last_attempt_server
-            FROM sys_invocation_status pps
-            JOIN sys_invocation_state is ON pps.id = is.id
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
             LIMIT 1",
         )
         .await

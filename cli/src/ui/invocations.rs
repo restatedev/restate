@@ -194,6 +194,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                     invocation
                         .last_failure_entry_name
                         .as_deref()
+                        .and_then(|s| if s.is_empty() { None } else { Some(s) })
                         .map(|n| format!(" [{}]", n))
                         .or_else(|| invocation
                             .last_failure_entry_index

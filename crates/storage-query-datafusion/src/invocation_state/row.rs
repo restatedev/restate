@@ -44,10 +44,12 @@ pub(crate) fn append_state_row(
     if let Some(last_retry_attempt_failure) = status_row.last_retry_attempt_failure() {
         row.last_failure(format_using(output, &last_retry_attempt_failure.err));
         if let Some(doc_error_code) = last_retry_attempt_failure.doc_error_code {
-            row.last_error_code(doc_error_code.code())
+            row.last_failure_error_code(doc_error_code.code())
         }
         if let Some(name) = &last_retry_attempt_failure.related_entry_name {
-            row.last_failure_related_entry_name(name);
+            if !name.is_empty() {
+                row.last_failure_related_entry_name(name);
+            }
         }
         if let Some(idx) = last_retry_attempt_failure.related_entry_index {
             row.last_failure_related_entry_index(idx as u64);

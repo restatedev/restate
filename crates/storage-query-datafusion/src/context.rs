@@ -26,6 +26,45 @@ use restate_types::config::QueryEngineOptions;
 
 use crate::{analyzer, physical_optimizer};
 
+const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
+            ss.id,
+            ss.target,
+            ss.target_service_name,
+            ss.target_service_key,
+            ss.target_handler_name,
+            ss.target_service_ty,
+            ss.invoked_by,
+            ss.invoked_by_service_name,
+            ss.invoked_by_id,
+            ss.invoked_by_target,
+            ss.pinned_deployment_id,
+            ss.trace_id,
+            ss.journal_size,
+            ss.created_at,
+            ss.modified_at,
+
+            sis.retry_count,
+            sis.last_start_at,
+            sis.next_retry_at,
+            sis.last_attempt_deployment_id,
+            sis.last_attempt_server,
+            sis.last_failure,
+            sis.last_failure_error_code,
+            sis.last_failure_related_entry_index,
+            sis.last_failure_related_entry_name,
+            sis.last_failure_related_entry_type,
+
+            CASE
+                WHEN ss.status = 'inboxed' THEN 'pending'
+                WHEN ss.status = 'completed' THEN 'completed'
+                WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN sis.in_flight THEN 'running'
+                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                ELSE 'ready'
+            END AS status
+        FROM sys_invocation_status ss
+        LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
+
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
     #[error(transparent)]
@@ -71,6 +110,17 @@ impl QueryContext {
         crate::deployment::register_self(&ctx, schemas.clone())?;
         crate::service::register_self(&ctx, schemas)?;
         crate::idempotency::register_self(&ctx, rocksdb)?;
+
+        // todo: Fix me
+        // we need this now because we can't make new async.
+        // i'm ashamed!
+        let ctx = futures::executor::block_on(async move {
+            let ctx = ctx;
+            ctx.datafusion_context
+                .sql(SYS_INVOCATION_VIEW)
+                .await
+                .map(|_| ctx)
+        })?;
 
         Ok(ctx)
     }
