@@ -942,7 +942,7 @@ pub async fn get_invocation_journal(
             sj.name
         FROM sys_journal sj
         WHERE
-            sj.invocation_id = '{}'
+            sj.id = '{}'
         ORDER BY index DESC
         LIMIT {}",
         invocation_id, JOURNAL_QUERY_LIMIT,
