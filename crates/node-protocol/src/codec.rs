@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Buf, BufMut, BytesMut};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -68,86 +68,106 @@ where
     }
 }
 
-pub trait WireSerde {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError>;
-    fn decode(bytes: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+pub trait WireEncode {
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError>;
+}
+
+pub trait WireDecode {
+    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
     where
         Self: Sized;
 }
 
-impl<T> WireSerde for &T
+impl<T> WireEncode for &T
 where
-    T: WireSerde,
+    T: WireEncode,
 {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        (**self).encode(protocol_version)
-    }
-
-    fn decode(_bytes: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError>
-    where
-        Self: Sized,
-    {
-        unreachable!()
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        (*self).encode(buf, protocol_version)
     }
 }
 
-impl<T> WireSerde for &mut T
+impl<T> WireEncode for &mut T
 where
-    T: WireSerde,
+    T: WireEncode,
 {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        (**self).encode(protocol_version)
-    }
-
-    fn decode(_bytes: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError>
-    where
-        Self: Sized,
-    {
-        unreachable!()
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        (**self).encode(buf, protocol_version)
     }
 }
 
-impl<T> WireSerde for Box<T>
+impl<T> WireEncode for Box<T>
 where
-    T: WireSerde,
+    T: WireEncode,
 {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        (**self).encode(protocol_version)
-    }
-
-    fn decode(bytes: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
-    where
-        Self: Sized,
-    {
-        Ok(Box::new(T::decode(bytes, protocol_version)?))
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        (**self).encode(buf, protocol_version)
     }
 }
 
-impl<T> WireSerde for Arc<T>
+impl<T> WireDecode for Box<T>
 where
-    T: WireSerde,
+    T: WireDecode,
 {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        (**self).encode(protocol_version)
-    }
-
-    fn decode(bytes: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
     where
         Self: Sized,
     {
-        Ok(Arc::new(T::decode(bytes, protocol_version)?))
+        Ok(Box::new(T::decode(buf, protocol_version)?))
     }
 }
 
-pub fn serialize_message<M: WireSerde + Targeted>(
+impl<T> WireEncode for Arc<T>
+where
+    T: WireEncode,
+{
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        (**self).encode(buf, protocol_version)
+    }
+}
+
+impl<T> WireDecode for Arc<T>
+where
+    T: WireDecode,
+{
+    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    where
+        Self: Sized,
+    {
+        Ok(Arc::new(T::decode(buf, protocol_version)?))
+    }
+}
+
+pub fn serialize_message<M: WireEncode + Targeted>(
     msg: M,
     protocol_version: ProtocolVersion,
 ) -> Result<message::Body, CodecError> {
-    let payload = msg.encode(protocol_version)?;
+    let mut payload = BytesMut::new();
+    msg.encode(&mut payload, protocol_version)?;
     let target = M::TARGET.into();
-    Ok(message::Body::Encoded(message::BinaryMessage {
+    Ok(message::Body::Encoded(BinaryMessage {
         target,
-        payload,
+        payload: payload.freeze(),
     }))
 }
 
@@ -165,30 +185,33 @@ pub fn deserialize_message(
 }
 
 /// Helper function for default encoding of values.
-pub fn encode_default<T: Serialize>(
+pub fn encode_default<T: Serialize, B: BufMut>(
     value: T,
+    buf: &mut B,
     protocol_version: ProtocolVersion,
-) -> Result<Bytes, CodecError> {
+) -> Result<(), CodecError> {
     match protocol_version {
-        ProtocolVersion::Bincoded => {
-            bincode::serde::encode_to_vec(value, bincode::config::standard())
-                .map(Into::into)
-                .map_err(Into::into)
-        }
+        ProtocolVersion::Bincoded => bincode::serde::encode_into_std_write(
+            value,
+            &mut buf.writer(),
+            bincode::config::standard(),
+        )
+        .map(|_| ())
+        .map_err(Into::into),
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
     }
 }
 
-pub fn decode_default<T: DeserializeOwned>(
-    bytes: Bytes,
+pub fn decode_default<T: DeserializeOwned, B: Buf>(
+    buf: &mut B,
     protocol_version: ProtocolVersion,
 ) -> Result<T, CodecError> {
     match protocol_version {
         ProtocolVersion::Bincoded => {
-            bincode::serde::decode_from_slice(bytes.as_ref(), bincode::config::standard())
-                .map(|(value, _)| value)
+            let mut reader = buf.reader();
+            bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
                 .map_err(Into::into)
         }
         ProtocolVersion::Unknown => {

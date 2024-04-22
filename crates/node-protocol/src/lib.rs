@@ -22,16 +22,16 @@ pub use error::*;
 
 use restate_types::GenerationalNodeId;
 
-use self::codec::WireSerde;
+use self::codec::WireDecode;
 
 /// A wrapper for a message that includes the sender id
-pub struct MessageEnvelope<M: WireSerde> {
+pub struct MessageEnvelope<M: WireDecode> {
     peer: GenerationalNodeId,
     connection_id: u64,
     body: M,
 }
 
-impl<M: WireSerde> MessageEnvelope<M> {
+impl<M: WireDecode> MessageEnvelope<M> {
     pub fn new(peer: GenerationalNodeId, connection_id: u64, body: M) -> Self {
         Self {
             peer,

@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{Buf, BufMut};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::ResponseResult;
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{Targeted, WireSerde};
+use crate::codec::{decode_default, encode_default, Targeted, WireDecode, WireEncode};
 use crate::common::{ProtocolVersion, TargetName};
 use crate::CodecError;
 
@@ -38,15 +38,23 @@ impl Targeted for IngressMessage {
     }
 }
 
-impl WireSerde for IngressMessage {
-    fn encode(&self, _protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        // serialize message to bytes
-        Ok(bincode::serde::encode_to_vec(self, bincode::config::standard())?.into())
+impl WireEncode for IngressMessage {
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        // serialize message into buf
+        encode_default(self, buf, protocol_version)
     }
+}
 
-    fn decode(payload: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
-        let (output, _) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
-        Ok(output)
+impl WireDecode for IngressMessage {
+    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    where
+        Self: Sized,
+    {
+        decode_default(buf, protocol_version)
     }
 }
 

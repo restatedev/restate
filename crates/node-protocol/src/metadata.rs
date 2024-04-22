@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
+use bytes::{Buf, BufMut};
 use enum_map::Enum;
 pub use restate_schema::{Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
@@ -17,7 +17,7 @@ use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::codec::{decode_default, encode_default, Targeted, WireSerde};
+use crate::codec::{decode_default, encode_default, Targeted, WireDecode, WireEncode};
 use crate::common::ProtocolVersion;
 use crate::common::TargetName;
 use crate::CodecError;
@@ -44,13 +44,22 @@ impl Targeted for MetadataMessage {
     }
 }
 
-impl WireSerde for MetadataMessage {
-    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        encode_default(self, protocol_version)
+impl WireEncode for MetadataMessage {
+    fn encode<B: BufMut>(
+        &self,
+        buf: &mut B,
+        protocol_version: ProtocolVersion,
+    ) -> Result<(), CodecError> {
+        encode_default(self, buf, protocol_version)
     }
+}
 
-    fn decode(payload: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
-        decode_default(payload, protocol_version)
+impl WireDecode for MetadataMessage {
+    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
+    where
+        Self: Sized,
+    {
+        decode_default(buf, protocol_version)
     }
 }
 

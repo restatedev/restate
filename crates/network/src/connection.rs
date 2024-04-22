@@ -17,9 +17,8 @@ use tracing::instrument;
 
 use restate_core::metadata;
 use restate_core::network::NetworkSendError;
-use restate_node_protocol::codec::serialize_message;
 use restate_node_protocol::codec::Targeted;
-use restate_node_protocol::codec::WireSerde;
+use restate_node_protocol::codec::{serialize_message, WireEncode};
 use restate_node_protocol::common::ProtocolVersion;
 use restate_node_protocol::node::message;
 use restate_node_protocol::node::Header;
@@ -118,7 +117,7 @@ impl ConnectionSender {
     #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
     pub async fn send<M>(&self, message: M) -> Result<(), NetworkSendError>
     where
-        M: WireSerde + Targeted,
+        M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
         let header = Header::new(metadata().nodes_config_version());

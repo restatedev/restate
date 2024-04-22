@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node_protocol::codec::{Targeted, WireSerde};
+use restate_node_protocol::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
 use super::NetworkSendError;
@@ -40,5 +40,5 @@ pub trait NetworkSender: Send + Sync + Clone {
         message: &M,
     ) -> impl std::future::Future<Output = Result<(), NetworkSendError>> + Send
     where
-        M: WireSerde + Targeted + Send + Sync;
+        M: WireEncode + Targeted + Send + Sync;
 }

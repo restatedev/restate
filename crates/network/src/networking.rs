@@ -15,7 +15,7 @@ use tracing::{info, instrument, trace};
 
 use restate_core::metadata;
 use restate_core::network::{NetworkSendError, NetworkSender};
-use restate_node_protocol::codec::{Targeted, WireSerde};
+use restate_node_protocol::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
 use crate::error::NetworkError;
@@ -59,7 +59,7 @@ impl NetworkSender for Networking {
     #[instrument(level = "debug", skip(self, message), fields(message = ?message.target()))]
     async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
     where
-        M: WireSerde + Targeted + Send + Sync,
+        M: WireEncode + Targeted + Send + Sync,
     {
         let target_is_generational = to.is_generational();
         // we try to reconnect to the node for N times.

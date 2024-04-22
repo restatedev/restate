@@ -14,8 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use futures::stream::BoxStream;
-use restate_node_protocol::codec::Targeted;
-use restate_node_protocol::codec::WireSerde;
+use restate_node_protocol::codec::{Targeted, WireDecode};
 use restate_node_protocol::common::ProtocolVersion;
 use restate_node_protocol::common::TargetName;
 use restate_node_protocol::node::message::BinaryMessage;
@@ -33,7 +32,7 @@ use super::RouterError;
 /// Implement this trait to process network messages for a specific target
 /// (e.g. TargetName = METADATA_MANAGER).
 pub trait MessageHandler {
-    type MessageType: WireSerde + Targeted;
+    type MessageType: WireDecode + Targeted;
     /// Process the request and return the response asynchronously.
     fn on_message(
         &self,
@@ -116,7 +115,7 @@ impl MessageRouterBuilder {
         buffer_size: usize,
     ) -> BoxStream<'static, MessageEnvelope<M>>
     where
-        M: WireSerde + Targeted + Send + Sync + 'static,
+        M: WireDecode + Targeted + Send + Sync + 'static,
     {
         let (tx, rx) = mpsc::channel(buffer_size);
 
@@ -153,9 +152,9 @@ where
         from: GenerationalNodeId,
         connection_id: u64,
         protocol_version: ProtocolVersion,
-        message: BinaryMessage,
+        mut message: BinaryMessage,
     ) -> Result<(), Self::Error> {
-        let msg = <H::MessageType as WireSerde>::decode(message.payload, protocol_version)?;
+        let msg = <H::MessageType as WireDecode>::decode(&mut message.payload, protocol_version)?;
         self.inner
             .on_message(MessageEnvelope::new(from, connection_id, msg))
             .await;
@@ -165,7 +164,7 @@ where
 
 struct StreamHandlerWrapper<M>
 where
-    M: WireSerde + Targeted + Send + Sync + 'static,
+    M: WireDecode + Targeted + Send + Sync + 'static,
 {
     sender: mpsc::Sender<MessageEnvelope<M>>,
 }
@@ -173,7 +172,7 @@ where
 #[async_trait]
 impl<M> Handler for StreamHandlerWrapper<M>
 where
-    M: WireSerde + Targeted + Send + Sync + 'static,
+    M: WireDecode + Targeted + Send + Sync + 'static,
 {
     type Error = CodecError;
     /// Process the request and return the response asynchronously.
@@ -182,9 +181,9 @@ where
         from: GenerationalNodeId,
         connection_id: u64,
         protocol_version: ProtocolVersion,
-        message: BinaryMessage,
+        mut message: BinaryMessage,
     ) -> Result<(), Self::Error> {
-        let msg = <M as WireSerde>::decode(message.payload, protocol_version)?;
+        let msg = <M as WireDecode>::decode(&mut message.payload, protocol_version)?;
         if let Err(e) = self
             .sender
             .send(MessageEnvelope::new(from, connection_id, msg))

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
 
-use restate_node_protocol::codec::{deserialize_message, serialize_message, Targeted, WireSerde};
+use restate_node_protocol::codec::{deserialize_message, serialize_message, Targeted, WireEncode};
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
@@ -43,7 +43,7 @@ pub struct MockNetworkSender {
 impl NetworkSender for MockNetworkSender {
     async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
     where
-        M: WireSerde + Targeted + Send + Sync,
+        M: WireEncode + Targeted + Send + Sync,
     {
         let Some(sender) = &self.sender else {
             info!("Not sending message, mock sender is not configured");
