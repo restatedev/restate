@@ -48,6 +48,18 @@ pub trait RocksAccess {
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     ) -> Result<(), RocksError>;
     fn cfs(&self) -> Vec<CfName>;
+    fn write_batch(
+        &self,
+        batch: &rocksdb::WriteBatch,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error>;
+
+    // rust-rocksdb's interface is pita. Hopefully we remove the usage of transaction db soon.
+    fn write_tx_batch(
+        &self,
+        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error>;
 }
 
 fn prepare_cf_options(
@@ -171,6 +183,22 @@ impl RocksAccess for rocksdb::DB {
     fn cfs(&self) -> Vec<CfName> {
         self.cf_names().into_iter().map(CfName::from).collect()
     }
+
+    fn write_batch(
+        &self,
+        batch: &rocksdb::WriteBatch,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        self.write_opt(batch, write_options)
+    }
+
+    fn write_tx_batch(
+        &self,
+        _batch: &rocksdb::WriteBatchWithTransaction<true>,
+        _write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        unreachable!("not possible to perform tx commits on non-tx db")
+    }
 }
 
 impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
@@ -258,5 +286,21 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
 
     fn cfs(&self) -> Vec<CfName> {
         self.cf_names().into_iter().map(CfName::from).collect()
+    }
+
+    fn write_batch(
+        &self,
+        _batch: &rocksdb::WriteBatch,
+        _write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        unreachable!("not possible to perform non-tx commits tx db")
+    }
+
+    fn write_tx_batch(
+        &self,
+        batch: &rocksdb::WriteBatchWithTransaction<true>,
+        write_options: &rocksdb::WriteOptions,
+    ) -> Result<(), rocksdb::Error> {
+        self.write_opt(batch, write_options)
     }
 }

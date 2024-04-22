@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use restate_rocksdb::{
-    CfExactPattern, CfName, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
+    CfExactPattern, CfName, DbName, DbSpecBuilder, Owner, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
@@ -45,6 +45,7 @@ pub enum LogStoreError {
 #[derive(Debug, Clone)]
 pub struct RocksDbLogStore {
     db: Arc<DB>,
+    rocksdb: Arc<RocksDb>,
 }
 
 impl RocksDbLogStore {
@@ -65,9 +66,11 @@ impl RocksDbLogStore {
                 .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
                 .ensure_column_families(cfs)
                 .build_as_db();
-        Ok(Self {
-            db: db_manager.open_db(updateable_options, db_spec)?,
-        })
+        // todo: hack, fixme
+        let db_name = db_spec.name().clone();
+        let db = db_manager.open_db(updateable_options, db_spec)?;
+        let rocksdb = db_manager.get_db(Owner::Bifrost, db_name).unwrap();
+        Ok(Self { db, rocksdb })
     }
 
     pub fn data_cf(&self) -> Arc<BoundColumnFamily> {
@@ -93,7 +96,7 @@ impl RocksDbLogStore {
     }
 
     pub fn create_writer(&self, manual_wal_flush: bool) -> LogStoreWriter {
-        LogStoreWriter::new(self.db.clone(), manual_wal_flush)
+        LogStoreWriter::new(self.db.clone(), self.rocksdb.clone(), manual_wal_flush)
     }
 
     pub fn db(&self) -> &DB {
