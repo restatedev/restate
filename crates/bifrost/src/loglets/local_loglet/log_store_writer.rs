@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::arc_util::Updateable;
 use restate_types::config::LocalLogletOptions;
 use rocksdb::{BoundColumnFamily, WriteBatch, DB};
@@ -44,14 +45,16 @@ enum DataUpdate {
 
 pub(crate) struct LogStoreWriter {
     db: Arc<DB>,
+    rocksdb: Arc<RocksDb>,
     batch_acks_buf: Vec<Ack>,
     manual_wal_flush: bool,
 }
 
 impl LogStoreWriter {
-    pub(crate) fn new(db: Arc<DB>, manual_wal_flush: bool) -> Self {
+    pub(crate) fn new(db: Arc<DB>, rocksdb: Arc<RocksDb>, manual_wal_flush: bool) -> Self {
         Self {
             db,
+            rocksdb,
             batch_acks_buf: Vec::default(),
             manual_wal_flush,
         }
@@ -63,7 +66,8 @@ impl LogStoreWriter {
         mut updateable: impl Updateable<LocalLogletOptions> + Send + 'static,
     ) -> Result<RocksDbLogWriterHandle, ShutdownError> {
         // big enough to allows a second full batch to queue up while the existing one is being processed
-        let (sender, receiver) = mpsc::channel(updateable.load().writer_batch_commit_count * 2);
+        let batch_size = std::cmp::max(1, updateable.load().writer_batch_commit_count);
+        let (sender, receiver) = mpsc::channel(batch_size * 2);
 
         task_center().spawn_child(
             TaskKind::LogletProvider,
@@ -85,7 +89,7 @@ impl LogStoreWriter {
                         }
                         Some(cmds) = receiver.next() => {
                                 let opts = updateable.load();
-                                self.handle_commands(opts, cmds);
+                                self.handle_commands(opts, cmds).await;
                         }
                     }
                 }
@@ -96,7 +100,11 @@ impl LogStoreWriter {
         Ok(RocksDbLogWriterHandle { sender })
     }
 
-    fn handle_commands(&mut self, opts: &LocalLogletOptions, commands: Vec<LogStoreWriteCommand>) {
+    async fn handle_commands(
+        &mut self,
+        opts: &LocalLogletOptions,
+        commands: Vec<LogStoreWriteCommand>,
+    ) {
         let mut write_batch = WriteBatch::default();
         self.batch_acks_buf.clear();
         self.batch_acks_buf.reserve(commands.len());
@@ -134,7 +142,7 @@ impl LogStoreWriter {
             }
         }
 
-        self.commit(opts, write_batch);
+        self.commit(opts, write_batch).await;
     }
 
     fn update_log_state(
@@ -161,27 +169,34 @@ impl LogStoreWriter {
         write_batch.put_cf(data_cf, &key.to_bytes(), data);
     }
 
-    fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
-        let mut rocksdb_write_options = rocksdb::WriteOptions::new();
-        rocksdb_write_options.disable_wal(opts.rocksdb.rocksdb_disable_wal());
+    async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
+        let mut write_opts = rocksdb::WriteOptions::new();
+        write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
 
         trace!(
             "Committing local loglet current write batch: {} items",
             write_batch.len(),
         );
+        let result = self
+            .rocksdb
+            .write_batch(Priority::High, IoMode::Default, write_opts, write_batch)
+            .await;
 
-        if let Err(e) = self.db.write_opt(&write_batch, &rocksdb_write_options) {
+        if let Err(e) = result {
             error!("Failed to commit local loglet write batch: {}", e);
             self.send_acks(Err(Error::LogStoreError(e.into())));
             return;
         }
 
         if self.manual_wal_flush {
-            if let Err(e) = self.db.flush_wal(true) {
+            // WAL flush is done in the forground, but sync will happen in the background to avoid
+            // blocking IO.
+            if let Err(e) = self.db.flush_wal(false) {
                 warn!("Failed to flush rocksdb WAL in local loglet : {}", e);
                 self.send_acks(Err(Error::LogStoreError(e.into())));
                 return;
             }
+            self.rocksdb.run_bg_wal_sync();
         }
 
         self.send_acks(Ok(()));

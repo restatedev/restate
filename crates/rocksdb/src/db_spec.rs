@@ -27,9 +27,13 @@ type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
     Eq,
     PartialEq,
     Hash,
+    Default,
 )]
 #[strum(serialize_all = "kebab-case")]
 pub enum Owner {
+    #[default]
+    // A system-wide database, or represents an operation that has no specific owner.
+    None,
     PartitionProcessor,
     Bifrost,
     MetadataStore,
