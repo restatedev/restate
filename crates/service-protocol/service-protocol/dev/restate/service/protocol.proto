@@ -222,9 +222,9 @@ message SleepEntryMessage {
 // Completable: Yes
 // Fallible: Yes
 // Type: 0x0C00 + 1
-message InvokeEntryMessage {
+message CallEntryMessage {
   string service_name = 1;
-  string method_name = 2;
+  string handler_name = 2;
 
   bytes parameter = 3;
 
@@ -245,9 +245,9 @@ message InvokeEntryMessage {
 // Completable: No
 // Fallible: Yes
 // Type: 0x0C00 + 2
-message BackgroundInvokeEntryMessage {
+message OneWayCallEntryMessage {
   string service_name = 1;
-  string method_name = 2;
+  string handler_name = 2;
 
   bytes parameter = 3;
 
@@ -300,7 +300,7 @@ message CompleteAwakeableEntryMessage {
 // Fallible: No
 // Type: 0x0C00 + 5
 // Flag: RequiresRuntimeAck
-message SideEffectEntryMessage {
+message RunEntryMessage {
   oneof result {
     bytes value = 14;
     dev.restate.service.protocol.Failure failure = 15;
