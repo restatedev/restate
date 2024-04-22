@@ -32,11 +32,11 @@ pub enum Entry {
 
     // Syscalls
     Sleep(SleepEntry),
-    Invoke(InvokeEntry),
-    BackgroundInvoke(BackgroundInvokeEntry),
+    Call(InvokeEntry),
+    OneWayCall(OneWayCallEntry),
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
-    SideEffect(SideEffectEntry),
+    Run(RunEntry),
     Custom(Bytes),
 }
 
@@ -78,14 +78,14 @@ impl Entry {
     }
 
     pub fn invoke(request: InvokeRequest, result: Option<EntryResult>) -> Self {
-        Entry::Invoke(InvokeEntry { request, result })
+        Entry::Call(InvokeEntry { request, result })
     }
 
     pub fn background_invoke(
         request: InvokeRequest,
         invoke_time: Option<MillisSinceEpoch>,
     ) -> Self {
-        Entry::BackgroundInvoke(BackgroundInvokeEntry {
+        Entry::OneWayCall(OneWayCallEntry {
             request,
             invoke_time: invoke_time.map(|t| t.as_u64()).unwrap_or_default(),
         })
@@ -150,11 +150,11 @@ pub enum EntryType {
     GetStateKeys,
     ClearAllState,
     Sleep,
-    Invoke,
-    BackgroundInvoke,
+    Call,
+    OneWayCall,
     Awakeable,
     CompleteAwakeable,
-    SideEffect,
+    Run,
     Custom,
 }
 
@@ -275,7 +275,7 @@ impl CompletableEntry for SleepEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvokeRequest {
     pub service_name: ByteString,
-    pub method_name: ByteString,
+    pub handler_name: ByteString,
     pub parameter: Bytes,
     /// Empty if service call.
     /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
@@ -292,7 +292,7 @@ impl InvokeRequest {
     ) -> Self {
         InvokeRequest {
             service_name: service_name.into(),
-            method_name: method_name.into(),
+            handler_name: method_name.into(),
             parameter: parameter.into(),
             key: key.into(),
         }
@@ -312,7 +312,7 @@ impl CompletableEntry for InvokeEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackgroundInvokeEntry {
+pub struct OneWayCallEntry {
     pub request: InvokeRequest,
     pub invoke_time: u64,
 }
@@ -335,6 +335,6 @@ pub struct CompleteAwakeableEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SideEffectEntry {
+pub struct RunEntry {
     pub result: EntryResult,
 }

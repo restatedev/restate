@@ -18,7 +18,7 @@ use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+    CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use std::pin::pin;
 
@@ -31,9 +31,9 @@ const MOCK_SLEEP_JOURNAL_ENTRY: JournalEntry = JournalEntry::Entry(EnrichedRawEn
 
 static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
     JournalEntry::Entry(EnrichedRawEntry::new(
-        EnrichedEntryHeader::Invoke {
+        EnrichedEntryHeader::Call {
             is_completed: true,
-            enrichment_result: Some(InvokeEnrichmentResult {
+            enrichment_result: Some(CallEnrichmentResult {
                 invocation_id: InvocationId::from_parts(789, InvocationUuid::from_parts(123, 456)),
                 invocation_target: InvocationTarget::Service {
                     name: ByteString::from_static("MySvc"),

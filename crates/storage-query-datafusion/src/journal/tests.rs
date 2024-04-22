@@ -24,7 +24,7 @@ use restate_storage_api::Transaction;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::{
-    EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+    CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::{Entry, EntryType, InputEntry};
 
@@ -56,9 +56,9 @@ async fn get_entries() {
         &journal_invocation_id,
         1,
         JournalEntry::Entry(EnrichedRawEntry::new(
-            EnrichedEntryHeader::Invoke {
+            EnrichedEntryHeader::Call {
                 is_completed: false,
-                enrichment_result: Some(InvokeEnrichmentResult {
+                enrichment_result: Some(CallEnrichmentResult {
                     invocation_id: invoked_invocation_id,
                     invocation_target: invoked_invocation_target.clone(),
                     span_context: Default::default(),
@@ -72,8 +72,8 @@ async fn get_entries() {
         &journal_invocation_id,
         2,
         JournalEntry::Entry(EnrichedRawEntry::new(
-            EnrichedEntryHeader::SideEffect {},
-            restate_service_protocol::pb::protocol::SideEffectEntryMessage {
+            EnrichedEntryHeader::Run {},
+            restate_service_protocol::pb::protocol::RunEntryMessage {
                 name: "my-side-effect".to_string(),
                 result: None,
             }
@@ -111,7 +111,7 @@ async fn get_entries() {
                 {
                     "id" => LargeStringArray: eq(journal_invocation_id.to_string()),
                     "index" => UInt32Array: eq(1),
-                    "entry_type" => LargeStringArray: eq(EntryType::Invoke.to_string()),
+                    "entry_type" => LargeStringArray: eq(EntryType::Call.to_string()),
                     "invoked_id" => LargeStringArray: eq(invoked_invocation_id.to_string()),
                     "invoked_target" => LargeStringArray: eq(invoked_invocation_target.to_string()),
                 }
@@ -121,7 +121,7 @@ async fn get_entries() {
                 {
                     "id" => LargeStringArray: eq(journal_invocation_id.to_string()),
                     "index" => UInt32Array: eq(2),
-                    "entry_type" => LargeStringArray: eq(EntryType::SideEffect.to_string()),
+                    "entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
                     "name" => LargeStringArray: eq("my-side-effect")
                 }
             )

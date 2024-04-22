@@ -260,7 +260,7 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
                 format!("until {}", style(wakeup_at).dim())
             }
         }
-        JournalEntryType::Call(inv) | JournalEntryType::Send(inv) => {
+        JournalEntryType::Call(inv) | JournalEntryType::OneWayCall(inv) => {
             format!(
                 "{} {}",
                 inv.invoked_target.as_ref().unwrap(),

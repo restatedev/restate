@@ -89,11 +89,11 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             ClearAllState,
             GetStateKeys,
             Sleep,
-            Invoke,
-            BackgroundInvoke,
+            Call,
+            OneWayCall,
             Awakeable,
             CompleteAwakeable,
-            SideEffect
+            Run
         })
     }
 
@@ -167,17 +167,16 @@ mod mocks {
 
     use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
-        awakeable_entry_message, complete_awakeable_entry_message, get_state_entry_message,
-        get_state_keys_entry_message, invoke_entry_message, output_entry_message,
-        AwakeableEntryMessage, BackgroundInvokeEntryMessage, ClearAllStateEntryMessage,
-        ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage,
-        GetStateKeysEntryMessage, InputEntryMessage, InvokeEntryMessage, OutputEntryMessage,
-        SetStateEntryMessage,
+        awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
+        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
+        AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, GetStateKeysEntryMessage,
+        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
     };
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::{HandlerType, InvocationTarget};
     use restate_types::journal::enriched::{
-        AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+        AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
@@ -237,30 +236,30 @@ mod mocks {
                     .encode_to_vec()
                     .into(),
                 ),
-                Entry::Invoke(entry) => {
+                Entry::Call(entry) => {
                     let invocation_id = InvocationId::mock_random();
                     EnrichedRawEntry::new(
-                        EnrichedEntryHeader::Invoke {
+                        EnrichedEntryHeader::Call {
                             is_completed: entry.is_completed(),
-                            enrichment_result: Some(InvokeEnrichmentResult {
+                            enrichment_result: Some(CallEnrichmentResult {
                                 invocation_id,
                                 invocation_target: InvocationTarget::VirtualObject {
                                     name: entry.request.service_name.clone(),
                                     key: entry.request.key.clone(),
-                                    handler: entry.request.method_name.clone(),
+                                    handler: entry.request.handler_name.clone(),
                                     handler_ty: HandlerType::Exclusive,
                                 },
                                 span_context: Default::default(),
                             }),
                         },
-                        InvokeEntryMessage {
+                        CallEntryMessage {
                             service_name: entry.request.service_name.into(),
-                            method_name: entry.request.method_name.into(),
+                            handler_name: entry.request.handler_name.into(),
                             parameter: entry.request.parameter,
                             result: entry.result.map(|r| match r {
-                                EntryResult::Success(v) => invoke_entry_message::Result::Value(v),
+                                EntryResult::Success(v) => call_entry_message::Result::Value(v),
                                 EntryResult::Failure(code, msg) => {
-                                    invoke_entry_message::Result::Failure(Failure {
+                                    call_entry_message::Result::Failure(Failure {
                                         code: code.into(),
                                         message: msg.to_string(),
                                     })
@@ -272,25 +271,25 @@ mod mocks {
                         .into(),
                     )
                 }
-                Entry::BackgroundInvoke(entry) => {
+                Entry::OneWayCall(entry) => {
                     let invocation_id = InvocationId::mock_random();
 
                     EnrichedRawEntry::new(
-                        EnrichedEntryHeader::BackgroundInvoke {
-                            enrichment_result: InvokeEnrichmentResult {
+                        EnrichedEntryHeader::OneWayCall {
+                            enrichment_result: CallEnrichmentResult {
                                 invocation_id,
                                 invocation_target: InvocationTarget::VirtualObject {
                                     name: entry.request.service_name.clone(),
                                     key: entry.request.key.clone(),
-                                    handler: entry.request.method_name.clone(),
+                                    handler: entry.request.handler_name.clone(),
                                     handler_ty: HandlerType::Exclusive,
                                 },
                                 span_context: Default::default(),
                             },
                         },
-                        BackgroundInvokeEntryMessage {
+                        OneWayCallEntryMessage {
                             service_name: entry.request.service_name.into(),
-                            method_name: entry.request.method_name.into(),
+                            handler_name: entry.request.handler_name.into(),
                             parameter: entry.request.parameter,
                             invoke_time: entry.invoke_time,
                             ..Default::default()
@@ -446,16 +445,16 @@ mod tests {
 
         // Create an invoke entry
         let raw_entry: PlainRawEntry = RawEntry::new(
-            PlainEntryHeader::Invoke {
+            PlainEntryHeader::Call {
                 is_completed: false,
                 enrichment_result: None,
             },
-            protocol::InvokeEntryMessage {
+            protocol::CallEntryMessage {
                 service_name: "MySvc".to_string(),
-                method_name: "MyMethod".to_string(),
+                handler_name: "MyMethod".to_string(),
 
                 parameter: Bytes::from_static(b"input"),
-                ..protocol::InvokeEntryMessage::default()
+                ..protocol::CallEntryMessage::default()
             }
             .encode_to_vec()
             .into(),
@@ -466,7 +465,7 @@ mod tests {
             .deserialize_entry_ref::<ProtobufRawEntryCodec>()
             .unwrap();
         match &mut expected_entry {
-            Entry::Invoke(invoke_entry_inner) => {
+            Entry::Call(invoke_entry_inner) => {
                 invoke_entry_inner.result = Some(EntryResult::Success(invoke_result.clone()))
             }
             _ => unreachable!(),

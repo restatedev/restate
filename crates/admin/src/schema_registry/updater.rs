@@ -414,7 +414,7 @@ impl DiscoveredHandlerMetadata {
         service_type: ServiceType,
         handler: schema::Handler,
     ) -> Result<Self, ServiceError> {
-        let handler_type = match handler.handler_type {
+        let handler_type = match handler.ty {
             None => HandlerType::default_for_service_type(service_type),
             Some(schema::HandlerType::Exclusive) => HandlerType::Exclusive,
             Some(schema::HandlerType::Shared) => HandlerType::Shared,
@@ -533,7 +533,7 @@ mod tests {
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
-                handler_type: None,
+                ty: None,
                 input: None,
                 output: None,
             }],
@@ -546,7 +546,7 @@ mod tests {
             name: GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "greet".parse().unwrap(),
-                handler_type: None,
+                ty: None,
                 input: None,
                 output: None,
             }],
@@ -559,7 +559,7 @@ mod tests {
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
             handlers: vec![schema::Handler {
                 name: "another_greeter".parse().unwrap(),
-                handler_type: None,
+                ty: None,
                 input: None,
                 output: None,
             }],
@@ -863,13 +863,13 @@ mod tests {
                 handlers: vec![
                     schema::Handler {
                         name: "greet".parse().unwrap(),
-                        handler_type: None,
+                        ty: None,
                         input: None,
                         output: None,
                     },
                     schema::Handler {
                         name: "doSomething".parse().unwrap(),
-                        handler_type: None,
+                        ty: None,
                         input: None,
                         output: None,
                     },
@@ -883,7 +883,7 @@ mod tests {
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![schema::Handler {
                     name: "greet".parse().unwrap(),
-                    handler_type: None,
+                    ty: None,
                     input: None,
                     output: None,
                 }],

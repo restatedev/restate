@@ -43,7 +43,7 @@ use restate_types::invocation::{
     SpanRelationCause, TerminationFlavor,
 };
 use restate_types::journal::enriched::{
-    AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+    AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::Completion;
@@ -678,7 +678,7 @@ where
                 let (h, _) = enriched_entry.into_inner();
                 match h {
                     // we only need to kill child invocations if they are not completed and the target was resolved
-                    EnrichedEntryHeader::Invoke {
+                    EnrichedEntryHeader::Call {
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
@@ -720,7 +720,7 @@ where
                 let (header, entry) = journal_entry.into_inner();
                 match header {
                     // cancel uncompleted invocations
-                    EnrichedEntryHeader::Invoke {
+                    EnrichedEntryHeader::Call {
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     } if !is_completed => {
@@ -1317,10 +1317,10 @@ where
                     invocation_metadata.journal_metadata.span_context.clone(),
                 );
             }
-            EnrichedEntryHeader::Invoke {
+            EnrichedEntryHeader::Call {
                 enrichment_result, ..
             } => {
-                if let Some(InvokeEnrichmentResult {
+                if let Some(CallEnrichmentResult {
                     span_context,
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
@@ -1328,7 +1328,7 @@ where
                 }) = enrichment_result
                 {
                     let_assert!(
-                        Entry::Invoke(InvokeEntry { request, .. }) =
+                        Entry::Call(InvokeEntry { request, .. }) =
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
@@ -1352,10 +1352,10 @@ where
                     // no action needed for an invoke entry that has been completed by the deployment
                 }
             }
-            EnrichedEntryHeader::BackgroundInvoke {
+            EnrichedEntryHeader::OneWayCall {
                 enrichment_result, ..
             } => {
-                let InvokeEnrichmentResult {
+                let CallEnrichmentResult {
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
                     span_context,
@@ -1363,7 +1363,7 @@ where
                 } = enrichment_result;
 
                 let_assert!(
-                    Entry::BackgroundInvoke(BackgroundInvokeEntry {
+                    Entry::OneWayCall(OneWayCallEntry {
                         request,
                         invoke_time
                     }) = journal_entry.deserialize_entry_ref::<Codec>()?
@@ -1442,7 +1442,7 @@ where
                     effects,
                 );
             }
-            EnrichedEntryHeader::SideEffect { .. } | EnrichedEntryHeader::Custom { .. } => {
+            EnrichedEntryHeader::Run { .. } | EnrichedEntryHeader::Custom { .. } => {
                 // We just store it
             }
         }

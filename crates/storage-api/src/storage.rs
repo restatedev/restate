@@ -1523,27 +1523,27 @@ pub mod v1 {
                     }
                     enriched_entry_header::Kind::Invoke(invoke) => {
                         let enrichment_result = Option::<
-                            restate_types::journal::enriched::InvokeEnrichmentResult,
+                            restate_types::journal::enriched::CallEnrichmentResult,
                         >::try_from(
                             invoke
                                 .resolution_result
                                 .ok_or(ConversionError::missing_field("resolution_result"))?,
                         )?;
 
-                        restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
+                        restate_types::journal::enriched::EnrichedEntryHeader::Call {
                             is_completed: invoke.is_completed,
                             enrichment_result,
                         }
                     }
                     enriched_entry_header::Kind::BackgroundCall(background_call) => {
                         let enrichment_result =
-                            restate_types::journal::enriched::InvokeEnrichmentResult::try_from(
+                            restate_types::journal::enriched::CallEnrichmentResult::try_from(
                                 background_call
                                     .resolution_result
                                     .ok_or(ConversionError::missing_field("resolution_result"))?,
                             )?;
 
-                        restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
+                        restate_types::journal::enriched::EnrichedEntryHeader::OneWayCall {
                             enrichment_result,
                         }
                     }
@@ -1568,7 +1568,7 @@ pub mod v1 {
                         }
                     }
                     enriched_entry_header::Kind::SideEffect(_) => {
-                        restate_types::journal::enriched::EnrichedEntryHeader::SideEffect {}
+                        restate_types::journal::enriched::EnrichedEntryHeader::Run {}
                     }
                     enriched_entry_header::Kind::Custom(custom) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::Custom {
@@ -1615,7 +1615,7 @@ pub mod v1 {
                         is_completed,
                         ..
                     } => enriched_entry_header::Kind::Sleep(Sleep { is_completed }),
-                    restate_types::journal::enriched::EnrichedEntryHeader::Invoke {
+                    restate_types::journal::enriched::EnrichedEntryHeader::Call {
                         is_completed,
                         enrichment_result,
                         ..
@@ -1625,7 +1625,7 @@ pub mod v1 {
                             enrichment_result,
                         )),
                     }),
-                    restate_types::journal::enriched::EnrichedEntryHeader::BackgroundInvoke {
+                    restate_types::journal::enriched::EnrichedEntryHeader::OneWayCall {
                         enrichment_result,
                         ..
                     } => enriched_entry_header::Kind::BackgroundCall(BackgroundCall {
@@ -1646,9 +1646,9 @@ pub mod v1 {
                         ),
                         entry_index: enrichment_result.entry_index,
                     }),
-                    restate_types::journal::enriched::EnrichedEntryHeader::SideEffect {
-                        ..
-                    } => enriched_entry_header::Kind::SideEffect(SideEffect {}),
+                    restate_types::journal::enriched::EnrichedEntryHeader::Run { .. } => {
+                        enriched_entry_header::Kind::SideEffect(SideEffect {})
+                    }
                     restate_types::journal::enriched::EnrichedEntryHeader::Custom {
                         code, ..
                     } => enriched_entry_header::Kind::Custom(Custom {
@@ -1661,7 +1661,7 @@ pub mod v1 {
         }
 
         impl TryFrom<InvocationResolutionResult>
-            for Option<restate_types::journal::enriched::InvokeEnrichmentResult>
+            for Option<restate_types::journal::enriched::CallEnrichmentResult>
         {
             type Error = ConversionError;
 
@@ -1690,7 +1690,7 @@ pub mod v1 {
                                     .ok_or(ConversionError::missing_field("span_context"))?,
                             )?;
 
-                        Some(restate_types::journal::enriched::InvokeEnrichmentResult {
+                        Some(restate_types::journal::enriched::CallEnrichmentResult {
                             invocation_id,
                             invocation_target,
                             span_context,
@@ -1702,16 +1702,14 @@ pub mod v1 {
             }
         }
 
-        impl From<Option<restate_types::journal::enriched::InvokeEnrichmentResult>>
+        impl From<Option<restate_types::journal::enriched::CallEnrichmentResult>>
             for InvocationResolutionResult
         {
-            fn from(
-                value: Option<restate_types::journal::enriched::InvokeEnrichmentResult>,
-            ) -> Self {
+            fn from(value: Option<restate_types::journal::enriched::CallEnrichmentResult>) -> Self {
                 let result = match value {
                     None => invocation_resolution_result::Result::None(Default::default()),
                     Some(resolution_result) => match resolution_result {
-                        restate_types::journal::enriched::InvokeEnrichmentResult {
+                        restate_types::journal::enriched::CallEnrichmentResult {
                             invocation_id,
                             invocation_target,
                             span_context,
@@ -1732,7 +1730,7 @@ pub mod v1 {
         }
 
         impl TryFrom<BackgroundCallResolutionResult>
-            for restate_types::journal::enriched::InvokeEnrichmentResult
+            for restate_types::journal::enriched::CallEnrichmentResult
         {
             type Error = ConversionError;
 
@@ -1752,7 +1750,7 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
 
-                Ok(restate_types::journal::enriched::InvokeEnrichmentResult {
+                Ok(restate_types::journal::enriched::CallEnrichmentResult {
                     invocation_id,
                     span_context,
                     invocation_target,
@@ -1760,10 +1758,10 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::journal::enriched::InvokeEnrichmentResult>
+        impl From<restate_types::journal::enriched::CallEnrichmentResult>
             for BackgroundCallResolutionResult
         {
-            fn from(value: restate_types::journal::enriched::InvokeEnrichmentResult) -> Self {
+            fn from(value: restate_types::journal::enriched::CallEnrichmentResult) -> Self {
                 BackgroundCallResolutionResult {
                     invocation_id: value.invocation_id.into(),
                     invocation_target: Some(value.invocation_target.into()),

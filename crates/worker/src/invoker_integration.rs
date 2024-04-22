@@ -19,12 +19,12 @@ use restate_types::invocation::{
     HandlerType, InvocationTarget, ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
 use restate_types::journal::enriched::{
-    AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+    AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::raw::{
     EntryHeader, PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec,
 };
-use restate_types::journal::{BackgroundInvokeEntry, CompleteAwakeableEntry, Entry, InvokeEntry};
+use restate_types::journal::{CompleteAwakeableEntry, Entry, InvokeEntry, OneWayCallEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -56,18 +56,18 @@ where
         serialized_entry: &Bytes,
         request_extractor: impl Fn(Entry) -> InvokeRequest,
         span_relation: SpanRelation,
-    ) -> Result<InvokeEnrichmentResult, InvocationError> {
+    ) -> Result<CallEnrichmentResult, InvocationError> {
         let entry = Codec::deserialize(entry_type, serialized_entry.clone())
             .map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
         let invocation_target = match self
             .schemas
-            .resolve_latest_invocation_target(&request.service_name, &request.method_name)
+            .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
         {
             Some(meta) => match meta.service_ty {
                 ServiceType::Service => {
-                    InvocationTarget::service(request.service_name, request.method_name)
+                    InvocationTarget::service(request.service_name, request.handler_name)
                 }
                 ServiceType::VirtualObject => InvocationTarget::virtual_object(
                     request.service_name.clone(),
@@ -76,14 +76,14 @@ where
                             "The request key is not a valid UTF-8 string: {e}"
                         ))
                     })?,
-                    request.method_name,
+                    request.handler_name,
                     meta.handler_ty,
                 ),
             },
             None => {
                 return Err(InvocationError::service_handler_not_found(
                     &request.service_name,
-                    &request.method_name,
+                    &request.handler_name,
                 ))
             }
         };
@@ -93,7 +93,7 @@ where
         // Create the span context
         let span_context = ServiceInvocationSpanContext::start(&invocation_id, span_relation);
 
-        Ok(InvokeEnrichmentResult {
+        Ok(CallEnrichmentResult {
             invocation_id,
             invocation_target,
             span_context,
@@ -156,44 +156,42 @@ where
                 EnrichedEntryHeader::ClearAllState {}
             }
             PlainEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
-            PlainEntryHeader::Invoke { is_completed, .. } => {
+            PlainEntryHeader::Call { is_completed, .. } => {
                 if !is_completed {
                     let enrichment_result = self.resolve_service_invocation_target(
                         header.as_entry_type(),
                         &serialized_entry,
                         |entry| {
-                            let_assert!(Entry::Invoke(InvokeEntry { request, .. }) = entry);
+                            let_assert!(Entry::Call(InvokeEntry { request, .. }) = entry);
                             request
                         },
                         current_invocation_span_context.as_parent(),
                     )?;
 
-                    EnrichedEntryHeader::Invoke {
+                    EnrichedEntryHeader::Call {
                         is_completed,
                         enrichment_result: Some(enrichment_result),
                     }
                 } else {
                     // No need to service resolution if the entry was completed by the deployment
-                    EnrichedEntryHeader::Invoke {
+                    EnrichedEntryHeader::Call {
                         is_completed,
                         enrichment_result: None,
                     }
                 }
             }
-            PlainEntryHeader::BackgroundInvoke { .. } => {
+            PlainEntryHeader::OneWayCall { .. } => {
                 let enrichment_result = self.resolve_service_invocation_target(
                     header.as_entry_type(),
                     &serialized_entry,
                     |entry| {
-                        let_assert!(
-                            Entry::BackgroundInvoke(BackgroundInvokeEntry { request, .. }) = entry
-                        );
+                        let_assert!(Entry::OneWayCall(OneWayCallEntry { request, .. }) = entry);
                         request
                     },
                     current_invocation_span_context.as_linked(),
                 )?;
 
-                EnrichedEntryHeader::BackgroundInvoke { enrichment_result }
+                EnrichedEntryHeader::OneWayCall { enrichment_result }
             }
             PlainEntryHeader::Awakeable { is_completed } => {
                 EnrichedEntryHeader::Awakeable { is_completed }
@@ -220,7 +218,7 @@ where
                     },
                 }
             }
-            EntryHeader::SideEffect { .. } => EnrichedEntryHeader::SideEffect {},
+            EntryHeader::Run { .. } => EnrichedEntryHeader::Run {},
             PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
         };
 
