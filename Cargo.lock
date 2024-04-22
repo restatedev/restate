@@ -3609,9 +3609,8 @@ dependencies = [
 
 [[package]]
 name = "librocksdb-sys"
-version = "0.16.0+8.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3d60bc059831dc1c83903fb45c103f75db65c5a7bf22272764d9cc683e348c"
+version = "0.17.0+9.0.0"
+source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#caec8ab62cf053679f409c69a4ee72483a8b9688"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -6405,11 +6404,12 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd13e55d6d7b8cd0ea569161127567cd587676c99f4472f779a0279aa60a7a7"
+source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#caec8ab62cf053679f409c69a4ee72483a8b9688"
 dependencies = [
  "libc",
  "librocksdb-sys",
+ "parking_lot",
+ "smartstring",
 ]
 
 [[package]]

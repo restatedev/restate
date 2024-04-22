@@ -23,16 +23,17 @@ pub trait RocksAccess {
     fn open_db(
         db_spec: &DbSpec<Self>,
         default_cf_options: rocksdb::Options,
-    ) -> Result<(Self, HashSet<CfName>), RocksError>
+    ) -> Result<Self, RocksError>
     where
         Self: Sized;
 
-    fn flush_memtables(&self, cfs: &[&CfName], wait: bool) -> Result<(), RocksError>;
+    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError>;
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError>;
     fn cancel_all_background_work(&self, wait: bool);
     fn set_options_cf(&self, cf: &CfName, opts: &[(&str, &str)]) -> Result<(), RocksError>;
     fn get_property_int_cf(&self, cf: &CfName, property: &str) -> Result<Option<u64>, RocksError>;
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder);
+    fn cfs(&self) -> Vec<CfName>;
 }
 
 fn prepare_descriptors<T>(
@@ -76,7 +77,7 @@ impl RocksAccess for rocksdb::DB {
     fn open_db(
         db_spec: &DbSpec<Self>,
         default_cf_options: rocksdb::Options,
-    ) -> Result<(Self, HashSet<CfName>), RocksError> {
+    ) -> Result<Self, RocksError> {
         let mut all_cfs: HashSet<CfName> =
             match rocksdb::DB::list_cf(&db_spec.db_options, &db_spec.path) {
                 Ok(existing) => existing.into_iter().map(Into::into).collect(),
@@ -98,20 +99,18 @@ impl RocksAccess for rocksdb::DB {
 
         let descriptors = prepare_descriptors(db_spec, default_cf_options, &mut all_cfs)?;
 
-        Ok((
-            rocksdb::DB::open_cf_descriptors(&db_spec.db_options, &db_spec.path, descriptors)
-                .map_err(RocksError::from_rocksdb_error)?,
-            all_cfs,
-        ))
+        rocksdb::DB::open_cf_descriptors(&db_spec.db_options, &db_spec.path, descriptors)
+            .map_err(RocksError::from_rocksdb_error)
     }
 
-    fn flush_memtables(&self, cfs: &[&CfName], wait: bool) -> Result<(), RocksError> {
+    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
         let mut flushopts = rocksdb::FlushOptions::default();
         flushopts.set_wait(wait);
         let cfs = cfs
             .iter()
             .filter_map(|name| self.cf_handle(name))
             .collect::<Vec<_>>();
+        // a side effect of the awkward rust-rocksdb interface!
         let cf_refs = cfs.iter().collect::<Vec<_>>();
         Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
@@ -141,13 +140,17 @@ impl RocksAccess for rocksdb::DB {
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
         builder.add_db(self)
     }
+
+    fn cfs(&self) -> Vec<CfName> {
+        self.cf_names().into_iter().map(CfName::from).collect()
+    }
 }
 
 impl RocksAccess for rocksdb::OptimisticTransactionDB {
     fn open_db(
         db_spec: &DbSpec<Self>,
         default_cf_options: rocksdb::Options,
-    ) -> Result<(Self, HashSet<CfName>), RocksError> {
+    ) -> Result<Self, RocksError> {
         // copy pasta from DB, this will be removed as soon we as we remove the use of
         // Optimistic Transaction DB
         let mut all_cfs: HashSet<CfName> =
@@ -174,24 +177,22 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB {
 
         let descriptors = prepare_descriptors(db_spec, default_cf_options, &mut all_cfs)?;
 
-        Ok((
-            rocksdb::OptimisticTransactionDB::open_cf_descriptors(
-                &db_spec.db_options,
-                &db_spec.path,
-                descriptors,
-            )
-            .map_err(RocksError::from_rocksdb_error)?,
-            all_cfs,
-        ))
+        rocksdb::OptimisticTransactionDB::open_cf_descriptors(
+            &db_spec.db_options,
+            &db_spec.path,
+            descriptors,
+        )
+        .map_err(RocksError::from_rocksdb_error)
     }
 
-    fn flush_memtables(&self, cfs: &[&CfName], wait: bool) -> Result<(), RocksError> {
+    fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
         let mut flushopts = rocksdb::FlushOptions::default();
         flushopts.set_wait(wait);
         let cfs = cfs
             .iter()
             .filter_map(|name| self.cf_handle(name))
             .collect::<Vec<_>>();
+        // a side effect of the awkward rust-rocksdb interface!
         let cf_refs = cfs.iter().collect::<Vec<_>>();
         Ok(self.flush_cfs_opt(&cf_refs, &flushopts)?)
     }
@@ -220,5 +221,9 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB {
 
     fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
         builder.add_db(self)
+    }
+
+    fn cfs(&self) -> Vec<CfName> {
+        self.cf_names().into_iter().map(CfName::from).collect()
     }
 }
