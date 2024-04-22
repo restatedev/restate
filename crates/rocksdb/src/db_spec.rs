@@ -194,8 +194,8 @@ impl<T> DbSpecBuilder<T> {
 
     pub fn add_cf_pattern(
         mut self,
-        pattern: impl CfNameMatch + 'static + Send + Sync,
-        options: impl Fn(rocksdb::Options) -> rocksdb::Options + Send + 'static,
+        pattern: impl CfNameMatch + Send + Sync + 'static,
+        options: impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static,
     ) -> Self {
         let mut cfs = self.cf_patterns.unwrap_or_default();
         cfs.push((Box::new(pattern), Box::new(options)));
