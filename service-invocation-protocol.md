@@ -310,15 +310,15 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 | `GetStateEntryMessage`          | `0x0800` | Yes         | No       | Get the value of a service instance state key.                                                                                                                   |
 | `GetStateKeysEntryMessage`      | `0x0804` | Yes         | No       | Get all the known state keys for this service instance. Note: the completion value for this message is a protobuf of type `GetStateKeysEntryMessage.StateKeys`.  |
 | `SleepEntryMessage`             | `0x0C00` | Yes         | No       | Initiate a timer that completes after the given time.                                                                                                            |
-| `InvokeEntryMessage`            | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                  |
+| `CallEntryMessage`              | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                  |
 | `AwakeableEntryMessage`         | `0x0C03` | Yes         | No       | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details. |
-| `BackgroundInvokeEntryMessage`  | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                              |
+| `OneWayCallEntryMessage`        | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                              |
 | `CompleteAwakeableEntryMessage` | `0x0C04` | No          | Yes      | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                       |
 | `OutputEntryMessage`            | `0x0401` | No          | No       | Carries the invocation output message(s) or terminal failure of the invocation.                                                                                  |
 | `SetStateEntryMessage`          | `0x0800` | No          | No       | Set the value of a service instance state key.                                                                                                                   |
 | `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                 |
 | `ClearAllStateEntryMessage`     | `0x0802` | No          | No       | Clear all the values of the service instance state.                                                                                                              |
-| `SideEffectEntryMessage`        | `0x0C05` | No          | No       | Run non-deterministic user provided code and persist the result.                                                                                                 |
+| `RunEntryMessage`               | `0x0C05` | No          | No       | Run non-deterministic user provided code and persist the result.                                                                                                 |
 
 #### Awakeable identifier
 

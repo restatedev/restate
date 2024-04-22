@@ -17,18 +17,18 @@
       "type": "integer",
       "maximum": 0
     },
-    "components": {
+    "services": {
       "type": "array",
       "items": {
         "type": "object",
-        "title": "Component",
+        "title": "Service",
         "properties": {
-          "fullyQualifiedComponentName": {
+          "name": {
             "type": "string",
             "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9._-]*$"
           },
-          "componentType": {
-            "title": "ComponentType",
+          "ty": {
+            "title": "ServiceType",
             "enum": ["VIRTUAL_OBJECT", "SERVICE"]
           },
           "handlers": {
@@ -41,7 +41,7 @@
                   "type": "string",
                   "pattern": "^([a-zA-Z]|_[a-zA-Z0-9])[a-zA-Z0-9_]*$"
                 },
-                "handlerType": {
+                "ty": {
                   "title": "HandlerType",
                   "enum": ["EXCLUSIVE", "SHARED"],
                   "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object. This should be unset for Services."
@@ -125,11 +125,11 @@
             }
           }
         },
-        "required": ["fullyQualifiedComponentName", "componentType", "handlers"],
+        "required": ["name", "ty", "handlers"],
         "additionalProperties": false
       }
     }
   },
-  "required": ["minProtocolVersion", "maxProtocolVersion", "components"],
+  "required": ["minProtocolVersion", "maxProtocolVersion", "services"],
   "additionalProperties": false
 }
