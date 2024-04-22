@@ -19,7 +19,6 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true, features = ["serde"] }
 codederror = { workspace = true }

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use restate_types::arc_util::Updateable;
 use restate_types::config::LocalLogletOptions;
 use rocksdb::{BoundColumnFamily, WriteBatch, DB};
@@ -46,6 +46,7 @@ pub(crate) struct LogStoreWriter {
     db: Arc<DB>,
     batch_acks_buf: Vec<Ack>,
     manual_wal_flush: bool,
+    buffer: BytesMut,
 }
 
 impl LogStoreWriter {
@@ -54,6 +55,7 @@ impl LogStoreWriter {
             db,
             batch_acks_buf: Vec::default(),
             manual_wal_flush,
+            buffer: BytesMut::default(),
         }
     }
 
@@ -101,6 +103,8 @@ impl LogStoreWriter {
         self.batch_acks_buf.clear();
         self.batch_acks_buf.reserve(commands.len());
         let batch_acks = &mut self.batch_acks_buf;
+        let buffer = &mut self.buffer;
+        buffer.clear();
 
         {
             let data_cf = self.db.cf_handle(DATA_CF).expect("data cf exists");
@@ -125,6 +129,7 @@ impl LogStoreWriter {
                         &mut write_batch,
                         command.log_id,
                         logstate_updates,
+                        buffer,
                     )
                 }
 
@@ -142,11 +147,13 @@ impl LogStoreWriter {
         write_batch: &mut WriteBatch,
         log_id: u64,
         updates: LogStateUpdates,
+        buffer: &mut BytesMut,
     ) {
+        updates.encode(buffer).expect("encode");
         write_batch.merge_cf(
             metadata_cf,
             MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
-            updates.to_bytes(),
+            buffer,
         );
     }
 

@@ -10,8 +10,10 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
+use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::logs::SequenceNumber;
+use restate_types::storage::StorageCodec;
 use rocksdb::MergeOperands;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
@@ -68,18 +70,22 @@ impl LogStateUpdates {
 }
 
 impl LogStateUpdates {
-    pub fn to_bytes(&self) -> Bytes {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .expect("encode")
-            .into()
+    pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
+        let mut buf = BytesMut::default();
+        self.encode(&mut buf)?;
+        Ok(buf.freeze())
     }
 
-    pub fn from_slice(data: &[u8]) -> Result<Self, LogStoreError> {
-        let (update, _) = bincode::serde::decode_from_slice(data, bincode::config::standard())
-            .map_err(Arc::new)?;
-        Ok(update)
+    pub fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), LogStoreError> {
+        StorageCodec::encode(self, buf).map_err(|err| LogStoreError::Encode(Arc::new(err)))
+    }
+
+    pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
+        StorageCodec::decode(&mut data).map_err(|err| LogStoreError::Decode(Arc::new(err)))
     }
 }
+
+flexbuffers_storage_encode_decode!(LogStateUpdates);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogState {
@@ -99,18 +105,18 @@ impl Default for LogState {
 }
 
 impl LogState {
-    pub fn to_bytes(&self) -> Bytes {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .expect("encode")
-            .into()
+    pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
+        let mut buf = BytesMut::default();
+        StorageCodec::encode(self, &mut buf).map_err(Arc::new)?;
+        Ok(buf.freeze())
     }
 
-    pub fn from_slice(data: &[u8]) -> Result<Self, LogStoreError> {
-        let (state, _) = bincode::serde::decode_from_slice(data, bincode::config::standard())
-            .map_err(Arc::new)?;
-        Ok(state)
+    pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
+        StorageCodec::decode(&mut data).map_err(|err| LogStoreError::Decode(Arc::new(err)))
     }
 }
+
+flexbuffers_storage_encode_decode!(LogState);
 
 pub fn log_state_full_merge(
     key: &[u8],
@@ -166,7 +172,13 @@ pub fn log_state_full_merge(
             }
         }
     }
-    Some(log_state.to_bytes().into())
+    match log_state.to_bytes() {
+        Ok(bytes) => Some(bytes.into()),
+        Err(err) => {
+            error!("Failed to encode log state updates: {}", err);
+            None
+        }
+    }
 }
 
 pub fn log_state_partial_merge(
@@ -193,5 +205,11 @@ pub fn log_state_partial_merge(
 
         merged.updates.append(&mut updates.updates);
     }
-    Some(merged.to_bytes().into())
+    match merged.to_bytes() {
+        Ok(bytes) => Some(bytes.into()),
+        Err(err) => {
+            error!("Failed to encode log state updates: {}", err);
+            None
+        }
+    }
 }

@@ -16,6 +16,7 @@ use restate_rocksdb::{
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
+use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use rocksdb::{BoundColumnFamily, DBCompressionType, DB};
 
 use super::keys::{MetadataKey, MetadataKind};
@@ -31,11 +32,11 @@ pub(crate) const METADATA_CF: &str = "logstore_metadata";
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum LogStoreError {
     #[error(transparent)]
-    // unfortunately, we have to use Arc here, because the bincode error is not Clone.
-    Encode(#[from] Arc<bincode::error::EncodeError>),
+    // unfortunately, we have to use Arc here, because the storage encode error is not Clone.
+    Encode(#[from] Arc<StorageEncodeError>),
     #[error(transparent)]
-    // unfortunately, we have to use Arc here, because the bincode error is not Clone.
-    Decode(#[from] Arc<bincode::error::DecodeError>),
+    // unfortunately, we have to use Arc here, because the storage decode error is not Clone.
+    Decode(#[from] Arc<StorageDecodeError>),
     #[error(transparent)]
     Rocksdb(#[from] rocksdb::Error),
     #[error(transparent)]
