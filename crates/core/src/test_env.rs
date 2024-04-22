@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
 
-use restate_node_protocol::codec::{deserialize_message, serialize_message, Targeted, WireEncode};
+use restate_node_protocol::codec::{
+    serialize_message, try_unwrap_binary_message, Targeted, WireEncode,
+};
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
@@ -103,7 +105,7 @@ impl NetworkReceiver {
         router: &MessageRouter,
     ) -> anyhow::Result<()> {
         let body = msg.body.expect("body must be set");
-        let msg = deserialize_message(body, CURRENT_PROTOCOL_VERSION)?;
+        let msg = try_unwrap_binary_message(body, CURRENT_PROTOCOL_VERSION)?;
         router
             .call(peer, rand::random(), CURRENT_PROTOCOL_VERSION, msg)
             .await?;

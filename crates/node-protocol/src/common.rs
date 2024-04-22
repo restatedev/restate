@@ -10,8 +10,8 @@
 
 include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
 
-pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Bincoded;
-pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Bincoded;
+pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
+pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/common_descriptor.bin"));

@@ -13,7 +13,7 @@ package dev.restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  BINCODED = 1;
+  FLEXBUFFERS = 1;
 }
 
 message NodeId {

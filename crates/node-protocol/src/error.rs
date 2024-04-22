@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::errors::GenericError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
-    #[error("bincode encode: {0}")]
-    BincodeEncode(#[from] bincode::error::EncodeError),
-    #[error("bincode decode: {0}")]
-    BincodeDecode(#[from] bincode::error::DecodeError),
-    #[error("protobuf decode: {0}")]
-    ProtobufDecode(&'static str),
+    #[error("encode error: {0}")]
+    Encode(GenericError),
+    #[error("decode error: {0}")]
+    Decode(GenericError),
 }

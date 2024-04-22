@@ -5783,6 +5783,7 @@ dependencies = [
  "bytestring",
  "derive_more",
  "enum-map",
+ "flexbuffers",
  "prost",
  "prost-build",
  "prost-types",

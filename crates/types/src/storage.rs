@@ -10,6 +10,9 @@
 
 use crate::errors::GenericError;
 use bytes::{Buf, BufMut};
+use serde::de::{DeserializeOwned, Error as DeserializationError};
+use serde::ser::Error as SerializationError;
+use serde::Serialize;
 use std::mem;
 
 #[derive(Debug, thiserror::Error)]
@@ -161,16 +164,8 @@ macro_rules! flexbuffers_storage_encode_decode {
                 &self,
                 buf: &mut B,
             ) -> Result<(), $crate::storage::StorageEncodeError> {
-                let vec = flexbuffers::to_vec(self)
-                    .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))?;
-                // write the length
-                buf.put_u32_le(u32::try_from(vec.len()).map_err(|_| {
-                    $crate::storage::StorageEncodeError::EncodeValue(
-                        "only support serializing types of size <= 4GB".into(),
-                    )
-                })?);
-                buf.put(&vec[..]);
-                Ok(())
+                $crate::storage::encode_as_flexbuffers(self, buf)
+                    .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))
             }
         }
 
@@ -184,39 +179,9 @@ macro_rules! flexbuffers_storage_encode_decode {
             {
                 match kind {
                     $crate::storage::StorageCodecKind::FlexbuffersSerde => {
-                        if buf.remaining() < 4 {
-                            return Err($crate::storage::StorageDecodeError::DecodeValue(
-                                "insufficient data: expecting 4 bytes for length".into(),
-                            ));
-                        }
-                        let length =
-                            usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
-
-                        if buf.remaining() < length {
-                            return Err($crate::storage::StorageDecodeError::DecodeValue(
-                                format!(
-                                    "insufficient data: expecting {} bytes for flexbuffers",
-                                    length
-                                )
-                                .into(),
-                            ));
-                        }
-
-                        if buf.chunk().len() >= length {
-                            let result = flexbuffers::from_slice(buf.chunk()).map_err(|err| {
-                                $crate::storage::StorageDecodeError::DecodeValue(err.into())
-                            })?;
-                            buf.advance(length);
-
-                            Ok(result)
-                        } else {
-                            // need to allocate contiguous buffer of length for flexbuffers
-                            let mut bytes = buf.copy_to_bytes(length);
-
-                            flexbuffers::from_slice(&mut bytes).map_err(|err| {
-                                $crate::storage::StorageDecodeError::DecodeValue(err.into())
-                            })
-                        }
+                        $crate::storage::decode_from_flexbuffers(buf).map_err(|err| {
+                            $crate::storage::StorageDecodeError::DecodeValue(err.into())
+                        })
                     }
                     codec => Err($crate::storage::StorageDecodeError::UnsupportedCodecKind(
                         codec,
@@ -225,4 +190,55 @@ macro_rules! flexbuffers_storage_encode_decode {
             }
         }
     };
+}
+
+/// Utility method to encode a [`Serialize`] type as flexbuffers using serde.
+pub fn encode_as_flexbuffers<T: Serialize, B: BufMut>(
+    value: T,
+    buf: &mut B,
+) -> Result<(), flexbuffers::SerializationError> {
+    let vec = flexbuffers::to_vec(value)?;
+
+    let required_buffer_bytes = vec.len() + mem::size_of::<u32>();
+    if buf.remaining_mut() < required_buffer_bytes {
+        return Err(flexbuffers::SerializationError::custom(format!("not enough buffer space to serialize value; required {} bytes but free capacity was {}", required_buffer_bytes, buf.remaining_mut())));
+    }
+
+    // write the length
+    buf.put_u32_le(u32::try_from(vec.len()).map_err(|_| {
+        flexbuffers::SerializationError::custom("only support serializing types of size <= 4GB")
+    })?);
+    buf.put(&vec[..]);
+    Ok(())
+}
+
+/// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde.
+pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
+    buf: &mut B,
+) -> Result<T, flexbuffers::DeserializationError> {
+    if buf.remaining() < mem::size_of::<u32>() {
+        return Err(flexbuffers::DeserializationError::custom(format!(
+            "insufficient data: expecting {} bytes for length",
+            mem::size_of::<u32>()
+        )));
+    }
+    let length = usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
+
+    if buf.remaining() < length {
+        return Err(flexbuffers::DeserializationError::custom(format!(
+            "insufficient data: expecting {} bytes for flexbuffers",
+            length
+        )));
+    }
+
+    if buf.chunk().len() >= length {
+        let result = flexbuffers::from_slice(buf.chunk())?;
+        buf.advance(length);
+
+        Ok(result)
+    } else {
+        // need to allocate contiguous buffer of length for flexbuffers
+        let bytes = buf.copy_to_bytes(length);
+        flexbuffers::from_slice(&bytes)
+    }
 }

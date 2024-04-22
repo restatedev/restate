@@ -16,7 +16,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rand::seq::SliceRandom;
 use restate_core::network::{Handler, MessageRouter};
-use restate_node_protocol::codec::deserialize_message;
+use restate_node_protocol::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
@@ -506,7 +506,7 @@ where
             break;
         }
 
-        match deserialize_message(body, connection.protocol_version) {
+        match try_unwrap_binary_message(body, connection.protocol_version) {
             Ok(msg) => {
                 if let Err(e) = router
                     .call(
@@ -548,7 +548,7 @@ where
     while let Some(Ok(msg)) = incoming.next().await {
         if let Some(body) = msg.body {
             // we ignore non-deserializable messages (serde errors, or control signals in drain)
-            if let Ok(msg) = deserialize_message(body, protocol_version) {
+            if let Ok(msg) = try_unwrap_binary_message(body, protocol_version) {
                 drain_counter += 1;
                 if let Err(e) = router
                     .call(peer_node_id, connection_id, protocol_version, msg)

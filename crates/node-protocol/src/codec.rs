@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bytes::{Buf, BufMut, BytesMut};
+use restate_types::storage::{decode_from_flexbuffers, encode_as_flexbuffers};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -171,14 +172,13 @@ pub fn serialize_message<M: WireEncode + Targeted>(
     }))
 }
 
-pub fn deserialize_message(
+pub fn try_unwrap_binary_message(
     msg: message::Body,
     _protocol_version: ProtocolVersion,
 ) -> Result<BinaryMessage, CodecError> {
     let message::Body::Encoded(binary) = msg else {
-        // at the moment, we only support bincoded messages
-        return Err(CodecError::ProtobufDecode(
-            "Cannot deserialize message, message is not of type BinaryMessage",
+        return Err(CodecError::Decode(
+            "Cannot deserialize message, message is not of type BinaryMessage".into(),
         ));
     };
     Ok(binary)
@@ -191,13 +191,9 @@ pub fn encode_default<T: Serialize, B: BufMut>(
     protocol_version: ProtocolVersion,
 ) -> Result<(), CodecError> {
     match protocol_version {
-        ProtocolVersion::Bincoded => bincode::serde::encode_into_std_write(
-            value,
-            &mut buf.writer(),
-            bincode::config::standard(),
-        )
-        .map(|_| ())
-        .map_err(Into::into),
+        ProtocolVersion::Flexbuffers => {
+            encode_as_flexbuffers(value, buf).map_err(|err| CodecError::Encode(err.into()))
+        }
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
         }
@@ -209,10 +205,8 @@ pub fn decode_default<T: DeserializeOwned, B: Buf>(
     protocol_version: ProtocolVersion,
 ) -> Result<T, CodecError> {
     match protocol_version {
-        ProtocolVersion::Bincoded => {
-            let mut reader = buf.reader();
-            bincode::serde::decode_from_std_read(&mut reader, bincode::config::standard())
-                .map_err(Into::into)
+        ProtocolVersion::Flexbuffers => {
+            decode_from_flexbuffers(buf).map_err(|err| CodecError::Decode(err.into()))
         }
         ProtocolVersion::Unknown => {
             unreachable!("unknown protocol version should never be set")
