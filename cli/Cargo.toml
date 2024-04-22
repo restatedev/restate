@@ -21,7 +21,7 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint"] }
-arrow_convert = { git = "https://github.com/slinkydeveloper/arrow-convert.git" }
+arrow_convert = { version = "0.6.6" }
 bytes = { workspace = true }
 base64 = { workspace = true}
 chrono = { workspace = true }
