@@ -24,8 +24,8 @@ Easily build workflows, event-driven applications, and distributed services in a
 
 ## Get started with Restate
 
-1. 🏎 [Check out our quickstart](https://docs.restate.dev/quickstart) to get up and running with Restate in 2 minutes!
-1. 💡 [The tour of Restate](https://docs.restate.dev/tour) walks you through all features of Restate.
+1. 🏎 [Check out our quickstart](https://docs.restate.dev/get_started/quickstart) to get up and running with Restate in 2 minutes!
+1. 💡 [The tour of Restate](https://docs.restate.dev/get_started/tour) walks you through all features of Restate.
 
 ## SDKs
 
