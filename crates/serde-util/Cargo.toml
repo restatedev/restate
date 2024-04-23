@@ -15,6 +15,7 @@ proto = ["dep:prost", "dep:bytes"]
 [dependencies]
 base64 = { workspace = true }
 bytes = { workspace = true, optional = true }
+bytesize = { workspace = true }
 http = { workspace = true }
 prost = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }

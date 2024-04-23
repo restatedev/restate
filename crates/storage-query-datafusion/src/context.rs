@@ -97,9 +97,9 @@ impl QueryContext {
             + 'static,
     ) -> Result<QueryContext, BuildError> {
         let ctx = QueryContext::new(
-            options.memory_limit,
+            options.memory_size,
             options.tmp_dir.clone(),
-            options.query_parallelism,
+            options.query_parallelism(),
         );
         crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
         crate::keyed_service_status::register_self(&ctx, rocksdb.clone())?;
