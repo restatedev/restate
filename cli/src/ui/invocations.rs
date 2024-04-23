@@ -146,7 +146,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
 
     if let Some(deployment_id) = deployment_id {
         let deployment_msg = format!(
-            "{} {}",
+            "{} {}{}",
             deployment_id,
             if invocation.pinned_deployment_id.is_some() {
                 if invocation.pinned_deployment_exists {
@@ -158,6 +158,11 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
             } else {
                 "".to_string()
             },
+            if let Some(server) = &invocation.last_attempt_server {
+                format!(" using {}", server)
+            } else {
+                "".to_string()
+            }
         );
         table.add_kv_row("Deployment:", deployment_msg);
     }

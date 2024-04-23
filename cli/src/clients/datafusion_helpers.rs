@@ -264,6 +264,7 @@ pub struct Invocation {
     pub deployment_id_at_latest_svc_revision: String,
     // Last attempted deployment
     pub last_attempt_deployment_id: Option<String>,
+    pub last_attempt_server: Option<String>,
 
     // if running, how long has it been running?
     pub current_attempt_duration: Option<Duration>,
@@ -730,6 +731,7 @@ struct InvocationRowResult {
     last_failure_related_entry_name: Option<String>,
     last_failure_related_entry_type: Option<String>,
     last_attempt_deployment_id: Option<String>,
+    last_attempt_server: Option<String>,
     next_retry_at: Option<RestateDateTime>,
     last_start_at: Option<RestateDateTime>,
     invoked_by_id: Option<String>,
@@ -765,6 +767,7 @@ pub async fn find_active_invocations(
             inv.last_failure_related_entry_name,
             inv.last_failure_related_entry_type,
             inv.last_attempt_deployment_id,
+            inv.last_attempt_server,
             inv.next_retry_at,
             inv.last_start_at,
             inv.invoked_by_id,
@@ -823,6 +826,7 @@ pub async fn find_active_invocations(
             last_failure_entry_index: row.last_failure_related_entry_index,
             last_failure_entry_name: row.last_failure_related_entry_name,
             last_attempt_deployment_id: row.last_attempt_deployment_id,
+            last_attempt_server: row.last_attempt_server,
             trace_id: row.trace_id,
             current_attempt_duration,
             last_attempt_started_at,
