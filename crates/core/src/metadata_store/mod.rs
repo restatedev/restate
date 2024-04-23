@@ -220,13 +220,8 @@ impl MetadataStoreClient {
     }
 
     fn exponential_retry_policy(max_backoff: Duration) -> RetryIter {
-        RetryPolicy::exponential(
-            Duration::from_millis(10),
-            2.0,
-            usize::MAX,
-            Some(max_backoff),
-        )
-        .into_iter()
+        RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, Some(max_backoff))
+            .into_iter()
     }
 
     /// Reads the value under the given key from the metadata store, then modifies it and writes
