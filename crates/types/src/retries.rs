@@ -12,6 +12,7 @@
 
 use std::cmp;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use rand::Rng;
@@ -82,8 +83,8 @@ pub enum RetryPolicy {
         interval: humantime::Duration,
         /// # Max attempts
         ///
-        /// Number of maximum attempts before giving up.
-        max_attempts: usize,
+        /// Number of maximum attempts before giving up. Infinite retries if unset.
+        max_attempts: Option<NonZeroUsize>,
     },
     /// # Exponential
     ///
@@ -105,8 +106,8 @@ pub enum RetryPolicy {
 
         /// # Max attempts
         ///
-        /// Number of maximum attempts before giving up.
-        max_attempts: usize,
+        /// Number of maximum attempts before giving up. Infinite retries if unset.
+        max_attempts: Option<NonZeroUsize>,
 
         /// # Max interval
         ///
@@ -124,17 +125,17 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    pub fn fixed_delay(interval: Duration, max_attempts: usize) -> Self {
+    pub fn fixed_delay(interval: Duration, max_attempts: Option<usize>) -> Self {
         Self::FixedDelay {
             interval: interval.into(),
-            max_attempts,
+            max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
         }
     }
 
     pub fn exponential(
         initial_interval: Duration,
         factor: f32,
-        max_attempts: usize,
+        max_attempts: Option<usize>,
         max_interval: Option<Duration>,
     ) -> Self {
         // Formula to compute the time based on number of retries:
@@ -142,7 +143,7 @@ impl RetryPolicy {
         Self::Exponential {
             initial_interval: initial_interval.into(),
             factor,
-            max_attempts,
+            max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
             max_interval: max_interval.map(Into::into),
         }
     }
@@ -228,7 +229,7 @@ impl Iterator for RetryIter {
                 interval,
                 max_attempts,
             } => {
-                if self.attempts > max_attempts {
+                if max_attempts.is_some_and(|limit| self.attempts > limit.into()) {
                     None
                 } else {
                     Some(with_jitter(interval.into(), DEFAULT_JITTER_MULTIPLIER))
@@ -240,7 +241,7 @@ impl Iterator for RetryIter {
                 max_attempts,
                 max_interval,
             } => {
-                if self.attempts > max_attempts {
+                if max_attempts.is_some_and(|limit| self.attempts > limit.into()) {
                     None
                 } else if self.last_retry.is_some() {
                     let new_retry = cmp::min(
@@ -263,6 +264,7 @@ impl Iterator for RetryIter {
             RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts,
             RetryPolicy::Exponential { max_attempts, .. } => max_attempts,
         };
+        let max_attempts: usize = max_attempts.unwrap_or(NonZeroUsize::MAX).into();
         (
             max_attempts - self.attempts,
             Some(max_attempts - self.attempts),
@@ -307,7 +309,7 @@ mod tests {
     #[test]
     fn fixed_delay_retry_policy() {
         let expected = [Duration::from_millis(100); 10];
-        let actuals = RetryPolicy::fixed_delay(Duration::from_millis(100), 10)
+        let actuals = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10))
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(actuals.len(), expected.len());
@@ -334,7 +336,7 @@ mod tests {
                 .mul_f32(2.0),
         ];
 
-        let actuals = RetryPolicy::exponential(Duration::from_millis(100), 2.0, 5, None)
+        let actuals = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(5), None)
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(actuals.len(), expected.len());
@@ -359,7 +361,7 @@ mod tests {
         let actuals = RetryPolicy::exponential(
             Duration::from_millis(100),
             2.0,
-            5,
+            Some(5),
             Some(Duration::from_secs(1)),
         )
         .into_iter()
@@ -378,7 +380,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn conditional_retry() {
-        let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
+        let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10));
 
         let attempts = Arc::new(AtomicU64::new(0));
 

@@ -10,6 +10,7 @@
 // by the Apache License, Version 2.0.
 
 //! Utilities for benchmarking the Restate runtime
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -33,7 +34,7 @@ use restate_types::retries::RetryPolicy;
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
-        RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
+        RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
                 hyper::Client::new()
                     .request(
@@ -62,7 +63,7 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     // wait for ingress being available
     // todo replace with node get_ident/status once it signals that the node is fully up and running
     let health_response = current_thread_rt.block_on(async {
-        RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
+        RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
                 hyper::Client::new()
                     .request(
@@ -126,7 +127,7 @@ pub fn restate_configuration() -> Configuration {
         .expect("building common options should work");
 
     let worker_options = WorkerOptionsBuilder::default()
-        .bootstrap_num_partitions(10)
+        .bootstrap_num_partitions(NonZeroU64::new(10).unwrap())
         .build()
         .expect("building worker options should work");
 

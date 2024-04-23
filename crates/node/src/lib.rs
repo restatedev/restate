@@ -362,7 +362,7 @@ impl Node {
     ) -> Result<FixedPartitionTable, Error> {
         Self::retry_on_network_error(|| {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
-                FixedPartitionTable::new(Version::MIN, config.worker.bootstrap_num_partitions)
+                FixedPartitionTable::new(Version::MIN, config.worker.bootstrap_num_partitions())
             })
         })
         .await
@@ -478,7 +478,7 @@ impl Node {
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(10),
             2.0,
-            15,
+            Some(15),
             Some(Duration::from_secs(5)),
         );
         let upsert_start = Instant::now();
