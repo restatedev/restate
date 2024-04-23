@@ -20,12 +20,11 @@ use size::Size;
 use tracing::warn;
 
 #[derive(Debug, codederror::CodedError, thiserror::Error)]
+#[code(restate_errors::RT0012)]
 pub enum EncodingError {
-    #[code(unknown)]
     #[error("cannot decode message type {0:?}. This looks like a bug of the SDK. Reason: {1:?}")]
     DecodeMessage(MessageType, #[source] prost::DecodeError),
     #[error(transparent)]
-    #[code(unknown)]
     UnknownMessageType(#[from] UnknownMessageType),
     #[error("hit message size limit: {0} >= {1}")]
     #[code(restate_errors::RT0003)]

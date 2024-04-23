@@ -61,55 +61,72 @@ const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/r
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
     #[error("no deployment was found to process the invocation")]
+    #[code(restate_errors::RT0011)]
     NoDeploymentForService,
     #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
+    #[code(restate_errors::RT0011)]
     UnknownDeployment(DeploymentId),
+
     #[error("unexpected http status code: {0}")]
+    #[code(restate_errors::RT0012)]
     UnexpectedResponse(http::StatusCode),
     #[error("unexpected content type: {0:?}")]
+    #[code(restate_errors::RT0012)]
     UnexpectedContentType(Option<HeaderValue>),
     #[error("received unexpected message: {0:?}")]
+    #[code(restate_errors::RT0012)]
     UnexpectedMessage(MessageType),
-    #[error("encoding/decoding error: {0}")]
+    #[error("message encoding error: {0}")]
     Encoding(
         #[from]
         #[code]
         EncodingError,
     ),
-    #[error("error when trying to read the journal: {0}")]
-    JournalReader(anyhow::Error),
-    #[error("error when trying to read the service instance state: {0}")]
-    StateReader(anyhow::Error),
-    #[error("other client error: {0}")]
-    Client(ServiceClientError),
-    #[error("unexpected join error, looks like hyper panicked: {0}")]
-    UnexpectedJoinError(#[from] JoinError),
+    #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry")]
+    #[code(restate_errors::RT0012)]
+    WriteAfterEndOfStream,
+    #[error("Bad header '{0}': {1}")]
+    #[code(restate_errors::RT0012)]
+    BadHeader(HeaderName, #[source] hyper::header::ToStrError),
     #[error("got bad SuspensionMessage without journal indexes")]
+    #[code(restate_errors::RT0012)]
     EmptySuspensionMessage,
     #[error(
         "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
     )]
+    #[code(restate_errors::RT0012)]
     BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
+
+    #[error("error when trying to read the journal: {0}")]
+    #[code(restate_errors::RT0006)]
+    JournalReader(anyhow::Error),
+    #[error("error when trying to read the service instance state: {0}")]
+    #[code(restate_errors::RT0006)]
+    StateReader(anyhow::Error),
+
+    #[error(transparent)]
+    #[code(restate_errors::RT0010)]
+    Client(ServiceClientError),
+    #[error("unexpected join error, looks like hyper panicked: {0}")]
+    #[code(restate_errors::RT0010)]
+    UnexpectedJoinError(#[from] JoinError),
+
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
     ResponseTimeout,
-    #[error("cannot process received entry at index {0} of type {1}: {2}")]
+
+    #[error("cannot process incoming entry at index {0} of type {1}: {2}")]
+    #[code(unknown)]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
+
     #[error("Error message received from the SDK with related entry {0:?}: {1}")]
     #[code(restate_errors::RT0007)]
     ErrorMessageReceived(
         Option<InvocationErrorRelatedEntry>,
         #[source] InvocationError,
     ),
-    #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
-    WriteAfterEndOfStream,
-    #[error("Bad header {0}: {1}")]
-    BadHeader(HeaderName, #[source] hyper::header::ToStrError),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Default)]
