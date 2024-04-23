@@ -60,6 +60,13 @@ pub struct LocalLogletOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub writer_batch_commit_duration: humantime::Duration,
 
+    /// Whether to sync the WAL before acknowledging a write. Restate will always attempt to sync
+    /// the WAL after the write, but this option prevents append acknowledgments from being sent
+    /// unless the WAL was synced to durable storage. Note that even if it's set to false, restate
+    /// will flush the WAL to the OS filesystem page cache before ack, so even if Restate crashed
+    /// prior to the background sync, the write is still durable if the OS didn't crash.
+    pub sync_wal_before_ack: bool,
+
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
     data_dir: std::sync::Arc<tempfile::TempDir>,
@@ -85,6 +92,7 @@ impl Default for LocalLogletOptions {
             .unwrap();
         Self {
             rocksdb,
+            sync_wal_before_ack: true,
             writer_batch_commit_count: 500,
             writer_batch_commit_duration: Duration::from_nanos(5).into(),
             #[cfg(any(test, feature = "test-util"))]
