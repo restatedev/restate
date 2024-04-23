@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tokio::sync::Semaphore;
 
@@ -31,8 +32,8 @@ pub struct AdminOptions {
 
     /// # Concurrency limit
     ///
-    /// Concurrency limit for the Admin APIs. Max allowed value is 2305843009213693950
-    pub concurrent_api_requests_limit: usize,
+    /// Concurrency limit for the Admin APIs. Default is unlimited.
+    concurrent_api_requests_limit: Option<NonZeroUsize>,
     pub query_engine: QueryEngineOptions,
 
     #[cfg(any(test, feature = "test-util"))]
@@ -50,6 +51,15 @@ impl AdminOptions {
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.path().join("registry")
     }
+
+    pub fn concurrent_api_requests_limit(&self) -> usize {
+        std::cmp::min(
+            self.concurrent_api_requests_limit
+                .map(Into::into)
+                .unwrap_or(Semaphore::MAX_PERMITS - 1),
+            Semaphore::MAX_PERMITS - 1,
+        )
+    }
 }
 
 impl Default for AdminOptions {
@@ -57,7 +67,7 @@ impl Default for AdminOptions {
         Self {
             bind_address: "0.0.0.0:9070".parse().unwrap(),
             // max is limited by Tower's LoadShedLayer.
-            concurrent_api_requests_limit: Semaphore::MAX_PERMITS - 1,
+            concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),

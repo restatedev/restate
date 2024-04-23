@@ -73,6 +73,7 @@ pub struct LogletParams(String);
     strum_macros::EnumIter,
     strum_macros::Display,
 )]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     /// A local rocksdb-backed loglet.

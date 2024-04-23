@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -30,9 +31,9 @@ pub struct IngressOptions {
 
     /// # Concurrency limit
     ///
-    /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded, the ingress will reply immediately with an appropriate status code.
-    /// Max allowed value is 2305843009213693950
-    pub concurrent_api_requests_limit: usize,
+    /// Local concurrency limit to use to limit the amount of concurrent requests. If exceeded,
+    /// the ingress will reply immediately with an appropriate status code. Default is unlimited.
+    concurrent_api_requests_limit: Option<NonZeroUsize>,
 
     kafka_clusters: Vec<KafkaClusterOptions>,
 }
@@ -42,6 +43,15 @@ impl IngressOptions {
         // a cluster is likely to have a very small number of kafka clusters configured.
         self.kafka_clusters.iter().find(|c| c.name == name)
     }
+
+    pub fn concurrent_api_requests_limit(&self) -> usize {
+        std::cmp::min(
+            self.concurrent_api_requests_limit
+                .map(Into::into)
+                .unwrap_or(Semaphore::MAX_PERMITS - 1),
+            Semaphore::MAX_PERMITS - 1,
+        )
+    }
 }
 
 impl Default for IngressOptions {
@@ -49,7 +59,7 @@ impl Default for IngressOptions {
         Self {
             bind_address: "0.0.0.0:8080".parse().unwrap(),
             // max is limited by Tower's LoadShedLayer.
-            concurrent_api_requests_limit: Semaphore::MAX_PERMITS - 1,
+            concurrent_api_requests_limit: None,
             kafka_clusters: Default::default(),
         }
     }

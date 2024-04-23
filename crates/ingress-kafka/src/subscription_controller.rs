@@ -71,7 +71,7 @@ impl Service {
         let mut task_orchestrator = TaskOrchestrator::new(RetryPolicy::exponential(
             Duration::from_millis(200),
             2.0,
-            usize::MAX,
+            None,
             Some(Duration::from_secs(10)),
         ));
 

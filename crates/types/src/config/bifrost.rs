@@ -26,7 +26,6 @@ use super::{RocksDbOptions, RocksDbOptionsBuilder};
 #[builder(default)]
 pub struct BifrostOptions {
     /// # The default kind of loglet to be used
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub default_provider: ProviderKind,
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
@@ -52,8 +51,9 @@ pub struct LocalLogletOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// Trigger a commit when the batch size exceeds this threshold. Set to 0 or 1 to commit the
-    /// write batch on every command.
+    /// Trigger a commit when the batch size exceeds this threshold.
+    ///
+    /// Set to 0 or 1 to commit the write batch on every command.
     pub writer_batch_commit_count: usize,
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     #[serde_as(as = "serde_with::DisplayFromStr")]
