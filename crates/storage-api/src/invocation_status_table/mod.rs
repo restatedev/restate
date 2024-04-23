@@ -242,6 +242,7 @@ impl InboxedInvocation {
 
     pub fn append_response_sink(&mut self, new_sink: ServiceInvocationResponseSink) {
         self.response_sinks.insert(new_sink);
+        self.timestamps.update();
     }
 }
 
@@ -285,12 +286,14 @@ impl InFlightInvocationMetadata {
     }
 
     pub fn from_inboxed_invocation(
-        inboxed_invocation: InboxedInvocation,
+        mut inboxed_invocation: InboxedInvocation,
     ) -> (Self, InvocationInput) {
         let (completion_retention_time, idempotency_key) = inboxed_invocation
             .idempotency
             .map(|idempotency| (idempotency.retention, Some(idempotency.key)))
             .unwrap_or((Duration::ZERO, None));
+
+        inboxed_invocation.timestamps.update();
 
         (
             Self {
@@ -309,6 +312,15 @@ impl InFlightInvocationMetadata {
             },
         )
     }
+
+    pub fn set_deployment_id(&mut self, deployment_id: DeploymentId) {
+        debug_assert_eq!(
+            self.deployment_id, None,
+            "No deployment_id should be fixed for the current invocation"
+        );
+        self.deployment_id = Some(deployment_id);
+        self.timestamps.update();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -322,9 +334,11 @@ pub struct CompletedInvocation {
 
 impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
-        in_flight_invocation_metadata: InFlightInvocationMetadata,
+        mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         response_result: ResponseResult,
     ) -> (Self, Duration) {
+        in_flight_invocation_metadata.timestamps.update();
+
         (
             Self {
                 invocation_target: in_flight_invocation_metadata.invocation_target,
