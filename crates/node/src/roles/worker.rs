@@ -8,30 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::config::UpdateableConfiguration;
 use std::time::Duration;
 
+use bincode::error::DecodeError;
 use codederror::CodedError;
-use restate_core::network::MessageRouterBuilder;
-use restate_network::Networking;
+use tracing::info;
 
 use restate_bifrost::Bifrost;
+use restate_core::network::MessageRouterBuilder;
 use restate_core::{cancellation_watcher, metadata, task_center};
 use restate_core::{ShutdownError, TaskKind};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_metadata_store::MetadataStoreClient;
+use restate_network::Networking;
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_node_services::cluster_ctrl::AttachmentRequest;
 use restate_schema::UpdateableSchema;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_types::config::UpdateableConfiguration;
 use restate_types::net::AdvertisedAddress;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::{SubscriptionControllerHandle, Worker};
-use tracing::info;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -137,7 +138,7 @@ impl WorkerRole {
 
         let cc_client = ClusterCtrlSvcClient::new(channel);
 
-        let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, 10, None)
+        let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, Some(10), None)
             .retry(|| async {
                 cc_client
                     .clone()
