@@ -31,8 +31,8 @@ logging:
   env_filter: info,restate=debug
 
 env:
-  - name: RESTATE_TRACING__LOG_FORMAT
-    value: Json
+  - name: RESTATE_LOG_FORMAT
+    value: json
 
 service:
   type: ClusterIP
