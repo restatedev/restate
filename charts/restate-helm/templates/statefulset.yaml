@@ -53,12 +53,12 @@ spec:
             {{- end }}
           readinessProbe:
             httpGet:
-              path: /grpc.health.v1.Health/Check
-              port: ingress
+              path: /health
+              port: admin
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
-            - mountPath: /target
+            - mountPath: /restate-data
               name: storage
             - mountPath: /tmp
               name: tmp
