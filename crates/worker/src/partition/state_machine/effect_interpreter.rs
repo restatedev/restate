@@ -336,11 +336,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 deployment_id,
                 mut metadata,
             } => {
-                debug_assert_eq!(
-                    metadata.deployment_id, None,
-                    "No deployment_id should be fixed for the current invocation"
-                );
-                metadata.deployment_id = Some(deployment_id);
+                metadata.set_deployment_id(deployment_id);
+
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
                 // chosen deployment_id only when the invocation is in-flight.
                 state_storage
@@ -404,6 +401,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .get_response_sinks_mut()
                     .expect("No response sinks available")
                     .insert(additional_response_sink);
+                previous_invocation_status.update_timestamps();
+
                 state_storage
                     .store_invocation_status(&invocation_id, previous_invocation_status)
                     .await?;
