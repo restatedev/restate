@@ -24,7 +24,10 @@ use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, Statis
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::{DbName, DbSpec, Owner, Priority, RocksAccess, RocksDb, RocksError};
+use crate::background::ReadyStorageTask;
+use crate::{
+    metric_definitions, DbName, DbSpec, Owner, Priority, RocksAccess, RocksDb, RocksError,
+};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -72,6 +75,7 @@ impl RocksDbManager {
         if let Some(manager) = DB_MANAGER.get() {
             return manager;
         }
+        metric_definitions::describe_metrics();
         let opts = base_opts.load();
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_limit as usize);
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
@@ -331,8 +335,7 @@ impl RocksDbManager {
     /// Spawn a rocksdb blocking operation in the background
     pub(crate) async fn async_spawn<OP, R>(
         &self,
-        priority: Priority,
-        op: OP,
+        task: ReadyStorageTask<OP>,
     ) -> Result<R, ShutdownError>
     where
         OP: FnOnce() -> R + Send + 'static,
@@ -345,23 +348,23 @@ impl RocksDbManager {
             return Err(ShutdownError);
         }
 
-        self.async_spawn_unchecked(priority, op).await
+        self.async_spawn_unchecked(task).await
     }
 
     /// Ignores the shutdown signal. This should be used if an IO operation needs
     /// to be performed _during_ shutdown.
     pub(crate) async fn async_spawn_unchecked<OP, R>(
         &self,
-        priority: Priority,
-        op: OP,
+        task: ReadyStorageTask<OP>,
     ) -> Result<R, ShutdownError>
     where
         OP: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let priority = task.priority;
         let action = move || {
-            let result = op();
+            let result = task.run();
             // ignoring the error since receiver might not be interested in the response
             let _ = tx.send(result);
         };
@@ -373,7 +376,7 @@ impl RocksDbManager {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn spawn<OP>(&self, priority: Priority, op: OP) -> Result<(), ShutdownError>
+    pub(crate) fn spawn<OP>(&self, task: ReadyStorageTask<OP>) -> Result<(), ShutdownError>
     where
         OP: FnOnce() + Send + 'static,
     {
@@ -383,18 +386,17 @@ impl RocksDbManager {
         {
             return Err(ShutdownError);
         }
-        self.spawn_unchecked(priority, op);
+        self.spawn_unchecked(task);
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn spawn_unchecked<OP>(&self, priority: Priority, op: OP)
+    pub(crate) fn spawn_unchecked<OP>(&self, task: ReadyStorageTask<OP>)
     where
         OP: FnOnce() + Send + 'static,
     {
-        match priority {
-            Priority::High => self.high_pri_pool.spawn(op),
-            Priority::Low => self.low_pri_pool.spawn(op),
+        match task.priority {
+            Priority::High => self.high_pri_pool.spawn(|| task.run()),
+            Priority::Low => self.low_pri_pool.spawn(|| task.run()),
         }
     }
 }
