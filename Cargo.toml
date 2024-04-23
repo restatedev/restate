@@ -37,12 +37,12 @@ restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
+restate-grpc-util = { path = "crates/grpc-util" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
-restate-meta = { path = "crates/meta" }
 restate-meta-rest-model = { path = "crates/meta-rest-model" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-network = { path = "crates/network" }
@@ -51,14 +51,14 @@ restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
 restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }
+restate-rocksdb = { path = "crates/rocksdb" }
+restate-schema = { path = "crates/schema" }
 restate-schema-api = { path = "crates/schema-api" }
-restate-schema-impl = { path = "crates/schema-impl" }
 restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
 restate-service-client = { path = "crates/service-client" }
 restate-service-protocol = { path = "crates/service-protocol" }
 restate-storage-api = { path = "crates/storage-api" }
-restate-storage-proto = { path = "crates/storage-proto" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
 restate-storage-rocksdb = { path = "crates/storage-rocksdb" }
@@ -69,7 +69,6 @@ restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
 restate-types = { path = "crates/types" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
-restate-worker-api = { path = "crates/worker-api" }
 
 # External crates
 ahash = "0.8.5"
@@ -85,21 +84,26 @@ base64 = "0.21"
 bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde", ] }
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
+bytesize = { version = "1.3.0" }
 bytestring = { version = "1.2", features = ["serde"] }
+clap = { version = "4", default-features = false }
 chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
 criterion = "0.5"
 dashmap = { version = "5.5.3" }
 datafusion = { version = "35.0.0" }
 datafusion-expr = { version = "35.0.0" }
+derive-getters = {  version = "0.3.0" }
 derive_builder = "0.12.0"
 derive_more = { version = "0.99.17" }
 drain = "0.1.1"
 enum-map = { version = "2.7.3" }
 enumset = { version = "1.1.3" }
+flexbuffers = { version = "2.0.0" }
 futures = "0.3.25"
 futures-sink = "0.3.25"
 futures-util = "0.3.25"
 googletest = "0.10"
+hostname = { version = "0.4.0" }
 http = "0.2.9"
 humantime = "2.1.0"
 hyper = { version = "0.14.24", default-features = false }
@@ -107,16 +111,18 @@ hyper-rustls = { version = "0.24.1", features = ["http2"] }
 itertools = "0.11.0"
 metrics = { version = "0.22" }
 once_cell = "1.18"
-opentelemetry = { version = "0.20.0" }
-opentelemetry-http = { version = "0.9.0" }
-opentelemetry_api = { version = "0.20.0" }
+opentelemetry = { version = "0.22.0" }
+opentelemetry-http = { version = "0.11.1" }
+opentelemetry_sdk = { version = "0.22.1" }
+parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
 prost = "0.12.1"
 prost-build = "0.12.1"
 prost-types = "0.12.1"
 rand = "0.8.5"
-rocksdb = { version = "0.22.0" }
+rayon = { version = "1.10" }
+rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", branch="next" }
 rustls = "0.21.6"
 schemars = { version = "0.8", features = ["bytes"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -124,6 +130,7 @@ serde_json = "1.0"
 serde_with = "2.2"
 serde_yaml = "0.9"
 sha2 = "0.10.8"
+smartstring = { version = "1.0.1" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.26.1" }
 strum_macros = { version = "0.26.1" }
@@ -134,27 +141,20 @@ test-log = { version = "0.2.11", default-features = false, features = ["trace"] 
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
-tokio-util = { version = "0.7.10" }
 tokio-stream = "0.1.14"
+tokio-util = { version = "0.7.10" }
 tonic = { version = "0.10.2", default-features = false }
 tonic-reflection = { version = "0.10.2" }
+tonic-health = "0.10.2"
 tonic-build = "0.11.0"
 tower = "0.4"
 tower-http = { version = "0.4", default-features = false }
 tracing = "0.1"
-tracing-opentelemetry = { version = "0.21.0" }
+tracing-opentelemetry = { version = "0.23.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-test = { version = "0.2.4" }
 ulid = { version = "1.1.0" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
-
-[patch.crates-io]
-# Patch these until https://github.com/smithy-lang/smithy-rs/pull/3416 merged and released
-aws-config = { git = "https://github.com/restatedev/aws-sdk-rust", commit = "684ccb3c39808a3ad183adbba07a2daa3b9a5dae" }
-aws-credential-types = { git = "https://github.com/restatedev/aws-sdk-rust", commit = "684ccb3c39808a3ad183adbba07a2daa3b9a5dae" }
-aws-sdk-lambda = { git = "https://github.com/restatedev/aws-sdk-rust", commit = "684ccb3c39808a3ad183adbba07a2daa3b9a5dae" }
-aws-sdk-sts = { git = "https://github.com/restatedev/aws-sdk-rust", commit = "684ccb3c39808a3ad183adbba07a2daa3b9a5dae" }
-aws-smithy-runtime = { git = "https://github.com/restatedev/aws-sdk-rust", commit = "684ccb3c39808a3ad183adbba07a2daa3b9a5dae" }
 
 [profile.release]
 opt-level = 3

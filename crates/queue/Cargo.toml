@@ -15,7 +15,7 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
-restate-types = { workspace = true, features = ["serde", "mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 tempfile = { workspace = true }

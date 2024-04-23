@@ -15,11 +15,11 @@ use std::str::FromStr;
 use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
 use crate::console::c_println;
-use crate::ui::component_methods::{
-    create_component_handlers_table, create_component_handlers_table_diff, icon_for_component_type,
-};
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::render_deployment_url;
+use crate::ui::service_handlers::{
+    create_service_handlers_table, create_service_handlers_table_diff, icon_for_service_type,
+};
 use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 
@@ -30,7 +30,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::components::ComponentMetadata;
+use restate_meta_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
@@ -195,7 +195,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             c_eprintln!();
             c_warn!(
                 "This deployment is already known to the server under the ID \"{}\". \
-                Confirming this operation will overwrite components defined by the existing \
+                Confirming this operation will overwrite services defined by the existing \
                 deployment. Inflight invocations to this deployment might move to an unrecoverable \
                 failure state afterwards!.\
                 \n\nThis is a DANGEROUS operation! \n
@@ -207,15 +207,15 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         }
     }
 
-    let discovered_component_names = dry_run_result
-        .components
+    let discovered_service_names = dry_run_result
+        .services
         .iter()
-        .map(|component| component.name.clone())
+        .map(|service| service.name.clone())
         .collect::<HashSet<_>>();
 
     // Services found in this discovery
     let (added, updated): (Vec<_>, Vec<_>) = dry_run_result
-        .components
+        .services
         .iter()
         .partition(|svc| svc.revision == 1);
 
@@ -227,21 +227,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     if !added.is_empty() {
         c_println!();
         c_println!(
-            "❯ COMPONENTS THAT WILL BE {}:",
+            "❯ SERVICES THAT WILL BE {}:",
             Styled(Style::Success, "ADDED")
         );
-        for component in added {
-            c_indentln!(1, "- {}", Styled(Style::Success, &component.name),);
+        for service in added {
+            c_indentln!(1, "- {}", Styled(Style::Success, &service.name),);
             c_indentln!(
                 2,
                 "Type: {:?} {}",
-                component.ty,
-                icon_for_component_type(&component.ty),
+                service.ty,
+                icon_for_service_type(&service.ty),
             );
 
             c_indent_table!(
                 2,
-                create_component_handlers_table(&env.ui_config, &component.handlers)
+                create_service_handlers_table(&env.ui_config, &service.handlers)
             );
             c_println!();
         }
@@ -260,29 +260,24 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         );
         progress.enable_steady_tick(std::time::Duration::from_millis(120));
 
-        let mut existing_components: HashMap<String, ComponentMetadata> = HashMap::new();
-        for component in &updated {
+        let mut existing_services: HashMap<String, ServiceMetadata> = HashMap::new();
+        for service in &updated {
             // Get the current service information by querying the server.
             progress.set_message(format!(
-                "Fetching information about component '{}'",
-                component.name,
+                "Fetching information about service '{}'",
+                service.name,
             ));
-            match client
-                .get_component(&component.name)
-                .await?
-                .into_body()
-                .await
-            {
-                Ok(component_metadata) => {
-                    existing_components.insert(component.name.clone(), component_metadata);
+            match client.get_service(&service.name).await?.into_body().await {
+                Ok(service_metadata) => {
+                    existing_services.insert(service.name.clone(), service_metadata);
                 }
                 Err(e) => {
                     // Let the spinner pause to print the error.
                     progress.suspend(|| {
                         c_eprintln!(
-                        "Warning: Couldn't fetch information about component {} from Restate server. \
-                         We will not be able to show the detailed changes for this component.",
-                        component.name,
+                        "Warning: Couldn't fetch information about service {} from Restate server. \
+                         We will not be able to show the detailed changes for this service.",
+                        service.name,
                     );
                         c_error!("{}", e);
                     });
@@ -292,14 +287,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         progress.finish_and_clear();
 
         c_println!(
-            "❯ COMPONENTS THAT WILL BE {}:",
+            "❯ SERVICES THAT WILL BE {}:",
             Styled(Style::Warn, "UPDATED")
         );
         for svc in updated {
             c_indentln!(1, "- {}", Styled(Style::Info, &svc.name),);
-            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_component_type(&svc.ty),);
+            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_service_type(&svc.ty),);
 
-            if let Some(existing_svc) = existing_components.get(&svc.name) {
+            if let Some(existing_svc) = existing_services.get(&svc.name) {
                 c_indentln!(
                     2,
                     "Revision: {} -> {}",
@@ -323,7 +318,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     );
                 }
 
-                let tt = create_component_handlers_table_diff(
+                let tt = create_service_handlers_table_diff(
                     &env.ui_config,
                     &existing_svc.handlers,
                     &svc.handlers,
@@ -333,7 +328,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 c_indentln!(
                     2,
                     "{}",
-                    create_component_handlers_table(&env.ui_config, &svc.handlers)
+                    create_service_handlers_table(&env.ui_config, &svc.handlers)
                 );
             }
             c_println!();
@@ -341,21 +336,21 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         c_println!();
     }
 
-    // The following components will be removed/forgotten:
+    // The following services will be removed/forgotten:
     if let Some(existing_endpoint) = existing_deployment {
-        // The following components will be removed/forgotten:
-        let components_removed = existing_endpoint
-            .components
+        // The following services will be removed/forgotten:
+        let services_removed = existing_endpoint
+            .services
             .iter()
-            .filter(|component| !discovered_component_names.contains(&component.name))
+            .filter(|service| !discovered_service_names.contains(&service.name))
             .collect::<Vec<_>>();
-        if !components_removed.is_empty() {
+        if !services_removed.is_empty() {
             c_println!();
             c_println!(
-                "❯ COMPONENTS THAT WILL BE {}:",
+                "❯ SERVICES THAT WILL BE {}:",
                 Styled(Style::Danger, "REMOVED")
             );
-            for svc in components_removed {
+            for svc in services_removed {
                 c_indentln!(2, "- {}", Styled(Style::Danger, &svc.name));
             }
             c_println!();
@@ -387,8 +382,8 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // print the result of the discovery
     c_success!("DEPLOYMENT:");
     let mut table = Table::new_styled(&env.ui_config);
-    table.set_styled_header(vec!["COMPONENT", "REV"]);
-    for svc in dry_run_result.components {
+    table.set_styled_header(vec!["SERVICE", "REV"]);
+    for svc in dry_run_result.services {
         table.add_row(vec![svc.name, svc.revision.to_string()]);
     }
     c_println!("{}", table);
@@ -423,9 +418,9 @@ async fn resolve_deployment(
         .await
         .ok()
         .map(|endpoint| {
-            let component_endpoint = endpoint.deployment;
-            cache.insert(deployment_id.to_string(), component_endpoint.clone());
-            Some(component_endpoint)
+            let service_endpoint = endpoint.deployment;
+            cache.insert(deployment_id.to_string(), service_endpoint.clone());
+            Some(service_endpoint)
         })?;
     progress.finish_and_clear();
 

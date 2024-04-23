@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 mod metadata;
+pub mod metadata_store;
 mod metric_definitions;
 pub mod network;
 mod task_center;
 mod task_center_types;
 
-pub use metadata::{spawn_metadata_manager, Metadata, MetadataManager, MetadataWriter};
+pub use metadata::{
+    spawn_metadata_manager, Metadata, MetadataKind, MetadataManager, MetadataWriter, SyncError,
+};
 pub use task_center::*;
 pub use task_center_types::*;
 

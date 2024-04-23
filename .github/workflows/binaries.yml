@@ -46,7 +46,7 @@ jobs:
       RUSTC_WRAPPER: "sccache"
       SCCACHE_GHA_ENABLED: "true"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
@@ -65,7 +65,7 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.3
+        uses: mozilla-actions/sccache-action@v0.0.4
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -78,7 +78,7 @@ jobs:
         uses: ./.github/actions/install-protoc
 
       - name: Setup just
-        uses: extractions/setup-just@v1
+        uses: extractions/setup-just@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -112,7 +112,7 @@ jobs:
       - name: Create tar
         run: tar -cvzf restate.${{ matrix.build.target }}.tar.gz LICENSE NOTICE restate-server restate
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: restate.${{ matrix.build.target }}.tar.gz
           path: restate.${{ matrix.build.target }}.tar.gz

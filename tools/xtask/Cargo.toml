@@ -9,20 +9,22 @@ publish = false
 
 [dependencies]
 restate-admin = { workspace = true, features = ["options_schema"] }
-restate-bifrost = { workspace = true, features = ["options_schema"] }
+restate-bifrost = { workspace = true, features = ["options_schema", "test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
-restate-meta = { workspace = true }
+restate-metadata-store = { workspace = true, features = ["test-util"] }
+restate-node = { workspace = true }
 restate-node-services = { workspace = true, features = ["clients"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
+restate-service-client = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["discovery"]}
 restate-server = { workspace = true, features = ["options_schema"] }
-restate-types = { workspace = true }
-restate-worker-api = { workspace = true }
+restate-types = { workspace = true, features = ["schemars"] }
+restate-worker = { workspace = true, features = ["options_schema"] }
 
 anyhow = { workspace = true }
 drain = { workspace = true }
 reqwest = { version = "0.11.16", default-features = false, features = ["rustls-tls"] }
 schemars = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = "0.9"
 tokio = { workspace = true }
 tonic = { workspace = true }

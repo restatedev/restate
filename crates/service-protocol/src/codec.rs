@@ -36,6 +36,13 @@ macro_rules! match_decode {
     };
 }
 
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct NamedEntryTemplate {
+    // By spec the field `name` is always tag 12
+    #[prost(string, optional, tag = "12")]
+    name: Option<String>,
+}
+
 #[derive(Debug, Default, Copy, Clone)]
 pub struct ProtobufRawEntryCodec;
 
@@ -52,6 +59,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
                     })
                     .collect(),
                 value,
+                ..Default::default()
             }
             .encode_to_vec()
             .into(),
@@ -81,11 +89,28 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             ClearAllState,
             GetStateKeys,
             Sleep,
-            Invoke,
-            BackgroundInvoke,
+            Call,
+            OneWayCall,
             Awakeable,
-            CompleteAwakeable
+            CompleteAwakeable,
+            Run
         })
+    }
+
+    fn read_entry_name(
+        entry_type: EntryType,
+        entry_value: Bytes,
+    ) -> Result<Option<String>, RawEntryCodecError> {
+        Ok(NamedEntryTemplate::decode(entry_value)
+            .map_err(|e| {
+                RawEntryCodecError::new(
+                    entry_type,
+                    ErrorKind::Decode {
+                        source: Some(e.into()),
+                    },
+                )
+            })?
+            .name)
     }
 
     fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(
@@ -101,7 +126,9 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {
-            CompletionResult::Empty => protocol::completion_message::Result::Empty(()),
+            CompletionResult::Empty => {
+                protocol::completion_message::Result::Empty(protocol::Empty {})
+            }
             CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
                 protocol::completion_message::Result::Failure(protocol::Failure {
@@ -140,134 +167,25 @@ mod mocks {
 
     use crate::awakeable_id::AwakeableIdentifier;
     use crate::pb::protocol::{
-        awakeable_entry_message, complete_awakeable_entry_message, get_state_entry_message,
-        get_state_keys_entry_message, invoke_entry_message, output_entry_message,
-        AwakeableEntryMessage, BackgroundInvokeEntryMessage, ClearAllStateEntryMessage,
-        ClearStateEntryMessage, CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage,
-        GetStateKeysEntryMessage, InputEntryMessage, InvokeEntryMessage, OutputEntryMessage,
-        SetStateEntryMessage,
+        awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
+        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
+        AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, GetStateKeysEntryMessage,
+        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
     };
+    use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::{HandlerType, InvocationTarget};
     use restate_types::journal::enriched::{
-        AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
+        AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
-        GetStateKeysResult, GetStateResult, InputEntry,
+        GetStateKeysResult, GetStateResult, InputEntry, OutputEntry,
     };
 
     impl ProtobufRawEntryCodec {
         pub fn serialize(entry: Entry) -> PlainRawEntry {
-            match entry {
-                Entry::Input(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::Input {},
-                    Self::serialize_input_entry(entry),
-                ),
-                Entry::Output(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::Output {},
-                    OutputEntryMessage {
-                        result: Some(match entry.result {
-                            EntryResult::Success(s) => output_entry_message::Result::Value(s),
-                            EntryResult::Failure(code, msg) => {
-                                output_entry_message::Result::Failure(Failure {
-                                    code: code.into(),
-                                    message: msg.to_string(),
-                                })
-                            }
-                        }),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::GetState(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::GetState {
-                        is_completed: entry.is_completed(),
-                    },
-                    GetStateEntryMessage {
-                        key: entry.key,
-                        result: entry.value.map(|value| match value {
-                            GetStateResult::Empty => get_state_entry_message::Result::Empty(()),
-                            GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
-                            GetStateResult::Failure(code, reason) => {
-                                get_state_entry_message::Result::Failure(Failure {
-                                    code: code.into(),
-                                    message: reason.to_string(),
-                                })
-                            }
-                        }),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::SetState(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::SetState {},
-                    SetStateEntryMessage {
-                        key: entry.key,
-                        value: entry.value,
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::ClearState(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::ClearState {},
-                    ClearStateEntryMessage { key: entry.key }
-                        .encode_to_vec()
-                        .into(),
-                ),
-                Entry::ClearAllState => PlainRawEntry::new(
-                    PlainEntryHeader::ClearAllState {},
-                    ClearAllStateEntryMessage {}.encode_to_vec().into(),
-                ),
-                Entry::Invoke(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::Invoke {
-                        is_completed: entry.is_completed(),
-                        enrichment_result: None,
-                    },
-                    InvokeEntryMessage {
-                        service_name: entry.request.service_name.into(),
-                        method_name: entry.request.method_name.into(),
-                        parameter: entry.request.parameter,
-                        result: entry.result.map(|r| match r {
-                            EntryResult::Success(v) => invoke_entry_message::Result::Value(v),
-                            EntryResult::Failure(code, msg) => {
-                                invoke_entry_message::Result::Failure(Failure {
-                                    code: code.into(),
-                                    message: msg.to_string(),
-                                })
-                            }
-                        }),
-                        ..InvokeEntryMessage::default()
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::BackgroundInvoke(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::BackgroundInvoke {
-                        enrichment_result: (),
-                    },
-                    BackgroundInvokeEntryMessage {
-                        service_name: entry.request.service_name.into(),
-                        method_name: entry.request.method_name.into(),
-                        parameter: entry.request.parameter,
-                        invoke_time: entry.invoke_time,
-                        ..BackgroundInvokeEntryMessage::default()
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ),
-                Entry::CompleteAwakeable(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::CompleteAwakeable {
-                        enrichment_result: (),
-                    },
-                    Self::serialize_complete_awakeable_entry(entry),
-                ),
-                Entry::Awakeable(entry) => PlainRawEntry::new(
-                    PlainEntryHeader::Awakeable {
-                        is_completed: entry.is_completed(),
-                    },
-                    Self::serialize_awakeable_entry(entry),
-                ),
-                _ => unimplemented!(),
-            }
+            Self::serialize_enriched(entry).erase_enrichment()
         }
 
         pub fn serialize_enriched(entry: Entry) -> EnrichedRawEntry {
@@ -275,6 +193,10 @@ mod mocks {
                 Entry::Input(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::Input {},
                     Self::serialize_input_entry(entry),
+                ),
+                Entry::Output(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Output {},
+                    Self::serialize_output_entry(entry),
                 ),
                 Entry::CompleteAwakeable(entry) => {
                     let (invocation_id, entry_index) = AwakeableIdentifier::from_str(&entry.id)
@@ -291,24 +213,117 @@ mod mocks {
                         Self::serialize_complete_awakeable_entry(entry),
                     )
                 }
+                Entry::GetState(entry) => EnrichedRawEntry::new(
+                    EnrichedEntryHeader::GetState {
+                        is_completed: entry.is_completed(),
+                    },
+                    GetStateEntryMessage {
+                        key: entry.key,
+                        result: entry.value.map(|value| match value {
+                            GetStateResult::Empty => {
+                                get_state_entry_message::Result::Empty(protocol::Empty {})
+                            }
+                            GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
+                            GetStateResult::Failure(code, reason) => {
+                                get_state_entry_message::Result::Failure(Failure {
+                                    code: code.into(),
+                                    message: reason.to_string(),
+                                })
+                            }
+                        }),
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                Entry::Call(entry) => {
+                    let invocation_id = InvocationId::mock_random();
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::Call {
+                            is_completed: entry.is_completed(),
+                            enrichment_result: Some(CallEnrichmentResult {
+                                invocation_id,
+                                invocation_target: InvocationTarget::VirtualObject {
+                                    name: entry.request.service_name.clone(),
+                                    key: entry.request.key.clone(),
+                                    handler: entry.request.handler_name.clone(),
+                                    handler_ty: HandlerType::Exclusive,
+                                },
+                                span_context: Default::default(),
+                            }),
+                        },
+                        CallEntryMessage {
+                            service_name: entry.request.service_name.into(),
+                            handler_name: entry.request.handler_name.into(),
+                            parameter: entry.request.parameter,
+                            result: entry.result.map(|r| match r {
+                                EntryResult::Success(v) => call_entry_message::Result::Value(v),
+                                EntryResult::Failure(code, msg) => {
+                                    call_entry_message::Result::Failure(Failure {
+                                        code: code.into(),
+                                        message: msg.to_string(),
+                                    })
+                                }
+                            }),
+                            ..Default::default()
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    )
+                }
+                Entry::OneWayCall(entry) => {
+                    let invocation_id = InvocationId::mock_random();
+
+                    EnrichedRawEntry::new(
+                        EnrichedEntryHeader::OneWayCall {
+                            enrichment_result: CallEnrichmentResult {
+                                invocation_id,
+                                invocation_target: InvocationTarget::VirtualObject {
+                                    name: entry.request.service_name.clone(),
+                                    key: entry.request.key.clone(),
+                                    handler: entry.request.handler_name.clone(),
+                                    handler_ty: HandlerType::Exclusive,
+                                },
+                                span_context: Default::default(),
+                            },
+                        },
+                        OneWayCallEntryMessage {
+                            service_name: entry.request.service_name.into(),
+                            handler_name: entry.request.handler_name.into(),
+                            parameter: entry.request.parameter,
+                            invoke_time: entry.invoke_time,
+                            ..Default::default()
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    )
+                }
                 Entry::SetState(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::SetState {},
                     SetStateEntryMessage {
                         key: entry.key,
                         value: entry.value,
+                        ..Default::default()
                     }
                     .encode_to_vec()
                     .into(),
                 ),
                 Entry::ClearState(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::ClearState {},
-                    ClearStateEntryMessage { key: entry.key }
-                        .encode_to_vec()
-                        .into(),
+                    ClearStateEntryMessage {
+                        key: entry.key,
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                    .into(),
                 ),
                 Entry::ClearAllState => EnrichedRawEntry::new(
                     EnrichedEntryHeader::ClearAllState {},
-                    ClearAllStateEntryMessage {}.encode_to_vec().into(),
+                    ClearAllStateEntryMessage {
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                    .into(),
                 ),
                 Entry::GetStateKeys(entry) => EnrichedRawEntry::new(
                     EnrichedEntryHeader::GetStateKeys {
@@ -330,6 +345,24 @@ mod mocks {
             InputEntryMessage {
                 headers: vec![],
                 value,
+                ..Default::default()
+            }
+            .encode_to_vec()
+            .into()
+        }
+
+        fn serialize_output_entry(OutputEntry { result }: OutputEntry) -> Bytes {
+            OutputEntryMessage {
+                result: Some(match result {
+                    EntryResult::Success(success) => output_entry_message::Result::Value(success),
+                    EntryResult::Failure(code, reason) => {
+                        output_entry_message::Result::Failure(Failure {
+                            code: code.into(),
+                            message: reason.to_string(),
+                        })
+                    }
+                }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -350,6 +383,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -368,6 +402,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -389,6 +424,7 @@ mod mocks {
                         })
                     }
                 }),
+                ..Default::default()
             }
             .encode_to_vec()
             .into()
@@ -409,16 +445,16 @@ mod tests {
 
         // Create an invoke entry
         let raw_entry: PlainRawEntry = RawEntry::new(
-            PlainEntryHeader::Invoke {
+            PlainEntryHeader::Call {
                 is_completed: false,
                 enrichment_result: None,
             },
-            protocol::InvokeEntryMessage {
+            protocol::CallEntryMessage {
                 service_name: "MySvc".to_string(),
-                method_name: "MyMethod".to_string(),
+                handler_name: "MyMethod".to_string(),
 
                 parameter: Bytes::from_static(b"input"),
-                ..protocol::InvokeEntryMessage::default()
+                ..protocol::CallEntryMessage::default()
             }
             .encode_to_vec()
             .into(),
@@ -429,7 +465,7 @@ mod tests {
             .deserialize_entry_ref::<ProtobufRawEntryCodec>()
             .unwrap();
         match &mut expected_entry {
-            Entry::Invoke(invoke_entry_inner) => {
+            Entry::Call(invoke_entry_inner) => {
                 invoke_entry_inner.result = Some(EntryResult::Success(invoke_result.clone()))
             }
             _ => unreachable!(),

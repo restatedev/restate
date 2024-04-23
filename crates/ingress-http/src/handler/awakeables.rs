@@ -14,21 +14,21 @@ use super::Handler;
 use super::HandlerError;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use http_body_util::Full;
 use prost::Message;
 use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_ingress_dispatcher::{IdempotencyMode, IngressRequest};
-use restate_schema_api::component::ComponentMetadataResolver;
+use restate_ingress_dispatcher::IngressDispatcherRequest;
+use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::{FullInvocationId, ServiceId};
-use restate_types::invocation::SpanRelation;
+use restate_types::invocation::{InvocationTarget, ResponseResult, SpanRelation};
 use tracing::{info, trace, warn, Instrument};
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ComponentMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_awakeable<B: http_body::Body>(
@@ -39,16 +39,19 @@ where
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
-        let fid =
-            FullInvocationId::generate(ServiceId::unkeyed(restate_pb::AWAKEABLES_SERVICE_NAME));
-
         let handler_name: &'static str = match &awakeable_request_type {
             AwakeableRequestType::Resolve { .. } => restate_pb::AWAKEABLES_RESOLVE_HANDLER_NAME,
             AwakeableRequestType::Reject { .. } => restate_pb::AWAKEABLES_REJECT_HANDLER_NAME,
         };
+        let invocation_target = InvocationTarget::Service {
+            name: ByteString::from_static(restate_pb::AWAKEABLES_SERVICE_NAME),
+            handler: ByteString::from_static(handler_name),
+        };
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         // Prepare the tracing span
-        let (ingress_span, ingress_span_context) = prepare_tracing_span(&fid, handler_name, &req);
+        let (ingress_span, ingress_span_context) =
+            prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
         let dispatcher = self.dispatcher.clone();
         async move {
@@ -89,15 +92,15 @@ where
                 }
             };
 
-            let invocation_id: InvocationId = fid.clone().into();
-            let (invocation, response_rx) = IngressRequest::invocation(
-                fid,
-                handler_name,
+            let (invocation, response_rx) = IngressDispatcherRequest::invocation(
+                invocation_id,
+                invocation_target,
                 payload,
                 SpanRelation::Linked(ingress_span_context),
-                IdempotencyMode::None,
+                None,
                 vec![],
             );
+            let ingress_correlation_id = invocation.correlation_id.clone();
             if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
                 warn!(
                     restate.invocation.id = %invocation_id,
@@ -111,17 +114,19 @@ where
             let response = if let Ok(response) = response_rx.await {
                 response
             } else {
-                dispatcher.evict_pending_response(&invocation_id);
+                dispatcher.evict_pending_response(&ingress_correlation_id);
                 warn!("Response channel was closed");
                 return Err(HandlerError::Unavailable);
             };
 
-            match response.into() {
-                Ok(_) => Ok(hyper::Response::builder()
+            match response.result {
+                ResponseResult::Success(_) => Ok(hyper::Response::builder()
                     .status(StatusCode::ACCEPTED)
                     .body(Full::default())
                     .unwrap()),
-                Err(error) => Ok(HandlerError::Invocation(error).into_response()),
+                ResponseResult::Failure(error) => {
+                    Ok(HandlerError::Invocation(error).into_response())
+                }
             }
         }
         .instrument(ingress_span)

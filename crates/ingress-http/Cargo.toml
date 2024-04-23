@@ -16,7 +16,7 @@ options_schema = ["dep:schemars"]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
-restate-schema-api = { workspace = true, features = ["component"]}
+restate-schema-api = { workspace = true, features = ["service", "invocation_target"]}
 restate-types = { workspace = true }
 
 # To invoke the awakeables built-in service
@@ -25,6 +25,7 @@ prost = { workspace = true }
 
 # Encoding/Decoding
 bytes = { workspace = true }
+bytestring = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
 serde_json = { workspace = true }
@@ -37,14 +38,20 @@ restate-futures-util = { workspace = true }
 hyper = { version = "1", features = ["server"] }
 tokio = { workspace = true }
 http = "1.0"
+url = "2.5.0"
 http-body = "1.0"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
 tower = { version = "0.4.13", features = ["util"] }
 tower-http = { version = "0.5.2", features = ["cors", "normalize-path"] }
 
+# We need this until we convert everything else to http 1.0/hyper 1.0
+# https://github.com/restatedev/restate/issues/96
+http-old = { package = "http", version = "0.2.12" }
+
 # Tracing
 opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
@@ -57,12 +64,14 @@ schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 urlencoding = "2.1"
 pin-project-lite = "0.2.13"
+iso8601 = "0.6.1"
+humantime = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true }
-restate-types = { workspace = true, features = ["mocks"] }
+restate-types = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["mocks"]}
 
 hyper = { version = "1.0", features = ["full"] }

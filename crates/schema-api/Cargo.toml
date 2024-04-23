@@ -10,12 +10,13 @@ publish = false
 [features]
 default = []
 
-deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "component"]
+deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "service"]
 mocks = []
-serde = ["dep:serde", "dep:serde_with", "restate-types?/serde", "dep:restate-serde-util"]
-serde_schema = ["serde", "dep:schemars", "restate-types?/serde_schema", "restate-serde-util?/schema"]
-component = ["dep:bytes", "dep:restate-types"]
-subscription = ["dep:anyhow", "dep:restate-types"]
+serde = ["dep:serde", "dep:serde_with", "dep:restate-serde-util"]
+serde_schema = ["serde", "dep:schemars", "restate-types?/schemars", "restate-serde-util?/schema"]
+service = ["dep:bytes", "dep:restate-types", "dep:humantime"]
+invocation_target = ["service", "dep:bytes", "dep:restate-types", "dep:thiserror", "dep:http", "dep:restate-serde-util", "dep:bytestring", "dep:itertools"]
+subscription = ["dep:anyhow", "dep:restate-types", "dep:tracing", "dep:thiserror"]
 
 [dependencies]
 restate-base64-util = { workspace = true, optional = true }
@@ -27,6 +28,10 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 bytestring = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+humantime = { workspace = true, optional = true }
+itertools = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }

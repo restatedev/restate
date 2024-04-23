@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Restate uses many identifiers to uniquely identify its components and entities.
+//! Restate uses many identifiers to uniquely identify its services and entities.
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use ulid::Ulid;
 
+use rand::RngCore;
 use std::fmt;
+use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
-use uuid::Uuid;
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
@@ -25,6 +26,7 @@ use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
+use crate::invocation::InvocationTarget;
 use crate::time::MillisSinceEpoch;
 
 /// Identifying the leader epoch of a partition processor
@@ -40,12 +42,23 @@ use crate::time::MillisSinceEpoch;
     derive_more::From,
     derive_more::Into,
     derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[display(fmt = "e{}", _0)]
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
     pub const INITIAL: Self = Self(1);
+
+    pub fn next(self) -> Self {
+        LeaderEpoch(self.0 + 1)
+    }
+}
+
+impl Default for LeaderEpoch {
+    fn default() -> Self {
+        Self::INITIAL
+    }
 }
 
 /// Identifying the partition
@@ -58,10 +71,17 @@ pub type PartitionLeaderEpoch = (PartitionId, LeaderEpoch);
 pub type EntryIndex = u32;
 
 /// Unique Id of a deployment.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct DeploymentId(pub(crate) Ulid);
 
@@ -82,10 +102,17 @@ impl Default for DeploymentId {
 }
 
 /// Unique Id of a subscription.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct SubscriptionId(pub(crate) Ulid);
 
@@ -145,10 +172,17 @@ pub trait ResourceId {
 }
 
 /// Discriminator for invocation instances
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, Ord, PartialOrd)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Ord,
+    PartialOrd,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct InvocationUuid(Ulid);
 
@@ -223,13 +257,13 @@ impl From<u128> for InvocationUuid {
     }
 }
 
-impl From<InvocationUuid> for opentelemetry_api::trace::TraceId {
+impl From<InvocationUuid> for opentelemetry::trace::TraceId {
     fn from(value: InvocationUuid) -> Self {
         Self::from_bytes(value.to_bytes())
     }
 }
 
-impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
+impl From<InvocationUuid> for opentelemetry::trace::SpanId {
     fn from(value: InvocationUuid) -> Self {
         let raw_be_bytes = value.to_bytes();
         let last8: [u8; 8] = std::convert::TryInto::try_into(&raw_be_bytes[8..16]).unwrap();
@@ -241,29 +275,24 @@ impl From<InvocationUuid> for opentelemetry_api::trace::SpanId {
 ///
 /// Services are isolated by key. This means that there cannot be two concurrent
 /// invocations for the same service instance (service name, key).
-#[derive(Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub struct ServiceId {
+    // TODO rename this to KeyedServiceId. This type can be used only by keyed service types (virtual objects and workflows)
     /// Identifies the grpc service
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
-    pub key: Bytes,
+    pub key: ByteString,
 
     partition_key: PartitionKey,
 }
 
 impl ServiceId {
-    pub fn new(service_name: impl Into<ByteString>, key: impl Into<Bytes>) -> Self {
+    pub fn new(service_name: impl Into<ByteString>, key: impl Into<ByteString>) -> Self {
         let key = key.into();
         let partition_key = partitioner::HashPartitioner::compute_partition_key(&key);
         Self::with_partition_key(partition_key, service_name, key)
-    }
-
-    pub fn unkeyed(service_name: impl Into<ByteString>) -> Self {
-        Self::new(
-            service_name,
-            Bytes::copy_from_slice(Uuid::now_v7().to_string().as_ref()),
-        )
     }
 
     /// # Important
@@ -271,7 +300,7 @@ impl ServiceId {
     pub fn with_partition_key(
         partition_key: PartitionKey,
         service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
+        key: impl Into<ByteString>,
     ) -> Self {
         Self {
             service_name: service_name.into(),
@@ -288,12 +317,19 @@ impl WithPartitionKey for ServiceId {
 }
 
 /// InvocationId is a unique identifier of the invocation,
-/// including enough routing information for the network component
+/// including enough routing information for the network service
 /// to route requests to the correct partition processors.
-#[derive(Eq, Hash, PartialEq, Clone, Debug, PartialOrd, Ord)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    PartialOrd,
+    Ord,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
 )]
 pub struct InvocationId {
     /// Partition key of the called service
@@ -305,11 +341,31 @@ pub struct InvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
-    pub fn new(partition_key: PartitionKey, invocation_uuid: impl Into<InvocationUuid>) -> Self {
-        Self {
-            partition_key,
-            inner: invocation_uuid.into(),
-        }
+    pub fn generate(invocation_target: &InvocationTarget) -> Self {
+        let partition_key = invocation_target
+            .key()
+            // If the invocation target is keyed, the PK is inferred from the key
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            // In all the other cases, the PK is random
+            .unwrap_or_else(|| rand::thread_rng().next_u64());
+
+        InvocationId::from_parts(partition_key, InvocationUuid::new())
+    }
+
+    pub fn generate_with_idempotency_key(
+        invocation_target: &InvocationTarget,
+        idempotency_key: impl Hash,
+    ) -> Self {
+        let partition_key = invocation_target
+            .key()
+            // If the invocation target is keyed, the PK is inferred from the key
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            // The PK is inferred from the idempotency key
+            .unwrap_or_else(|| {
+                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
+            });
+
+        InvocationId::from_parts(partition_key, InvocationUuid::new())
     }
 
     pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
@@ -329,6 +385,12 @@ impl InvocationId {
 
     pub fn to_bytes(&self) -> EncodedInvocationId {
         encode_invocation_id(&self.partition_key, &self.inner)
+    }
+}
+
+impl From<InvocationId> for Bytes {
+    fn from(value: InvocationId) -> Self {
+        Bytes::copy_from_slice(&value.to_bytes())
     }
 }
 
@@ -367,7 +429,7 @@ impl TryFrom<&[u8]> for InvocationId {
 impl From<EncodedInvocationId> for InvocationId {
     fn from(encoded_id: EncodedInvocationId) -> Self {
         // This optimizes nicely by the compiler. We unwrap because array length is guaranteed to
-        // fit both components according to EncodedInvocatioId type definition.
+        // fit both services according to EncodedInvocatioId type definition.
         let partition_key_bytes = encoded_id[..size_of::<PartitionKey>()].try_into().unwrap();
         let partition_key = PartitionKey::from_be_bytes(partition_key_bytes);
 
@@ -423,97 +485,71 @@ impl FromStr for InvocationId {
     }
 }
 
-/// Id of a single service invocation.
-///
-/// A service invocation id is composed of a [`ServiceId`] and an [`InvocationUuid`]
-/// that makes the id unique.
-#[derive(Eq, Hash, PartialEq, Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct FullInvocationId {
+#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct IdempotencyId {
     /// Identifies the invoked service
-    pub service_id: ServiceId,
-    /// Uniquely identifies this invocation instance
-    pub invocation_uuid: InvocationUuid,
+    pub service_name: ByteString,
+    /// Service key, if any
+    pub service_key: Option<Bytes>,
+    /// Identifies the invoked service handler
+    pub service_handler: ByteString,
+    /// The user supplied idempotency_key
+    pub idempotency_key: ByteString,
+
+    partition_key: PartitionKey,
 }
 
-impl FullInvocationId {
+impl IdempotencyId {
     pub fn new(
-        service_name: impl Into<ByteString>,
-        key: impl Into<Bytes>,
-        invocation_uuid: impl Into<InvocationUuid>,
+        service_name: ByteString,
+        service_key: Option<Bytes>,
+        service_handler: ByteString,
+        idempotency_key: ByteString,
     ) -> Self {
+        // The ownership model for idempotent invocations is the following:
+        //
+        // * For services without key, the partition key is the hash(idempotency key).
+        //   This makes sure that for a given idempotency key and its scope, we always land in the same partition.
+        // * For services with key, the partition key is the hash(service key), this due to the virtual object locking requirement.
+        let partition_key = service_key
+            .as_ref()
+            .map(|k| partitioner::HashPartitioner::compute_partition_key(&k))
+            .unwrap_or_else(|| {
+                partitioner::HashPartitioner::compute_partition_key(&idempotency_key)
+            });
+
         Self {
-            service_id: ServiceId::new(service_name, key),
-            invocation_uuid: invocation_uuid.into(),
+            service_name,
+            service_key,
+            service_handler,
+            idempotency_key,
+            partition_key,
         }
     }
 
-    pub fn generate(service_id: ServiceId) -> Self {
-        Self {
-            service_id,
-            invocation_uuid: InvocationUuid::new(),
+    pub fn combine(
+        invocation_id: InvocationId,
+        invocation_target: &InvocationTarget,
+        idempotency_key: ByteString,
+    ) -> Self {
+        IdempotencyId {
+            service_name: invocation_target.handler_name().clone(),
+            service_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
+            service_handler: invocation_target.handler_name().clone(),
+            idempotency_key,
+            partition_key: invocation_id.partition_key(),
         }
-    }
-
-    pub fn combine(service_id: ServiceId, invocation_id: InvocationId) -> Self {
-        debug_assert_eq!(
-            service_id.partition_key, invocation_id.partition_key,
-            "Cannot combine ServiceId and InvocationId with different partition keys."
-        );
-        Self {
-            service_id,
-            invocation_uuid: invocation_id.invocation_uuid(),
-        }
-    }
-
-    pub fn to_invocation_id_bytes(&self) -> EncodedInvocationId {
-        InvocationId {
-            partition_key: self.service_id.partition_key,
-            inner: self.invocation_uuid,
-        }
-        .to_bytes()
     }
 }
 
-impl WithPartitionKey for FullInvocationId {
+impl WithPartitionKey for IdempotencyId {
     fn partition_key(&self) -> PartitionKey {
-        self.service_id.partition_key()
-    }
-}
-
-impl fmt::Display for FullInvocationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Passthrough to InvocationId's Display
-        fmt::Display::fmt(
-            &InvocationId::new(self.service_id.partition_key, self.invocation_uuid),
-            f,
-        )
-    }
-}
-
-impl From<FullInvocationId> for InvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        InvocationId::from(&value)
-    }
-}
-
-impl From<&FullInvocationId> for InvocationId {
-    fn from(value: &FullInvocationId) -> Self {
-        Self {
-            partition_key: value.partition_key(),
-            inner: value.invocation_uuid,
-        }
-    }
-}
-
-impl From<FullInvocationId> for EncodedInvocationId {
-    fn from(value: FullInvocationId) -> Self {
-        value.to_invocation_id_bytes()
+        self.partition_key
     }
 }
 
 /// Incremental id defining the service revision.
-pub type ComponentRevision = u32;
+pub type ServiceRevision = u32;
 
 mod partitioner {
     use super::PartitionKey;
@@ -542,11 +578,7 @@ fn encode_invocation_id(
     buf
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
-)]
+#[derive(Debug, Clone, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
 pub struct LambdaARN {
     partition: ByteString,
     region: ByteString,
@@ -561,7 +593,7 @@ impl LambdaARN {
     }
 }
 
-#[cfg(feature = "serde_schema")]
+#[cfg(feature = "schemars")]
 impl schemars::JsonSchema for LambdaARN {
     fn schema_name() -> String {
         "LambdaARN".into()
@@ -659,7 +691,7 @@ impl FromStr for LambdaARN {
     }
 }
 
-#[cfg(any(test, feature = "mocks"))]
+#[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;
 
@@ -703,9 +735,16 @@ mod mocks {
 
     impl InvocationId {
         pub fn mock_random() -> Self {
-            Self::new(
+            Self::from_parts(
                 rand::thread_rng().sample::<PartitionKey, _>(rand::distributions::Standard),
                 InvocationUuid::new(),
+            )
+        }
+
+        pub fn mock_with(invocation_target: InvocationTarget) -> (Self, InvocationTarget) {
+            (
+                InvocationId::generate(&invocation_target),
+                invocation_target,
             )
         }
     }
@@ -714,16 +753,25 @@ mod mocks {
         pub fn mock_random() -> Self {
             Self::new(
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Bytes::copy_from_slice(
-                    &rand::thread_rng().sample::<[u8; 32], _>(rand::distributions::Standard),
-                ),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
             )
         }
     }
 
-    impl FullInvocationId {
-        pub fn mock_random() -> Self {
-            Self::generate(ServiceId::mock_random())
+    impl IdempotencyId {
+        pub const fn unkeyed(
+            partition_key: PartitionKey,
+            service_name: &'static str,
+            service_handler: &'static str,
+            idempotency_key: &'static str,
+        ) -> Self {
+            Self {
+                service_name: ByteString::from_static(service_name),
+                service_key: None,
+                service_handler: ByteString::from_static(service_handler),
+                idempotency_key: ByteString::from_static(idempotency_key),
+                partition_key,
+            }
         }
     }
 }
@@ -732,9 +780,30 @@ mod mocks {
 mod tests {
     use super::*;
 
+    use crate::invocation::HandlerType;
+
+    #[test]
+    fn service_id_and_invocation_id_partition_key_should_match() {
+        let invocation_target = InvocationTarget::virtual_object(
+            "MyService",
+            "MyKey",
+            "MyMethod",
+            HandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&invocation_target);
+
+        assert_eq!(
+            invocation_id.partition_key(),
+            invocation_target
+                .as_keyed_service_id()
+                .unwrap()
+                .partition_key()
+        );
+    }
+
     #[test]
     fn roundtrip_invocation_id() {
-        let expected = InvocationId::new(92, InvocationUuid::new());
+        let expected = InvocationId::from_parts(92, InvocationUuid::new());
         assert_eq!(
             expected,
             InvocationId::from_slice(&expected.to_bytes()).unwrap()

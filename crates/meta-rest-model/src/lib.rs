@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod components;
 pub mod deployments;
 pub mod handlers;
+pub mod services;
 pub mod subscriptions;

@@ -10,27 +10,28 @@
 
 //! This module implements the Meta API endpoint.
 
-mod components;
 mod deployments;
 mod error;
 mod handlers;
 mod health;
 mod invocations;
+mod services;
 mod subscriptions;
 
+use codederror::CodedError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
-use restate_meta::{FileMetaReader, MetaReader};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_node_services::node_svc::UpdateSchemaRequest;
+use restate_errors::warn_it;
+use restate_schema_api::subscription::SubscriptionValidator;
 use restate_types::identifiers::PartitionKey;
 use restate_wal_protocol::{Destination, Header, Source};
-use tonic::transport::Channel;
-use tracing::debug;
 
 use crate::state::AdminServiceState;
 
-pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
+pub fn create_router<V>(state: AdminServiceState<V>) -> axum::Router<()>
+where
+    V: SubscriptionValidator + Send + Sync + Clone + 'static,
+{
     // Setup the router
     axum_integration::Router::new()
         .route(
@@ -49,29 +50,26 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
             "/deployments/:deployment",
             delete(openapi_handler!(deployments::delete_deployment)),
         )
+        .route("/services", get(openapi_handler!(services::list_services)))
         .route(
-            "/components",
-            get(openapi_handler!(components::list_components)),
+            "/services/:service",
+            get(openapi_handler!(services::get_service)),
         )
         .route(
-            "/components/:component",
-            get(openapi_handler!(components::get_component)),
+            "/services/:service",
+            patch(openapi_handler!(services::modify_service)),
         )
         .route(
-            "/components/:component",
-            patch(openapi_handler!(components::modify_component)),
+            "/services/:service/state",
+            post(openapi_handler!(services::modify_service_state)),
         )
         .route(
-            "/components/:component/state",
-            post(openapi_handler!(components::modify_component_state)),
+            "/services/:service/handlers",
+            get(openapi_handler!(handlers::list_service_handlers)),
         )
         .route(
-            "/components/:component/handlers",
-            get(openapi_handler!(handlers::list_component_handlers)),
-        )
-        .route(
-            "/components/:component/handlers/:handler",
-            get(openapi_handler!(handlers::get_component_handler)),
+            "/services/:service/handlers/:handler",
+            get(openapi_handler!(handlers::get_service_handler)),
         )
         .route(
             "/invocations/:invocation_id",
@@ -102,39 +100,6 @@ pub fn create_router(state: AdminServiceState) -> axum::Router<()> {
         .with_state(state)
 }
 
-/// Notifies the node about schema changes. This method is best-effort and will not fail if the node
-/// could not be reached or the schema changes cannot serialized.
-async fn notify_node_about_schema_changes(
-    schema_reader: &FileMetaReader,
-    mut node_svc_client: NodeSvcClient<Channel>,
-) {
-    let schema_updates = schema_reader
-        .read()
-        .await
-        .map_err(anyhow::Error::from)
-        .and_then(|schema_updates| {
-            bincode::serde::encode_to_vec(schema_updates, bincode::config::standard())
-                .map_err(anyhow::Error::from)
-        });
-
-    if let Err(err) = schema_updates {
-        debug!("Failed serializing schema changes for notifying node about schema changes: {err}");
-        return;
-    }
-
-    let schema_updates = schema_updates.unwrap();
-
-    let result = node_svc_client
-        .update_schemas(UpdateSchemaRequest {
-            schema_bin: schema_updates.into(),
-        })
-        .await;
-
-    if let Err(err) = result {
-        debug!("Failed notifying node about schema changes: {err}");
-    }
-}
-
 fn create_envelope_header(partition_key: PartitionKey) -> Header {
     Header {
         source: Source::ControlPlane {},
@@ -143,4 +108,12 @@ fn create_envelope_header(partition_key: PartitionKey) -> Header {
             dedup: None,
         },
     }
+}
+
+#[inline]
+fn log_error<T, E: CodedError>(result: Result<T, E>) -> Result<T, E> {
+    result.map_err(|err| {
+        warn_it!(err);
+        err
+    })
 }

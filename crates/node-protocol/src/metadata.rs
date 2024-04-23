@@ -10,12 +10,14 @@
 
 use bytes::Bytes;
 use enum_map::Enum;
+pub use restate_schema::{Schema, UpdateableSchema};
+use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::codec::{Targeted, WireSerde};
+use crate::codec::{decode_default, encode_default, Targeted, WireSerde};
 use crate::common::ProtocolVersion;
 use crate::common::TargetName;
 use crate::CodecError;
@@ -43,14 +45,12 @@ impl Targeted for MetadataMessage {
 }
 
 impl WireSerde for MetadataMessage {
-    fn encode(&self, _protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
-        // serialize message to bytes
-        Ok(bincode::serde::encode_to_vec(self, bincode::config::standard())?.into())
+    fn encode(&self, protocol_version: ProtocolVersion) -> Result<Bytes, CodecError> {
+        encode_default(self, protocol_version)
     }
 
-    fn decode(payload: Bytes, _protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
-        let (output, _) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
-        Ok(output)
+    fn decode(payload: Bytes, protocol_version: ProtocolVersion) -> Result<Self, CodecError> {
+        decode_default(payload, protocol_version)
     }
 }
 
@@ -75,10 +75,12 @@ pub enum MetadataKind {
     Logs,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
     PartitionTable(FixedPartitionTable),
+    Logs(Logs),
+    Schema(Schema),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,18 +99,8 @@ impl MetadataContainer {
         match self {
             MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
             MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
+            MetadataContainer::Logs(_) => MetadataKind::Logs,
+            MetadataContainer::Schema(_) => MetadataKind::Schema,
         }
-    }
-}
-
-impl From<NodesConfiguration> for MetadataContainer {
-    fn from(value: NodesConfiguration) -> Self {
-        MetadataContainer::NodesConfiguration(value)
-    }
-}
-
-impl From<FixedPartitionTable> for MetadataContainer {
-    fn from(value: FixedPartitionTable) -> Self {
-        MetadataContainer::PartitionTable(value)
     }
 }

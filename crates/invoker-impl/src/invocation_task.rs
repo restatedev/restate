@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{InvokerError, Notification};
+use super::Notification;
 
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{future, stream, FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
 use hyper::http::response::Parts as ResponseParts;
-use hyper::http::HeaderValue;
+use hyper::http::uri::PathAndQuery;
+use hyper::http::{HeaderName, HeaderValue};
 use hyper::{http, Body, HeaderMap, Response};
 use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry::sdk::propagation::TraceContextPropagator;
 use opentelemetry_http::HeaderInjector;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
 use restate_invoker_api::{
-    EagerState, EntryEnricher, InvokeInputJournal, JournalReader, StateReader,
+    EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
+    StateReader,
 };
 use restate_schema_api::deployment::{
     DeploymentMetadata, DeploymentResolver, DeploymentType, ProtocolType,
@@ -32,17 +34,13 @@ use restate_service_protocol::message::{
     Decoder, Encoder, EncodingError, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, PartitionLeaderEpoch,
-};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionLeaderEpoch};
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
 use std::collections::HashSet;
 use std::error::Error;
-
-use hyper::http::uri::PathAndQuery;
 use std::future::{poll_fn, Future};
 use std::iter;
 use std::pin::Pin;
@@ -59,11 +57,14 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 #[allow(clippy::declare_interior_mutable_const)]
 const APPLICATION_RESTATE: HeaderValue = HeaderValue::from_static("application/restate");
 
+#[allow(clippy::declare_interior_mutable_const)]
+const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
+
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::RT0006)]
 pub(crate) enum InvocationTaskError {
     #[error("no deployment was found to process the invocation")]
-    NoDeploymentForComponent,
+    NoDeploymentForService,
     #[error("the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it")]
     UnknownDeployment(DeploymentId),
     #[error("unexpected http status code: {0}")]
@@ -97,23 +98,35 @@ pub(crate) enum InvocationTaskError {
     ResponseTimeout,
     #[error("cannot process received entry at index {0} of type {1}: {2}")]
     EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
-    #[error(transparent)]
+    #[error("Error message received from the SDK with related entry {0:?}: {1}")]
     #[code(restate_errors::RT0007)]
-    ErrorMessageReceived(#[from] InvocationError),
+    ErrorMessageReceived(
+        Option<InvocationErrorRelatedEntry>,
+        #[source] InvocationError,
+    ),
     #[error("Unexpected end of invocation stream, received a data frame after a SuspensionMessage or OutputStreamEntry. This is probably an SDK bug")]
     WriteAfterEndOfStream,
+    #[error("Bad header {0}: {1}")]
+    BadHeader(HeaderName, #[source] hyper::header::ToStrError),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
-impl InvokerError for InvocationTaskError {
-    fn is_transient(&self) -> bool {
+#[derive(Debug, Default)]
+pub struct InvocationErrorRelatedEntry {
+    pub related_entry_index: Option<restate_types::journal::EntryIndex>,
+    pub related_entry_name: Option<String>,
+    pub related_entry_type: Option<EntryType>,
+}
+
+impl InvocationTaskError {
+    pub(crate) fn is_transient(&self) -> bool {
         true
     }
 
-    fn to_invocation_error(&self) -> InvocationError {
+    pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
-            InvocationTaskError::ErrorMessageReceived(e) => e.clone(),
+            InvocationTaskError::ErrorMessageReceived(_, e) => e,
             InvocationTaskError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -128,6 +141,26 @@ impl InvokerError for InvocationTaskError {
                 err
             }
             e => InvocationError::internal(e),
+        }
+    }
+
+    pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
+        let doc_error_code = codederror::CodedError::code(&self);
+        let maybe_related_entry = match self {
+            InvocationTaskError::ErrorMessageReceived(ref mut related_entry, _) => {
+                related_entry.take()
+            }
+            _ => None,
+        }
+        .unwrap_or_default();
+        let err = self.into_invocation_error();
+
+        InvocationErrorReport {
+            doc_error_code,
+            err,
+            related_entry_index: maybe_related_entry.related_entry_index,
+            related_entry_name: maybe_related_entry.related_entry_name,
+            related_entry_type: maybe_related_entry.related_entry_type,
         }
     }
 }
@@ -160,13 +193,14 @@ fn h2_reason(err: &hyper::Error) -> h2::Reason {
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
-    pub(super) full_invocation_id: FullInvocationId,
+    pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
 pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
     SelectedDeployment(DeploymentId, /* has_changed: */ bool),
+    ServerHeaderReceived(String),
     NewEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
@@ -195,7 +229,8 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
 
     // Connection params
     partition: PartitionLeaderEpoch,
-    full_invocation_id: FullInvocationId,
+    invocation_id: InvocationId,
+    invocation_target: InvocationTarget,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
@@ -258,7 +293,8 @@ where
     pub fn new(
         client: ServiceClient,
         partition: PartitionLeaderEpoch,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         protocol_version: u16,
         inactivity_timeout: Duration,
         abort_timeout: Duration,
@@ -275,7 +311,8 @@ where
         Self {
             client,
             partition,
-            full_invocation_id: fid,
+            invocation_id,
+            invocation_target,
             inactivity_timeout,
             abort_timeout,
             disable_eager_state,
@@ -292,7 +329,7 @@ where
     }
 
     /// Loop opening the request to deployment and consuming the stream
-    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.full_invocation_id.service_id.service_name, restate.invocation.id = %self.full_invocation_id), skip_all)]
+    #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.invocation_target.service_name(), restate.invocation.id = %self.invocation_id, restate.invocation.target = %self.invocation_target), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
         // Execute the task
         let terminal_state = self.run_internal(input_journal).await;
@@ -315,11 +352,7 @@ where
             TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
         };
 
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
-            partition: self.partition,
-            full_invocation_id: self.full_invocation_id,
-            inner,
-        });
+        self.send_invoker_tx(inner);
     }
 
     async fn run_internal(&mut self, input_journal: InvokeInputJournal) -> TerminalLoopState<()> {
@@ -329,7 +362,7 @@ where
                 InvokeInputJournal::NoCachedJournal => {
                     let (journal_meta, journal_stream) = self
                         .journal_reader
-                        .read_journal(&self.full_invocation_id)
+                        .read_journal(&self.invocation_id)
                         .await
                         .map_err(|e| InvocationTaskError::JournalReader(e.into()))?;
                     (journal_meta, future::Either::Left(journal_stream))
@@ -342,11 +375,12 @@ where
         };
         // Read eager state
         let read_state_future = async {
-            if self.disable_eager_state {
+            let keyed_service_id = self.invocation_target.as_keyed_service_id();
+            if self.disable_eager_state || keyed_service_id.is_none() {
                 Ok(EagerState::<iter::Empty<_>>::default().map(itertools::Either::Right))
             } else {
                 self.state_reader
-                    .read_state(&self.full_invocation_id.service_id)
+                    .read_state(&keyed_service_id.unwrap())
                     .await
                     .map_err(|e| InvocationTaskError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
@@ -372,18 +406,15 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
-                    .resolve_latest_deployment_for_component(
-                        &self.full_invocation_id.service_id.service_name
-                    )
-                    .ok_or(InvocationTaskError::NoDeploymentForComponent));
+                    .resolve_latest_deployment_for_service(self.invocation_target.service_name())
+                    .ok_or(InvocationTaskError::NoDeploymentForService));
                 (deployment, /* has_changed= */ true)
             };
 
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
-            partition: self.partition,
-            full_invocation_id: self.full_invocation_id.clone(),
-            inner: InvocationTaskOutputInner::SelectedDeployment(deployment.id, deployment_changed),
-        });
+        self.send_invoker_tx(InvocationTaskOutputInner::SelectedDeployment(
+            deployment.id,
+            deployment_changed,
+        ));
 
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.inactivity_timeout.is_zero() {
@@ -399,12 +430,8 @@ where
 
         let path: PathAndQuery = format!(
             "/invoke/{}/{}",
-            self.full_invocation_id
-                .service_id
-                .service_name
-                .chars()
-                .as_str(),
-            &journal_metadata.method
+            self.invocation_target.service_name(),
+            self.invocation_target.handler_name()
         )
         .try_into()
         .expect("must be able to build a valid invocation path");
@@ -482,7 +509,7 @@ where
         JournalStream: Stream<Item = PlainRawEntry> + Unpin,
     {
         let mut journal_stream = journal_stream.fuse();
-        let got_headers_future = poll_fn(|cx| http_stream_rx.poll_wait_headers(cx)).fuse();
+        let got_headers_future = poll_fn(|cx| http_stream_rx.poll_only_headers(cx)).fuse();
         tokio::pin!(got_headers_future);
 
         loop {
@@ -490,7 +517,8 @@ where
                 got_headers_res = got_headers_future.as_mut(), if !got_headers_future.is_terminated() => {
                     // The reason we want to poll headers in this function is
                     // to exit early in case an error is returned during replays.
-                    shortcircuit!(got_headers_res);
+                    let headers = shortcircuit!(got_headers_res);
+                    shortcircuit!(self.handle_response_headers(headers));
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
@@ -536,12 +564,14 @@ where
                         },
                     }
                 },
-                opt_buf = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match shortcircuit!(opt_buf) {
-                        Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        None => {
+                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                    match shortcircuit!(chunk) {
+                        ResponseChunk::Parts(parts) => shortcircuit!(self.handle_response_headers(parts)),
+                        ResponseChunk::Data(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                None,
                                 InvocationError::default()
                             ))
                         }
@@ -564,12 +594,14 @@ where
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
-                opt_buf = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match shortcircuit!(opt_buf) {
-                        Some(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        None => {
+                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                    match shortcircuit!(chunk) {
+                        ResponseChunk::Parts(parts) => shortcircuit!(self.handle_response_headers(parts)),
+                        ResponseChunk::Data(buf) => shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                                None,
                                 InvocationError::default()
                             ))
                         }
@@ -597,9 +629,9 @@ where
         self.write(
             http_stream_tx,
             ProtocolMessage::new_start_message(
-                Bytes::copy_from_slice(&self.full_invocation_id.to_invocation_id_bytes()),
-                self.full_invocation_id.to_string(),
-                Some(self.full_invocation_id.service_id.key.clone()),
+                Bytes::copy_from_slice(&self.invocation_id.to_bytes()),
+                self.invocation_id.to_string(),
+                self.invocation_target.key().map(|bs| bs.as_bytes().clone()),
                 journal_size,
                 is_partial,
                 state_entries,
@@ -625,6 +657,38 @@ where
                 )));
             }
         };
+        Ok(())
+    }
+
+    fn handle_response_headers(
+        &mut self,
+        mut parts: ResponseParts,
+    ) -> Result<(), InvocationTaskError> {
+        if !parts.status.is_success() {
+            return Err(InvocationTaskError::UnexpectedResponse(parts.status));
+        }
+
+        let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
+        match content_type {
+            // Check content type is application/restate
+            Some(ct) =>
+            {
+                #[allow(clippy::borrow_interior_mutable_const)]
+                if ct != APPLICATION_RESTATE {
+                    return Err(InvocationTaskError::UnexpectedContentType(Some(ct)));
+                }
+            }
+            None => return Err(InvocationTaskError::UnexpectedContentType(None)),
+        }
+
+        if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
+            self.send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
+                hv.to_str()
+                    .map_err(|e| InvocationTaskError::BadHeader(X_RESTATE_SERVER, e))?
+                    .to_owned(),
+            ))
+        }
+
         Ok(())
     }
 
@@ -674,30 +738,37 @@ where
                 }
                 TerminalLoopState::Suspended(suspension_indexes)
             }
-            ProtocolMessage::Error(e) => TerminalLoopState::Failed(
-                InvocationTaskError::ErrorMessageReceived(InvocationError::from(e)),
-            ),
+            ProtocolMessage::Error(e) => {
+                TerminalLoopState::Failed(InvocationTaskError::ErrorMessageReceived(
+                    Some(InvocationErrorRelatedEntry {
+                        related_entry_index: e.related_entry_index,
+                        related_entry_name: e.related_entry_name.clone(),
+                        related_entry_type: e
+                            .related_entry_type
+                            .and_then(|t| u16::try_from(t).ok())
+                            .and_then(|idx| MessageType::try_from(idx).ok())
+                            .and_then(|mt| EntryType::try_from(mt).ok()),
+                    }),
+                    InvocationError::from(e),
+                ))
+            }
             ProtocolMessage::End(_) => TerminalLoopState::Closed,
             ProtocolMessage::UnparsedEntry(entry) => {
                 let entry_type = entry.header().as_entry_type();
                 let enriched_entry = shortcircuit!(self
                     .entry_enricher
-                    .enrich_entry(entry, parent_span_context)
+                    .enrich_entry(entry, &self.invocation_target, parent_span_context)
                     .map_err(|e| InvocationTaskError::EntryEnrichment(
                         self.next_journal_index,
                         entry_type,
                         e
                     )));
-                let _ = self.invoker_tx.send(InvocationTaskOutput {
-                    partition: self.partition,
-                    full_invocation_id: self.full_invocation_id.clone(),
-                    inner: InvocationTaskOutputInner::NewEntry {
-                        entry_index: self.next_journal_index,
-                        entry: enriched_entry,
-                        requires_ack: mh
-                            .requires_ack()
-                            .expect("All entry messages support requires_ack"),
-                    },
+                self.send_invoker_tx(InvocationTaskOutputInner::NewEntry {
+                    entry_index: self.next_journal_index,
+                    entry: enriched_entry,
+                    requires_ack: mh
+                        .requires_ack()
+                        .expect("All entry messages support requires_ack"),
                 });
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
@@ -747,11 +818,25 @@ where
             Request::new(Parts::new(address, path, headers), req_body),
         )
     }
+
+    fn send_invoker_tx(&mut self, invocation_task_output_inner: InvocationTaskOutputInner) {
+        let _ = self.invoker_tx.send(InvocationTaskOutput {
+            partition: self.partition,
+            invocation_id: self.invocation_id,
+            inner: invocation_task_output_inner,
+        });
+    }
+}
+
+enum ResponseChunk {
+    Parts(ResponseParts),
+    Data(Bytes),
+    End,
 }
 
 enum ResponseStreamState {
     WaitingHeaders(AbortOnDrop<Result<Response<Body>, ServiceClientError>>),
-    ReadingBody(Body),
+    ReadingBody(Option<ResponseParts>, Body),
 }
 
 impl ResponseStreamState {
@@ -766,7 +851,10 @@ impl ResponseStreamState {
     }
 
     // Could be replaced by a Future implementation
-    fn poll_wait_headers(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), InvocationTaskError>> {
+    fn poll_only_headers(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<ResponseParts, InvocationTaskError>> {
         match self {
             ResponseStreamState::WaitingHeaders(join_handle) => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
@@ -779,16 +867,17 @@ impl ResponseStreamState {
                     }
                 };
 
-                // Check the response is valid
+                // Convert to response parts
                 let (http_response_header, body) = http_response.into_parts();
-                Self::validate_response(http_response_header)?;
 
                 // Transition to reading body
-                *self = ResponseStreamState::ReadingBody(body);
+                *self = ResponseStreamState::ReadingBody(None, body);
 
-                Poll::Ready(Ok(()))
+                Poll::Ready(Ok(http_response_header))
             }
-            ResponseStreamState::ReadingBody(_) => Poll::Ready(Ok(())),
+            ResponseStreamState::ReadingBody { .. } => {
+                panic!("Unexpected poll after the headers have been resolved already")
+            }
         }
     }
 
@@ -796,20 +885,42 @@ impl ResponseStreamState {
     fn poll_next_chunk(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Bytes>, InvocationTaskError>> {
+    ) -> Poll<Result<ResponseChunk, InvocationTaskError>> {
         // Could be replaced by a Stream implementation
         loop {
             match self {
-                ResponseStreamState::WaitingHeaders(_) => {
-                    ready!(self.poll_wait_headers(cx))?;
+                ResponseStreamState::WaitingHeaders(join_handle) => {
+                    let http_response = match ready!(join_handle.poll_unpin(cx)) {
+                        Ok(Ok(res)) => res,
+                        Ok(Err(hyper_err)) => {
+                            return Poll::Ready(Err(InvocationTaskError::Client(hyper_err)))
+                        }
+                        Err(join_err) => {
+                            return Poll::Ready(Err(InvocationTaskError::UnexpectedJoinError(
+                                join_err,
+                            )))
+                        }
+                    };
+
+                    // Convert to response parts
+                    let (http_response_header, body) = http_response.into_parts();
+
+                    // Transition to reading body
+                    *self = ResponseStreamState::ReadingBody(Some(http_response_header), body);
                 }
-                ResponseStreamState::ReadingBody(b) => {
+                ResponseStreamState::ReadingBody(headers, b) => {
+                    // If headers are present, take them
+                    if let Some(parts) = headers.take() {
+                        return Poll::Ready(Ok(ResponseChunk::Parts(parts)));
+                    };
+
                     let next_element = ready!(b.poll_next_unpin(cx));
                     return Poll::Ready(match next_element.transpose() {
-                        Ok(opt) => Ok(opt),
+                        Ok(Some(val)) => Ok(ResponseChunk::Data(val)),
+                        Ok(None) => Ok(ResponseChunk::End),
                         Err(err) => {
                             if h2_reason(&err) == h2::Reason::NO_ERROR {
-                                Ok(None)
+                                Ok(ResponseChunk::End)
                             } else {
                                 Err(InvocationTaskError::Client(ServiceClientError::Http(
                                     err.into(),
@@ -820,27 +931,6 @@ impl ResponseStreamState {
                 }
             }
         }
-    }
-
-    fn validate_response(mut parts: ResponseParts) -> Result<(), InvocationTaskError> {
-        if !parts.status.is_success() {
-            return Err(InvocationTaskError::UnexpectedResponse(parts.status));
-        }
-
-        let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
-        match content_type {
-            // Check content type is application/restate
-            Some(ct) =>
-            {
-                #[allow(clippy::borrow_interior_mutable_const)]
-                if ct != APPLICATION_RESTATE {
-                    return Err(InvocationTaskError::UnexpectedContentType(Some(ct)));
-                }
-            }
-            None => return Err(InvocationTaskError::UnexpectedContentType(None)),
-        }
-
-        Ok(())
     }
 }
 

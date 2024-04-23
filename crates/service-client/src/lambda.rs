@@ -34,49 +34,15 @@ use hyper::http::HeaderValue;
 use hyper::{body, Body, HeaderMap, Method, Response};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use once_cell::sync::Lazy;
+use restate_types::config::AwsOptions;
 use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_with::serde_as;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
-
-/// # Lambda client options
-#[serde_as]
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "options_schema",
-    schemars(rename = "LambdaClientOptions", default)
-)]
-#[builder(default)]
-pub struct Options {
-    /// # AWS Profile
-    ///
-    /// Name of the AWS profile to select. Defaults to 'AWS_PROFILE' env var, or otherwise
-    /// the `default` profile.
-    aws_profile: Option<String>,
-
-    /// # AssumeRole external ID
-    ///
-    /// An external ID to apply to any AssumeRole operations taken by this client.
-    /// https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
-    /// Can be overridden by the `AWS_EXTERNAL_ID` environment variable.
-    assume_role_external_id: Option<String>,
-}
-
-impl Options {
-    pub fn build(self, assume_role_cache_mode: AssumeRoleCacheMode) -> LambdaClient {
-        LambdaClient::new(
-            self.aws_profile,
-            self.assume_role_external_id,
-            assume_role_cache_mode,
-        )
-    }
-}
 
 /// # AssumeRole Cache Mode
 ///
@@ -191,6 +157,17 @@ impl LambdaClient {
         .shared();
 
         Self { inner }
+    }
+
+    pub fn from_options(
+        options: &AwsOptions,
+        assume_role_cache_mode: AssumeRoleCacheMode,
+    ) -> LambdaClient {
+        LambdaClient::new(
+            options.aws_profile.clone(),
+            options.aws_assume_role_external_id.clone(),
+            assume_role_cache_mode,
+        )
     }
 
     pub fn invoke(

@@ -10,14 +10,15 @@
 
 use crate::metric_definitions::{PARTITION_STORAGE_TX_COMMITTED, PARTITION_STORAGE_TX_CREATED};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
-use restate_storage_api::deduplication_table::ReadOnlyDeduplicationTable;
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
-use restate_storage_api::inbox_table::{
-    InboxEntry, SequenceNumberInboxEntry, SequenceNumberInvocation,
+use restate_storage_api::deduplication_table::{
+    DedupSequenceNumber, ProducerId, ReadOnlyDeduplicationTable,
 };
+use restate_storage_api::fsm_table::{ReadOnlyFsmTable, SequenceNumber};
+use restate_storage_api::idempotency_table::IdempotencyMetadata;
+use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
@@ -31,12 +32,10 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
-use restate_types::dedup::{DedupSequenceNumber, ProducerId};
 use restate_types::identifiers::{
-    EntryIndex, FullInvocationId, InvocationId, PartitionId, PartitionKey, ServiceId,
-    WithPartitionKey,
+    EntryIndex, IdempotencyId, InvocationId, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
 };
-use restate_types::invocation::MaybeFullInvocationId;
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::logs::Lsn;
@@ -91,15 +90,12 @@ async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
     partition_id: PartitionId,
     state_id: u64,
 ) -> Result<MessageIndex, StorageError> {
-    let seq_number = storage.get(partition_id, state_id).await?;
-
-    if let Some(mut seq_number) = seq_number {
-        let mut buffer = [0; 8];
-        seq_number.copy_to_slice(&mut buffer);
-        Ok(MessageIndex::from_be_bytes(buffer))
-    } else {
-        Ok(0)
-    }
+    let seq_number = storage
+        .get::<SequenceNumber>(partition_id, state_id)
+        .await?;
+    Ok(seq_number
+        .map(Into::into)
+        .unwrap_or(MessageIndex::default()))
 }
 
 impl<Storage> PartitionStorage<Storage>
@@ -132,23 +128,18 @@ where
     }
 
     pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {
-        let bytes = self
+        let seq_number = self
             .storage
-            .get(self.partition_id, fsm_variable::APPLIED_LSN)
+            .get::<SequenceNumber>(self.partition_id, fsm_variable::APPLIED_LSN)
             .await?;
 
-        Ok(if let Some(bytes) = bytes {
-            let (lsn, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .map_err(|err| StorageError::Generic(err.into()))?;
-            Some(lsn)
-        } else {
-            None
-        })
+        Ok(seq_number.map(|seq_number| Lsn::from(u64::from(seq_number))))
     }
 
     pub fn scan_invoked_invocations(
         &mut self,
-    ) -> impl Stream<Item = Result<FullInvocationId, StorageError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget), StorageError>> + Send + '_
+    {
         self.storage
             .invoked_invocations(self.partition_key_range.clone())
     }
@@ -243,9 +234,12 @@ where
         seq_number: MessageIndex,
         state_id: u64,
     ) -> Result<(), StorageError> {
-        let bytes = &seq_number.to_be_bytes();
         self.inner
-            .put(self.partition_id, state_id, bytes.as_slice())
+            .put(
+                self.partition_id,
+                state_id,
+                SequenceNumber::from(seq_number),
+            )
             .await;
 
         Ok(())
@@ -262,18 +256,20 @@ where
     }
 
     pub async fn store_applied_lsn(&mut self, lsn: Lsn) -> StorageResult<()> {
-        // todo: Rethink serialization of lsn
-        let bytes = bincode::serde::encode_to_vec(lsn, bincode::config::standard())
-            .map_err(|err| StorageError::Generic(err.into()))?;
-
         self.inner
-            .put(self.partition_id, fsm_variable::APPLIED_LSN, bytes)
+            .put(
+                self.partition_id,
+                fsm_variable::APPLIED_LSN,
+                SequenceNumber::from(u64::from(lsn)),
+            )
             .await;
 
         Ok(())
     }
 }
 
+// Avoid adding methods here, but rather use directly the storage_api traits!!!
+// See https://github.com/restatedev/restate/issues/276
 impl<TransactionType> super::state_machine::StateReader for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
@@ -292,15 +288,6 @@ where
     ) -> StorageResult<InvocationStatus> {
         self.assert_partition_key(invocation_id);
         self.inner.get_invocation_status(invocation_id).await
-    }
-
-    fn get_inboxed_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = StorageResult<Option<SequenceNumberInvocation>>> + Send {
-        let maybe_fid = maybe_fid.into();
-        self.assert_partition_key(&maybe_fid);
-        self.inner.get_invocation(maybe_fid)
     }
 
     // Returns true if the entry is a completable journal entry and is completed,
@@ -356,6 +343,8 @@ where
     }
 }
 
+// Avoid adding methods here, but rather use directly the storage_api traits!!!
+// See https://github.com/restatedev/restate/issues/276
 impl<TransactionType> super::state_machine::StateStorage for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
@@ -581,6 +570,91 @@ where
     async fn delete_timer(&mut self, timer_key: &TimerKey) -> StorageResult<()> {
         self.inner.delete_timer(self.partition_id, timer_key).await;
         Ok(())
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> ReadOnlyJournalTable for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+    ) -> impl Future<Output = StorageResult<Option<JournalEntry>>> + Send {
+        self.inner.get_journal_entry(invocation_id, journal_index)
+    }
+
+    fn get_journal(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
+        self.inner.get_journal(invocation_id, journal_length)
+    }
+}
+
+impl<TransactionType> ReadOnlyInvocationStatusTable for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = StorageResult<InvocationStatus>> + Send {
+        self.inner.get_invocation_status(invocation_id)
+    }
+
+    fn invoked_invocations(
+        &mut self,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(InvocationId, InvocationTarget)>> + Send {
+        self.inner.invoked_invocations(partition_key_range)
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable
+    for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_idempotency_metadata(
+        &mut self,
+        idempotency_id: &IdempotencyId,
+    ) -> impl Future<Output = StorageResult<Option<IdempotencyMetadata>>> + Send {
+        self.inner.get_idempotency_metadata(idempotency_id)
+    }
+
+    fn all_idempotency_metadata(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        self.inner.all_idempotency_metadata(range)
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> restate_storage_api::idempotency_table::IdempotencyTable
+    for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn put_idempotency_metadata(
+        &mut self,
+        idempotency_id: &IdempotencyId,
+        metadata: IdempotencyMetadata,
+    ) -> impl Future<Output = ()> + Send {
+        self.inner
+            .put_idempotency_metadata(idempotency_id, metadata)
+    }
+
+    fn delete_idempotency_metadata(
+        &mut self,
+        idempotency_id: &IdempotencyId,
+    ) -> impl Future<Output = ()> + Send {
+        self.inner.delete_idempotency_metadata(idempotency_id)
     }
 }
 

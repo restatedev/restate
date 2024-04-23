@@ -140,20 +140,20 @@ mod pb_into {
         }
     }
 
-    impl TryFrom<InvokeEntryMessage> for Entry {
+    impl TryFrom<CallEntryMessage> for Entry {
         type Error = &'static str;
 
-        fn try_from(msg: InvokeEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Self::Invoke(InvokeEntry {
+        fn try_from(msg: CallEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::Call(InvokeEntry {
                 request: InvokeRequest {
                     service_name: msg.service_name.into(),
-                    method_name: msg.method_name.into(),
+                    handler_name: msg.handler_name.into(),
                     parameter: msg.parameter,
                     key: msg.key.into(),
                 },
                 result: msg.result.map(|v| match v {
-                    invoke_entry_message::Result::Value(r) => EntryResult::Success(r),
-                    invoke_entry_message::Result::Failure(Failure { code, message }) => {
+                    call_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    call_entry_message::Result::Failure(Failure { code, message }) => {
                         EntryResult::Failure(code.into(), message.into())
                     }
                 }),
@@ -161,14 +161,14 @@ mod pb_into {
         }
     }
 
-    impl TryFrom<BackgroundInvokeEntryMessage> for Entry {
+    impl TryFrom<OneWayCallEntryMessage> for Entry {
         type Error = &'static str;
 
-        fn try_from(msg: BackgroundInvokeEntryMessage) -> Result<Self, Self::Error> {
-            Ok(Self::BackgroundInvoke(BackgroundInvokeEntry {
+        fn try_from(msg: OneWayCallEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::OneWayCall(OneWayCallEntry {
                 request: InvokeRequest {
                     service_name: msg.service_name.into(),
-                    method_name: msg.method_name.into(),
+                    handler_name: msg.handler_name.into(),
                     parameter: msg.parameter,
                     key: msg.key.into(),
                 },
@@ -204,6 +204,21 @@ mod pb_into {
                         code,
                         message,
                     }) => EntryResult::Failure(code.into(), message.into()),
+                },
+            }))
+        }
+    }
+
+    impl TryFrom<RunEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: RunEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::Run(RunEntry {
+                result: match msg.result.ok_or("result")? {
+                    run_entry_message::Result::Value(r) => EntryResult::Success(r),
+                    run_entry_message::Result::Failure(Failure { code, message }) => {
+                        EntryResult::Failure(code.into(), message.into())
+                    }
                 },
             }))
         }

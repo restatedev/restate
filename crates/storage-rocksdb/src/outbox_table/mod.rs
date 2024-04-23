@@ -8,21 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Outbox;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
 
-use prost::Message;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
 use restate_types::identifiers::PartitionId;
+use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 use std::ops::Range;
 
 define_table_key!(
     Outbox,
+    KeyKind::Outbox,
     OutboxKey(partition_id: PartitionId, message_index: u64)
 );
 
@@ -36,8 +35,7 @@ fn add_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(message_index);
 
-    let value = ProtoValue(storage::v1::OutboxMessage::from(outbox_message));
-    storage.put_kv(key, value);
+    storage.put_kv(key, outbox_message);
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -72,14 +70,7 @@ fn get_outbox_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(sequence_number);
 
-    storage.get_blocking(outbox_key, |_, v| {
-        if let Some(v) = v {
-            let t = decode_value(v)?;
-            Ok(Some(t))
-        } else {
-            Ok(None)
-        }
-    })
+    storage.get_value(outbox_key)
 }
 
 fn truncate_outbox<S: StorageAccess>(
@@ -169,12 +160,10 @@ fn decode_key_value(k: &[u8], v: &[u8]) -> crate::Result<(u64, OutboxMessage)> {
     Ok((sequence_number, outbox_message))
 }
 
-fn decode_value(v: &[u8]) -> crate::Result<OutboxMessage> {
+fn decode_value(mut v: &[u8]) -> crate::Result<OutboxMessage> {
     // decode value
-    let decoded = storage::v1::OutboxMessage::decode(v)
-        .map_err(|error| StorageError::Generic(error.into()))?;
-    let outbox_message =
-        OutboxMessage::try_from(decoded).map_err(|e| StorageError::Conversion(e.into()))?;
+    let outbox_message = StorageCodec::decode::<OutboxMessage, _>(&mut v)
+        .map_err(|error| StorageError::Conversion(error.into()))?;
 
     Ok(outbox_message)
 }

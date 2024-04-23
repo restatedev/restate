@@ -19,9 +19,7 @@ use crate::clients::datafusion_helpers::{get_invocation, get_invocation_journal,
 use crate::clients::{self};
 use crate::ui::console::StyledTable;
 use crate::ui::duration_to_human_rough;
-use crate::ui::invocations::{
-    add_invocation_to_kv_table, format_journal_entry, invocation_qualified_name, invocation_status,
-};
+use crate::ui::invocations::{add_invocation_to_kv_table, format_journal_entry, invocation_status};
 use crate::ui::watcher::Watch;
 use crate::{c_println, c_tip, c_title};
 
@@ -59,20 +57,6 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             )
         ),
     );
-    if let Some(key) = &inv.key {
-        table.add_kv_row(
-            "Component:",
-            format!(
-                "{} {} {}",
-                inv.component,
-                style("@").dim(),
-                style(key).dim(),
-            ),
-        );
-    } else {
-        table.add_kv_row("Component:", &inv.component);
-    }
-    table.add_kv_row("Method:", &inv.handler);
     add_invocation_to_kv_table(&mut table, &inv);
     table.add_kv_row_if(
         || inv.state_modified_at.is_some(),
@@ -99,21 +83,21 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     }
 
     c_title!("🚂", "Invocation Progress");
-    if let Some(parent) = &inv.invoked_by_id {
+    if let Some(invoked_by_id) = &inv.invoked_by_id {
         c_println!(
             "{} {}",
-            inv.invoked_by_component
+            inv.invoked_by_target
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
-            style(parent).italic(),
+            style(invoked_by_id).italic(),
         );
     } else {
         c_println!("[{}]", style("Ingress").dim().italic());
     }
 
     // This invocation..
-    c_println!(" └──(this)─> {}", invocation_qualified_name(&inv));
+    c_println!(" └──(this)─> {}", &inv.target);
 
     // filtering journal based on `should_present`
     let journal = get_invocation_journal(&sql_client, &opts.invocation_id).await?;

@@ -8,22 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::types::InvocationIdAndTarget;
 use bytes::Bytes;
-use bytestring::ByteString;
-use opentelemetry_api::trace::SpanId;
+use opentelemetry::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
-use restate_storage_api::invocation_status_table::InvocationMetadata;
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
+};
 use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{
-    DeploymentId, EntryIndex, FullInvocationId, InvocationId, ServiceId,
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, ServiceId,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, ResponseResult, ServiceInvocation, ServiceInvocationSpanContext,
-    SpanRelation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, CompletionResult};
@@ -34,37 +36,42 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerValue;
 use std::collections::HashSet;
 use std::fmt;
+use std::time::Duration;
 use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
 
 #[derive(Debug)]
 pub(crate) enum Effect {
-    // service status changes
+    // InvocationStatus changes
     InvokeService(ServiceInvocation),
     ResumeService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     },
     SuspendService {
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
+    StoreCompletedInvocation {
+        invocation_id: InvocationId,
+        retention: Duration,
+        completed_invocation: CompletedInvocation,
+    },
+    StoreInboxedInvocation(InvocationId, InboxedInvocation),
+    FreeInvocation(InvocationId),
 
     // In-/outbox
     EnqueueIntoInbox {
         seq_number: MessageIndex,
         inbox_entry: InboxEntry,
     },
+    PopInbox(ServiceId),
     EnqueueIntoOutbox {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
     TruncateOutbox(MessageIndex),
-    DropJournalAndPopInbox {
-        full_invocation_id: FullInvocationId,
-        journal_length: EntryIndex,
-    },
     DeleteInboxEntry {
         service_id: ServiceId,
         sequence_number: MessageIndex,
@@ -101,7 +108,15 @@ pub(crate) enum Effect {
     StoreDeploymentId {
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
+    },
+    AppendResponseSink {
+        invocation_id: InvocationId,
+        // We pass around the invocation_status here to avoid an additional read.
+        // We could in theory get rid of this here (and in other places, such as StoreDeploymentId),
+        // by using a merge operator in rocksdb.
+        previous_invocation_status: InvocationStatus,
+        additional_response_sink: ServiceInvocationResponseSink,
     },
     AppendJournalEntry {
         invocation_id: InvocationId,
@@ -117,33 +132,39 @@ pub(crate) enum Effect {
         completion: Completion,
     },
     ForwardCompletion {
-        // TODO this can be invocation_id once the invoker uses only InvocationId
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
+    },
+    DropJournal {
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
     },
 
     // Effects used only for tracing purposes
     TraceBackgroundInvoke {
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id_and_target: InvocationIdAndTarget,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     },
     TraceInvocationResult {
-        full_invocation_id: FullInvocationId,
+        invocation_id_and_target: InvocationIdAndTarget,
         creation_time: MillisSinceEpoch,
-        service_method: ByteString,
         span_context: ServiceInvocationSpanContext,
         result: Result<(), (InvocationErrorCode, String)>,
     },
 
     // Invoker commands
-    AbortInvocation(FullInvocationId),
-    SendStoredEntryAckToInvoker(FullInvocationId, EntryIndex),
+    SendAbortInvocationToInvoker(InvocationId),
+    SendStoredEntryAckToInvoker(InvocationId, EntryIndex),
 
     // State mutations
     MutateState(ExternalStateMutation),
 
+    // Idempotency
+    StoreIdempotencyId(IdempotencyId, InvocationId),
+    DeleteIdempotencyId(IdempotencyId),
+
+    // Send ingress response
     IngressResponse(IngressResponse),
 }
 
@@ -179,22 +200,18 @@ macro_rules! info_span_if_leader {
 impl Effect {
     fn log(&self, is_leader: bool) {
         match self {
-            Effect::InvokeService(ServiceInvocation { method_name, .. }) => debug_if_leader!(
-                is_leader,
-                rpc.method = %method_name,
-                "Effect: Invoke service"
-            ),
+            Effect::InvokeService(ServiceInvocation { .. }) => {
+                debug_if_leader!(is_leader, "Effect: Invoke service")
+            }
             Effect::ResumeService {
                 metadata:
-                    InvocationMetadata {
-                        method,
+                    InFlightInvocationMetadata {
                         journal_metadata: JournalMetadata { length, .. },
                         ..
                     },
                 ..
             } => debug_if_leader!(
                 is_leader,
-                rpc.method = %method,
                 restate.journal.length = length,
                 "Effect: Resume service"
             ),
@@ -214,10 +231,24 @@ impl Effect {
                 );
                 debug_if_leader!(
                     is_leader,
-                    rpc.method = %metadata.method,
                     restate.journal.length = metadata.journal_metadata.length,
                     "Effect: Suspend service waiting on entries {:?}",
                     waiting_for_completed_entries
+                )
+            }
+            Effect::StoreInboxedInvocation(id, inboxed_invocation) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    restate.outbox.seq = inboxed_invocation.inbox_sequence_number,
+                    "Effect: Store inboxed invocation"
+                )
+            }
+            Effect::FreeInvocation(id) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %id,
+                    "Effect: Free invocation"
                 )
             }
             Effect::EnqueueIntoInbox { seq_number, .. } => debug_if_leader!(
@@ -230,9 +261,10 @@ impl Effect {
                 message: OutboxMessage::ServiceInvocation(service_invocation),
             } => debug_if_leader!(
                 is_leader,
-                rpc.service = %service_invocation.fid.service_id.service_name,
-                rpc.method = %service_invocation.method_name,
-                restate.invocation.id = %service_invocation.fid,
+                rpc.service = %service_invocation.invocation_target.service_name(),
+                rpc.method = %service_invocation.invocation_target.handler_name(),
+                restate.invocation.id = %service_invocation.invocation_id,
+                restate.invocation.target = %service_invocation.invocation_target,
                 restate.outbox.seq = seq_number,
                 "Effect: Send service invocation to partition processor"
             ),
@@ -256,7 +288,7 @@ impl Effect {
                 message: OutboxMessage::InvocationTermination(invocation_termination),
             } => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %invocation_termination.maybe_fid,
+                restate.invocation.id = %invocation_termination.invocation_id,
                 restate.outbox.seq = seq_number,
                 "Effect: Send invocation termination command '{:?}' to partition processor",
                 invocation_termination.flavor
@@ -265,7 +297,7 @@ impl Effect {
                 seq_number,
                 message:
                     OutboxMessage::ServiceResponse(InvocationResponse {
-                        result: ResponseResult::Failure(failure_code, failure_msg),
+                        result: ResponseResult::Failure(e),
                         entry_index,
                         id,
                     }),
@@ -273,29 +305,27 @@ impl Effect {
                 is_leader,
                 restate.invocation.id = %id,
                 restate.outbox.seq = seq_number,
-                "Effect: Send failure code {} response to another invocation, completing entry index {}. Reason: {}",
-                failure_code,
-                entry_index,
-                failure_msg
+                "Effect: Send failure '{}' response to another invocation, completing entry index {}",
+                e,
+                entry_index
             ),
             Effect::IngressResponse(IngressResponse {
                 response: ResponseResult::Success(_),
-                full_invocation_id,
+                invocation_id,
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %full_invocation_id,
+                restate.invocation.id = %invocation_id,
                 "Effect: Send response to ingress: Success"),
             Effect::IngressResponse(IngressResponse {
-                response: ResponseResult::Failure(error_code, error_msg),
-                full_invocation_id,
+                response: ResponseResult::Failure(e),
+                invocation_id,
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %full_invocation_id,
-                "Effect: Send response to ingress: Failure(code: {}, msg: {})",
-                error_code,
-                error_msg,
+                restate.invocation.id = %invocation_id,
+                "Effect: Send response to ingress: Failure({})",
+                e
             ),
             Effect::DeleteInboxEntry {
                 service_id,
@@ -311,11 +341,11 @@ impl Effect {
             Effect::TruncateOutbox(seq_number) => {
                 trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
             }
-            Effect::DropJournalAndPopInbox { journal_length, .. } => {
+            Effect::DropJournal { journal_length, .. } => {
                 debug_if_leader!(
                     is_leader,
                     restate.journal.length = journal_length,
-                    "Effect: Drop journal and pop from inbox"
+                    "Effect: Drop journal"
                 );
             }
             Effect::SetState {
@@ -386,13 +416,12 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(service_id) => {
+                Timer::CompleteSleepEntry(_) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        rpc.service = %service_id.service_name,
                         restate.invocation.id = %timer_value.invocation_id(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
@@ -408,15 +437,26 @@ impl Effect {
                         "Effect: Register Sleep timer"
                     )
                 }
-                Timer::Invoke(_, service_invocation) => {
+                Timer::Invoke(service_invocation) => {
                     // no span necessary; there will already be a background_invoke span
                     debug_if_leader!(
                         is_leader,
-                        rpc.service = %service_invocation.fid.service_id.service_name,
-                        restate.invocation.id = %service_invocation.fid,
+                        rpc.service = %service_invocation.invocation_target.service_name(),
+                        rpc.method = %service_invocation.invocation_target.handler_name(),
+                        restate.invocation.id = %service_invocation.invocation_id,
+                        restate.invocation.target = %service_invocation.invocation_target,
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         "Effect: Register background invoke timer"
+                    )
+                }
+                Timer::CleanInvocationStatus(invocation_id) => {
+                    debug_if_leader!(
+                        is_leader,
+                        restate.invocation.id = %invocation_id,
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        "Effect: Register cleanup invocation status timer"
                     )
                 }
             },
@@ -472,8 +512,7 @@ impl Effect {
                 CompletionResultFmt(result)
             ),
             Effect::TraceBackgroundInvoke {
-                full_invocation_id,
-                service_method,
+                invocation_id_and_target: (invocation_id, invocation_target),
                 span_context,
                 pointer_span_id,
             } => {
@@ -488,10 +527,11 @@ impl Effect {
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "background_invoke",
-                        otel.name = format!("background_invoke {service_method}"),
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = %service_method,
-                        restate.invocation.id = %full_invocation_id,
+                        otel.name = format!("background_invoke {invocation_target}"),
+                        rpc.service = %invocation_target.service_name(),
+                        rpc.method = %invocation_target.handler_name(),
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %invocation_target,
                         restate.internal.span_id = %pointer_span_id,
                     );
                 } else {
@@ -500,17 +540,17 @@ impl Effect {
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "background_invoke",
-                        otel.name = format!("background_invoke {service_method}"),
-                        rpc.service = %full_invocation_id.service_id.service_name,
-                        rpc.method = %service_method,
-                        restate.invocation.id = %full_invocation_id,
+                        otel.name = format!("background_invoke {invocation_target}"),
+                        rpc.service = %invocation_target.service_name(),
+                        rpc.method = %invocation_target.handler_name(),
+                        restate.invocation.id = %invocation_id,
+                        restate.invocation.target = %invocation_target,
                     );
                 }
             }
             Effect::TraceInvocationResult {
-                full_invocation_id,
+                invocation_id_and_target: (invocation_id, invocation_target),
                 creation_time,
-                service_method,
                 span_context,
                 result,
             } => {
@@ -524,10 +564,11 @@ impl Effect {
                     span_context.is_sampled(),
                     span_context.causing_span_relation(),
                     "invoke",
-                    otel.name = format!("invoke {service_method}"),
-                    rpc.service = %full_invocation_id.service_id.service_name,
-                    rpc.method = %service_method,
-                    restate.invocation.id = %full_invocation_id,
+                    otel.name = format!("invoke {invocation_target}"),
+                    rpc.service = %invocation_target.service_name(),
+                    rpc.method = %invocation_target.handler_name(),
+                    restate.invocation.id = %invocation_id,
+                    restate.invocation.target = %invocation_target,
                     restate.invocation.result = result,
                     error = error, // jaeger uses this tag to show an error icon
                     // without converting to i64 this field will encode as a string
@@ -538,8 +579,8 @@ impl Effect {
                 );
                 // No need to log this
             }
-            Effect::AbortInvocation(_) => {
-                debug_if_leader!(is_leader, "Effect: Abort unknown invocation");
+            Effect::SendAbortInvocationToInvoker(invocation_id) => {
+                debug_if_leader!(is_leader, restate.invocation.id = %invocation_id, "Effect: Send abort command to invoker");
             }
             Effect::SendStoredEntryAckToInvoker(_, _) => {
                 // We can ignore these
@@ -548,7 +589,48 @@ impl Effect {
                 debug_if_leader!(
                     is_leader,
                     "Effect: Mutate state for service id '{:?}'",
-                    &state_mutation.component_id
+                    &state_mutation.service_id
+                );
+            }
+            Effect::StoreCompletedInvocation { invocation_id, .. } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store completed invocation"
+                );
+            }
+            Effect::PopInbox(service_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    rpc.service = %service_id.service_name,
+                    "Effect: Pop inbox"
+                );
+            }
+            Effect::AppendResponseSink {
+                invocation_id,
+                additional_response_sink,
+                ..
+            } => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store additional response sink {:?}",
+                    additional_response_sink
+                );
+            }
+            Effect::StoreIdempotencyId(idempotency_id, invocation_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    restate.invocation.id = %invocation_id,
+                    "Effect: Store idempotency id {:?}",
+                    idempotency_id
+                );
+            }
+            Effect::DeleteIdempotencyId(idempotency_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    "Effect: Delete idempotency id {:?}",
+                    idempotency_id
                 );
             }
         }
@@ -570,12 +652,40 @@ impl<'a> fmt::Display for CompletionResultFmt<'a> {
 
 #[derive(Debug, Default)]
 pub struct Effects {
+    related_invocation_id: Option<InvocationId>,
+    related_invocation_target: Option<InvocationTarget>,
+    related_span: SpanRelation,
     effects: Vec<Effect>,
 }
 
 impl Effects {
     pub(crate) fn clear(&mut self) {
-        self.effects.clear()
+        self.related_invocation_id = None;
+        self.related_invocation_target = None;
+        self.related_span = SpanRelation::None;
+        self.effects.clear();
+    }
+
+    pub(crate) fn set_related_invocation_id(&mut self, related_invocation_id: &InvocationId) {
+        self.related_invocation_id = Some(*related_invocation_id);
+    }
+
+    pub(crate) fn set_related_invocation_target(
+        &mut self,
+        related_invocation_target: &InvocationTarget,
+    ) {
+        self.related_invocation_target = Some(related_invocation_target.clone());
+    }
+
+    pub(crate) fn set_related_span(&mut self, related_span: SpanRelation) {
+        self.related_span = related_span;
+    }
+
+    pub(crate) fn set_parent_span_context(
+        &mut self,
+        service_invocation_span_context: &ServiceInvocationSpanContext,
+    ) {
+        self.set_related_span(service_invocation_span_context.as_parent())
     }
 
     pub(crate) fn drain(&mut self) -> Drain<'_, Effect> {
@@ -589,7 +699,7 @@ impl Effects {
     pub(crate) fn resume_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::ResumeService {
             invocation_id,
@@ -600,7 +710,7 @@ impl Effects {
     pub(crate) fn suspend_service(
         &mut self,
         invocation_id: InvocationId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) {
         self.effects.push(Effect::SuspendService {
@@ -608,6 +718,34 @@ impl Effects {
             metadata,
             waiting_for_completed_entries,
         })
+    }
+
+    pub(crate) fn store_inboxed_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        inboxed_invocation: InboxedInvocation,
+    ) {
+        self.effects.push(Effect::StoreInboxedInvocation(
+            invocation_id,
+            inboxed_invocation,
+        ))
+    }
+
+    pub(crate) fn store_completed_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        retention: Duration,
+        completed_invocation: CompletedInvocation,
+    ) {
+        self.effects.push(Effect::StoreCompletedInvocation {
+            invocation_id,
+            retention,
+            completed_invocation,
+        })
+    }
+
+    pub(crate) fn free_invocation(&mut self, invocation_id: InvocationId) {
+        self.effects.push(Effect::FreeInvocation(invocation_id))
     }
 
     pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {
@@ -626,6 +764,10 @@ impl Effects {
             service_id,
             sequence_number,
         });
+    }
+
+    pub(crate) fn pop_inbox(&mut self, service_id: ServiceId) {
+        self.effects.push(Effect::PopInbox(service_id))
     }
 
     pub(crate) fn enqueue_into_outbox(&mut self, seq_number: MessageIndex, message: OutboxMessage) {
@@ -703,13 +845,26 @@ impl Effects {
         &mut self,
         invocation_id: InvocationId,
         deployment_id: DeploymentId,
-        metadata: InvocationMetadata,
+        metadata: InFlightInvocationMetadata,
     ) {
         self.effects.push(Effect::StoreDeploymentId {
             invocation_id,
             deployment_id,
             metadata,
         })
+    }
+
+    pub(crate) fn append_response_sink(
+        &mut self,
+        invocation_id: InvocationId,
+        previous_invocation_status: InvocationStatus,
+        response_sink: ServiceInvocationResponseSink,
+    ) {
+        self.effects.push(Effect::AppendResponseSink {
+            invocation_id,
+            previous_invocation_status,
+            additional_response_sink: response_sink,
+        });
     }
 
     pub(crate) fn append_journal_entry(
@@ -741,36 +896,31 @@ impl Effects {
 
     pub(crate) fn forward_completion(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     ) {
         self.effects.push(Effect::ForwardCompletion {
-            full_invocation_id,
+            invocation_id,
             completion,
         });
     }
 
-    pub(crate) fn drop_journal_and_pop_inbox(
-        &mut self,
-        full_invocation_id: FullInvocationId,
-        journal_length: EntryIndex,
-    ) {
-        self.effects.push(Effect::DropJournalAndPopInbox {
-            full_invocation_id,
+    pub(crate) fn drop_journal(&mut self, invocation_id: InvocationId, journal_length: EntryIndex) {
+        self.effects.push(Effect::DropJournal {
+            invocation_id,
             journal_length,
-        });
+        })
     }
 
     pub(crate) fn trace_background_invoke(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         pointer_span_id: Option<SpanId>,
     ) {
         self.effects.push(Effect::TraceBackgroundInvoke {
-            full_invocation_id,
-            service_method,
+            invocation_id_and_target: (invocation_id, invocation_target),
             span_context,
             pointer_span_id,
         })
@@ -778,33 +928,46 @@ impl Effects {
 
     pub(crate) fn trace_invocation_result(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        service_method: ByteString,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {
         self.effects.push(Effect::TraceInvocationResult {
-            full_invocation_id,
+            invocation_id_and_target: (invocation_id, invocation_target),
             creation_time,
-            service_method,
             span_context,
             result,
         })
     }
 
-    pub(crate) fn abort_invocation(&mut self, full_invocation_id: FullInvocationId) {
+    pub(crate) fn abort_invocation(&mut self, invocation_id: InvocationId) {
         self.effects
-            .push(Effect::AbortInvocation(full_invocation_id));
+            .push(Effect::SendAbortInvocationToInvoker(invocation_id));
+    }
+
+    pub(crate) fn store_idempotency_id(
+        &mut self,
+        idempotency_id: IdempotencyId,
+        invocation_id: InvocationId,
+    ) {
+        self.effects
+            .push(Effect::StoreIdempotencyId(idempotency_id, invocation_id));
+    }
+
+    pub(crate) fn delete_idempotency_id(&mut self, idempotency_id: IdempotencyId) {
+        self.effects
+            .push(Effect::DeleteIdempotencyId(idempotency_id));
     }
 
     pub(crate) fn send_stored_ack_to_invoker(
         &mut self,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) {
         self.effects.push(Effect::SendStoredEntryAckToInvoker(
-            full_invocation_id,
+            invocation_id,
             entry_index,
         ));
     }
@@ -815,12 +978,7 @@ impl Effects {
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,
     /// or if the span level is INFO and we're the leader.
-    pub(crate) fn log(
-        &self,
-        is_leader: bool,
-        full_invocation_id: Option<FullInvocationId>,
-        related_span: SpanRelation,
-    ) {
+    pub(crate) fn log(&self, is_leader: bool) {
         // Skip this method altogether if logging is disabled
         if !(((event_enabled!(Level::DEBUG) || span_enabled!(Level::INFO)) && is_leader)
             || event_enabled!(Level::TRACE))
@@ -828,23 +986,36 @@ impl Effects {
             return;
         }
 
-        let span = match (is_leader, full_invocation_id) {
-            (true, Some(full_invocation_id)) => debug_span!(
-                "state_machine_effects",
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-            ),
-            (false, Some(full_invocation_id)) => trace_span!(
-                "state_machine_effects",
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-            ),
-            (true, None) => debug_span!("state_machine_effects"),
-            (false, None) => trace_span!("state_machine_effects"),
+        let span = if is_leader {
+            debug_span!("state_machine_effects")
+        } else {
+            trace_span!("state_machine_effects")
         };
 
+        if let Some(invocation_id) = &self.related_invocation_id {
+            span.record(
+                "restate.invocation.id",
+                tracing::field::display(invocation_id),
+            );
+        }
+
+        if let Some(invocation_target) = &self.related_invocation_target {
+            span.record(
+                "rpc.service",
+                tracing::field::display(invocation_target.service_name()),
+            );
+            span.record(
+                "rpc.method",
+                tracing::field::display(invocation_target.handler_name()),
+            );
+            span.record(
+                "restate.invocation.target",
+                tracing::field::display(invocation_target),
+            );
+        }
+
         // Create span and enter it
-        related_span.attach_to_span(&span);
+        self.related_span.attach_to_span(&span);
         let _enter = span.enter();
 
         // Log all the effects

@@ -22,7 +22,7 @@ use restate_network::Networking;
 use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
-use std::ops::{Deref, RangeInclusive};
+use std::ops::RangeInclusive;
 use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -37,9 +37,9 @@ use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
+use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
-use restate_types::dedup::EpochSequenceNumber;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_types::journal::EntryType;
@@ -55,11 +55,12 @@ pub(crate) struct LeaderState {
     timer_service: Pin<Box<TimerService>>,
     non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
     action_effect_handler: ActionEffectHandler,
+    actions_effects_tx: mpsc::Sender<ActionEffect>,
 }
 
 pub(crate) struct FollowerState<I> {
     partition_id: PartitionId,
-    timer_service_options: restate_timer::Options,
+    num_timers_in_memory_limit: Option<usize>,
     channel_size: usize,
     invoker_tx: I,
     networking: Networking,
@@ -94,7 +95,7 @@ where
     pub(crate) fn follower(
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: restate_timer::Options,
+        num_timers_in_memory_limit: Option<usize>,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
         bifrost: Bifrost,
@@ -104,7 +105,7 @@ where
             Self::Follower(FollowerState {
                 partition_id,
                 partition_key_range,
-                timer_service_options,
+                num_timers_in_memory_limit,
                 channel_size,
                 invoker_tx,
                 bifrost,
@@ -156,11 +157,11 @@ where
             )
             .await?;
 
-            let timer_service = Box::pin(
-                follower_state
-                    .timer_service_options
-                    .build(partition_storage.clone(), TokioClock),
-            );
+            let timer_service = Box::pin(TimerService::new(
+                TokioClock,
+                follower_state.num_timers_in_memory_limit,
+                partition_storage.clone(),
+            ));
 
             let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
 
@@ -192,6 +193,9 @@ where
                 follower_state.bifrost.clone(),
             );
 
+            let (actions_effects_tx, actions_effects_rx) =
+                mpsc::channel(follower_state.channel_size);
+
             Ok((
                 LeadershipState::Leader {
                     follower_state,
@@ -202,9 +206,15 @@ where
                         timer_service,
                         action_effect_handler,
                         non_deterministic_service_invoker: service_invoker,
+                        actions_effects_tx,
                     },
                 },
-                ActionEffectStream::leader(invoker_rx, shuffle_rx, service_invoker_output_rx),
+                ActionEffectStream::leader(
+                    invoker_rx,
+                    shuffle_rx,
+                    service_invoker_output_rx,
+                    actions_effects_rx,
+                ),
             ))
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -232,29 +242,30 @@ where
             let invoked_invocations = partition_storage.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
-            while let Some(full_invocation_id) = invoked_invocations.next().await {
-                let full_invocation_id = full_invocation_id?;
+            while let Some(invocation_id_and_target) = invoked_invocations.next().await {
+                let (invocation_id, invocation_target) = invocation_id_and_target?;
 
                 if !non_deterministic::ServiceInvoker::is_supported(
-                    &full_invocation_id.service_id.service_name,
+                    invocation_target.service_name(),
                 ) {
                     invoker_handle
                         .invoke(
                             partition_leader_epoch,
-                            full_invocation_id,
+                            invocation_id,
+                            invocation_target,
                             InvokeInputJournal::NoCachedJournal,
                         )
                         .await
                         .map_err(Error::Invoker)?;
                 } else {
-                    built_in_invoked_services.push(full_invocation_id);
+                    built_in_invoked_services.push(invocation_id);
                 }
             }
         }
 
-        for full_invocation_id in built_in_invoked_services {
+        for invocation_id in built_in_invoked_services {
             let input_entry = partition_storage
-                .load_journal_entry(&InvocationId::from(&full_invocation_id), 0)
+                .load_journal_entry(&invocation_id, 0)
                 .await?
                 .expect("first journal entry must be present; if not, this indicates a bug.");
 
@@ -266,18 +277,22 @@ where
             );
 
             let status = partition_storage
-                .get_invocation_status(&InvocationId::from(&full_invocation_id))
+                .get_invocation_status(&invocation_id)
                 .await?;
 
             let_assert!(InvocationStatus::Invoked(metadata) = status);
 
-            let method = metadata.method;
-            let response_sink = metadata.response_sink;
+            // Built-in services support only one response_sink
+            debug_assert!(
+                metadata.response_sinks.len() <= 1,
+                "Built-in services support only one response_sink"
+            );
+            let response_sink = metadata.response_sinks.into_iter().next();
             let argument = input_entry.serialized_entry().clone();
             built_in_service_invoker
                 .invoke(
-                    full_invocation_id,
-                    &method,
+                    invocation_id,
+                    metadata.invocation_target,
                     metadata.journal_metadata.span_context,
                     response_sink,
                     argument,
@@ -295,7 +310,7 @@ where
                     partition_id,
                     partition_key_range,
                     channel_size,
-                    timer_service_options: num_in_memory_timers,
+                    num_timers_in_memory_limit,
                     mut invoker_tx,
                     bifrost,
                     networking,
@@ -324,7 +339,7 @@ where
             Ok(Self::follower(
                 partition_id,
                 partition_key_range,
-                num_in_memory_timers,
+                num_timers_in_memory_limit,
                 channel_size,
                 invoker_tx,
                 bifrost,
@@ -366,6 +381,7 @@ where
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.non_deterministic_service_invoker,
+                        &mut leader_state.actions_effects_tx,
                         &follower_state.networking,
                     )
                     .await?;
@@ -384,16 +400,19 @@ where
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
         non_deterministic_service_invoker: &mut ServiceInvoker,
+        actions_effects_tx: &mut mpsc::Sender<ActionEffect>,
         networking: &Networking,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
-                full_invocation_id,
+                invocation_id,
+                invocation_target,
                 invoke_input_journal,
             } => invoker_tx
                 .invoke(
                     partition_leader_epoch,
-                    full_invocation_id,
+                    invocation_id,
+                    invocation_target,
                     invoke_input_journal,
                 )
                 .await
@@ -407,40 +426,36 @@ where
                 timer_service.as_mut().remove_timer(timer_key.into())
             }
             Action::AckStoredEntry {
-                full_invocation_id,
+                invocation_id,
                 entry_index,
             } => {
                 invoker_tx
-                    .notify_stored_entry_ack(
-                        partition_leader_epoch,
-                        full_invocation_id,
-                        entry_index,
-                    )
+                    .notify_stored_entry_ack(partition_leader_epoch, invocation_id, entry_index)
                     .await
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
-                full_invocation_id,
+                invocation_id,
                 completion,
             } => invoker_tx
-                .notify_completion(partition_leader_epoch, full_invocation_id, completion)
+                .notify_completion(partition_leader_epoch, invocation_id, completion)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::AbortInvocation(full_invocation_id) => invoker_tx
-                .abort_invocation(partition_leader_epoch, full_invocation_id)
+            Action::AbortInvocation(invocation_id) => invoker_tx
+                .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
             Action::InvokeBuiltInService {
-                full_invocation_id,
+                invocation_id,
+                invocation_target,
                 span_context,
                 response_sink,
-                method,
                 argument,
             } => {
                 non_deterministic_service_invoker
                     .invoke(
-                        full_invocation_id,
-                        method.deref(),
+                        invocation_id,
+                        invocation_target,
                         span_context,
                         response_sink,
                         argument,
@@ -448,7 +463,7 @@ where
                     .await;
             }
             Action::IngressResponse(ingress_response) => {
-                let invocation_id: InvocationId = ingress_response.full_invocation_id.into();
+                let invocation_id: InvocationId = ingress_response.invocation_id;
                 // NOTE: We dispatch the response in a non-blocking task-center task to avoid
                 // blocking partition processor. This comes with the risk of overwhelming the
                 // runtime. This should be a temporary solution until we have a better way to
@@ -470,14 +485,14 @@ where
                     current_task_partition_id(),
                     {
                         let networking = networking.clone();
-                        let invocation_id = invocation_id.clone();
                         async move {
                             if let Err(e) = networking
                                 .send(
                                     ingress_response.target_node.into(),
                                     &ingress::IngressMessage::InvocationResponse(
                                         ingress::InvocationResponse {
-                                            id: invocation_id.clone(),
+                                            invocation_id,
+                                            idempotency_id: ingress_response.idempotency_id,
                                             response: ingress_response.response,
                                         },
                                     ),
@@ -504,6 +519,15 @@ where
                         invocation_id
                     );
                 }
+            }
+            Action::ScheduleInvocationStatusCleanup {
+                invocation_id,
+                retention,
+            } => {
+                // We can ignore this error. It means the PP is shutting down.
+                let _ = actions_effects_tx
+                    .send(ActionEffect::ScheduleCleanupTimer(invocation_id, retention))
+                    .await;
             }
         }
 

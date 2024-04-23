@@ -31,7 +31,17 @@ pub mod schema {
     #![allow(warnings)]
     #![allow(clippy::all)]
     #![allow(unknown_lints)]
+
     include!(concat!(env!("OUT_DIR"), "/deployment.rs"));
+
+    impl From<ServiceType> for restate_types::invocation::ServiceType {
+        fn from(value: ServiceType) -> Self {
+            match value {
+                ServiceType::VirtualObject => restate_types::invocation::ServiceType::VirtualObject,
+                ServiceType::Service => restate_types::invocation::ServiceType::Service,
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -61,7 +71,7 @@ impl DiscoverEndpoint {
 #[derive(Debug)]
 pub struct DiscoveredMetadata {
     pub protocol_type: ProtocolType,
-    pub components: Vec<schema::Component>,
+    pub services: Vec<schema::Service>,
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -106,13 +116,13 @@ impl DiscoveryError {
     }
 }
 
-#[derive(Debug)]
-pub struct ComponentDiscovery {
+#[derive(Debug, Clone)]
+pub struct ServiceDiscovery {
     retry_policy: RetryPolicy,
     client: ServiceClient,
 }
 
-impl ComponentDiscovery {
+impl ServiceDiscovery {
     pub fn new(retry_policy: RetryPolicy, client: ServiceClient) -> Self {
         Self {
             retry_policy,
@@ -121,7 +131,7 @@ impl ComponentDiscovery {
     }
 }
 
-impl ComponentDiscovery {
+impl ServiceDiscovery {
     pub async fn discover(
         &self,
         endpoint: &DiscoverEndpoint,
@@ -161,7 +171,7 @@ impl ComponentDiscovery {
 
         Ok(DiscoveredMetadata {
             protocol_type,
-            components: response.components,
+            services: response.services,
         })
     }
 

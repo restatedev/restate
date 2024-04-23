@@ -21,8 +21,9 @@
     derive_more::From,
     derive_more::Into,
     derive_more::AddAssign,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[display(fmt = "v{}", _0)]
 pub struct Version(u32);
 
@@ -45,7 +46,22 @@ impl Default for Version {
 pub trait Versioned {
     /// Returns the version of the versioned value
     fn version(&self) -> Version;
+}
 
-    /// Increments the version of the versioned value
-    fn increment_version(&mut self);
+impl<T: Versioned> Versioned for &T {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+}
+
+impl<T: Versioned> Versioned for &mut T {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+}
+
+impl<T: Versioned> Versioned for Box<T> {
+    fn version(&self) -> Version {
+        (**self).version()
+    }
 }

@@ -21,6 +21,7 @@ use tokio::task::AbortHandle;
 /// Component encapsulating the business logic of the invocation state machine
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
+    pub(super) invocation_target: InvocationTarget,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter,
 }
@@ -127,8 +128,12 @@ impl fmt::Debug for InvocationState {
 }
 
 impl InvocationStateMachine {
-    pub(super) fn create(retry_policy: RetryPolicy) -> InvocationStateMachine {
+    pub(super) fn create(
+        invocation_target: InvocationTarget,
+        retry_policy: RetryPolicy,
+    ) -> InvocationStateMachine {
         Self {
+            invocation_target,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
         }
@@ -330,8 +335,10 @@ mod tests {
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
-        let mut invocation_state_machine =
-            InvocationStateMachine::create(RetryPolicy::fixed_delay(Duration::from_secs(1), 10));
+        let mut invocation_state_machine = InvocationStateMachine::create(
+            InvocationTarget::mock_virtual_object(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
+        );
 
         assert!(invocation_state_machine.handle_task_error().is_some());
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
@@ -345,8 +352,10 @@ mod tests {
 
     #[test(tokio::test)]
     async fn handle_requires_ack() {
-        let mut invocation_state_machine =
-            InvocationStateMachine::create(RetryPolicy::fixed_delay(Duration::from_secs(1), 10));
+        let mut invocation_state_machine = InvocationStateMachine::create(
+            InvocationTarget::mock_virtual_object(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
+        );
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
         let (tx, mut rx) = mpsc::unbounded_channel();

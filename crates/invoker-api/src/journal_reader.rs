@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytestring::ByteString;
 use futures::Stream;
-use restate_types::identifiers::{DeploymentId, FullInvocationId};
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
@@ -21,7 +20,6 @@ use std::future::Future;
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
-    pub method: ByteString,
     pub deployment_id: Option<DeploymentId>,
 }
 
@@ -29,12 +27,10 @@ impl JournalMetadata {
     pub fn new(
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
-        method: ByteString,
         deployment_id: Option<DeploymentId>,
     ) -> Self {
         Self {
             deployment_id,
-            method,
             span_context,
             length,
         }
@@ -47,7 +43,7 @@ pub trait JournalReader {
 
     fn read_journal<'a>(
         &'a mut self,
-        fid: &'a FullInvocationId,
+        fid: &'a InvocationId,
     ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 }
 
@@ -66,15 +62,10 @@ pub mod mocks {
 
         async fn read_journal<'a>(
             &'a mut self,
-            _sid: &'a FullInvocationId,
+            _sid: &'a InvocationId,
         ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
             Ok((
-                JournalMetadata::new(
-                    0,
-                    ServiceInvocationSpanContext::empty(),
-                    "test".into(),
-                    None,
-                ),
+                JournalMetadata::new(0, ServiceInvocationSpanContext::empty(), None),
                 futures::stream::empty(),
             ))
         }

@@ -72,7 +72,7 @@ async fn for_each_state<'a, I>(
     let mut temp = String::new();
     let mut rows = rows.collect::<Vec<_>>();
     // need to be ordered by partition key for symmetric joins
-    rows.sort_unstable_by_key(|row| row.full_invocation_id().service_id.partition_key());
+    rows.sort_unstable_by_key(|row| row.invocation_id().partition_key());
     for row in rows {
         append_state_row(&mut builder, &mut temp, row);
         if builder.full() {

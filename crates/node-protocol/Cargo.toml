@@ -11,10 +11,13 @@ publish = false
 default = []
 
 [dependencies]
-restate-types = { workspace = true, features = ["serde"] }
+restate-types = { workspace = true }
+# merge schema creates with restate-types?
+restate-schema = { workspace = true }
 
 bincode = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 prost = { workspace = true }

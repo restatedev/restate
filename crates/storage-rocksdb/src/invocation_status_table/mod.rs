@@ -8,26 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::PartitionKeyRange;
 use crate::{RocksDBStorage, TableKind, TableScanIterationDecision};
 use crate::{RocksDBTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
-use restate_types::identifiers::{FullInvocationId, PartitionKey};
-use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use restate_types::invocation::InvocationTarget;
+use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
 define_table_key!(
     TableKind::InvocationStatus,
+    KeyKind::InvocationStatus,
     InvocationStatusKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
@@ -46,7 +45,7 @@ fn invocation_id_from_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Invoc
         .partition_key
         .take()
         .ok_or(StorageError::DataIntegrityError)?;
-    Ok(InvocationId::new(
+    Ok(InvocationId::from_parts(
         partition_key,
         key.invocation_uuid
             .take()
@@ -63,8 +62,7 @@ fn put_invocation_status<S: StorageAccess>(
     if status == InvocationStatus::Free {
         storage.delete_key(&key);
     } else {
-        let value = ProtoValue(storage::v1::InvocationStatus::from(status));
-        storage.put_kv(key, value);
+        storage.put_kv(key, status);
     }
 }
 
@@ -74,15 +72,9 @@ fn get_invocation_status<S: StorageAccess>(
 ) -> Result<InvocationStatus> {
     let key = write_invocation_status_key(invocation_id);
 
-    storage.get_blocking(key, move |_, v| {
-        if v.is_none() {
-            return Ok(InvocationStatus::Free);
-        }
-        let v = v.unwrap();
-        let proto = storage::v1::InvocationStatus::decode(v)
-            .map_err(|err| StorageError::Generic(err.into()))?;
-        InvocationStatus::try_from(proto).map_err(StorageError::from)
-    })
+    storage
+        .get_value::<_, InvocationStatus>(key)
+        .map(|value| value.unwrap_or(InvocationStatus::Free))
 }
 
 fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
@@ -93,7 +85,7 @@ fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &I
 fn invoked_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
-) -> Vec<Result<FullInvocationId>> {
+) -> Vec<Result<(InvocationId, InvocationTarget)>> {
     storage.for_each_key_value_in_place(
         PartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
@@ -110,16 +102,12 @@ fn invoked_invocations<S: StorageAccess>(
 fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
-) -> Result<Option<FullInvocationId>> {
+) -> Result<Option<(InvocationId, InvocationTarget)>> {
     let invocation_id = invocation_id_from_bytes(&mut k)?;
-    let proto = storage::v1::InvocationStatus::decode(v)
+    let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
-    let invocation_status = InvocationStatus::try_from(proto).map_err(StorageError::from)?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
-        Ok(Some(FullInvocationId::combine(
-            invocation_meta.service_id,
-            invocation_id,
-        )))
+        Ok(Some((invocation_id, invocation_meta.invocation_target)))
     } else {
         Ok(None)
     }
@@ -136,7 +124,7 @@ impl ReadOnlyInvocationStatusTable for RocksDBStorage {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
 }
@@ -153,7 +141,7 @@ impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
     fn invoked_invocations(
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<FullInvocationId>> + Send {
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
 }
@@ -185,10 +173,9 @@ impl RocksDBStorage {
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedInvocationStatusRow> + '_ {
         let iter = self.iterator_from(PartitionKeyRange::<InvocationStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, value)| {
+        OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = InvocationStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = storage::v1::InvocationStatus::decode(value).unwrap();
-            let state_value = InvocationStatus::try_from(state_value).unwrap();
+            let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value).unwrap();
             OwnedInvocationStatusRow {
                 partition_key: state_key.partition_key.unwrap(),
                 invocation_uuid: state_key.invocation_uuid.unwrap(),

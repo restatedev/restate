@@ -8,35 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Inbox;
 use crate::{RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
-use bytes::Bytes;
 use bytestring::ByteString;
-use std::future;
-use std::future::Future;
-
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
-use restate_storage_api::inbox_table::{
-    InboxEntry, InboxTable, SequenceNumberInboxEntry, SequenceNumberInvocation,
-};
+use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::invocation::MaybeFullInvocationId;
+use restate_types::storage::StorageCodec;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 define_table_key!(
     Inbox,
+    KeyKind::Inbox,
     InboxKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: Bytes,
+        service_key: ByteString,
         sequence_number: u64
     )
 );
@@ -56,7 +48,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(key, ProtoValue(storage::v1::InboxEntry::from(inbox_entry)));
+        self.put_kv(key, inbox_entry);
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
@@ -130,65 +122,14 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             },
         ))
     }
-
-    fn get_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInvocation>>> + Send {
-        let (inbox_key, invocation_uuid) = match maybe_fid.into() {
-            MaybeFullInvocationId::Partial(invocation_id) => (
-                InboxKey::default().partition_key(invocation_id.partition_key()),
-                invocation_id.invocation_uuid(),
-            ),
-            MaybeFullInvocationId::Full(fid) => (
-                InboxKey::default()
-                    .partition_key(fid.partition_key())
-                    .service_name(fid.service_id.service_name)
-                    .service_key(fid.service_id.key),
-                fid.invocation_uuid,
-            ),
-        };
-
-        let mut inbox_entries =
-            self.for_each_key_value_in_place(TableScan::KeyPrefix(inbox_key), move |key, value| {
-                let inbox_entry = decode_inbox_key_value(key, value);
-
-                match inbox_entry {
-                    Ok(inbox_entry) => {
-                        if let InboxEntry::Invocation(invocation) = inbox_entry.inbox_entry {
-                            if invocation.fid.invocation_uuid == invocation_uuid {
-                                return TableScanIterationDecision::BreakWith(Ok(
-                                    SequenceNumberInvocation {
-                                        inbox_sequence_number: inbox_entry.inbox_sequence_number,
-                                        invocation,
-                                    },
-                                ));
-                            }
-                        }
-
-                        TableScanIterationDecision::Continue
-                    }
-                    Err(err) => TableScanIterationDecision::BreakWith(Err(err)),
-                }
-            });
-
-        let result = if inbox_entries.is_empty() {
-            Ok(None)
-        } else {
-            inbox_entries.swap_remove(0).map(Some)
-        };
-
-        future::ready(result)
-    }
 }
 
-fn decode_inbox_key_value(k: &[u8], v: &[u8]) -> Result<SequenceNumberInboxEntry> {
+fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
     let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
     let sequence_number = *key.sequence_number_ok_or()?;
 
-    let inbox_entry = InboxEntry::try_from(
-        storage::v1::InboxEntry::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
-    )?;
+    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
 }

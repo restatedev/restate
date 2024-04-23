@@ -25,20 +25,32 @@
     derive_more::From,
     derive_more::Display,
     strum_macros::EnumIs,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodeId {
     Plain(PlainNodeId),
     Generational(GenerationalNodeId),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, derive_more::From, derive_more::Display)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    derive_more::From,
+    derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[display(fmt = "{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
 #[derive(
     Debug,
+    Default,
     PartialEq,
     Eq,
     Ord,
@@ -47,13 +59,15 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
     Copy,
     Hash,
     derive_more::From,
+    derive_more::FromStr,
     derive_more::Into,
     derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[display(fmt = "N{}", _0)]
-pub struct PlainNodeId(#[cfg_attr(feature = "serde_schema", schemars(default))] u32);
+pub struct PlainNodeId(#[cfg_attr(feature = "schemars", schemars(default))] u32);
 
 impl NodeId {
     pub fn new(id: u32, generation: Option<u32>) -> NodeId {
@@ -130,6 +144,11 @@ impl PartialEq<PlainNodeId> for NodeId {
 impl PlainNodeId {
     pub fn with_generation(self, generation: u32) -> GenerationalNodeId {
         GenerationalNodeId(self, generation)
+    }
+
+    pub fn next(mut self) -> Self {
+        self.0 += 1;
+        self
     }
 }
 

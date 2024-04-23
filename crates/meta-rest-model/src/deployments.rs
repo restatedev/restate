@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use http::Uri;
-use restate_schema_api::component::ComponentMetadata;
+use restate_schema_api::service::ServiceMetadata;
 use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -19,7 +19,7 @@ use std::time::SystemTime;
 // that we are using proxying to restate-schema-api or restate-types
 use restate_schema_api::deployment::DeploymentType;
 pub use restate_schema_api::deployment::{DeploymentMetadata, ProtocolType};
-use restate_types::identifiers::ComponentRevision;
+use restate_types::identifiers::ServiceRevision;
 pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -152,16 +152,16 @@ pub enum RegisterDeploymentRequest {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ComponentNameRevPair {
+pub struct ServiceNameRevPair {
     pub name: String,
-    pub revision: ComponentRevision,
+    pub revision: ServiceRevision,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterDeploymentResponse {
     pub id: DeploymentId,
-    pub components: Vec<ComponentMetadata>,
+    pub services: Vec<ServiceMetadata>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -178,10 +178,10 @@ pub struct DeploymentResponse {
     #[serde(flatten)]
     pub deployment: Deployment,
 
-    /// # Components
+    /// # Services
     ///
-    /// List of components exposed by this deployment.
-    pub components: Vec<ComponentNameRevPair>,
+    /// List of services exposed by this deployment.
+    pub services: Vec<ServiceNameRevPair>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -192,8 +192,8 @@ pub struct DetailedDeploymentResponse {
     #[serde(flatten)]
     pub deployment: Deployment,
 
-    /// # Components
+    /// # Services
     ///
-    /// List of components exposed by this deployment.
-    pub components: Vec<ComponentMetadata>,
+    /// List of services exposed by this deployment.
+    pub services: Vec<ServiceMetadata>,
 }

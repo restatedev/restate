@@ -1,0 +1,20 @@
+[package]
+name = "restate-grpc-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-types = { workspace = true }
+
+http = { workspace = true }
+hyper = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true }
+tower = { workspace = true }
+tracing = { workspace = true }

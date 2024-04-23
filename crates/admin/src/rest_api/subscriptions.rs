@@ -12,9 +12,9 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 use restate_meta_rest_model::subscriptions::*;
-use restate_schema_api::subscription::SubscriptionResolver;
+use restate_schema_api::subscription::SubscriptionValidator;
 
-use crate::rest_api::notify_node_about_schema_changes;
+use crate::rest_api::log_error;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -38,22 +38,16 @@ use restate_types::identifiers::SubscriptionId;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn create_subscription<V: SubscriptionValidator>(
+    State(state): State<AdminServiceState<V>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
-    let subscription = state
-        .meta_handle()
-        .create_subscription(
-            // Do not allow users to create their own subscription ids.
-            None, /* subscription_id */
-            payload.source,
-            payload.sink,
-            payload.options,
-        )
-        .await?;
-
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
+    let subscription = log_error(
+        state
+            .schema_registry
+            .create_subscription(payload.source, payload.sink, payload.options)
+            .await,
+    )?;
 
     Ok((
         StatusCode::CREATED,
@@ -77,13 +71,15 @@ pub async fn create_subscription(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn get_subscription<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
-        .schemas()
-        .get_subscription(subscription_id)
+        .task_center
+        .run_in_scope_sync("get-subscription", None, || {
+            state.schema_registry.get_subscription(subscription_id)
+        })
         .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
 
     Ok(SubscriptionResponse::from(subscription).into())
@@ -114,8 +110,8 @@ pub async fn get_subscription(
         )
     )
 )]
-pub async fn list_subscriptions(
-    State(state): State<AdminServiceState>,
+pub async fn list_subscriptions<V>(
+    State(state): State<AdminServiceState<V>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
 ) -> Json<ListSubscriptionsResponse> {
     let filters = match (sink, source) {
@@ -130,10 +126,14 @@ pub async fn list_subscriptions(
         _ => vec![],
     };
 
+    let subscriptions = state
+        .task_center
+        .run_in_scope_sync("list-subscriptions", None, || {
+            state.schema_registry.list_subscriptions(&filters)
+        });
+
     ListSubscriptionsResponse {
-        subscriptions: state
-            .schemas()
-            .list_subscriptions(&filters)
+        subscriptions: subscriptions
             .into_iter()
             .map(SubscriptionResponse::from)
             .collect(),
@@ -162,16 +162,15 @@ pub async fn list_subscriptions(
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription(
-    State(state): State<AdminServiceState>,
+pub async fn delete_subscription<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
-    state
-        .meta_handle()
-        .delete_subscription(subscription_id)
-        .await?;
-
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
-
+    log_error(
+        state
+            .schema_registry
+            .delete_subscription(subscription_id)
+            .await,
+    )?;
     Ok(StatusCode::ACCEPTED)
 }

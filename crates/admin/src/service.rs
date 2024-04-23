@@ -8,60 +8,65 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_bifrost::Bifrost;
+use restate_types::arc_util::Updateable;
+use restate_types::config::AdminOptions;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
 
-use restate_core::{cancellation_watcher, task_center};
-use restate_meta::{FileMetaReader, MetaHandle};
+use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::{cancellation_watcher, task_center, MetadataWriter};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_impl::Schemas;
+use restate_schema_api::subscription::SubscriptionValidator;
+use restate_service_protocol::discovery::ServiceDiscovery;
 
+use crate::schema_registry::SchemaRegistry;
+use crate::Error;
 use crate::{rest_api, state, storage_query};
-use crate::{Error, Options};
 
-#[derive(Debug)]
-pub struct AdminService {
-    opts: Options,
-    schemas: Schemas,
-    meta_handle: MetaHandle,
-    schema_reader: FileMetaReader,
+#[derive(Debug, thiserror::Error)]
+#[error("could not create the service client: {0}")]
+pub struct BuildError(#[from] restate_service_client::BuildError);
+
+pub struct AdminService<V> {
+    schema_registry: SchemaRegistry<V>,
 }
 
-impl AdminService {
+impl<V> AdminService<V>
+where
+    V: SubscriptionValidator + Send + Sync + Clone + 'static,
+{
     pub fn new(
-        opts: Options,
-        schemas: Schemas,
-        meta_handle: MetaHandle,
-        schema_reader: FileMetaReader,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
+        subscription_validator: V,
+        service_discovery: ServiceDiscovery,
     ) -> Self {
         Self {
-            opts,
-            schemas,
-            meta_handle,
-            schema_reader,
+            schema_registry: SchemaRegistry::new(
+                metadata_store_client,
+                metadata_writer,
+                service_discovery,
+                subscription_validator,
+            ),
         }
     }
 
     pub async fn run(
         self,
+        mut updateable_config: impl Updateable<AdminOptions> + Send + 'static,
         node_svc_client: NodeSvcClient<Channel>,
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {
-        let rest_state = state::AdminServiceState::new(
-            self.meta_handle,
-            self.schemas,
-            node_svc_client.clone(),
-            self.schema_reader,
-            bifrost,
-            task_center(),
-        );
+        let opts = updateable_config.load();
+
+        let rest_state =
+            state::AdminServiceState::new(self.schema_registry, bifrost, task_center());
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));
@@ -76,14 +81,14 @@ impl AdminService {
                     }))
                     .layer(tower::load_shed::LoadShedLayer::new())
                     .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                        self.opts.concurrency_limit,
+                        opts.concurrent_api_requests_limit,
                     )),
             );
 
         // Bind and serve
-        let server = hyper::Server::try_bind(&self.opts.bind_address)
+        let server = hyper::Server::try_bind(&opts.bind_address)
             .map_err(|err| Error::Binding {
-                address: self.opts.bind_address,
+                address: opts.bind_address,
                 source: err,
             })?
             .serve(router.into_make_service());

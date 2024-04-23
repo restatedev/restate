@@ -13,19 +13,20 @@
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
 
+use restate_core::{metadata, Metadata, MetadataKind};
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::Version;
+use tracing::{error, instrument};
 
-use crate::loglet::{LogletBase, LogletProvider, LogletWrapper, ProviderKind};
-use crate::metadata::Logs;
-use crate::options::Options;
+use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
-use crate::{create_static_metadata, Error, FindTailAttributes, LogReadStream, LogRecord};
+use crate::{Error, FindTailAttributes, LogReadStream, LogRecord};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -42,9 +43,12 @@ impl Bifrost {
         Self { inner }
     }
 
-    #[cfg(any(test, feature = "memory_loglet"))]
-    pub async fn new_in_memory(num_logs: u64) -> Self {
-        let bifrost_svc = Options::memory().build(num_logs);
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn init() -> Self {
+        use crate::BifrostService;
+
+        let metadata = metadata();
+        let bifrost_svc = BifrostService::new(metadata);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -57,6 +61,7 @@ impl Bifrost {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
+    #[instrument(level = "debug", skip(self, payload), err)]
     pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.inner.append(log_id, payload).await
     }
@@ -96,7 +101,7 @@ impl Bifrost {
 
     /// The version of the currently loaded logs metadata
     pub fn version(&self) -> Version {
-        self.inner.log_metadata.lock().unwrap().version
+        metadata().logs_version()
     }
 
     #[cfg(test)]
@@ -111,21 +116,17 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    opts: Options,
-    num_partitions: u64,
+    metadata: Metadata,
     watchdog: WatchdogSender,
-    log_metadata: Mutex<Logs>,
     providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
     shutting_down: AtomicBool,
 }
 
 impl BifrostInner {
-    pub fn new(opts: Options, watchdog: WatchdogSender, num_partitions: u64) -> Self {
+    pub fn new(metadata: Metadata, watchdog: WatchdogSender) -> Self {
         Self {
-            opts,
-            num_partitions,
+            metadata,
             watchdog,
-            log_metadata: Mutex::new(Logs::empty()),
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
         }
@@ -177,23 +178,19 @@ impl BifrostInner {
     #[inline]
     fn fail_if_shutting_down(&self) -> Result<(), Error> {
         if self.shutting_down.load(Ordering::Relaxed) {
-            Err(Error::Shutdown)
+            Err(Error::Shutdown(restate_core::ShutdownError))
         } else {
             Ok(())
         }
     }
 
-    /// Immediately fetch new metadata from metadata store and update the local copy
-    ///
-    /// NOTE: The current version assumes static metadata map!
+    /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
-
-        let logs = create_static_metadata(&self.opts, self.num_partitions);
-        let mut guard = self.log_metadata.lock().unwrap();
-        if logs.version > guard.version {
-            *guard = logs;
-        }
+        self.metadata
+            .sync(MetadataKind::Logs)
+            .await
+            .map_err(Arc::new)?;
         Ok(())
     }
 
@@ -204,11 +201,18 @@ impl BifrostInner {
     fn provider_for(&self, kind: ProviderKind) -> &dyn LogletProvider {
         self.providers[kind]
             .get_or_init(|| {
-                let provider = crate::loglet::create_provider(kind, &self.opts);
+                let provider =
+                    crate::loglet::create_provider(kind).expect("provider is able to get created");
+                if let Err(e) = provider.start() {
+                    error!("Failed to start loglet provider {}: {}", kind, e);
+                    // todo: Handle provider errors by a graceful system shutdown
+                    // task_center().shutdown_node("Bifrost loglet provider startup error", 1);
+                    panic!("Failed to start loglet provider {}: {}", kind, e);
+                }
                 // tell watchdog about it.
                 let _ = self
                     .watchdog
-                    .send(WatchdogCommand::StartProvider(provider.clone()));
+                    .send(WatchdogCommand::WatchProvider(provider.clone()));
                 provider
             })
             .deref()
@@ -224,14 +228,11 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper, Error> {
-        // Locks the logs mutex.
         let tail_segment = self
-            .log_metadata
-            .lock()
-            .unwrap()
-            .tail_segment(log_id)
+            .metadata
+            .logs()
+            .and_then(|logs| logs.tail_segment(log_id))
             .ok_or(Error::UnknownLogId(log_id))?;
-        // Logs lock released here.
         let provider = self.provider_for(tail_segment.config.kind);
         let loglet = provider.get_loglet(&tail_segment.config.params).await?;
 
@@ -239,15 +240,11 @@ impl BifrostInner {
     }
 
     async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper, Error> {
-        // Locks the logs mutex.
         let segment = self
-            .log_metadata
-            .lock()
-            .unwrap()
-            .find_segment_for_lsn(log_id, lsn)
+            .metadata
+            .logs()
+            .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
             .ok_or(Error::UnknownLogId(log_id))?;
-
-        // Logs lock released here.
         let provider = self.provider_for(segment.config.kind);
         let loglet = provider.get_loglet(&segment.config.params).await?;
 
@@ -261,25 +258,27 @@ mod tests {
 
     use super::*;
 
-    use crate::loglet::ProviderKind;
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
-    use restate_core::task_center;
     use restate_core::TestCoreEnv;
+    use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_types::logs::SequenceNumber;
+    use restate_types::partition_table::FixedPartitionTable;
     use tracing::info;
     use tracing_test::traced_test;
 
     #[tokio::test]
     #[traced_test]
     async fn test_append_smoke() -> Result<()> {
-        let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
+        let num_partitions = 5;
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .with_partition_table(FixedPartitionTable::new(Version::MIN, num_partitions))
+            .build()
+            .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            // start a simple bifrost service with 5 logs.
-            let num_partitions = 5;
-            let mut bifrost = Bifrost::new_in_memory(num_partitions).await;
+            let mut bifrost = Bifrost::init().await;
 
             let mut clean_bifrost_clone = bifrost.clone();
 
@@ -334,7 +333,7 @@ mod tests {
             task_center().shutdown_node("completed", 0).await;
             // appends cannot succeed after shutdown
             let res = bifrost.append(LogId::from(0), Payload::default()).await;
-            assert!(matches!(res, Err(Error::Shutdown)));
+            assert!(matches!(res, Err(Error::Shutdown(_))));
             // Validate the watchdog has called the provider::start() function.
             assert!(logs_contain("Starting in-memory loglet provider"));
             assert!(logs_contain("Shutting down in-memory loglet provider"));
@@ -350,25 +349,16 @@ mod tests {
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             let delay = Duration::from_secs(5);
-            let num_partitions = 5;
             // This memory provider adds a delay to its loglet initialization, we want
             // to ensure that appends do not fail while waiting for the loglet;
             let memory_provider = MemoryLogletProvider::with_init_delay(delay);
 
-            let bifrost_opts = Options {
-                default_provider: ProviderKind::Memory,
-                ..Options::default()
-            };
-            let bifrost_svc = bifrost_opts.build(num_partitions);
-            let mut bifrost = bifrost_svc.handle();
+            let mut bifrost = Bifrost::init().await;
 
             // Inject out preconfigured memory provider
             bifrost
                 .inner()
-                .inject_provider(ProviderKind::Memory, memory_provider);
-
-            // start bifrost service in the background
-            bifrost_svc.start().await.unwrap();
+                .inject_provider(ProviderKind::InMemory, memory_provider);
 
             let start = tokio::time::Instant::now();
             let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;

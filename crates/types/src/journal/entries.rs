@@ -32,10 +32,11 @@ pub enum Entry {
 
     // Syscalls
     Sleep(SleepEntry),
-    Invoke(InvokeEntry),
-    BackgroundInvoke(BackgroundInvokeEntry),
+    Call(InvokeEntry),
+    OneWayCall(OneWayCallEntry),
     Awakeable(AwakeableEntry),
     CompleteAwakeable(CompleteAwakeableEntry),
+    Run(RunEntry),
     Custom(Bytes),
 }
 
@@ -77,14 +78,14 @@ impl Entry {
     }
 
     pub fn invoke(request: InvokeRequest, result: Option<EntryResult>) -> Self {
-        Entry::Invoke(InvokeEntry { request, result })
+        Entry::Call(InvokeEntry { request, result })
     }
 
     pub fn background_invoke(
         request: InvokeRequest,
         invoke_time: Option<MillisSinceEpoch>,
     ) -> Self {
-        Entry::BackgroundInvoke(BackgroundInvokeEntry {
+        Entry::OneWayCall(OneWayCallEntry {
             request,
             invoke_time: invoke_time.map(|t| t.as_u64()).unwrap_or_default(),
         })
@@ -128,9 +129,7 @@ impl From<ResponseResult> for CompletionResult {
     fn from(value: ResponseResult) -> Self {
         match value {
             ResponseResult::Success(bytes) => CompletionResult::Success(bytes),
-            ResponseResult::Failure(error_code, error_msg) => {
-                CompletionResult::Failure(error_code, error_msg)
-            }
+            ResponseResult::Failure(e) => CompletionResult::Failure(e.code(), e.message().into()),
         }
     }
 }
@@ -141,7 +140,7 @@ impl From<&InvocationError> for CompletionResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
     Input,
     Output,
@@ -151,10 +150,11 @@ pub enum EntryType {
     GetStateKeys,
     ClearAllState,
     Sleep,
-    Invoke,
-    BackgroundInvoke,
+    Call,
+    OneWayCall,
     Awakeable,
     CompleteAwakeable,
+    Run,
     Custom,
 }
 
@@ -174,7 +174,9 @@ impl From<EntryResult> for ResponseResult {
     fn from(value: EntryResult) -> Self {
         match value {
             EntryResult::Success(bytes) => ResponseResult::Success(bytes),
-            EntryResult::Failure(code, error_msg) => ResponseResult::Failure(code, error_msg),
+            EntryResult::Failure(code, error_msg) => {
+                ResponseResult::Failure(InvocationError::new(code, error_msg))
+            }
         }
     }
 }
@@ -273,7 +275,7 @@ impl CompletableEntry for SleepEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvokeRequest {
     pub service_name: ByteString,
-    pub method_name: ByteString,
+    pub handler_name: ByteString,
     pub parameter: Bytes,
     /// Empty if service call.
     /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
@@ -290,7 +292,7 @@ impl InvokeRequest {
     ) -> Self {
         InvokeRequest {
             service_name: service_name.into(),
-            method_name: method_name.into(),
+            handler_name: method_name.into(),
             parameter: parameter.into(),
             key: key.into(),
         }
@@ -310,7 +312,7 @@ impl CompletableEntry for InvokeEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackgroundInvokeEntry {
+pub struct OneWayCallEntry {
     pub request: InvokeRequest,
     pub invoke_time: u64,
 }
@@ -329,5 +331,10 @@ impl CompletableEntry for AwakeableEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteAwakeableEntry {
     pub id: ByteString,
+    pub result: EntryResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEntry {
     pub result: EntryResult,
 }

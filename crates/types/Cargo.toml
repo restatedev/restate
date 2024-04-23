@@ -10,9 +10,7 @@ publish = false
 [features]
 default = []
 
-mocks = []
-serde = ["dep:serde", "dep:serde_with", "enumset/serde"]
-serde_schema = ["serde", "dep:schemars"]
+test-util = ["dep:tempfile"]
 
 [dependencies]
 restate-base64-util = { workspace = true }
@@ -22,27 +20,33 @@ arc-swap = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
+derive_builder = { workspace = true }
+derive_more = { workspace = true }
 enum-map = { workspace = true }
-enumset = { workspace = true }
+enumset = { workspace = true, features = ["serde"] }
+flexbuffers = { workspace = true }
+hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
-opentelemetry_api = { workspace = true }
+opentelemetry = { workspace = true }
 rand = { workspace = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_with = { workspace = true, optional = true }
+serde = { workspace = true, features = ["rc"] }
+serde_with = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
+tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
+toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-derive_more = { workspace = true }
 
 base62 = { version = "2.0.2" }
 # See this https://github.com/jonasbb/serde_with/issues/355#issuecomment-909512315
@@ -52,7 +56,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+tempfile = { workspace = true }
 
-test-log = { workspace = true }
-
+googletest = { workspace = true }
 rand = { workspace = true }
+test-log = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

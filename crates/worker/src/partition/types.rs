@@ -10,16 +10,21 @@
 
 use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::FullInvocationId;
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, MaybeFullInvocationId, ResponseResult, ServiceInvocation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, SpanRelation,
 };
+use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
 pub(crate) type InvokerEffectKind = restate_invoker_api::EffectKind;
+
+/// This type carries together invocation id and target.
+/// Use this type only when you need to group together id and target,
+/// and generally use only InvocationId for identifying an invocation.
+pub(crate) type InvocationIdAndTarget = (InvocationId, InvocationTarget);
 
 // Extension methods to the OutboxMessage type
 pub(crate) trait OutboxMessageExt {
@@ -28,6 +33,8 @@ pub(crate) trait OutboxMessageExt {
         entry_index: EntryIndex,
         result: ResponseResult,
     ) -> OutboxMessage;
+
+    fn to_command(self) -> Command;
 }
 
 impl OutboxMessageExt for OutboxMessage {
@@ -39,13 +46,22 @@ impl OutboxMessageExt for OutboxMessage {
         OutboxMessage::ServiceResponse(InvocationResponse {
             entry_index,
             result,
-            id: MaybeFullInvocationId::Partial(invocation_id),
+            id: invocation_id,
         })
+    }
+
+    fn to_command(self) -> Command {
+        match self {
+            OutboxMessage::ServiceInvocation(si) => Command::Invoke(si),
+            OutboxMessage::ServiceResponse(sr) => Command::InvocationResponse(sr),
+            OutboxMessage::InvocationTermination(it) => Command::TerminateInvocation(it),
+        }
     }
 }
 
 pub fn create_response_message(
-    callee: &FullInvocationId,
+    callee: &InvocationId,
+    idempotency_id: Option<IdempotencyId>,
     response_sink: ServiceInvocationResponseSink,
     result: ResponseResult,
 ) -> ResponseMessage {
@@ -54,35 +70,38 @@ pub fn create_response_message(
             entry_index,
             caller,
         } => ResponseMessage::Outbox(OutboxMessage::ServiceResponse(InvocationResponse {
-            id: MaybeFullInvocationId::Full(caller),
+            id: caller,
             entry_index,
             result,
         })),
         ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
             ResponseMessage::Ingress(IngressResponse {
                 target_node: ingress_dispatcher_id,
-                full_invocation_id: callee.clone(),
+                invocation_id: *callee,
+                idempotency_id,
                 response: result,
             })
         }
         ServiceInvocationResponseSink::NewInvocation {
             target,
-            method,
+            id,
             caller_context,
         } => {
             ResponseMessage::Outbox(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
+                id,
                 target,
-                method,
                 // Methods receiving responses MUST accept this input type
                 restate_pb::restate::internal::ServiceInvocationSinkRequest {
                     response: Some(result.into()),
                     caller_context,
                 }
                 .encode_to_vec(),
-                Source::Service(callee.clone()),
+                Source::Internal,
                 None,
                 SpanRelation::None,
                 vec![],
+                None,
+                None,
             )))
         }
     }

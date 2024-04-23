@@ -8,20 +8,34 @@ license.workspace = true
 publish = false
 
 [features]
-test-util = ["dep:rand"]
+default = []
+test-util = ["dep:rand", "tokio/test-util"]
+options_schema = ["dep:schemars"]
 
 [dependencies]
-restate-types = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-schema = { workspace = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
+bincode = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+derive-getters = { workspace = true }
+derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
+enumset = { workspace = true }
 futures = { workspace = true }
+hostname = { workspace = true }
+humantime = { workspace = true }
 metrics = { workspace = true }
 rand = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -34,6 +48,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 rand = { workspace = true }
@@ -41,4 +56,3 @@ test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
-

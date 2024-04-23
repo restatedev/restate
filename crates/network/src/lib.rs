@@ -10,12 +10,10 @@
 
 mod connection;
 mod connection_manager;
+pub mod error;
 mod handshake;
 pub(crate) mod metric_definitions;
 mod networking;
-pub mod utils;
-
-pub mod error;
 
 pub use connection::ConnectionSender;
 pub use connection_manager::ConnectionManager;

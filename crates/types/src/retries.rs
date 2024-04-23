@@ -52,12 +52,15 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(tag = "type"))]
-#[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
-    feature = "serde_schema",
+    feature = "schemars",
     schemars(title = "Retry policy", description = "Definition of a retry policy")
 )]
 pub enum RetryPolicy {
@@ -74,11 +77,8 @@ pub enum RetryPolicy {
         /// Interval between retries.
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         interval: humantime::Duration,
         /// # Max attempts
         ///
@@ -94,11 +94,8 @@ pub enum RetryPolicy {
         /// Initial interval for the first retry attempt.
         ///
         /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         initial_interval: humantime::Duration,
 
         /// # Factor
@@ -114,11 +111,8 @@ pub enum RetryPolicy {
         /// # Max interval
         ///
         /// Maximum interval between retries.
-        #[cfg_attr(
-            feature = "serde",
-            serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")
-        )]
-        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
         max_interval: Option<humantime::Duration>,
     },
 }
@@ -154,7 +148,7 @@ impl RetryPolicy {
     }
 
     /// Retry the provided closure respecting this retry policy.
-    pub async fn retry_operation<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
+    pub async fn retry<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
     where
         Fn: FnMut() -> Fut,
         Fut: Future<Output = Result<T, E>>,
@@ -166,6 +160,36 @@ impl RetryPolicy {
                 (Err(e), None) => return Err(e),
                 (Err(_), Some(timer)) => {
                     tokio::time::sleep(timer).await;
+                }
+            }
+        }
+    }
+
+    /// Retry the provided closure respecting this retry policy and the retry condition.
+    pub async fn retry_if<T, E, Fn, Fut, C>(
+        self,
+        mut operation: Fn,
+        mut condition: C,
+    ) -> Result<T, E>
+    where
+        Fn: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+        C: FnMut(&E) -> bool,
+    {
+        let mut retry_iter = self.into_iter();
+        loop {
+            match operation().await {
+                Ok(res) => return Ok(res),
+                Err(err) => {
+                    if condition(&err) {
+                        if let Some(pause) = retry_iter.next() {
+                            tokio::time::sleep(pause).await;
+                        } else {
+                            return Err(err);
+                        }
+                    } else {
+                        return Err(err);
+                    }
                 }
             }
         }
@@ -268,6 +292,9 @@ impl ExactSizeIterator for RetryIter {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn no_retry_policy() {
@@ -347,5 +374,24 @@ mod tests {
         let min_inc_jitter = expected + MIN_JITTER;
         let max_inc_jitter = expected + expected.mul_f32(max_multiplier);
         actual >= min_inc_jitter && actual <= max_inc_jitter
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn conditional_retry() {
+        let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
+
+        let attempts = Arc::new(AtomicU64::new(0));
+
+        let result = retry_policy
+            .retry_if(
+                || {
+                    let previous_value = attempts.fetch_add(1, Ordering::Relaxed);
+                    future::ready(Err::<(), _>(previous_value))
+                },
+                |err| *err < 5,
+            )
+            .await;
+
+        assert_eq!(result, Err(5));
     }
 }

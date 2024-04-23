@@ -8,21 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::component_handler::*;
 use super::health::HealthResponse;
 use super::mocks::*;
+use super::service_handler::*;
 use super::ConnectInfo;
 use super::Handler;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_core::TestCoreEnv;
 use restate_ingress_dispatcher::mocks::MockDispatcher;
-use restate_ingress_dispatcher::IdempotencyMode;
-use restate_ingress_dispatcher::IngressRequest;
-use restate_types::invocation::Header;
+use restate_ingress_dispatcher::{IngressCorrelationId, IngressDispatcherRequest};
+use restate_schema_api::invocation_target::{
+    InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
+    OutputContentTypeRule, OutputRules,
+};
+use restate_test_util::{assert, assert_eq};
+use restate_types::identifiers::IdempotencyId;
+use restate_types::invocation::{HandlerType, Header, Idempotency, ResponseResult, ServiceType};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use tracing_test::traced_test;
@@ -37,6 +44,7 @@ async fn call_service() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.Greeter/greet")
         .method(Method::POST)
+        .header("content-type", "application/json")
         .header("Connection", "Close")
         .header("my-header", "my-value")
         .body(Full::new(Bytes::from(
@@ -46,22 +54,30 @@ async fn call_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx, headers) =
+        let (_, invocation_target, argument, _, _, response_tx, headers) =
             ingress_req.expect_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
-        restate_test_util::assert_eq!(method_name, "greet");
-        restate_test_util::assert_eq!(headers, vec![Header::new("my-header", "my-value")]);
+        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
+        assert_eq!(invocation_target.handler_name(), "greet");
+        assert_eq!(
+            headers,
+            vec![
+                Header::new("content-type", "application/json"),
+                Header::new("my-header", "my-value")
+            ]
+        );
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
-        restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
+        assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -72,7 +88,7 @@ async fn call_service() {
     let (_, response_body) = response.into_parts();
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
-    restate_test_util::assert_eq!(response_value.greeting, "Igal");
+    assert_eq!(response_value.greeting, "Igal");
 }
 
 #[tokio::test]
@@ -84,32 +100,48 @@ async fn call_service_with_get() {
         .body(Empty::<Bytes>::default())
         .unwrap();
 
-    let response = handle(req, |ingress_req| {
-        // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx, _) = ingress_req.expect_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
-        restate_test_util::assert_eq!(method_name, "greet");
+    let response = handle_with_schemas(
+        req,
+        MockSchemas::default().with_service_and_target(
+            "greeter.Greeter",
+            "greet",
+            InvocationTargetMetadata {
+                input_rules: InputRules {
+                    input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
+                },
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+            },
+        ),
+        |ingress_req| {
+            // Get the function invocation and assert on it
+            let (_, invocation_target, argument, _, _, response_tx, _) =
+                ingress_req.expect_invocation();
+            assert_eq!(invocation_target.service_name(), "greeter.Greeter");
+            assert_eq!(invocation_target.handler_name(), "greet");
 
-        assert!(argument.is_empty());
+            assert!(argument.is_empty());
 
-        response_tx
-            .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
-                .into(),
-            )
-            .unwrap();
-    })
+            response_tx
+                .send(
+                    ResponseResult::Success(
+                        serde_json::to_vec(&GreetingResponse {
+                            greeting: "Igal".to_string(),
+                        })
+                        .unwrap()
+                        .into(),
+                    )
+                    .into(),
+                )
+                .unwrap();
+        },
+    )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let (_, response_body) = response.into_parts();
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
-    restate_test_util::assert_eq!(response_value.greeting, "Igal");
+    assert_eq!(response_value.greeting, "Igal");
 }
 
 #[tokio::test]
@@ -122,6 +154,7 @@ async fn call_virtual_object() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.GreeterObject/my-key/greet")
         .method(Method::POST)
+        .header("content-type", "application/json")
         .body(Full::new(Bytes::from(
             serde_json::to_vec(&greeting_req).unwrap(),
         )))
@@ -129,21 +162,24 @@ async fn call_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, _, response_tx, _) = ingress_req.expect_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.GreeterObject");
-        restate_test_util::assert_eq!(fid.service_id.key, &"my-key");
-        restate_test_util::assert_eq!(method_name, "greet");
+        let (_, invocation_target, argument, _, _, response_tx, _) =
+            ingress_req.expect_invocation();
+        assert_eq!(invocation_target.service_name(), "greeter.GreeterObject");
+        assert_eq!(invocation_target.key().unwrap(), &"my-key");
+        assert_eq!(invocation_target.handler_name(), "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
-        restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
+        assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -154,7 +190,7 @@ async fn call_virtual_object() {
     let (_, response_body) = response.into_parts();
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
-    restate_test_util::assert_eq!(response_value.greeting, "Igal");
+    assert_eq!(response_value.greeting, "Igal");
 }
 
 #[tokio::test]
@@ -167,6 +203,7 @@ async fn send_service() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.Greeter/greet/send")
         .method(Method::POST)
+        .header("content-type", "application/json")
         .body(Full::new(Bytes::from(
             serde_json::to_vec(&greeting_req).unwrap(),
         )))
@@ -174,12 +211,47 @@ async fn send_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _) = ingress_req.expect_background_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
-        restate_test_util::assert_eq!(method_name, "greet");
+        let (_, invocation_target, argument, _, _) = ingress_req.expect_background_invocation();
+        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
+        assert_eq!(invocation_target.handler_name(), "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
-        restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
+        assert_eq!(&greeting_req.person, "Francesco");
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
+}
+
+#[tokio::test]
+#[traced_test]
+async fn send_with_delay_service() {
+    let greeting_req = GreetingRequest {
+        person: "Francesco".to_string(),
+    };
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet/send?delay=PT1M")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&greeting_req).unwrap(),
+        )))
+        .unwrap();
+
+    let response = handle(req, |ingress_req| {
+        // Get the function invocation and assert on it
+        let (_, invocation_target, argument, _, execution_time) =
+            ingress_req.expect_background_invocation();
+        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
+        assert_eq!(invocation_target.handler_name(), "greet");
+        assert!(execution_time.is_some());
+
+        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        assert_eq!(&greeting_req.person, "Francesco");
     })
     .await;
 
@@ -199,6 +271,7 @@ async fn send_virtual_object() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.GreeterObject/my-key/greet/send")
         .method(Method::POST)
+        .header("content-type", "application/json")
         .body(Full::new(Bytes::from(
             serde_json::to_vec(&greeting_req).unwrap(),
         )))
@@ -206,13 +279,13 @@ async fn send_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _) = ingress_req.expect_background_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.GreeterObject");
-        restate_test_util::assert_eq!(fid.service_id.key, &"my-key");
-        restate_test_util::assert_eq!(method_name, "greet");
+        let (_, invocation_target, argument, _, _) = ingress_req.expect_background_invocation();
+        assert_eq!(invocation_target.service_name(), "greeter.GreeterObject");
+        assert_eq!(invocation_target.key().unwrap(), &"my-key");
+        assert_eq!(invocation_target.handler_name(), "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
-        restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
+        assert_eq!(&greeting_req.person, "Francesco");
     })
     .await;
 
@@ -232,6 +305,7 @@ async fn idempotency_key_parsing() {
     let req = hyper::Request::builder()
         .uri("http://localhost/greeter.Greeter/greet")
         .method(Method::POST)
+        .header("content-type", "application/json")
         .header(IDEMPOTENCY_KEY, "123456")
         .body(Full::new(Bytes::from(
             serde_json::to_vec(&greeting_req).unwrap(),
@@ -239,27 +313,42 @@ async fn idempotency_key_parsing() {
         .unwrap();
 
     let response = handle(req, |ingress_req| {
+        let correlation_id = ingress_req.correlation_id.clone();
+
         // Get the function invocation and assert on it
-        let (fid, method_name, argument, _, idempotency_mode, response_tx, _) =
+        let (invocation_id, invocation_target, argument, _, idempotency, response_tx, _) =
             ingress_req.expect_invocation();
-        restate_test_util::assert_eq!(fid.service_id.service_name, "greeter.Greeter");
-        restate_test_util::assert_eq!(method_name, "greet");
+        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
+        assert_eq!(invocation_target.handler_name(), "greet");
 
         let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
-        restate_test_util::assert_eq!(&greeting_req.person, "Francesco");
+        assert_eq!(&greeting_req.person, "Francesco");
 
-        restate_test_util::assert_eq!(
-            idempotency_mode,
-            IdempotencyMode::key(Bytes::from_static(b"123456"), None)
+        assert_eq!(
+            correlation_id,
+            IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
+                invocation_id,
+                &invocation_target,
+                ByteString::from_static("123456")
+            ))
+        );
+        assert_eq!(
+            idempotency,
+            Some(Idempotency {
+                key: ByteString::from_static("123456"),
+                retention: Duration::from_secs(60 * 60 * 24)
+            })
         );
 
         response_tx
             .send(
-                Ok(serde_json::to_vec(&GreetingResponse {
-                    greeting: "Igal".to_string(),
-                })
-                .unwrap()
-                .into())
+                ResponseResult::Success(
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                )
                 .into(),
             )
             .unwrap();
@@ -270,101 +359,244 @@ async fn idempotency_key_parsing() {
     let (_, response_body) = response.into_parts();
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
-    restate_test_util::assert_eq!(response_value.greeting, "Igal");
+    assert_eq!(response_value.greeting, "Igal");
 }
 
 #[tokio::test]
 #[traced_test]
 async fn bad_path_service() {
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.Greeter")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.Greeter/greet/sendbla")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.Greeter/greet/send/bla")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 #[traced_test]
 async fn bad_path_virtual_object() {
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.GreeterObject/my-key")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.GreeterObject/my-key/greet/sendbla")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.GreeterObject/my-key/greet/send/bla")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 #[traced_test]
-async fn unknown_component() {
-    test_handle_with_status_code_error_response(
+async fn unknown_service() {
+    let response = handle(
         hyper::Request::get(
             "http://localhost/whatevernotexistingservice/whatevernotexistinghandler",
         )
         .body(Empty::<Bytes>::default())
         .unwrap(),
-        StatusCode::NOT_FOUND,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 #[traced_test]
 async fn unknown_handler() {
-    test_handle_with_status_code_error_response(
+    let response = handle(
         hyper::Request::get("http://localhost/greeter.Greeter/whatevernotexistinghandler")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::NOT_FOUND,
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 #[traced_test]
 async fn private_service() {
-    test_handle_with_status_code_error_response(
+    let response = handle_with_schemas(
         hyper::Request::get("http://localhost/greeter.GreeterPrivate/greet")
             .body(Empty::<Bytes>::default())
             .unwrap(),
-        StatusCode::BAD_REQUEST,
+        MockSchemas::default().with_service_and_target(
+            "greeter.GreeterPrivate",
+            "greet",
+            InvocationTargetMetadata {
+                public: false,
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+            },
+        ),
+        request_handler_not_reached,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn invalid_input() {
+    let response = handle_with_schemas(
+        hyper::Request::get("http://localhost/greeter.Greeter/greet")
+            .header("content-type", "application/cbor")
+            .body(Empty::<Bytes>::default())
+            .unwrap(),
+        MockSchemas::default().with_service_and_target(
+            "greeter.Greeter",
+            "greet",
+            InvocationTargetMetadata {
+                input_rules: InputRules {
+                    input_validation_rules: vec![InputValidationRule::ContentType {
+                        content_type: InputContentType::MimeTypeAndSubtype(
+                            "application".into(),
+                            "json".into(),
+                        ),
+                    }],
+                },
+                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+            },
+        ),
+        request_handler_not_reached,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn set_custom_content_type_on_response() {
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata {
+            output_rules: OutputRules {
+                content_type_rule: OutputContentTypeRule::Set {
+                    content_type: http_old::HeaderValue::from_static("application/cbor"),
+                    set_content_type_if_empty: false,
+                    has_json_schema: false,
+                },
+            },
+            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+        },
+    );
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .body(Empty::<Bytes>::default())
+        .unwrap();
+
+    // Case when the response is empty
+    let response = handle_with_schemas(
+        req.clone(),
+        mock_schemas.clone(),
+        expect_invocation_and_reply_with_empty,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("content-type").is_none());
+
+    // Case when the response is non-empty
+    let response = handle_with_schemas(
+        req.clone(),
+        mock_schemas,
+        expect_invocation_and_reply_with_non_empty,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/cbor"
+    );
+}
+
+#[tokio::test]
+#[traced_test]
+async fn set_custom_content_type_on_empty_response() {
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata {
+            output_rules: OutputRules {
+                content_type_rule: OutputContentTypeRule::Set {
+                    content_type: http_old::HeaderValue::from_static("application/protobuf"),
+                    set_content_type_if_empty: true,
+                    has_json_schema: false,
+                },
+            },
+            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+        },
+    );
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .body(Empty::<Bytes>::default())
+        .unwrap();
+
+    // Case when the response is empty
+    let response = handle_with_schemas(
+        req.clone(),
+        mock_schemas.clone(),
+        expect_invocation_and_reply_with_empty,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/protobuf"
+    );
+
+    // Case when the response is non-empty
+    let response = handle_with_schemas(
+        req.clone(),
+        mock_schemas,
+        expect_invocation_and_reply_with_non_empty,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/protobuf"
+    );
 }
 
 #[tokio::test]
@@ -387,27 +619,28 @@ async fn health() {
     let _: HealthResponse = serde_json::from_slice(&response_bytes).unwrap();
 }
 
-pub async fn test_handle_with_status_code_error_response<B: http_body::Body + Send + 'static>(
-    req: Request<B>,
-    expected_status_code: StatusCode,
-) -> Response<Full<Bytes>>
-where
-    <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
-    <B as http_body::Body>::Data: Send + Sync + 'static,
-{
-    let response = handle(req, |_| {
-        panic!("This code should not be reached in this test");
-    })
-    .await;
-
-    assert_eq!(response.status(), expected_status_code);
-
-    response
+fn request_handler_not_reached(_req: IngressDispatcherRequest) {
+    panic!("This code should not be reached in this test");
 }
 
-pub async fn handle<B: http_body::Body + Send + 'static>(
+fn expect_invocation_and_reply_with_empty(req: IngressDispatcherRequest) {
+    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
+    response_tx
+        .send(ResponseResult::Success(Bytes::new()).into())
+        .unwrap();
+}
+
+fn expect_invocation_and_reply_with_non_empty(req: IngressDispatcherRequest) {
+    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
+    response_tx
+        .send(ResponseResult::Success(Bytes::from_static(b"123")).into())
+        .unwrap();
+}
+
+pub async fn handle_with_schemas<B: http_body::Body + Send + 'static>(
     mut req: Request<B>,
-    f: impl FnOnce(IngressRequest) + Send + 'static,
+    schemas: MockSchemas,
+    f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
 ) -> Response<Full<Bytes>>
 where
     <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -424,7 +657,7 @@ where
     let handler_fut = node_env.tc.run_in_scope(
         "ingress",
         None,
-        Handler::new(mock_component_resolver(), dispatcher).oneshot(req),
+        Handler::new(schemas, dispatcher).oneshot(req),
     );
 
     // Mock the service invocation receiver
@@ -433,4 +666,15 @@ where
     });
 
     handler_fut.await.unwrap()
+}
+
+pub async fn handle<B: http_body::Body + Send + 'static>(
+    req: Request<B>,
+    f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
+) -> Response<Full<Bytes>>
+where
+    <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    <B as http_body::Body>::Data: Send + Sync + 'static,
+{
+    handle_with_schemas(req, mock_schemas(), f).await
 }

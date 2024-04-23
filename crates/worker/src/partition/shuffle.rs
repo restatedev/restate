@@ -9,17 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::shuffle::state_machine::StateMachine;
+use crate::partition::types::OutboxMessageExt;
 use async_channel::{TryRecvError, TrySendError};
 use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
+use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::dedup::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::{AckKind, MessageIndex};
 use restate_types::NodeId;
-use restate_wal_protocol::{
-    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
-};
+use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 use std::future::Future;
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -60,32 +59,10 @@ pub(crate) fn wrap_outbox_message_in_envelope(
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
 ) -> Envelope {
-    match message {
-        OutboxMessage::ServiceInvocation(service_invocation) => {
-            let header = create_header(
-                service_invocation.fid.partition_key(),
-                seq_number,
-                shuffle_metadata,
-            );
-            Envelope::new(header, Command::Invoke(service_invocation))
-        }
-        OutboxMessage::ServiceResponse(invocation_response) => {
-            let header = create_header(
-                invocation_response.id.partition_key(),
-                seq_number,
-                shuffle_metadata,
-            );
-            Envelope::new(header, Command::InvocationResponse(invocation_response))
-        }
-        OutboxMessage::InvocationTermination(invocation_termination) => {
-            let header = create_header(
-                invocation_termination.maybe_fid.partition_key(),
-                seq_number,
-                shuffle_metadata,
-            );
-            Envelope::new(header, Command::TerminateInvocation(invocation_termination))
-        }
-    }
+    Envelope::new(
+        create_header(message.partition_key(), seq_number, shuffle_metadata),
+        message.to_command(),
+    )
 }
 
 fn create_header(

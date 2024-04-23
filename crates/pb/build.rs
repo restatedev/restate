@@ -38,6 +38,7 @@ mod multi_service_generator {
             self
         }
 
+        #[allow(dead_code)]
         pub fn with_fallback(mut self, svc_gen: Box<dyn ServiceGenerator>) -> Self {
             self.fallback = Some(svc_gen);
             self
@@ -142,7 +143,7 @@ mod built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::service_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -263,7 +264,7 @@ mod manual_response_built_in_service_gen {
                     async move {{
                         match method {{
                             {impl_built_in_service_match_arms}
-                            _ => Err(restate_types::errors::InvocationError::component_handler_not_found("{service_name}", method))
+                            _ => Err(restate_types::errors::InvocationError::service_handler_not_found("{service_name}", method))
                         }}
                     }}
                 }}
@@ -309,24 +310,6 @@ fn main() -> std::io::Result<()> {
                                 "()",
                             ),
                     ),
-                )
-                .with_svc(
-                    "dev.restate.internal.IdempotentInvoker",
-                    Box::new(
-                        ManualResponseRestateBuiltInServiceGen::default()
-                            .with_additional_method(
-                                "InternalOnResponse",
-                                "crate::restate::internal::ServiceInvocationSinkRequest",
-                                "()",
-                            )
-                            .with_additional_method("InternalOnTimer", "()", "()"),
-                    ),
-                )
-                .with_fallback(
-                    tonic_build::configure()
-                        .build_client(false)
-                        .build_transport(false)
-                        .service_generator(),
                 ),
         ))
         // allow older protobuf compiler to be used

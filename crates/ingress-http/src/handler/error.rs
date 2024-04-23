@@ -12,6 +12,7 @@ use super::APPLICATION_JSON;
 
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
+use restate_schema_api::invocation_target::InputValidationError;
 use restate_types::errors::InvocationError;
 use serde::Serialize;
 use std::string;
@@ -23,7 +24,7 @@ pub(crate) enum HandlerError {
     #[error(
         "bad path, expected either /:service-name/:handler or /:object-name/:object-key/:handler"
     )]
-    BadComponentPath,
+    BadServicePath,
     #[error(
         "bad path, expected either /restate/awakeables/:id/resolve or /restate/awakeables/:id/reject"
     )]
@@ -32,22 +33,28 @@ pub(crate) enum HandlerError {
     NotImplemented,
     #[error("bad header {0}: {1:?}")]
     BadHeader(header::HeaderName, #[source] header::ToStrError),
+    #[error("bad delay query parameter, must be a ISO8601 duration: {0}")]
+    BadDelayDuration(String),
+    #[error("bad delaySec query parameter, must be a number: {0:?}")]
+    BadDelaySecDuration(std::num::ParseIntError),
     #[error("bad path, cannot decode key: {0:?}")]
     UrlDecodingError(string::FromUtf8Error),
-    #[error("the invoked component is not public")]
-    PrivateComponent,
-    #[error("bad idempotency header: {0:?}")]
-    BadIdempotency(anyhow::Error),
+    #[error("the invoked service is not public")]
+    PrivateService,
     #[error("cannot read body: {0:?}")]
     Body(anyhow::Error),
     #[error("unavailable")]
     Unavailable,
     #[error("method not allowed")]
     MethodNotAllowed,
-    #[error("using the idempotency key and send together is not yet supported")]
-    SendAndIdempotencyKey,
     #[error("invocation error: {0:?}")]
     Invocation(InvocationError),
+    #[error("input validation error: {0}")]
+    InputValidation(#[from] InputValidationError),
+    #[error(
+        "cannot use the delay query parameter with calls. The delay is supported only with sends"
+    )]
+    UnsupportedDelay,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,20 +78,22 @@ impl HandlerError {
     ) -> Response<B> {
         let status_code = match &self {
             HandlerError::NotFound => StatusCode::NOT_FOUND,
-            HandlerError::BadComponentPath => StatusCode::BAD_REQUEST,
-            HandlerError::PrivateComponent => StatusCode::BAD_REQUEST,
-            HandlerError::BadIdempotency(_) => StatusCode::BAD_REQUEST,
+            HandlerError::BadServicePath
+            | HandlerError::PrivateService
+            | HandlerError::UrlDecodingError(_)
+            | HandlerError::BadDelayDuration(_)
+            | HandlerError::BadDelaySecDuration(_)
+            | HandlerError::BadAwakeablesPath
+            | HandlerError::UnsupportedDelay
+            | HandlerError::BadHeader(_, _)
+            | HandlerError::InputValidation(_) => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
-            HandlerError::UrlDecodingError(_) => StatusCode::BAD_REQUEST,
-            HandlerError::SendAndIdempotencyKey => StatusCode::NOT_IMPLEMENTED,
-            HandlerError::BadAwakeablesPath => StatusCode::BAD_REQUEST,
             HandlerError::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             HandlerError::Invocation(e) => {
                 StatusCode::from_u16(e.code().into()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             }
-            HandlerError::BadHeader(_, _) => StatusCode::BAD_REQUEST,
         };
 
         let error_response = match self {

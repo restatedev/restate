@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Result;
+use crate::{protobuf_storage_encode_decode, Result};
 use futures_util::Stream;
-use restate_types::identifiers::{PartitionKey, ServiceId};
-use restate_types::invocation::{MaybeFullInvocationId, ServiceInvocation};
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
@@ -19,24 +18,32 @@ use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
-    Invocation(ServiceInvocation),
+    Invocation(ServiceId, InvocationId),
     StateMutation(ExternalStateMutation),
 }
 
 impl InboxEntry {
     pub fn service_id(&self) -> &ServiceId {
         match self {
-            InboxEntry::Invocation(invocation) => &invocation.fid.service_id,
-            InboxEntry::StateMutation(state_mutation) => &state_mutation.component_id,
+            InboxEntry::Invocation(service_id, _) => service_id,
+            InboxEntry::StateMutation(state_mutation) => &state_mutation.service_id,
         }
     }
 }
+
+protobuf_storage_encode_decode!(InboxEntry);
 
 /// Entry of the inbox
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceNumberInboxEntry {
     pub inbox_sequence_number: MessageIndex,
     pub inbox_entry: InboxEntry,
+}
+
+impl WithPartitionKey for SequenceNumberInboxEntry {
+    fn partition_key(&self) -> PartitionKey {
+        self.inbox_entry.service_id().partition_key()
+    }
 }
 
 impl SequenceNumberInboxEntry {
@@ -48,11 +55,12 @@ impl SequenceNumberInboxEntry {
     }
     pub fn from_invocation(
         inbox_sequence_number: MessageIndex,
-        service_invocation: ServiceInvocation,
+        service_id: ServiceId,
+        invocation_id: InvocationId,
     ) -> Self {
         Self {
             inbox_sequence_number,
-            inbox_entry: InboxEntry::Invocation(service_invocation),
+            inbox_entry: InboxEntry::Invocation(service_id, invocation_id),
         }
     }
 
@@ -69,12 +77,6 @@ impl SequenceNumberInboxEntry {
     pub fn service_id(&self) -> &ServiceId {
         self.inbox_entry.service_id()
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SequenceNumberInvocation {
-    pub inbox_sequence_number: MessageIndex,
-    pub invocation: ServiceInvocation,
 }
 
 pub trait InboxTable {
@@ -109,13 +111,4 @@ pub trait InboxTable {
         &mut self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
-
-    /// Gets an invocation for the given invocation id.
-    ///
-    /// Important: This method can be quite costly if it is invoked with an `InvocationId` because
-    /// it needs to scan all inboxes for the given partition key to match the given invocation uuid.
-    fn get_invocation(
-        &mut self,
-        maybe_fid: impl Into<MaybeFullInvocationId>,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInvocation>>> + Send;
 }

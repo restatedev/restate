@@ -20,8 +20,7 @@ pub type PlainEntryHeader = EntryHeader<(), ()>;
 pub type PlainRawEntry = RawEntry<(), ()>;
 
 /// This struct represents a serialized journal entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     header: EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult>,
     entry: Bytes,
@@ -94,14 +93,19 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
         Codec::deserialize(self.ty(), self.entry.clone())
     }
 
+    pub fn deserialize_name<Codec: RawEntryCodec>(
+        &self,
+    ) -> Result<Option<String>, RawEntryCodecError> {
+        Codec::read_entry_name(self.ty(), self.entry.clone())
+    }
+
     pub fn erase_enrichment(self) -> PlainRawEntry {
         self.map_header(|h, _| h.erase_enrichment())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult> {
     Input,
     Output,
     GetState {
@@ -116,12 +120,12 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     Sleep {
         is_completed: bool,
     },
-    Invoke {
+    Call {
         is_completed: bool,
-        enrichment_result: Option<InvokeEnrichmentResult>,
+        enrichment_result: Option<CallEnrichmentResult>,
     },
-    BackgroundInvoke {
-        enrichment_result: InvokeEnrichmentResult,
+    OneWayCall {
+        enrichment_result: CallEnrichmentResult,
     },
     Awakeable {
         is_completed: bool,
@@ -129,6 +133,7 @@ pub enum EntryHeader<InvokeEnrichmentResult, AwakeableEnrichmentResult> {
     CompleteAwakeable {
         enrichment_result: AwakeableEnrichmentResult,
     },
+    Run,
     Custom {
         code: u16,
     },
@@ -147,10 +152,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::ClearAllState => None,
             EntryHeader::GetStateKeys { is_completed, .. } => Some(*is_completed),
             EntryHeader::Sleep { is_completed, .. } => Some(*is_completed),
-            EntryHeader::Invoke { is_completed, .. } => Some(*is_completed),
-            EntryHeader::BackgroundInvoke { .. } => None,
+            EntryHeader::Call { is_completed, .. } => Some(*is_completed),
+            EntryHeader::OneWayCall { .. } => None,
             EntryHeader::Awakeable { is_completed, .. } => Some(*is_completed),
             EntryHeader::CompleteAwakeable { .. } => None,
+            EntryHeader::Run { .. } => None,
             EntryHeader::Custom { .. } => None,
         }
     }
@@ -165,10 +171,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetStateKeys { is_completed, .. } => *is_completed = true,
             EntryHeader::ClearAllState => {}
             EntryHeader::Sleep { is_completed, .. } => *is_completed = true,
-            EntryHeader::Invoke { is_completed, .. } => *is_completed = true,
-            EntryHeader::BackgroundInvoke { .. } => {}
+            EntryHeader::Call { is_completed, .. } => *is_completed = true,
+            EntryHeader::OneWayCall { .. } => {}
             EntryHeader::Awakeable { is_completed, .. } => *is_completed = true,
             EntryHeader::CompleteAwakeable { .. } => {}
+            EntryHeader::Run { .. } => {}
             EntryHeader::Custom { .. } => {}
         }
     }
@@ -183,10 +190,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::GetStateKeys { .. } => EntryType::GetStateKeys,
             EntryHeader::ClearAllState => EntryType::ClearAllState,
             EntryHeader::Sleep { .. } => EntryType::Sleep,
-            EntryHeader::Invoke { .. } => EntryType::Invoke,
-            EntryHeader::BackgroundInvoke { .. } => EntryType::BackgroundInvoke,
+            EntryHeader::Call { .. } => EntryType::Call,
+            EntryHeader::OneWayCall { .. } => EntryType::OneWayCall,
             EntryHeader::Awakeable { .. } => EntryType::Awakeable,
             EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
+            EntryHeader::Run { .. } => EntryType::Run,
             EntryHeader::Custom { .. } => EntryType::Custom,
         }
     }
@@ -203,17 +211,18 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             }
             EntryHeader::ClearAllState => EntryHeader::ClearAllState,
             EntryHeader::Sleep { is_completed } => EntryHeader::Sleep { is_completed },
-            EntryHeader::Invoke { is_completed, .. } => EntryHeader::Invoke {
+            EntryHeader::Call { is_completed, .. } => EntryHeader::Call {
                 is_completed,
                 enrichment_result: None,
             },
-            EntryHeader::BackgroundInvoke { .. } => EntryHeader::BackgroundInvoke {
+            EntryHeader::OneWayCall { .. } => EntryHeader::OneWayCall {
                 enrichment_result: (),
             },
             EntryHeader::Awakeable { is_completed } => EntryHeader::Awakeable { is_completed },
             EntryHeader::CompleteAwakeable { .. } => EntryHeader::CompleteAwakeable {
                 enrichment_result: (),
             },
+            EntryHeader::Run { .. } => EntryHeader::Run {},
             EntryHeader::Custom { code } => EntryHeader::Custom { code },
         }
     }
@@ -254,6 +263,11 @@ pub trait RawEntryCodec {
     fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult;
 
     fn deserialize(entry_type: EntryType, entry_value: Bytes) -> Result<Entry, RawEntryCodecError>;
+
+    fn read_entry_name(
+        entry_type: EntryType,
+        entry_value: Bytes,
+    ) -> Result<Option<String>, RawEntryCodecError>;
 
     fn write_completion<InvokeEnrichmentResult: Debug, AwakeableEnrichmentResult: Debug>(
         entry: &mut RawEntry<InvokeEnrichmentResult, AwakeableEnrichmentResult>,

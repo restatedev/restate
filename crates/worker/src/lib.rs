@@ -10,8 +10,22 @@
 
 extern crate core;
 
-use crate::invoker_integration::EntryEnricher;
-use crate::partition::storage::invoker::InvokerStorageReader;
+mod error;
+mod handle;
+mod invoker_integration;
+mod metric_definitions;
+mod partition;
+mod partition_processor_manager;
+mod subscription_controller;
+mod subscription_integration;
+
+pub use error::*;
+pub use handle::*;
+use restate_types::arc_util::ArcSwapExt;
+use restate_types::config::UpdateableConfiguration;
+pub use subscription_controller::SubscriptionController;
+pub use subscription_integration::SubscriptionControllerHandle;
+
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -22,110 +36,26 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
     ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
+use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
-use restate_schema_impl::Schemas;
+use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
-use std::path::Path;
 use tracing::debug;
 
-mod invoker_integration;
-mod metric_definitions;
-mod partition;
-mod subscription_integration;
-
-pub use restate_ingress_http::{
-    Options as IngressOptions, OptionsBuilder as IngressOptionsBuilder,
-    OptionsBuilderError as IngressOptionsBuilderError,
+use crate::invoker_integration::EntryEnricher;
+use crate::partition::storage::invoker::InvokerStorageReader;
+use crate::partition_processor_manager::{
+    Action, PartitionProcessorManager, PartitionProcessorPlan, Role,
 };
-pub use restate_ingress_kafka::{
-    Options as KafkaIngressOptions, OptionsBuilder as KafkaIngressOptionsBuilder,
-    OptionsBuilderError as KafkaIngressOptionsBuilderError,
-};
-pub use restate_invoker_impl::{
-    Options as InvokerOptions, OptionsBuilder as InvokerOptionsBuilder,
-    OptionsBuilderError as InvokerOptionsBuilderError,
-};
-
-pub use restate_storage_rocksdb::{
-    Options as RocksdbOptions, OptionsBuilder as RocksdbOptionsBuilder,
-    OptionsBuilderError as RocksdbOptionsBuilderError,
-};
-pub use restate_timer::{
-    Options as TimerOptions, OptionsBuilder as TimerOptionsBuilder,
-    OptionsBuilderError as TimerOptionsBuilderError,
-};
-
-pub use restate_storage_query_datafusion::{
-    Options as StorageQueryDatafusionOptions,
-    OptionsBuilder as StorageQueryDatafusionOptionsBuilder,
-    OptionsBuilderError as StorageQueryDatafusionOptionsBuilderError,
-};
-
-pub use crate::subscription_integration::SubscriptionControllerHandle;
-pub use restate_storage_query_postgres::{
-    Options as StorageQueryPostgresOptions, OptionsBuilder as StorageQueryPostgresOptionsBuilder,
-    OptionsBuilderError as StorageQueryPostgresOptionsBuilderError,
-};
-use restate_types::logs::{LogId, Payload};
-use restate_types::partition_table::FixedPartitionTable;
 use restate_types::Version;
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 type PartitionProcessor =
     partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
-type ExternalClientIngress = HyperServerIngress<Schemas, IngressDispatcher>;
 
-/// # Worker options
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "options_schema", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "options_schema",
-    schemars(rename = "WorkerOptions", default)
-)]
-#[builder(default)]
-pub struct Options {
-    /// # Bounded channel size
-    channel_size: usize,
-    timers: TimerOptions,
-    storage_query_datafusion: StorageQueryDatafusionOptions,
-    storage_query_postgres: StorageQueryPostgresOptions,
-    storage_rocksdb: RocksdbOptions,
-    ingress: IngressOptions,
-    pub kafka: KafkaIngressOptions,
-    invoker: InvokerOptions,
-
-    /// # Partitions
-    ///
-    /// Number of partitions to be used to process messages.
-    ///
-    /// Note: This config entry **will be removed** in future Restate releases,
-    /// as the partitions number will be dynamically configured depending on the load.
-    ///
-    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    pub partitions: u64,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            channel_size: 64,
-            timers: Default::default(),
-            storage_query_datafusion: Default::default(),
-            storage_query_postgres: Default::default(),
-            storage_rocksdb: Default::default(),
-            ingress: Default::default(),
-            kafka: Default::default(),
-            invoker: Default::default(),
-            partitions: 1024,
-        }
-    }
-}
+type ExternalClientIngress = HyperServerIngress<UpdateableSchema, IngressDispatcher>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -141,23 +71,8 @@ pub enum BuildError {
         #[code]
         restate_storage_rocksdb::BuildError,
     ),
-}
-
-impl Options {
-    pub fn storage_path(&self) -> &Path {
-        self.storage_rocksdb.path.as_path()
-    }
-
-    pub fn build(
-        self,
-        networking: Networking,
-        bifrost: Bifrost,
-        router_builder: &mut MessageRouterBuilder,
-        schemas: Schemas,
-    ) -> Result<Worker, BuildError> {
-        metric_definitions::describe_metrics();
-        Worker::new(self, networking, bifrost, router_builder, schemas)
-    }
+    #[code(unknown)]
+    Invoker(#[from] restate_invoker_impl::BuildError),
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -180,16 +95,17 @@ impl Error {
 }
 
 pub struct Worker {
-    processors: Vec<PartitionProcessor>,
+    updateable_config: UpdateableConfiguration,
     networking: Networking,
+    metadata_store_client: MetadataStoreClient,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
     invoker: InvokerService<
         InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
-        EntryEnricher<Schemas, ProtobufRawEntryCodec>,
-        Schemas,
+        EntryEnricher<UpdateableSchema, ProtobufRawEntryCodec>,
+        UpdateableSchema,
     >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
@@ -199,76 +115,86 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(
-        opts: Options,
+    pub fn from_options(
+        updateable_config: UpdateableConfiguration,
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schemas: Schemas,
-    ) -> Result<Self, BuildError> {
-        let Options {
-            channel_size,
-            ingress,
-            kafka,
-            timers,
-            storage_query_datafusion,
-            storage_query_postgres,
-            storage_rocksdb,
-            ..
-        } = opts;
+        schema_view: UpdateableSchema,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Result<Worker, BuildError> {
+        metric_definitions::describe_metrics();
+        Worker::new(
+            updateable_config,
+            networking,
+            bifrost,
+            router_builder,
+            schema_view,
+            metadata_store_client,
+        )
+    }
 
+    pub fn new(
+        updateable_config: UpdateableConfiguration,
+        networking: Networking,
+        bifrost: Bifrost,
+        router_builder: &mut MessageRouterBuilder,
+        schema_view: UpdateableSchema,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Result<Self, BuildError> {
         let ingress_dispatcher = IngressDispatcher::new(bifrost);
         router_builder.add_message_handler(ingress_dispatcher.clone());
 
+        let config = updateable_config.pinned();
         // http ingress
-        let ingress_http = ingress.build(ingress_dispatcher.clone(), schemas.clone());
+        let ingress_http = HyperServerIngress::from_options(
+            &config.ingress,
+            ingress_dispatcher.clone(),
+            schema_view.clone(),
+        );
 
         // ingress_kafka
-        let kafka_config_clone = kafka.clone();
-        let ingress_kafka = kafka.build(ingress_dispatcher.clone());
+        let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
         let subscription_controller_handle =
             subscription_integration::SubscriptionControllerHandle::new(
-                kafka_config_clone,
+                config.ingress.clone(),
                 ingress_kafka.create_command_sender(),
             );
 
-        // todo: Fix once we support dynamic partition tables
-        let partitioner = FixedPartitionTable::new(Version::MIN, opts.partitions).partitioner();
-
-        let (rocksdb_storage, rocksdb_writer) = storage_rocksdb.build()?;
+        // todo: Fix me
+        // a really ugly hack (I'm ashamed) until we can decouple opening database(s)
+        // from worker creation, or we make worker creation async. This is a stop gap
+        // to avoid unraveling the entire worker creation process to be async in this change.
+        let (rocksdb_storage, rocksdb_writer) = futures::executor::block_on(RocksDBStorage::open(
+            config.worker.data_dir(),
+            updateable_config
+                .clone()
+                .map_as_updateable_owned(|c| &c.worker.rocksdb),
+        ))?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
-        let invoker = opts.invoker.build(
+        let invoker = InvokerService::from_options(
+            &config.common.service_client,
+            &config.worker.invoker,
             invoker_storage_reader.clone(),
             invoker_storage_reader,
-            EntryEnricher::new(schemas.clone()),
-            schemas.clone(),
-        );
+            EntryEnricher::new(schema_view.clone()),
+            schema_view.clone(),
+        )?;
 
-        let storage_query_context = storage_query_datafusion.build(
+        let storage_query_context = QueryContext::from_options(
+            &config.admin.query_engine,
             rocksdb_storage.clone(),
             invoker.status_reader(),
-            schemas.clone(),
+            schema_view.clone(),
         )?;
-        let storage_query_postgres = storage_query_postgres.build(storage_query_context.clone());
-
-        let processors = partitioner
-            .map(|(idx, partition_range)| {
-                let invoker_sender = invoker.handle();
-
-                Self::create_partition_processor(
-                    idx,
-                    partition_range,
-                    timers.clone(),
-                    channel_size,
-                    invoker_sender,
-                    rocksdb_storage.clone(),
-                )
-            })
-            .collect();
+        let storage_query_postgres = PostgresQueryService::from_options(
+            &config.admin.query_engine,
+            storage_query_context.clone(),
+        );
 
         Ok(Self {
-            processors,
+            updateable_config,
             networking,
             storage_query_context,
             storage_query_postgres,
@@ -278,26 +204,8 @@ impl Worker {
             subscription_controller_handle,
             rocksdb_writer,
             rocksdb_storage,
+            metadata_store_client,
         })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn create_partition_processor(
-        partition_id: PartitionId,
-        partition_key_range: RangeInclusive<PartitionKey>,
-        timer_service_options: restate_timer::Options,
-        channel_size: usize,
-        invoker_sender: InvokerChannelServiceHandle,
-        rocksdb_storage: RocksDBStorage,
-    ) -> PartitionProcessor {
-        PartitionProcessor::new(
-            partition_id,
-            partition_key_range,
-            timer_service_options,
-            channel_size,
-            invoker_sender,
-            rocksdb_storage,
-        )
     }
 
     pub fn subscription_controller_handle(&self) -> SubscriptionControllerHandle {
@@ -312,9 +220,8 @@ impl Worker {
         &self.rocksdb_storage
     }
 
-    pub async fn run(self, mut bifrost: Bifrost) -> anyhow::Result<()> {
+    pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
         let tc = task_center();
-        let shutdown = cancellation_watcher();
         let (shutdown_signal, shutdown_watch) = drain::channel();
 
         // RocksDB Writer
@@ -334,9 +241,6 @@ impl Worker {
             self.external_client_ingress.run(),
         )?;
 
-        // Invoker service
-        tc.spawn_child(TaskKind::SystemService, "invoker", None, self.invoker.run())?;
-
         // Postgres external server
         tc.spawn_child(
             TaskKind::RpcServer,
@@ -350,44 +254,48 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             None,
-            self.ingress_kafka.run(),
+            self.ingress_kafka.run(
+                self.updateable_config
+                    .clone()
+                    .map_as_updateable_owned(|c| &c.ingress),
+            ),
         )?;
 
-        let node_id = metadata().my_node_id();
-        let announce_leader = AnnounceLeader {
-            node_id,
-            // todo: This only works as long as we have an ephemeral log. Once the log becomes
-            //  durable, we need to generate an increasing leader epoch.
-            leader_epoch: LeaderEpoch::INITIAL,
-        };
+        let invoker_handle = self.invoker.handle();
 
-        // Create partition processors
-        for processor in self.processors {
-            let networking = self.networking.clone();
+        // Invoker service
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "invoker",
+            None,
+            self.invoker.run(
+                self.updateable_config
+                    .clone()
+                    .map_as_updateable_owned(|c| &c.worker.invoker),
+            ),
+        )?;
 
-            let header = Header {
-                dest: Destination::Processor {
-                    partition_key: *processor.partition_key_range.start(),
-                    dedup: None,
-                },
-                source: Source::ControlPlane {},
-            };
+        let shutdown = cancellation_watcher();
 
-            let envelope = Envelope::new(header, Command::AnnounceLeader(announce_leader.clone()));
-            let payload = Payload::from(envelope.encode_with_bincode()?);
+        let mut partition_processor_manager = PartitionProcessorManager::new(
+            self.updateable_config.clone(),
+            metadata().my_node_id(),
+            self.metadata_store_client,
+            self.rocksdb_storage,
+            self.networking,
+            bifrost,
+            invoker_handle,
+        );
 
-            // todo: Remove once we have proper leader election
-            bifrost
-                .append(LogId::from(processor.partition_id), payload)
-                .await?;
-
-            tc.spawn_child(
-                TaskKind::PartitionProcessor,
-                "partition-processor",
-                Some(processor.partition_id),
-                processor.run(networking, bifrost.clone()),
-            )?;
-        }
+        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
+        let plan = PartitionProcessorPlan::new(
+            partition_table.version(),
+            partition_table
+                .partitioner()
+                .map(|(partition_id, _)| (partition_id, Action::Start(Role::Leader)))
+                .collect(),
+        );
+        partition_processor_manager.apply_plan(plan).await?;
 
         tokio::select! {
             _ = shutdown => {
@@ -396,7 +304,7 @@ impl Worker {
                 // This will only shutdown rocksdb writer thread. Everything else will respond to
                 // the cancellation signal independently.
                 shutdown_signal.drain().await;
-            }
+            },
         }
 
         Ok(())

@@ -104,11 +104,11 @@ mod tests {
 
     #[test]
     fn test_encode_decode() {
-        let expected_invocation_id = InvocationId::new(92, InvocationUuid::new());
+        let expected_invocation_id = InvocationId::from_parts(92, InvocationUuid::new());
         let expected_entry_index = 2_u32;
 
         let input_str = AwakeableIdentifier {
-            invocation_id: expected_invocation_id.clone(),
+            invocation_id: expected_invocation_id,
             entry_index: expected_entry_index,
         }
         .to_string();

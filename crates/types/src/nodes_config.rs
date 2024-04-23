@@ -12,12 +12,12 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use enumset::{EnumSet, EnumSetType};
-use http::Uri;
+use serde_with::serde_as;
 
-use crate::{GenerationalNodeId, NodeId, PlainNodeId};
+use crate::net::AdvertisedAddress;
+use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
@@ -33,32 +33,39 @@ pub enum NodesConfigError {
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
-#[derive(Debug, Hash, EnumSetType, derive_more::Display)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", enumset(serialize_repr = "list"))]
+#[derive(Debug, Hash, EnumSetType, strum_macros::Display, serde::Serialize, serde::Deserialize)]
+#[enumset(serialize_repr = "list")]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 pub enum Role {
+    /// A worker runs partition processor (journal, state, and drives invocations)
     Worker,
+    /// Admin runs cluster controller and user-facing admin APIs
     Admin,
+    MetadataStore,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[serde_as]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     nodes: HashMap<PlainNodeId, MaybeNode>,
     name_lookup: HashMap<String, PlainNodeId>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, strum_macros::EnumIs)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Debug, Clone, Eq, PartialEq, strum_macros::EnumIs, serde::Serialize, serde::Deserialize,
+)]
 enum MaybeNode {
     Tombstone,
     Node(NodeConfig),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
@@ -82,33 +89,6 @@ impl NodeConfig {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, derive_more::Display)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)
-)]
-pub enum AdvertisedAddress {
-    /// Unix domain socket
-    #[display(fmt = "unix:{}", _0)]
-    Uds(String),
-    /// Hostname or host:port pair, or any unrecognizable string.
-    #[display(fmt = "{}", _0)]
-    Http(Uri),
-}
-
-impl FromStr for AdvertisedAddress {
-    type Err = NodesConfigError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(stripped_address) = s.strip_prefix("unix:") {
-            Ok(AdvertisedAddress::Uds(stripped_address.to_owned()))
-        } else {
-            // try to parse as a URI
-            Ok(AdvertisedAddress::Http(s.parse()?))
-        }
-    }
-}
-
 impl NodesConfiguration {
     pub fn new(version: Version, cluster_name: String) -> Self {
         Self {
@@ -127,7 +107,7 @@ impl NodesConfiguration {
         self.version += Version::from(1);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_version(&mut self, version: Version) {
         self.version = version;
     }
@@ -196,17 +176,20 @@ impl NodesConfiguration {
             _ => None,
         })
     }
+
+    /// Returns the maximum known plain node id.
+    pub fn max_plain_node_id(&self) -> Option<PlainNodeId> {
+        self.nodes.keys().max().cloned()
+    }
 }
 
 impl Versioned for NodesConfiguration {
     fn version(&self) -> Version {
         self.version()
     }
-
-    fn increment_version(&mut self) {
-        self.increment_version();
-    }
 }
+
+flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {
@@ -287,26 +270,5 @@ mod tests {
         // find by new name
         let found = config.find_node_by_name("nodeX").expect("known id");
         assert_eq!(&node, found);
-    }
-
-    // test parsing networkaddress
-    #[test]
-    fn test_parse_network_address() -> anyhow::Result<()> {
-        let tcp: AdvertisedAddress = "127.0.0.1:5123".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Http("127.0.0.1:5123".parse()?));
-
-        let tcp: AdvertisedAddress = "unix:/tmp/unix.socket".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Uds("/tmp/unix.socket".to_owned()));
-
-        let tcp: AdvertisedAddress = "localhost:5123".parse()?;
-        assert_eq!(tcp, AdvertisedAddress::Http("localhost:5123".parse()?));
-
-        let tcp: AdvertisedAddress = "https://localhost:5123".parse()?;
-        assert_eq!(
-            tcp,
-            AdvertisedAddress::Http(Uri::from_static("https://localhost:5123"))
-        );
-
-        Ok(())
     }
 }

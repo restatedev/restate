@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::DBIterator;
 use bytes::{BufMut, Bytes, BytesMut};
+use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
-pub struct OwnedIterator<'a> {
-    iter: DBIterator<'a>,
+pub struct OwnedIterator<'a, DB: DBAccess> {
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
     arena: BytesMut,
 }
 
-impl<'a> OwnedIterator<'a> {
-    pub(crate) fn new(iter: DBIterator<'a>) -> Self {
+impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
+    pub(crate) fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
         Self {
             iter,
             arena: BytesMut::with_capacity(8196),
@@ -25,7 +25,7 @@ impl<'a> OwnedIterator<'a> {
     }
 }
 
-impl<'a> Iterator for OwnedIterator<'a> {
+impl<'a, DB: DBAccess> Iterator for OwnedIterator<'a, DB> {
     type Item = (Bytes, Bytes);
 
     #[inline]

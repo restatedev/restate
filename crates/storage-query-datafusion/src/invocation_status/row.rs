@@ -11,11 +11,11 @@
 use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
 use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{Source, TraceId};
+use restate_types::invocation::{ServiceType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -26,16 +26,26 @@ pub(crate) fn append_invocation_status_row(
     let mut row = builder.row();
 
     row.partition_key(status_row.partition_key);
-    if let Some(service_id) = status_row.invocation_status.service_id() {
-        row.component(&service_id.service_name);
-        row.component_key(std::str::from_utf8(&service_id.key).expect("The key must be a string!"));
+    if let Some(invocation_target) = status_row.invocation_status.invocation_target() {
+        row.target_service_name(invocation_target.service_name());
+        if let Some(key) = invocation_target.key() {
+            row.target_service_key(key);
+        }
+        row.target_handler_name(invocation_target.handler_name());
+        if row.is_target_defined() {
+            row.target(format_using(output, &invocation_target));
+        }
+        row.target_service_ty(match invocation_target.service_ty() {
+            ServiceType::Service => "service",
+            ServiceType::VirtualObject => "virtual_object",
+        });
     }
 
     // Invocation id
     if row.is_id_defined() {
         row.id(format_using(
             output,
-            &InvocationId::new(status_row.partition_key, status_row.invocation_uuid),
+            &InvocationId::from_parts(status_row.partition_key, status_row.invocation_uuid),
         ));
     }
 
@@ -50,42 +60,52 @@ pub(crate) fn append_invocation_status_row(
     }
 
     // Additional invocation metadata
-    let metadata = match status_row.invocation_status {
+    match status_row.invocation_status {
+        InvocationStatus::Inboxed(inboxed) => {
+            row.status("inboxed");
+            fill_invoked_by(&mut row, output, inboxed.source);
+        }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
-            Some(metadata)
+            fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
         InvocationStatus::Suspended { metadata, .. } => {
             row.status("suspended");
-            Some(metadata)
+            fill_in_flight_invocation_metadata(&mut row, output, metadata);
         }
         InvocationStatus::Free => {
             row.status("free");
-            None
+        }
+        InvocationStatus::Completed(completed) => {
+            row.status("completed");
+            fill_invoked_by(&mut row, output, completed.source);
         }
     };
-    if let Some(metadata) = metadata {
-        fill_invocation_metadata(&mut row, output, metadata);
-    }
 }
 
-#[inline]
-fn fill_invocation_metadata(
+fn fill_in_flight_invocation_metadata(
     row: &mut InvocationStatusRowBuilder,
     output: &mut String,
-    meta: InvocationMetadata,
+    meta: InFlightInvocationMetadata,
 ) {
     // journal_metadata and stats are filled by other functions
-    row.handler(meta.method);
     if let Some(deployment_id) = meta.deployment_id {
         row.pinned_deployment_id(deployment_id.to_string());
     }
-    match meta.source {
-        Source::Service(caller) => {
-            row.invoked_by("component");
-            row.invoked_by_component(&caller.service_id.service_name);
+    fill_invoked_by(row, output, meta.source)
+}
+
+#[inline]
+fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, source: Source) {
+    match source {
+        Source::Service(invocation_id, invocation_target) => {
+            row.invoked_by("service");
+            row.invoked_by_service_name(invocation_target.service_name());
             if row.is_invoked_by_id_defined() {
-                row.invoked_by_id(format_using(output, &caller));
+                row.invoked_by_id(format_using(output, &invocation_id));
+            }
+            if row.is_invoked_by_target_defined() {
+                row.invoked_by_target(format_using(output, &invocation_target));
             }
         }
         Source::Ingress => {

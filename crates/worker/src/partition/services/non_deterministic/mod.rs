@@ -13,24 +13,18 @@ use super::*;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::types::{create_response_message, ResponseMessage};
 use bytes::Bytes;
-use restate_pb::builtin_service::ManualResponseBuiltInService;
-use restate_pb::restate::internal::IdempotentInvokerInvoker;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, FullInvocationId};
+use restate_types::identifiers::InvocationId;
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    InvocationTarget, ResponseResult, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
 };
-use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use std::collections::HashMap;
-use std::ops::Deref;
 use tokio::sync::mpsc;
 use tracing::warn;
-
-mod idempotent_invoker;
 
 // TODO Replace with bounded channels but this requires support for spilling on the sender side
 pub(crate) type EffectsSender = mpsc::UnboundedSender<BuiltinServiceEffects>;
@@ -65,16 +59,17 @@ impl ServiceInvoker {
 
     pub(crate) async fn invoke(
         &mut self,
-        full_invocation_id: FullInvocationId,
-        method: &str,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         span_context: ServiceInvocationSpanContext,
         response_sink: Option<ServiceInvocationResponseSink>,
-        argument: Bytes,
+        _argument: Bytes,
     ) {
         let mut out_effects = vec![];
         let mut state_and_journal_transitions = StateTransitions::default();
-        let invocation_context = InvocationContext {
-            full_invocation_id: &full_invocation_id,
+        let _invocation_context = InvocationContext {
+            invocation_id: &invocation_id,
+            invocation_target: &invocation_target,
             state_reader: &mut self.storage,
             response_sink: response_sink.as_ref(),
             effects_buffer: &mut out_effects,
@@ -82,14 +77,11 @@ impl ServiceInvoker {
             span_context: &span_context,
         };
 
-        let result = match full_invocation_id.service_id.service_name.deref() {
-            restate_pb::IDEMPOTENT_INVOKER_SERVICE_NAME => {
-                IdempotentInvokerInvoker(invocation_context)
-                    .invoke_builtin(method, argument)
-                    .await
-            }
-            _ => Err(InvocationError::component_not_found(
-                &full_invocation_id.service_id.service_name,
+        #[allow(clippy::match_single_binding)]
+        let result = match invocation_target.service_name() {
+            // Add here the built-in services
+            _ => Err(InvocationError::service_not_found(
+                invocation_target.service_name(),
             )),
         };
 
@@ -102,8 +94,8 @@ impl ServiceInvoker {
             }
             Err(e) => {
                 warn!(
-                    rpc.service = %full_invocation_id.service_id.service_name,
-                    restate.invocation.id = %full_invocation_id,
+                    rpc.service = %invocation_target.service_name(),
+                    restate.invocation.id = %invocation_id,
                     "Invocation to built-in service failed with {}",
                     e);
                 // Clear effects, and append end error
@@ -116,7 +108,7 @@ impl ServiceInvoker {
         // the receiver channel should only be shut down if the system is shutting down
         let _ = self
             .effects_tx
-            .send(BuiltinServiceEffects::new(full_invocation_id, out_effects));
+            .send(BuiltinServiceEffects::new(invocation_id, out_effects));
     }
 }
 
@@ -142,7 +134,8 @@ impl StateTransitions {
 
 struct InvocationContext<'a, S> {
     // Invocation metadata
-    full_invocation_id: &'a FullInvocationId,
+    invocation_id: &'a InvocationId,
+    invocation_target: &'a InvocationTarget,
     state_reader: &'a mut S,
     response_sink: Option<&'a ServiceInvocationResponseSink>,
     span_context: &'a ServiceInvocationSpanContext,
@@ -161,7 +154,12 @@ impl<S: StateReader> InvocationContext<'_, S> {
                 opt_val.clone()
             } else {
                 self.state_reader
-                    .read_state(&self.full_invocation_id.service_id, &key.0)
+                    .read_state(
+                        &self.invocation_target.as_keyed_service_id().expect(
+                            "Non deterministic built in services requesting state MUST be keyed",
+                        ),
+                        &key.0,
+                    )
                     .await
                     .map_err(InvocationError::internal)?
             },
@@ -210,30 +208,6 @@ impl<S: StateReader> InvocationContext<'_, S> {
             .insert(key.0.to_string(), None);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn delay_invoke(
-        &mut self,
-        target_fid: FullInvocationId,
-        target_method: String,
-        argument: Bytes,
-        source: Source,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        time: MillisSinceEpoch,
-        timer_index: EntryIndex,
-    ) {
-        // Perhaps we can internally keep track of the timer index here?
-        self.effects_buffer
-            .push(BuiltinServiceEffect::DelayedInvoke {
-                target_fid,
-                target_method,
-                argument,
-                source,
-                response_sink,
-                time,
-                timer_index,
-            });
-    }
-
     fn send_response(&mut self, msg: ResponseMessage) {
         match msg {
             ResponseMessage::Outbox(outbox) => self.outbox_message(outbox),
@@ -254,7 +228,8 @@ impl<S: StateReader> InvocationContext<'_, S> {
     fn reply_to_caller(&mut self, res: ResponseResult) {
         if let Some(response_sink) = self.response_sink {
             self.send_response(create_response_message(
-                self.full_invocation_id,
+                self.invocation_id,
+                None,
                 response_sink.clone(),
                 res,
             ));
@@ -288,15 +263,15 @@ mod tests {
 
     #[derive(Clone)]
     pub(super) struct TestInvocationContext {
-        service_id: ServiceId,
+        invocation_target: InvocationTarget,
         state_reader: MockStateReader,
         response_sink: Option<ServiceInvocationResponseSink>,
     }
 
     impl TestInvocationContext {
-        pub(super) fn from_service_id(service_id: ServiceId) -> Self {
+        pub(super) fn from_invocation_target(invocation_target: InvocationTarget) -> Self {
             Self {
-                service_id,
+                invocation_target,
                 state_reader: Default::default(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
                     GenerationalNodeId::new(1, 1),
@@ -315,17 +290,18 @@ mod tests {
         pub(super) async fn invoke<'this, F>(
             &'this mut self,
             f: F,
-        ) -> Result<(FullInvocationId, Vec<BuiltinServiceEffect>), InvocationError>
+        ) -> Result<(InvocationId, Vec<BuiltinServiceEffect>), InvocationError>
         where
             F: for<'fut> FnOnce(
                 &'fut mut InvocationContext<'fut, MockStateReader>,
             ) -> LocalBoxFuture<'fut, Result<(), InvocationError>>,
         {
-            let fid = FullInvocationId::generate(self.service_id.clone());
+            let id = InvocationId::generate(&self.invocation_target);
             let mut out_effects = vec![];
             let mut state_and_journal_transitions = StateTransitions::default();
             let mut invocation_ctx = InvocationContext {
-                full_invocation_id: &fid,
+                invocation_id: &id,
+                invocation_target: &self.invocation_target,
                 state_reader: &mut self.state_reader,
                 response_sink: self.response_sink.as_ref(),
                 span_context: &Default::default(),
@@ -339,7 +315,7 @@ mod tests {
             state_and_journal_transitions.fill_effects_buffer(&mut out_effects);
             self.state_reader.apply_effects(&out_effects);
 
-            Ok((fid, out_effects))
+            Ok((id, out_effects))
         }
     }
 }

@@ -9,10 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use codederror::Code;
-use restate_types::errors::{InvocationError, InvocationErrorCode};
-use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey};
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use std::fmt;
+use restate_types::journal::{EntryIndex, EntryType};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
@@ -27,6 +27,7 @@ pub struct InvocationStatusReportInner {
     pub last_retry_attempt_failure: Option<InvocationErrorReport>,
     pub next_retry_at: Option<SystemTime>,
     pub last_attempt_deployment_id: Option<DeploymentId>,
+    pub last_attempt_server: Option<String>,
 }
 
 impl Default for InvocationStatusReportInner {
@@ -38,27 +39,28 @@ impl Default for InvocationStatusReportInner {
             last_retry_attempt_failure: None,
             next_retry_at: None,
             last_attempt_deployment_id: None,
+            last_attempt_server: None,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InvocationStatusReport(
-    FullInvocationId,
+    InvocationId,
     PartitionLeaderEpoch,
     InvocationStatusReportInner,
 );
 
 impl InvocationStatusReport {
     pub fn new(
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
         partition: PartitionLeaderEpoch,
         report: InvocationStatusReportInner,
     ) -> Self {
-        Self(fid, partition, report)
+        Self(invocation_id, partition, report)
     }
 
-    pub fn full_invocation_id(&self) -> &FullInvocationId {
+    pub fn invocation_id(&self) -> &InvocationId {
         &self.0
     }
 
@@ -93,33 +95,19 @@ impl InvocationStatusReport {
     pub fn last_attempt_deployment_id(&self) -> Option<&DeploymentId> {
         self.2.last_attempt_deployment_id.as_ref()
     }
+
+    pub fn last_attempt_server(&self) -> Option<&str> {
+        self.2.last_attempt_server.as_deref()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct InvocationErrorReport {
-    err: InvocationError,
-    doc_error_code: Option<&'static Code>,
-}
-
-impl InvocationErrorReport {
-    pub fn new(err: InvocationError, doc_error_code: Option<&'static Code>) -> Self {
-        InvocationErrorReport {
-            err,
-            doc_error_code,
-        }
-    }
-
-    pub fn invocation_error_code(&self) -> InvocationErrorCode {
-        self.err.code()
-    }
-
-    pub fn doc_error_code(&self) -> Option<&'static Code> {
-        self.doc_error_code
-    }
-
-    pub fn display_err(&self) -> impl fmt::Display + '_ {
-        &self.err
-    }
+    pub err: InvocationError,
+    pub doc_error_code: Option<&'static Code>,
+    pub related_entry_index: Option<EntryIndex>,
+    pub related_entry_name: Option<String>,
+    pub related_entry_type: Option<EntryType>,
 }
 
 /// Struct to access the status of the invocations currently handled by the invoker
@@ -134,4 +122,27 @@ pub trait StatusHandle {
         &self,
         keys: RangeInclusive<PartitionKey>,
     ) -> impl Future<Output = Self::Iterator> + Send;
+}
+
+#[cfg(any(test, feature = "mocks"))]
+pub mod mocks {
+    use super::*;
+
+    #[derive(Debug, Clone, Default)]
+    pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+
+    impl MockStatusHandle {
+        pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
+            self.0.push(invocation_status_report);
+            self
+        }
+    }
+
+    impl StatusHandle for MockStatusHandle {
+        type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+
+        async fn read_status(&self, _keys: RangeInclusive<PartitionKey>) -> Self::Iterator {
+            self.0.clone().into_iter()
+        }
+    }
 }

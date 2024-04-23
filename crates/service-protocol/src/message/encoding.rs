@@ -299,11 +299,11 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::SleepEntry => PlainEntryHeader::Sleep {
             is_completed: expect_flag!(message_header, completed),
         },
-        MessageType::InvokeEntry => PlainEntryHeader::Invoke {
+        MessageType::InvokeEntry => PlainEntryHeader::Call {
             is_completed: expect_flag!(message_header, completed),
             enrichment_result: None,
         },
-        MessageType::BackgroundInvokeEntry => PlainEntryHeader::BackgroundInvoke {
+        MessageType::BackgroundInvokeEntry => PlainEntryHeader::OneWayCall {
             enrichment_result: (),
         },
         MessageType::AwakeableEntry => PlainEntryHeader::Awakeable {
@@ -312,6 +312,7 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
         MessageType::CompleteAwakeableEntry => PlainEntryHeader::CompleteAwakeable {
             enrichment_result: (),
         },
+        MessageType::SideEffectEntry => PlainEntryHeader::Run {},
         MessageType::CustomEntry(code) => PlainEntryHeader::Custom { code },
     }
 }
@@ -326,10 +327,11 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::GetStateKeys { .. } => MessageType::GetStateKeysEntry,
         PlainEntryHeader::ClearAllState { .. } => MessageType::ClearAllStateEntry,
         PlainEntryHeader::Sleep { .. } => MessageType::SleepEntry,
-        PlainEntryHeader::Invoke { .. } => MessageType::InvokeEntry,
-        PlainEntryHeader::BackgroundInvoke { .. } => MessageType::BackgroundInvokeEntry,
+        PlainEntryHeader::Call { .. } => MessageType::InvokeEntry,
+        PlainEntryHeader::OneWayCall { .. } => MessageType::BackgroundInvokeEntry,
         PlainEntryHeader::Awakeable { .. } => MessageType::AwakeableEntry,
         PlainEntryHeader::CompleteAwakeable { .. } => MessageType::CompleteAwakeableEntry,
+        PlainEntryHeader::Run { .. } => MessageType::SideEffectEntry,
         PlainEntryHeader::Custom { code, .. } => MessageType::CustomEntry(*code),
     }
 }

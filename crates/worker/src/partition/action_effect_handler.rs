@@ -11,13 +11,17 @@
 use super::leadership::ActionEffect;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
-use restate_types::dedup::{DedupInformation, EpochSequenceNumber};
+use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::BuiltinServiceEffects;
+use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
 };
 use std::ops::RangeInclusive;
+use std::time::SystemTime;
 
 /// Responsible for proposing [ActionEffect].
 pub(super) struct ActionEffectHandler {
@@ -45,7 +49,7 @@ impl ActionEffectHandler {
     pub(super) async fn handle(&mut self, actuator_output: ActionEffect) -> anyhow::Result<()> {
         match actuator_output {
             ActionEffect::Invoker(invoker_output) => {
-                let header = self.create_header(invoker_output.full_invocation_id.partition_key());
+                let header = self.create_header(invoker_output.invocation_id.partition_key());
                 append_envelope_to_bifrost(
                     &mut self.bifrost,
                     Envelope::new(header, Command::InvokerEffect(invoker_output)),
@@ -79,22 +83,43 @@ impl ActionEffectHandler {
                 //  to make sure the next command can see the effects of the previous one.
                 //  A problematic example case is a sequence of CreateVirtualJournal and AppendJournalEntry:
                 //  to append a journal entry we must have stored the JournalMetadata first.
-                let (fid, effects) = invoker_output.into_inner();
+                let (id, effects) = invoker_output.into_inner();
 
                 for effect in effects {
-                    let header = self.create_header(fid.partition_key());
+                    let header = self.create_header(id.partition_key());
                     append_envelope_to_bifrost(
                         &mut self.bifrost,
                         Envelope::new(
                             header.clone(),
                             Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                                fid.clone(),
+                                id,
                                 vec![effect],
                             )),
                         ),
                     )
                     .await?;
                 }
+            }
+            ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
+                // We need this self proposal because we need to agree between leaders and followers on the wakeup time.
+                //  We can get rid of this once we'll have a synchronized clock between leaders/followers.
+                let header = self.create_header(invocation_id.partition_key());
+                append_envelope_to_bifrost(
+                    &mut self.bifrost,
+                    Envelope::new(
+                        header.clone(),
+                        Command::ScheduleTimer(TimerValue::new(
+                            TimerKey {
+                                timestamp: MillisSinceEpoch::from(SystemTime::now() + duration)
+                                    .as_u64(),
+                                invocation_uuid: invocation_id.invocation_uuid(),
+                                journal_index: 0,
+                            },
+                            Timer::CleanInvocationStatus(invocation_id),
+                        )),
+                    ),
+                )
+                .await?;
             }
         };
 

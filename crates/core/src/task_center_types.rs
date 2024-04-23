@@ -73,12 +73,16 @@ pub enum TaskKind {
     #[strum(props(OnError = "log"))]
     ConnectionReactor,
     Shuffle,
+    MetadataStore,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system
     /// shutdown on errors and the system will wait for its graceful cancellation on shutdown.
     BifrostBackgroundHighPriority,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
+    LogletProvider,
+    #[strum(props(OnCancel = "abort"))]
+    Watchdog,
 }
 
 impl TaskKind {

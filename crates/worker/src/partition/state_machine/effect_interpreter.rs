@@ -13,19 +13,19 @@ use super::{Effects, Error};
 use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
+use assert2::let_assert;
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
 use restate_invoker_api::InvokeInputJournal;
+use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
-use restate_storage_api::invocation_status_table::{
-    InvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
-};
+use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, ServiceId};
-use restate_types::invocation::ServiceInvocation;
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
+use restate_types::invocation::{HandlerType, InvocationInput};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
@@ -169,7 +169,11 @@ pub(crate) struct EffectInterpreter<Codec> {
 }
 
 impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
-    pub(crate) async fn interpret_effects<S: StateStorage>(
+    pub(crate) async fn interpret_effects<
+        S: StateStorage
+            + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
+            + restate_storage_api::idempotency_table::IdempotencyTable,
+    >(
         effects: &mut Effects,
         state_storage: &mut S,
         action_collector: &mut ActionCollector,
@@ -181,27 +185,42 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         Ok(())
     }
 
-    async fn interpret_effect<S: StateStorage>(
+    async fn interpret_effect<
+        S: StateStorage
+            + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
+            + restate_storage_api::idempotency_table::IdempotencyTable,
+    >(
         effect: Effect,
         state_storage: &mut S,
         collector: &mut ActionCollector,
     ) -> Result<(), Error> {
         match effect {
             Effect::InvokeService(service_invocation) => {
-                Self::invoke_service(state_storage, collector, service_invocation).await?;
+                let invocation_id = service_invocation.invocation_id;
+                let (in_flight_invocation_meta, invocation_input) =
+                    InFlightInvocationMetadata::from_service_invocation(service_invocation);
+                Self::invoke_service(
+                    state_storage,
+                    collector,
+                    invocation_id,
+                    in_flight_invocation_meta,
+                    invocation_input,
+                )
+                .await?;
             }
             Effect::ResumeService {
                 invocation_id,
                 mut metadata,
             } => {
                 metadata.timestamps.update();
-                let service_id = metadata.service_id.clone();
+                let invocation_target = metadata.invocation_target.clone();
                 state_storage
                     .store_invocation_status(&invocation_id, InvocationStatus::Invoked(metadata))
                     .await?;
 
                 collector.push(Action::Invoke {
-                    full_invocation_id: FullInvocationId::combine(service_id, invocation_id),
+                    invocation_id,
+                    invocation_target,
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
             }
@@ -221,6 +240,32 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     )
                     .await?;
             }
+            Effect::StoreInboxedInvocation(invocation_id, inboxed) => {
+                state_storage
+                    .store_invocation_status(&invocation_id, InvocationStatus::Inboxed(inboxed))
+                    .await?;
+            }
+            Effect::StoreCompletedInvocation {
+                invocation_id,
+                retention,
+                completed_invocation,
+            } => {
+                state_storage
+                    .store_invocation_status(
+                        &invocation_id,
+                        InvocationStatus::Completed(completed_invocation),
+                    )
+                    .await?;
+                collector.push(Action::ScheduleInvocationStatusCleanup {
+                    invocation_id,
+                    retention,
+                });
+            }
+            Effect::FreeInvocation(invocation_id) => {
+                state_storage
+                    .store_invocation_status(&invocation_id, InvocationStatus::Free)
+                    .await?;
+            }
             Effect::EnqueueIntoInbox {
                 seq_number,
                 inbox_entry,
@@ -230,6 +275,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .await?;
                 // need to store the next inbox sequence number
                 state_storage.store_inbox_seq_number(seq_number + 1).await?;
+            }
+            Effect::PopInbox(service_id) => {
+                Self::pop_from_inbox(state_storage, collector, service_id).await?;
             }
             Effect::DeleteInboxEntry {
                 service_id,
@@ -314,6 +362,15 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 )
                 .await?;
             }
+            Effect::DropJournal {
+                invocation_id,
+                journal_length,
+            } => {
+                // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
+                state_storage
+                    .drop_journal(&invocation_id, journal_length)
+                    .await?;
+            }
             Effect::TruncateOutbox(outbox_sequence_number) => {
                 state_storage
                     .truncate_outbox(outbox_sequence_number)
@@ -330,41 +387,49 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 Self::store_completion(state_storage, &invocation_id, entry_index, result).await?;
             }
             Effect::ForwardCompletion {
-                full_invocation_id,
+                invocation_id,
                 completion,
             } => {
                 collector.push(Action::ForwardCompletion {
-                    full_invocation_id,
+                    invocation_id,
                     completion,
                 });
             }
-            Effect::DropJournalAndPopInbox {
-                full_invocation_id,
-                journal_length,
+            Effect::AppendResponseSink {
+                invocation_id,
+                additional_response_sink,
+                mut previous_invocation_status,
             } => {
-                // TODO: Only drop journals if the inbox is empty; this requires that keep track of the max journal length: https://github.com/restatedev/restate/issues/272
+                previous_invocation_status
+                    .get_response_sinks_mut()
+                    .expect("No response sinks available")
+                    .insert(additional_response_sink);
                 state_storage
-                    .drop_journal(&InvocationId::from(&full_invocation_id), journal_length)
+                    .store_invocation_status(&invocation_id, previous_invocation_status)
                     .await?;
+            }
+            Effect::StoreIdempotencyId(idempotency_id, invocation_id) => {
                 state_storage
-                    .store_invocation_status(
-                        &InvocationId::from(&full_invocation_id),
-                        InvocationStatus::Free,
+                    .put_idempotency_metadata(
+                        &idempotency_id,
+                        IdempotencyMetadata { invocation_id },
                     )
-                    .await?;
-
-                Self::pop_from_inbox(state_storage, collector, &full_invocation_id.service_id)
-                    .await?;
+                    .await;
+            }
+            Effect::DeleteIdempotencyId(idempotency_id) => {
+                state_storage
+                    .delete_idempotency_metadata(&idempotency_id)
+                    .await;
             }
             Effect::TraceInvocationResult { .. } | Effect::TraceBackgroundInvoke { .. } => {
                 // these effects are only needed for span creation
             }
-            Effect::AbortInvocation(full_invocation_id) => {
-                collector.push(Action::AbortInvocation(full_invocation_id))
+            Effect::SendAbortInvocationToInvoker(invocation_id) => {
+                collector.push(Action::AbortInvocation(invocation_id))
             }
-            Effect::SendStoredEntryAckToInvoker(full_invocation_id, entry_index) => {
+            Effect::SendStoredEntryAckToInvoker(invocation_id, entry_index) => {
                 collector.push(Action::AckStoredEntry {
-                    full_invocation_id,
+                    invocation_id,
                     entry_index,
                 });
             }
@@ -382,16 +447,36 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     async fn pop_from_inbox<S>(
         state_storage: &mut S,
         collector: &mut ActionCollector,
-        service_id: &ServiceId,
+        service_id: ServiceId,
     ) -> Result<(), Error>
     where
-        S: StateStorage,
+        S: StateStorage
+            + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable,
     {
-        // pop until we find the first invocation that we can invoke
-        while let Some(inbox_entry) = state_storage.pop_inbox(service_id).await? {
+        // Pop until we find the first inbox entry.
+        // Note: the inbox seq numbers can have gaps.
+        while let Some(inbox_entry) = state_storage.pop_inbox(&service_id).await? {
             match inbox_entry.inbox_entry {
-                InboxEntry::Invocation(service_invocation) => {
-                    Self::invoke_service(state_storage, collector, service_invocation).await?;
+                InboxEntry::Invocation(_, invocation_id) => {
+                    let inboxed_status =
+                        state_storage.get_invocation_status(&invocation_id).await?;
+
+                    let_assert!(
+                        InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
+                        "InvocationStatus must contain an Inboxed invocation for the id {}",
+                        invocation_id
+                    );
+
+                    let (in_flight_invocation_meta, invocation_input) =
+                        InFlightInvocationMetadata::from_inboxed_invocation(inboxed_invocation);
+                    Self::invoke_service(
+                        state_storage,
+                        collector,
+                        invocation_id,
+                        in_flight_invocation_meta,
+                        invocation_input,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 InboxEntry::StateMutation(state_mutation) => {
@@ -401,7 +486,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         }
 
         state_storage
-            .store_service_status(service_id, VirtualObjectStatus::Unlocked)
+            .store_service_status(&service_id, VirtualObjectStatus::Unlocked)
             .await?;
 
         Ok(())
@@ -412,7 +497,7 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         state_mutation: ExternalStateMutation,
     ) -> StorageResult<()> {
         let ExternalStateMutation {
-            component_id: service_id,
+            service_id,
             version,
             state,
         } = state_mutation;
@@ -451,79 +536,87 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     async fn invoke_service<S: StateStorage>(
         state_storage: &mut S,
         collector: &mut ActionCollector,
-        service_invocation: ServiceInvocation,
+        invocation_id: InvocationId,
+        mut in_flight_invocation_metadata: InFlightInvocationMetadata,
+        invocation_input: InvocationInput,
     ) -> Result<(), Error> {
-        let journal_metadata = JournalMetadata::new(
-            1, // initial length is 1, because we store the poll input stream entry
-            service_invocation.span_context.clone(),
-        );
+        // In our current data model, ServiceInvocation has always an input, so initial length is 1
+        in_flight_invocation_metadata.journal_metadata.length = 1;
 
-        let invocation_id = InvocationId::from(&service_invocation.fid);
-        state_storage
-            .store_service_status(
-                &service_invocation.fid.service_id,
-                VirtualObjectStatus::Locked(invocation_id.clone()),
-            )
-            .await?;
+        if in_flight_invocation_metadata.invocation_target.handler_ty()
+            == Some(HandlerType::Exclusive)
+        {
+            state_storage
+                .store_service_status(
+                    &in_flight_invocation_metadata
+                        .invocation_target
+                        .as_keyed_service_id()
+                        .unwrap(),
+                    VirtualObjectStatus::Locked(invocation_id),
+                )
+                .await?;
+        }
         state_storage
             .store_invocation_status(
                 &invocation_id,
-                InvocationStatus::Invoked(InvocationMetadata::new(
-                    service_invocation.fid.service_id.clone(),
-                    journal_metadata.clone(),
-                    None,
-                    service_invocation.method_name.clone(),
-                    service_invocation.response_sink.clone(),
-                    StatusTimestamps::now(),
-                    service_invocation.source,
-                )),
+                InvocationStatus::Invoked(in_flight_invocation_metadata.clone()),
             )
             .await?;
 
         let input_entry = if non_deterministic::ServiceInvoker::is_supported(
-            &service_invocation.fid.service_id.service_name,
+            in_flight_invocation_metadata
+                .invocation_target
+                .service_name(),
         ) {
+            debug_assert!(
+                in_flight_invocation_metadata.response_sinks.len() <= 1,
+                "At most one response sink is supported for built-in services"
+            );
+
             collector.push(Action::InvokeBuiltInService {
-                full_invocation_id: service_invocation.fid.clone(),
-                span_context: service_invocation.span_context,
-                response_sink: service_invocation.response_sink,
-                method: service_invocation.method_name,
-                argument: service_invocation.argument.clone(),
+                invocation_id,
+                invocation_target: in_flight_invocation_metadata.invocation_target,
+                span_context: in_flight_invocation_metadata.journal_metadata.span_context,
+                response_sink: in_flight_invocation_metadata
+                    .response_sinks
+                    .into_iter()
+                    .next(),
+                argument: invocation_input.argument.clone(),
             });
 
             // TODO clean up custom entry hack by allowing to store bytes directly?
             EnrichedRawEntry::new(
                 EnrichedEntryHeader::Custom { code: 0 },
-                service_invocation.argument,
+                invocation_input.argument,
             )
         } else {
-            let poll_input_stream_entry = Codec::serialize_as_input_entry(
-                service_invocation.headers,
-                service_invocation.argument.clone(),
+            let input_entry = Codec::serialize_as_input_entry(
+                invocation_input.headers,
+                invocation_input.argument,
             );
-            let (header, serialized_entry) = poll_input_stream_entry.into_inner();
+            let (entry_header, serialized_entry) = input_entry.into_inner();
 
             collector.push(Action::Invoke {
-                full_invocation_id: service_invocation.fid.clone(),
+                invocation_id,
+                invocation_target: in_flight_invocation_metadata.invocation_target,
                 invoke_input_journal: InvokeInputJournal::CachedJournal(
                     restate_invoker_api::JournalMetadata::new(
-                        journal_metadata.length,
-                        journal_metadata.span_context,
-                        service_invocation.method_name.clone(),
+                        in_flight_invocation_metadata.journal_metadata.length,
+                        in_flight_invocation_metadata.journal_metadata.span_context,
                         None,
                     ),
                     vec![PlainRawEntry::new(
-                        header.clone().erase_enrichment(),
+                        entry_header.clone().erase_enrichment(),
                         serialized_entry.clone(),
                     )],
                 ),
             });
 
-            EnrichedRawEntry::new(header, serialized_entry)
+            EnrichedRawEntry::new(entry_header, serialized_entry)
         };
 
         state_storage
-            .store_journal_entry(&InvocationId::from(&service_invocation.fid), 0, input_entry)
+            .store_journal_entry(&invocation_id, 0, input_entry)
             .await?;
 
         Ok(())

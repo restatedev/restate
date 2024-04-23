@@ -53,4 +53,5 @@ prettyplease = "0.2"
 schemars = { workspace = true }
 serde_json = { workspace = true }
 syn = "2.0"
-typify = { version = "0.0.15" }
+typify = { version = "0.0.16" }
+jsonptr = "0.4.7"

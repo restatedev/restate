@@ -39,7 +39,7 @@ pub struct DeleteInvocationParams {
     summary = "Terminate an invocation",
     description = "Terminate the given invocation. By default, an invocation is terminated by gracefully \
     cancelling it. This ensures virtual object state consistency. Alternatively, an invocation can be killed which \
-    does not guarantee consistency for virtual object instance state, in-flight invocations to other components, etc.",
+    does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc.",
     operation_id = "terminate_invocation",
     tags = "invocation",
     parameters(
@@ -67,8 +67,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation(
-    State(mut state): State<AdminServiceState>,
+pub async fn delete_invocation<V>(
+    State(mut state): State<AdminServiceState<V>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -81,7 +81,7 @@ pub async fn delete_invocation(
         TerminationMode::Kill => InvocationTermination::kill(invocation_id),
     };
 
-    let partition_key = invocation_termination.maybe_fid.partition_key();
+    let partition_key = invocation_termination.invocation_id.partition_key();
 
     let result = state
         .task_center

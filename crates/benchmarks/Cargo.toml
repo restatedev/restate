@@ -12,22 +12,22 @@ default = []
 frame-pointer = ["pprof/frame-pointer"]
 
 [dependencies]
-restate-core = { workspace = true }
+restate-core = { workspace = true, features = ["test-util"] }
 restate-node = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-server = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
-pprof = { version = "0.12", features = ["criterion", "flamegraph"] }
-prost = { workspace = true }
+pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -35,8 +35,6 @@ criterion = { workspace = true, features = ["async_tokio"] }
 rand = { workspace = true }
 
 [build-dependencies]
-prost-build = { workspace = true }
-tonic-build = { workspace = true }
 
 [[bench]]
 name = "throughput_parallel"

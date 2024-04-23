@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
@@ -26,10 +26,11 @@ use std::ops::RangeInclusive;
 
 define_table_key!(
     State,
+    KeyKind::State,
     StateKey(
         partition_key: PartitionKey,
         service_name: ByteString,
-        service_key: Bytes,
+        service_key: ByteString,
         state_key: Bytes
     )
 );
@@ -60,7 +61,7 @@ fn put_user_state<S: StorageAccess>(
     state_value: impl AsRef<[u8]>,
 ) {
     let key = write_state_entry_key(service_id, state_key);
-    storage.put_kv(key, state_value.as_ref());
+    storage.put_kv_raw(key, state_value.as_ref());
 }
 
 fn delete_user_state<S: StorageAccess>(
@@ -95,7 +96,7 @@ fn get_user_state<S: StorageAccess>(
     state_key: impl AsRef<[u8]>,
 ) -> Result<Option<Bytes>> {
     let key = write_state_entry_key(service_id, state_key);
-    storage.get_blocking(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
+    storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
 }
 
 fn get_all_user_states<S: StorageAccess>(
@@ -184,7 +185,7 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
 pub struct OwnedStateRow {
     pub partition_key: PartitionKey,
     pub service: ByteString,
-    pub service_key: Bytes,
+    pub service_key: ByteString,
     pub state_key: Bytes,
     pub state_value: Bytes,
 }

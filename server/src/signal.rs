@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::info;
+use tracing::{info, warn};
+
+use restate_types::config::Configuration;
 
 pub(super) async fn shutdown() -> &'static str {
     let signal = tokio::select! {
@@ -19,6 +21,22 @@ pub(super) async fn shutdown() -> &'static str {
 
     info!(%signal, "Received signal, starting shutdown.");
     signal
+}
+
+/// Dump the configuration to the log (level=info) on SIGUSR1
+pub(super) async fn sigusr_dump_config() {
+    let mut stream =
+        signal(SignalKind::user_defined1()).expect("failed to register handler for SIGUSR1");
+
+    loop {
+        stream.recv().await;
+        info!("Received SIGUSR1, dumping configuration");
+        let config = Configuration::pinned().dump();
+        match config {
+            Err(e) => warn!("Failed to dump configuration: {}", e),
+            Ok(config) => info!("{}", config),
+        }
+    }
 }
 
 async fn await_signal(kind: SignalKind) {

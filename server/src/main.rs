@@ -10,17 +10,22 @@
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::TaskCenterFactory;
+use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
+use restate_rocksdb::RocksDbManager;
 use restate_server::build_info;
-use restate_server::Configuration;
+use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
+use restate_types::config::CommonOptionCliOverride;
+use restate_types::config::Configuration;
 use std::error::Error;
 use std::ops::Div;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io;
+use tracing::debug;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -43,24 +48,33 @@ struct RestateArguments {
         short,
         long = "config-file",
         env = "RESTATE_CONFIG",
-        default_value = "restate.yaml",
         value_name = "FILE"
     )]
-    config_file: PathBuf,
+    config_file: Option<PathBuf>,
+
+    /// Dumps the loaded configuration (or default if no config-file is set) to stdout and exits.
+    /// Defaults will include any values overridden by environment variables.
+    #[clap(long)]
+    dump_config: bool,
 
     /// Wipes the configured data before starting Restate.
     ///
     /// **WARNING** all the wiped data will be lost permanently!
     #[arg(value_enum, long = "wipe")]
     wipe: Option<WipeMode>,
+
+    #[clap(flatten)]
+    opts_overrides: CommonOptionCliOverride,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum WipeMode {
     /// Wipe all worker state, including all the service instances and their state, all enqueued invocations, all waiting timers.
     Worker,
-    /// Wipe all the meta information, including discovered services and their respective schemas.
-    Meta,
+    /// Wipe the local rocksdb-based loglet.
+    LocalLoglet,
+    /// Wipe the local rocksdb-based metadata-store.
+    LocalMetadataStore,
     /// Wipe all
     All,
 }
@@ -68,21 +82,26 @@ enum WipeMode {
 impl WipeMode {
     async fn wipe(
         mode: Option<&WipeMode>,
-        meta_storage_dir: PathBuf,
         worker_storage_dir: PathBuf,
+        local_loglet_storage_dir: PathBuf,
+        local_metadata_store_storage_dir: PathBuf,
     ) -> io::Result<()> {
-        let (wipe_meta, wipe_worker) = match mode {
-            Some(WipeMode::Worker) => (false, true),
-            Some(WipeMode::Meta) => (true, false),
-            Some(WipeMode::All) => (true, true),
-            None => (false, false),
+        let (wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
+            Some(WipeMode::Worker) => (true, true, false),
+            Some(WipeMode::LocalLoglet) => (false, true, false),
+            Some(WipeMode::LocalMetadataStore) => (false, false, true),
+            Some(WipeMode::All) => (true, true, true),
+            None => (false, false, false),
         };
 
-        if wipe_meta {
-            restate_fs_util::remove_dir_all_if_exists(meta_storage_dir).await?;
-        }
         if wipe_worker {
             restate_fs_util::remove_dir_all_if_exists(worker_storage_dir).await?;
+        }
+        if wipe_local_loglet {
+            restate_fs_util::remove_dir_all_if_exists(local_loglet_storage_dir).await?;
+        }
+        if wipe_local_metadata_store {
+            restate_fs_util::remove_dir_all_if_exists(local_metadata_store_storage_dir).await?
         }
         Ok(())
     }
@@ -93,7 +112,22 @@ const EXIT_CODE_FAILURE: i32 = 1;
 fn main() {
     let cli_args = RestateArguments::parse();
 
-    let config = match Configuration::load(&cli_args.config_file) {
+    // We capture the absolute path of the config file on startup before we change the current
+    // working directory (base-dir arg)
+    let config_path = cli_args
+        .config_file
+        .as_ref()
+        .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
+
+    // Initial configuration loading
+    let config_loader = ConfigLoaderBuilder::default()
+        .load_env(true)
+        .path(config_path.clone())
+        .cli_override(cli_args.opts_overrides.clone())
+        .build()
+        .unwrap();
+
+    let config = match config_loader.load_once() {
         Ok(c) => c,
         Err(e) => {
             // We cannot use tracing here as it's not configured yet
@@ -102,24 +136,26 @@ fn main() {
             std::process::exit(EXIT_CODE_FAILURE);
         }
     };
+    if cli_args.dump_config {
+        println!("{}", config.dump().expect("config is toml serializable"));
+        std::process::exit(0);
+    }
 
-    let runtime = config
-        .tokio_runtime
-        .clone()
+    // Setting initial configuration as global current
+    restate_types::config::set_current_config(config);
+
+    let tc = TaskCenterBuilder::default()
+        .options(Configuration::pinned().common.clone())
         .build()
-        .expect("failed to build Tokio runtime!");
-
-    let tc = TaskCenterFactory::create(runtime.handle().clone());
-
-    runtime.block_on({
+        .expect("task_center builds");
+    tc.block_on("main", None, {
         let tc = tc.clone();
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
-            let tracing_guard = config
-                .observability
-                .init("Restate binary", std::process::id())
-                .expect("failed to instrument logging and tracing!");
+            let tracing_guard =
+                init_tracing_and_logging(&Configuration::pinned().common, "Restate binary")
+                    .expect("failed to configure logging and tracing!");
 
             // Log panics as tracing errors if possible
             let prev_hook = std::panic::take_hook();
@@ -129,26 +165,46 @@ fn main() {
                 prev_hook(panic_info);
             }));
 
-            info!("Starting Restate Server {}", build_info::build_info());
             info!(
-                "Loading configuration file from {}",
-                cli_args.config_file.display()
+                node_name = Configuration::pinned().node_name(),
+                "Starting Restate Server {}",
+                build_info::build_info()
             );
-            info!(
+            if cli_args.config_file.is_some() {
+                info!(
+                    config_file = %cli_args.config_file.as_ref().unwrap().display(),
+                    "Loaded configuration file",
+                );
+            } else {
+                info!("Loaded default configuration");
+            }
+
+            debug!(
                 "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                serde_yaml::to_string(&config).unwrap()
+                Configuration::pinned().dump().unwrap()
             );
 
-            WipeMode::wipe(
-                cli_args.wipe.as_ref(),
-                config.node.meta.storage_path().into(),
-                config.node.worker.storage_path().into(),
-            )
-            .await
-            .expect("Error when trying to wipe the configured storage path");
+            // Initialize rocksdb manager
+            let rocksdb_manager =
+                RocksDbManager::init(Configuration::mapped_updateable(|c| &c.common));
 
-            let task_center_watch = tc.watch_shutdown();
-            let node = Node::new(config.node);
+            // start config watcher
+            config_loader.start();
+
+            {
+                let config = Configuration::pinned();
+
+                WipeMode::wipe(
+                    cli_args.wipe.as_ref(),
+                    config.worker.data_dir(),
+                    config.bifrost.local.data_dir(),
+                    config.metadata_store.data_dir(),
+                )
+                .await
+                .expect("Error when trying to wipe the configured storage path");
+            }
+
+            let node = Node::new(Configuration::current().clone());
             if let Err(err) = node {
                 handle_error(err);
             }
@@ -157,31 +213,57 @@ fn main() {
             // the TaskCenter.
             let _ = tc.spawn(TaskKind::SystemBoot, "init", None, node.unwrap().start());
 
-            tokio::select! {
-                signal_name = signal::shutdown() => {
-                    info!("Received shutdown signal.");
-                    let signal_reason = format!("received signal {}", signal_name);
+            let task_center_watch = tc.shutdown_token();
+            tokio::pin!(task_center_watch);
 
-                    let shutdown_with_timeout = tokio::time::timeout(
-                        config.shutdown_grace_period.into(),
-                        tc.shutdown_node(&signal_reason, 0)
-                    );
+            let config_update_watcher = Configuration::watcher();
+            tokio::pin!(config_update_watcher);
+            let mut shutdown = false;
+            while !shutdown {
+                tokio::select! {
+                    signal_name = signal::shutdown() => {
+                        info!("Received shutdown signal.");
+                        shutdown = true;
+                        let signal_reason = format!("received signal {}", signal_name);
 
-                    // ignore the result because we are shutting down
-                    let shutdown_result = shutdown_with_timeout.await;
 
-                    if shutdown_result.is_err() {
-                        warn!("Could not gracefully shut down Restate, terminating now.");
-                    } else {
-                        info!("Restate has been gracefully shut down.");
+                        let shutdown_with_timeout = tokio::time::timeout(
+                            Configuration::pinned().common.shutdown_grace_period(),
+                            async {
+                                tc.shutdown_node(&signal_reason, 0).await;
+                                rocksdb_manager.shutdown().await;
+                            }
+                        );
+
+                        // ignore the result because we are shutting down
+                        let shutdown_result = shutdown_with_timeout.await;
+
+                        if shutdown_result.is_err() {
+                            warn!("Could not gracefully shut down Restate, terminating now.");
+                        } else {
+                            info!("Restate has been gracefully shut down.");
+                        }
+                    },
+                    _ = config_update_watcher.changed() => {
+                        let config = Configuration::pinned();
+                        tracing_guard.reload_log_filter(&config.common);
                     }
-                },
-                _ = task_center_watch => {
-                    // Shutdown was requested by task center and it has completed.
-                },
-            };
+                    _ = signal::sigusr_dump_config() => {},
+                    _ = task_center_watch.cancelled() => {
+                        shutdown = true;
+                        // Shutdown was requested by task center and it has completed.
+                    },
+                };
+            }
 
-            shutdown_tracing(config.shutdown_grace_period.div(2), tracing_guard).await;
+            shutdown_tracing(
+                Configuration::pinned()
+                    .common
+                    .shutdown_grace_period()
+                    .div(2),
+                tracing_guard,
+            )
+            .await;
         }
     });
     let exit_code = tc.exit_code();

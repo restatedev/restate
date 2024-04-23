@@ -12,10 +12,8 @@ extern crate core;
 
 use std::future::Future;
 
-mod options;
 mod service;
 
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 use restate_types::timer::Timer;
 pub use service::clock::{Clock, TokioClock};
 pub use service::TimerService;

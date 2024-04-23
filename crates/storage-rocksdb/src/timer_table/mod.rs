@@ -8,22 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::codec::ProtoValue;
-use crate::keys::{define_table_key, TableKey};
+use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
-use prost::Message;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::{Result, StorageError};
-use restate_storage_proto::storage;
 use restate_types::identifiers::{InvocationUuid, PartitionId};
+use restate_types::storage::StorageCodec;
 
 define_table_key!(
     Timers,
+    KeyKind::Timers,
     TimersKey(
         partition_id: PartitionId,
         timestamp: u64,
@@ -57,12 +56,11 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
     Ok(timer_key)
 }
 
-fn decode_seq_timer_key_value(k: &[u8], v: &[u8]) -> Result<(TimerKey, Timer)> {
+fn decode_seq_timer_key_value(k: &[u8], mut v: &[u8]) -> Result<(TimerKey, Timer)> {
     let timer_key = timer_key_from_key_slice(k)?;
 
-    let timer = Timer::try_from(
-        storage::v1::Timer::decode(v).map_err(|error| StorageError::Generic(error.into()))?,
-    )?;
+    let timer = StorageCodec::decode::<Timer, _>(&mut v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok((timer_key, timer))
 }
@@ -96,9 +94,8 @@ fn add_timer<S: StorageAccess>(
     timer: Timer,
 ) {
     let key = write_timer_key(partition_id, key);
-    let value = ProtoValue(storage::v1::Timer::from(timer));
 
-    storage.put_kv(key, value);
+    storage.put_kv(key, timer);
 }
 
 fn delete_timer<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, key: &TimerKey) {

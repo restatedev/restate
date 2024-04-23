@@ -10,16 +10,23 @@
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::arc_util::Constant;
+use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_worker_api::Error;
+use restate_worker::SubscriptionController;
+use restate_worker::WorkerHandle;
+use restate_worker::WorkerHandleError;
 use schemars::gen::SchemaSettings;
 use std::env;
 use std::time::Duration;
@@ -28,55 +35,56 @@ use tonic::transport::{Channel, Uri};
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
         .into_generator()
-        .into_root_schema_for::<restate_server::Configuration>();
+        .into_root_schema_for::<Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
 
-fn generate_default_config() -> anyhow::Result<()> {
+fn generate_default_config() {
     println!(
         "{}",
-        serde_yaml::to_string(&restate_server::Configuration::default())?
+        Configuration::default()
+            .dump()
+            .expect("default configuration")
     );
-    Ok(())
 }
 
 // Need this for worker Handle
 #[derive(Clone)]
 struct Mock;
 
-impl restate_worker_api::Handle for Mock {
+impl WorkerHandle for Mock {
     async fn terminate_invocation(
         &self,
         _: InvocationTermination,
-    ) -> Result<(), restate_worker_api::Error> {
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn external_state_mutation(&self, _mutation: ExternalStateMutation) -> Result<(), Error> {
+    async fn external_state_mutation(
+        &self,
+        _mutation: ExternalStateMutation,
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
-impl restate_worker_api::SubscriptionController for Mock {
-    async fn start_subscription(&self, _: Subscription) -> Result<(), restate_worker_api::Error> {
+impl SubscriptionController for Mock {
+    async fn start_subscription(&self, _: Subscription) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), restate_worker_api::Error> {
+    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 
-    async fn update_subscriptions(
-        &self,
-        _: Vec<Subscription>,
-    ) -> Result<(), restate_worker_api::Error> {
+    async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
 
 impl restate_schema_api::subscription::SubscriptionValidator for Mock {
-    type Error = restate_worker_api::Error;
+    type Error = WorkerHandleError;
 
     fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
         unimplemented!()
@@ -84,38 +92,43 @@ impl restate_schema_api::subscription::SubscriptionValidator for Mock {
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
-    let admin_options = restate_admin::Options::default();
-    let meta_options = restate_meta::Options::default();
-    let mut meta = meta_options
-        .build(Mock)
-        .expect("expect to build meta service");
+    let config = Configuration::default();
     let openapi_address = format!(
         "http://localhost:{}/openapi",
-        admin_options.bind_address.port()
+        config.admin.bind_address.port()
     );
-    let admin_service =
-        admin_options.build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
-    meta.init().await.unwrap();
 
-    // We start the Meta component, then download the openapi schema generated
+    // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let bifrost = node_env
         .tc
-        .run_in_scope("bifrost init", None, Bifrost::new_in_memory(1))
+        .run_in_scope("bifrost init", None, Bifrost::init())
         .await;
+
+    let admin_service = AdminService::new(
+        node_env.metadata_writer.clone(),
+        node_env.metadata_store_client.clone(),
+        Mock,
+        ServiceDiscovery::new(
+            RetryPolicy::default(),
+            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)
+                .unwrap(),
+        ),
+    );
 
     node_env.tc.spawn(
         TaskKind::TestRunner,
         "doc-gen",
         None,
         admin_service.run(
+            Constant::new(config.admin),
             NodeSvcClient::new(Channel::builder(Uri::default()).connect_lazy()),
             bifrost,
         ),
     )?;
 
     let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
-        .retry_operation(|| async {
+        .retry(|| async {
             reqwest::Client::builder()
                 .build()?
                 .get(openapi_address.clone())
@@ -154,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
         None => print_help(),
         Some(t) => match t.as_str() {
             "generate-config-schema" => generate_config_schema()?,
-            "generate-default-config" => generate_default_config()?,
+            "generate-default-config" => generate_default_config(),
             "generate-rest-api-doc" => generate_rest_api_doc().await?,
             invalid => {
                 print_help();

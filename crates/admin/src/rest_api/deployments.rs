@@ -9,21 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use super::notify_node_about_schema_changes;
 use crate::state::AdminServiceState;
 
-use axum::body::Bytes;
+use crate::rest_api::log_error;
+use crate::schema_registry::{ApplyMode, Force};
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::Json;
-use okapi_operation::anyhow::Error;
-use okapi_operation::okapi::openapi3::{MediaType, Responses};
-use okapi_operation::okapi::Map;
 use okapi_operation::*;
-use restate_meta::{ApplyMode, Force};
 use restate_meta_rest_model::deployments::*;
-use restate_schema_api::deployment::DeploymentResolver;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;
@@ -32,7 +27,7 @@ use serde::Deserialize;
 /// Create deployment and return discovered services.
 #[openapi(
     summary = "Create deployment",
-    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the components exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
     operation_id = "create_deployment",
     tags = "deployment",
     responses(
@@ -45,8 +40,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment(
-    State(state): State<AdminServiceState>,
+pub async fn create_deployment<V>(
+    State(state): State<AdminServiceState<V>>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
     let (discover_endpoint, force, dry_run) = match payload {
@@ -84,24 +79,27 @@ pub async fn create_deployment(
         ),
     };
 
-    let apply_changes = if dry_run {
+    let force = if force { Force::Yes } else { Force::No };
+
+    let apply_mode = if dry_run {
         ApplyMode::DryRun
     } else {
         ApplyMode::Apply
     };
 
-    let force = if force { Force::Yes } else { Force::No };
-    let registration_result = state
-        .meta_handle()
-        .register_deployment(discover_endpoint, force, apply_changes)
+    let (id, services) = state
+        .task_center
+        .run_in_scope("create-deployment", None, async {
+            log_error(
+                state
+                    .schema_registry
+                    .register_deployment(discover_endpoint, force, apply_mode)
+                    .await,
+            )
+        })
         .await?;
 
-    notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
-
-    let response_body = RegisterDeploymentResponse {
-        id: registration_result.deployment,
-        components: registration_result.components,
-    };
+    let response_body = RegisterDeploymentResponse { id, services };
 
     Ok((
         StatusCode::CREATED,
@@ -125,19 +123,21 @@ pub async fn create_deployment(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment(
-    State(state): State<AdminServiceState>,
+pub async fn get_deployment<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (deployment, components) = state
-        .schemas()
-        .get_deployment_and_components(&deployment_id)
+    let (deployment, services) = state
+        .task_center
+        .run_in_scope_sync("get-deployment", None, || {
+            state.schema_registry.get_deployment(deployment_id)
+        })
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(DetailedDeploymentResponse {
         id: deployment.id,
         deployment: deployment.metadata.into(),
-        components,
+        services,
     }
     .into())
 }
@@ -149,25 +149,26 @@ pub async fn get_deployment(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments(
-    State(state): State<AdminServiceState>,
+pub async fn list_deployments<V>(
+    State(state): State<AdminServiceState<V>>,
 ) -> Json<ListDeploymentsResponse> {
-    ListDeploymentsResponse {
-        deployments: state
-            .schemas()
-            .get_deployments()
-            .into_iter()
-            .map(|(deployment, services)| DeploymentResponse {
-                id: deployment.id,
-                deployment: deployment.metadata.into(),
-                components: services
-                    .into_iter()
-                    .map(|(name, revision)| ComponentNameRevPair { name, revision })
-                    .collect(),
-            })
-            .collect(),
-    }
-    .into()
+    let deployments = state
+        .task_center
+        .run_in_scope_sync("list-deployments", None, || {
+            state.schema_registry.list_deployments()
+        })
+        .into_iter()
+        .map(|(deployment, services)| DeploymentResponse {
+            id: deployment.id,
+            deployment: deployment.metadata.into(),
+            services: services
+                .into_iter()
+                .map(|(name, revision)| ServiceNameRevPair { name, revision })
+                .collect(),
+        })
+        .collect();
+
+    ListDeploymentsResponse { deployments }.into()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -211,47 +212,15 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment(
-    State(state): State<AdminServiceState>,
+pub async fn delete_deployment<V>(
+    State(state): State<AdminServiceState<V>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
     if let Some(true) = force {
-        state.meta_handle().remove_deployment(deployment_id).await?;
-        notify_node_about_schema_changes(state.schema_reader(), state.node_svc_client()).await;
+        log_error(state.schema_registry.delete_deployment(deployment_id).await)?;
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
-    }
-}
-
-pub struct ProtoBytes(Bytes);
-
-impl IntoResponse for ProtoBytes {
-    fn into_response(self) -> Response {
-        (
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/x-protobuf"),
-            )],
-            self.0,
-        )
-            .into_response()
-    }
-}
-
-impl ToMediaTypes for ProtoBytes {
-    fn generate(_components: &mut Components) -> Result<Map<String, MediaType>, anyhow::Error> {
-        Ok(okapi::map! {
-            "application/x-protobuf".into() => {
-                MediaType { ..Default::default() }
-            }
-        })
-    }
-}
-
-impl ToResponses for ProtoBytes {
-    fn generate(_components: &mut Components) -> Result<Responses, Error> {
-        Ok(Responses::default())
     }
 }

@@ -12,12 +12,11 @@ mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
-mod options;
 mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use codederror::CodedError;
+use futures::Stream;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -26,16 +25,18 @@ use metrics::counter;
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
 use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
-    StateReader,
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_queue::SegmentQueue;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_timer_queue::TimerQueue;
-use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, FullInvocationId, PartitionKey, WithPartitionKey};
+use restate_types::arc_util::Updateable;
+use restate_types::config::{InvokerOptions, ServiceClientOptions};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
 use status_store::InvocationStatusStore;
@@ -44,32 +45,24 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::instrument;
 use tracing::{debug, trace};
 
+use crate::invocation_task::InvocationTaskError;
 pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
-pub use options::{
-    Options, OptionsBuilder, OptionsBuilderError, ServiceClientOptionsBuilder,
-    ServiceClientOptionsBuilderError,
-};
-use restate_service_client::ServiceClient;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
+use restate_types::invocation::InvocationTarget;
 
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASK, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
-
-/// Internal error trait for the invoker errors
-trait InvokerError: std::error::Error {
-    fn is_transient(&self) -> bool;
-    fn to_invocation_error(&self) -> InvocationError;
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -83,8 +76,10 @@ trait InvocationTaskRunner {
     #[allow(clippy::too_many_arguments)]
     fn start_invocation_task(
         &self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -95,11 +90,6 @@ trait InvocationTaskRunner {
 #[derive(Debug)]
 struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
     client: ServiceClient,
-    inactivity_timeout: Duration,
-    abort_timeout: Duration,
-    disable_eager_state: bool,
-    message_size_warning: usize,
-    message_size_limit: Option<usize>,
     journal_reader: JR,
     state_reader: SR,
     entry_enricher: EE,
@@ -117,8 +107,10 @@ where
 {
     fn start_invocation_task(
         &self,
+        opts: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        fid: FullInvocationId,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -128,13 +120,14 @@ where
             InvocationTask::new(
                 self.client.clone(),
                 partition,
-                fid,
+                invocation_id,
+                invocation_target,
                 RESTATE_SERVICE_PROTOCOL_VERSION,
-                self.inactivity_timeout,
-                self.abort_timeout,
-                self.disable_eager_state,
-                self.message_size_warning,
-                self.message_size_limit,
+                opts.inactivity_timeout.into(),
+                opts.abort_timeout.into(),
+                opts.disable_eager_state,
+                opts.message_size_warning,
+                opts.message_size_limit,
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
@@ -151,8 +144,14 @@ where
 
 #[derive(Debug)]
 pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry> {
-    // Used for constructing the invoker sender
+    // Used for constructing the invoker sender and status reader
     input_tx: mpsc::UnboundedSender<InputCommand>,
+    status_tx: mpsc::UnboundedSender<
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    >,
     // For the segment queue
     tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
@@ -165,51 +164,75 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry
 impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        options: &InvokerOptions,
         deployment_metadata_resolver: DMR,
-        retry_policy: RetryPolicy,
-        inactivity_timeout: Duration,
-        abort_timeout: Duration,
-        disable_eager_state: bool,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
         client: ServiceClient,
-        tmp_dir: PathBuf,
-        concurrency_limit: Option<usize>,
         journal_reader: JR,
         state_reader: SR,
         entry_enricher: EE,
     ) -> Service<JR, SR, EE, DMR> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
         Self {
             input_tx,
-            tmp_dir,
+            status_tx,
+            tmp_dir: options.gen_tmp_dir(),
             inner: ServiceInner {
                 input_rx,
+                status_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
-                    inactivity_timeout,
-                    abort_timeout,
-                    disable_eager_state,
-                    message_size_warning,
-                    message_size_limit,
                     journal_reader,
                     state_reader,
                     entry_enricher,
                     deployment_metadata_resolver,
                 },
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(concurrency_limit),
+                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
         }
     }
+
+    pub fn from_options<JS>(
+        service_client_options: &ServiceClientOptions,
+        invoker_options: &InvokerOptions,
+        journal_reader: JR,
+        state_reader: SR,
+        entry_enricher: EE,
+        deployment_registry: DMR,
+    ) -> Result<Service<JR, SR, EE, DMR>, BuildError>
+    where
+        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        EE: EntryEnricher,
+        DMR: DeploymentResolver,
+    {
+        metric_definitions::describe_metrics();
+        let client =
+            ServiceClient::from_options(service_client_options, AssumeRoleCacheMode::Unbounded)?;
+
+        Ok(Service::new(
+            invoker_options,
+            deployment_registry,
+            client,
+            journal_reader,
+            state_reader,
+            entry_enricher,
+        ))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed building the invoker service: {0}")]
+pub enum BuildError {
+    ServiceClient(#[from] restate_service_client::BuildError),
 }
 
 impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
@@ -228,10 +251,13 @@ where
     }
 
     pub fn status_reader(&self) -> ChannelStatusReader {
-        ChannelStatusReader(self.input_tx.clone())
+        ChannelStatusReader(self.status_tx.clone())
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(
+        self,
+        mut updateable_options: impl Updateable<InvokerOptions> + Send + 'static,
+    ) -> anyhow::Result<()> {
         let Service {
             tmp_dir,
             inner: mut service,
@@ -247,8 +273,9 @@ where
             .expect("Cannot initialize input spillable queue");
 
         loop {
+            let options = updateable_options.load();
             if !service
-                .step(&mut segmented_input_queue, shutdown.as_mut())
+                .step(options, &mut segmented_input_queue, shutdown.as_mut())
                 .await
             {
                 break;
@@ -264,6 +291,12 @@ where
 #[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner> {
     input_rx: mpsc::UnboundedReceiver<InputCommand>,
+    status_rx: mpsc::UnboundedReceiver<
+        restate_futures_util::command::Command<
+            RangeInclusive<PartitionKey>,
+            Vec<InvocationStatusReport>,
+        >,
+    >,
 
     // Channel to communicate with invocation tasks
     invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -272,12 +305,9 @@ struct ServiceInner<InvocationTaskRunner> {
     // Invocation task factory
     invocation_task_runner: InvocationTaskRunner,
 
-    // Invoker service arguments
-    retry_policy: RetryPolicy,
-
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, FullInvocationId)>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
@@ -290,6 +320,7 @@ where
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
         &mut self,
+        options: &InvokerOptions,
         segmented_input_queue: &mut SegmentQueue<InvokeCommand>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
@@ -297,6 +328,17 @@ where
         F: Future<Output = ()>,
     {
         tokio::select! {
+            Some(cmd) = self.status_rx.recv() => {
+                let keys = cmd.payload();
+                let statuses = self
+                    .invocation_state_machine_manager
+                    .registered_partitions_with_keys(keys.clone())
+                    .flat_map(|partition| self.status_store.status_for_partition(partition))
+                    .filter(|status| keys.contains(&status.invocation_id().partition_key()))
+                    .collect();
+                let _ = cmd.reply(statuses);
+            },
+
             Some(input_message) = self.input_rx.recv() => {
                 match input_message {
                     // --- Spillable queue loading/offloading
@@ -308,38 +350,28 @@ where
                     InputCommand::RegisterPartition { partition, partition_key_range, sender } => {
                         self.handle_register_partition(partition, partition_key_range, sender);
                     },
-                    InputCommand::Abort { partition, full_invocation_id } => {
-                        self.handle_abort_invocation(partition, full_invocation_id);
+                    InputCommand::Abort { partition, invocation_id } => {
+                        self.handle_abort_invocation(partition, invocation_id);
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
                     }
-                    InputCommand::Completion { partition, full_invocation_id, completion } => {
-                        self.handle_completion(partition, full_invocation_id, completion);
+                    InputCommand::Completion { partition, invocation_id, completion } => {
+                        self.handle_completion(partition, invocation_id, completion);
                     },
-                    InputCommand::StoredEntryAck { partition, full_invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(partition, full_invocation_id, entry_index).await;
-                    },
-                    InputCommand::ReadStatus(cmd) => {
-                        let keys = cmd.payload();
-                        let statuses = self
-                            .invocation_state_machine_manager
-                            .registered_partitions_with_keys(keys.clone())
-                            .flat_map(|partition| self.status_store.status_for_partition(partition))
-                            .filter(|status| keys.contains(&status.full_invocation_id().partition_key()))
-                            .collect();
-                        let _ = cmd.reply(statuses);
+                    InputCommand::StoredEntryAck { partition, invocation_id, entry_index } => {
+                        self.handle_stored_entry_ack(options, partition, invocation_id, entry_index).await;
                     }
                 }
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(invoke_input_command.partition, invoke_input_command.full_invocation_id, invoke_input_command.journal).await;
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal).await;
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
-                    full_invocation_id,
+                    invocation_id,
                     partition,
                     inner
                 } = invocation_task_msg;
@@ -347,34 +379,41 @@ where
                     InvocationTaskOutputInner::SelectedDeployment(deployment_id, has_changed) => {
                         self.handle_selected_deployment(
                             partition,
-                            full_invocation_id,
+                            invocation_id,
                             deployment_id,
                             has_changed,
+                        ).await
+                    }
+                    InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                        self.handle_server_header_received(
+                            partition,
+                            invocation_id,
+                            x_restate_server_header
                         ).await
                     }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
                         self.handle_new_entry(
                             partition,
-                            full_invocation_id,
+                            invocation_id,
                             entry_index,
                             entry,
                             requires_ack
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
-                        self.handle_invocation_task_closed(partition, full_invocation_id).await
+                        self.handle_invocation_task_closed(partition, invocation_id).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, full_invocation_id, e).await
+                        self.handle_invocation_task_failed(partition, invocation_id, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(partition, full_invocation_id, indexes).await
+                        self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
                     }
                 };
             },
             timer = self.retry_timers.await_timer() => {
                 let (partition, fid) = timer.into_inner();
-                self.handle_retry_timer_fired(partition, fid).await;
+                self.handle_retry_timer_fired(options, partition, fid).await;
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -422,15 +461,19 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            rpc.service = %invocation_target.service_name(),
+            rpc.method = %invocation_target.handler_name(),
+            restate.invocation.id = %invocation_id,
+            restate.invocation.target = %invocation_target,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invoke(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) {
         debug_assert!(self
@@ -438,15 +481,16 @@ where
             .has_partition(partition));
         debug_assert!(self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &full_invocation_id)
+            .resolve_invocation(partition, &invocation_id)
             .is_none());
 
         self.quota.reserve_slot();
         self.start_invocation_task(
+            options,
             partition,
-            full_invocation_id,
+            invocation_id,
             journal,
-            InvocationStateMachine::create(self.retry_policy.clone()),
+            InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
         )
         .await
     }
@@ -455,18 +499,18 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_retry_timer_fired(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     ) {
         trace!("Retry timeout fired");
-        self.handle_retry_event(partition, full_invocation_id, |sm| {
+        self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_retry_timer_fired()
         })
         .await;
@@ -476,20 +520,20 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
         )
     )]
     async fn handle_stored_entry_ack(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) {
         trace!("Received a new stored journal entry acknowledgement");
-        self.handle_retry_event(partition, full_invocation_id, |sm| {
+        self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_stored_ack(entry_index)
         })
         .await;
@@ -499,8 +543,7 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.deployment.id = %deployment_id,
         )
@@ -508,13 +551,13 @@ where
     async fn handle_selected_deployment(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         deployment_id: DeploymentId,
         has_changed: bool,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &full_invocation_id)
+            .resolve_invocation(partition, &invocation_id)
         {
             trace!(
                 "Chosen deployment {}. Invocation state: {:?}",
@@ -523,7 +566,7 @@ where
             );
 
             self.status_store
-                .on_deployment_chosen(&partition, &full_invocation_id, deployment_id);
+                .on_deployment_chosen(&partition, &invocation_id, deployment_id);
             // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.
             if has_changed {
@@ -539,8 +582,42 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_server_header_received(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        x_restate_server_header: String,
+    ) {
+        if let Some((_, ism)) = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+        {
+            trace!(
+                "x-restate-server header {}. Invocation state: {:?}",
+                x_restate_server_header,
+                ism.invocation_state_debug()
+            );
+
+            self.status_store.on_server_header_receiver(
+                &partition,
+                &invocation_id,
+                x_restate_server_header,
+            );
+        } else {
+            // If no state machine, this might be an event for an aborted invocation.
+            trace!("No state machine found for selected server header");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
             restate.journal.entry_type = ?entry.ty(),
@@ -549,14 +626,14 @@ where
     async fn handle_new_entry(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &full_invocation_id)
+            .resolve_invocation(partition, &invocation_id)
         {
             ism.notify_new_entry(entry_index, requires_ack);
             trace!(
@@ -566,14 +643,14 @@ where
             if let Some(deployment_id) = ism.chosen_deployment_to_notify() {
                 let _ = output_tx
                     .send(Effect {
-                        full_invocation_id: full_invocation_id.clone(),
+                        invocation_id,
                         kind: EffectKind::SelectedDeployment(deployment_id),
                     })
                     .await;
             }
             let _ = output_tx
                 .send(Effect {
-                    full_invocation_id,
+                    invocation_id,
                     kind: EffectKind::JournalEntry { entry_index, entry },
                 })
                 .await;
@@ -587,20 +664,19 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     fn handle_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         completion: Completion,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation(partition, &full_invocation_id)
+            .resolve_invocation(partition, &invocation_id)
         {
             trace!(
                 restate.journal.index = completion.entry_index,
@@ -617,27 +693,26 @@ where
         level = "debug",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_closed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     ) {
         if let Some((sender, _)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &full_invocation_id)
+            .remove_invocation(partition, &invocation_id)
         {
             counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_COMPLETED).increment(1);
             trace!("Invocation task closed correctly");
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &full_invocation_id);
+            self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Effect {
-                    full_invocation_id,
+                    invocation_id,
                     kind: EffectKind::End,
                 })
                 .await;
@@ -651,28 +726,27 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_suspended(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &full_invocation_id)
+            .remove_invocation(partition, &invocation_id)
         {
             counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_SUSPENDED).increment(1);
             trace!("Suspending invocation");
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &full_invocation_id);
+            self.status_store.on_end(&partition, &invocation_id);
             let _ = sender
                 .send(Effect {
-                    full_invocation_id,
+                    invocation_id,
                     kind: EffectKind::Suspended {
                         waiting_for_completed_entries: entry_indexes,
                     },
@@ -688,22 +762,21 @@ where
         level = "debug",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     async fn handle_invocation_task_failed(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
-        error: impl InvokerError + CodedError + Send + Sync + 'static,
+        invocation_id: InvocationId,
+        error: InvocationTaskError,
     ) {
         if let Some((_, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &full_invocation_id)
+            .remove_invocation(partition, &invocation_id)
         {
-            self.handle_error_event(partition, full_invocation_id, error, ism)
+            self.handle_error_event(partition, invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -715,35 +788,25 @@ where
         level = "trace",
         skip_all,
         fields(
-            rpc.service = %full_invocation_id.service_id.service_name,
-            restate.invocation.id = %full_invocation_id,
+            restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
     fn handle_abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
     ) {
         if let Some((_, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &full_invocation_id)
+            .remove_invocation(partition, &invocation_id)
         {
-            trace!(
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-                "Aborting invocation"
-            );
+            trace!("Aborting invocation");
             ism.abort();
             self.quota.unreserve_slot();
-            self.status_store.on_end(&partition, &full_invocation_id);
+            self.status_store.on_end(&partition, &invocation_id);
         } else {
-            trace!(
-                restate.invoker.partition_leader_epoch = ?partition,
-                rpc.service = %full_invocation_id.service_id.service_name,
-                restate.invocation.id = %full_invocation_id,
-                "Ignoring Abort command because there is no matching partition/invocation"
-            );
+            trace!("Ignoring Abort command because there is no matching partition/invocation");
         }
     }
 
@@ -761,7 +824,6 @@ where
         {
             for (fid, mut ism) in invocation_state_machines.into_iter() {
                 trace!(
-                    rpc.service = %fid.service_id.service_name,
                     restate.invocation.id = %fid,
                     "Aborting invocation"
                 );
@@ -770,10 +832,7 @@ where
                 self.status_store.on_end(&partition, &fid);
             }
         } else {
-            trace!(
-                restate.invoker.partition_leader_epoch = ?partition,
-                "Ignoring AbortAll command because there is no matching partition"
-            );
+            trace!("Ignoring AbortAll command because there is no matching partition");
         }
     }
 
@@ -789,11 +848,11 @@ where
 
     // --- Helpers
 
-    async fn handle_error_event<E: InvokerError + CodedError + Send + Sync + 'static>(
+    async fn handle_error_event(
         &mut self,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
-        error: E,
+        invocation_id: InvocationId,
+        error: InvocationTaskError,
         mut ism: InvocationStateMachine,
     ) {
         match ism.handle_task_error() {
@@ -805,24 +864,25 @@ where
                 .increment(1);
                 warn_it!(
                     error,
-                    restate.invocation.id = %full_invocation_id,
+                    restate.invocation.id = %invocation_id,
                     "Error when executing the invocation, retrying in {}.",
                     humantime::format_duration(next_retry_timer_duration));
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;
+
                 self.status_store.on_failure(
                     partition,
-                    full_invocation_id.clone(),
-                    InvocationErrorReport::new(error.to_invocation_error(), error.code()),
+                    invocation_id,
+                    error.into_invocation_error_report(),
                     Some(next_retry_at),
                 );
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
-                    full_invocation_id.clone(),
+                    invocation_id,
                     ism,
                 );
                 self.retry_timers
-                    .sleep_until(next_retry_at, (partition, full_invocation_id));
+                    .sleep_until(next_retry_at, (partition, invocation_id));
             }
             _ => {
                 counter!(INVOKER_INVOCATION_TASK,
@@ -832,17 +892,18 @@ where
                 .increment(1);
                 warn_it!(
                     error,
-                    restate.invocation.id = %full_invocation_id,
+                    restate.invocation.id = %invocation_id,
                     "Error when executing the invocation, not going to retry.");
                 self.quota.unreserve_slot();
-                self.status_store.on_end(&partition, &full_invocation_id);
+                self.status_store.on_end(&partition, &invocation_id);
+
                 let _ = self
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
                     .send(Effect {
-                        full_invocation_id,
-                        kind: EffectKind::Failed(error.to_invocation_error()),
+                        invocation_id,
+                        kind: EffectKind::Failed(error.into_invocation_error()),
                     })
                     .await;
             }
@@ -851,16 +912,19 @@ where
 
     async fn start_invocation_task(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
     ) {
         // Start the InvocationTask
         let (completions_tx, completions_rx) = mpsc::unbounded_channel();
         let abort_handle = self.invocation_task_runner.start_invocation_task(
+            options,
             partition,
-            full_invocation_id.clone(),
+            invocation_id,
+            ism.invocation_target.clone(),
             self.invocation_tasks_tx.clone(),
             completions_rx,
             journal,
@@ -868,39 +932,37 @@ where
         );
 
         // Transition the state machine, and store it
-        self.status_store
-            .on_start(partition, full_invocation_id.clone());
+        self.status_store.on_start(partition, invocation_id);
         ism.start(abort_handle, completions_tx);
         trace!(
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
         counter!(INVOKER_INVOCATION_TASK, "status" => TASK_OP_STARTED).increment(1);
-        self.invocation_state_machine_manager.register_invocation(
-            partition,
-            full_invocation_id,
-            ism,
-        );
+        self.invocation_state_machine_manager
+            .register_invocation(partition, invocation_id, ism);
     }
 
     async fn handle_retry_event<FN>(
         &mut self,
+        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         f: FN,
     ) where
         FN: FnOnce(&mut InvocationStateMachine),
     {
         if let Some((_, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation(partition, &full_invocation_id)
+            .remove_invocation(partition, &invocation_id)
         {
             f(&mut ism);
             if ism.is_ready_to_retry() {
                 trace!("Going to retry now");
                 self.start_invocation_task(
+                    options,
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                     InvokeInputJournal::NoCachedJournal,
                     ism,
                 )
@@ -913,7 +975,7 @@ where
                 // Not ready for retrying yet
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                     ism,
                 );
             }
@@ -934,6 +996,8 @@ mod tests {
     use bytes::Bytes;
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
+    use restate_types::arc_util::Constant;
+    use restate_types::config::InvokerOptionsBuilder;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -942,14 +1006,12 @@ mod tests {
     use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::InvocationUuid;
-    use restate_types::identifiers::{FullInvocationId, LeaderEpoch};
+    use restate_types::identifiers::LeaderEpoch;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
 
     use crate::invocation_task::InvocationTaskError;
-    use crate::options::ServiceClientOptions;
     use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
@@ -957,27 +1019,37 @@ mod tests {
     const MOCK_PARTITION: PartitionLeaderEpoch = (0, LeaderEpoch::INITIAL);
 
     impl<ITR> ServiceInner<ITR> {
+        #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
-            retry_policy: RetryPolicy,
             concurrency_limit: Option<usize>,
-        ) -> (mpsc::UnboundedSender<InputCommand>, Self) {
+        ) -> (
+            mpsc::UnboundedSender<InputCommand>,
+            mpsc::UnboundedSender<
+                restate_futures_util::command::Command<
+                    RangeInclusive<PartitionKey>,
+                    Vec<InvocationStatusReport>,
+                >,
+            >,
+            Self,
+        ) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
+            let (status_tx, status_rx) = mpsc::unbounded_channel();
             let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
 
             let service_inner = Self {
                 input_rx,
+                status_rx,
                 invocation_tasks_tx,
                 invocation_tasks_rx,
                 invocation_task_runner,
-                retry_policy,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             };
-            (input_tx, service_inner)
+            (input_tx, status_tx, service_inner)
         }
 
         fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect>
@@ -994,7 +1066,8 @@ mod tests {
     where
         F: Fn(
             PartitionLeaderEpoch,
-            FullInvocationId,
+            InvocationId,
+            InvocationTarget,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
             InvokeInputJournal,
@@ -1003,8 +1076,10 @@ mod tests {
     {
         fn start_invocation_task(
             &self,
+            _options: &InvokerOptions,
             partition: PartitionLeaderEpoch,
-            fid: FullInvocationId,
+            invocation_id: InvocationId,
+            invocation_target: InvocationTarget,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             input_journal: InvokeInputJournal,
@@ -1012,7 +1087,8 @@ mod tests {
         ) -> AbortHandle {
             task_pool.spawn((*self)(
                 partition,
-                fid,
+                invocation_id,
+                invocation_target,
                 invoker_tx,
                 invoker_rx,
                 input_journal,
@@ -1020,29 +1096,29 @@ mod tests {
         }
     }
 
-    fn mock_sid() -> FullInvocationId {
-        FullInvocationId::new("MyService", Bytes::default(), InvocationUuid::new())
-    }
-
     #[test(tokio::test)]
     async fn input_order_is_maintained() {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
-        let tempdir = tempfile::tempdir().unwrap();
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
         let service = Service::new(
+            &invoker_options,
             // all invocations are unknown leading to immediate retries
             MockDeploymentMetadataRegistry::default(),
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            RetryPolicy::fixed_delay(Duration::ZERO, 1),
-            Duration::ZERO,
-            Duration::ZERO,
-            false,
-            1024,
-            None,
-            ServiceClientOptions::default()
-                .build(restate_service_client::AssumeRoleCacheMode::None),
-            tempdir.into_path(),
-            None,
+            ServiceClient::from_options(
+                &ServiceClientOptions::default(),
+                restate_service_client::AssumeRoleCacheMode::None,
+            )
+            .unwrap(),
             journal_reader::mocks::EmptyJournalReader,
             state_reader::mocks::EmptyStateReader,
             entry_enricher::mocks::MockEntryEnricher,
@@ -1051,11 +1127,17 @@ mod tests {
         let mut handle = service.handle();
 
         let invoker_task_id = tc
-            .spawn(TaskKind::SystemService, "invoker", None, service.run())
+            .spawn(
+                TaskKind::SystemService,
+                "invoker",
+                None,
+                service.run(Constant::new(invoker_options)),
+            )
             .unwrap();
 
         let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
-        let fid = FullInvocationId::new("TestService", Bytes::new(), InvocationUuid::new());
+        let invocation_target = InvocationTarget::mock_service();
+        let invocation_id = InvocationId::generate(&invocation_target);
 
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
@@ -1066,7 +1148,8 @@ mod tests {
         handle
             .invoke(
                 partition_leader_epoch,
-                fid,
+                invocation_id,
+                invocation_target,
                 InvokeInputJournal::NoCachedJournal,
             )
             .await
@@ -1082,30 +1165,43 @@ mod tests {
 
     #[test(tokio::test)]
     async fn quota_allows_one_concurrent_invocation() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+
         let mut segment_queue = SegmentQueue::new(tempdir().unwrap().into_path(), 1024);
         let cancel_token = CancellationToken::new();
         let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);
 
-        let sid_1 = mock_sid();
-        let sid_2 = mock_sid();
+        let invocation_id_1 = InvocationId::mock_random();
+        let invocation_id_2 = InvocationId::mock_random();
 
-        let (_invoker_tx, mut service_inner) =
-            ServiceInner::mock(|_, _, _, _, _| ready(()), Default::default(), Some(1));
+        let (_invoker_tx, _status_tx, mut service_inner) =
+            ServiceInner::mock(|_, _, _, _, _, _| ready(()), Some(1));
         let _ = service_inner.register_mock_partition();
 
         // Enqueue sid_1 and sid_2
         segment_queue
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
-                full_invocation_id: sid_1.clone(),
+                invocation_id: invocation_id_1,
+                invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
         segment_queue
             .enqueue(InvokeCommand {
                 partition: MOCK_PARTITION,
-                full_invocation_id: sid_2.clone(),
+                invocation_id: invocation_id_2,
+                invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             })
             .await;
@@ -1113,14 +1209,14 @@ mod tests {
         // Now step the state machine to start the invocation
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
 
         // Check status and quota
         assert!(service_inner
             .status_store
-            .resolve_invocation(MOCK_PARTITION, &sid_1)
+            .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
             .unwrap()
             .in_flight());
         assert!(!service_inner.quota.is_slot_available());
@@ -1128,18 +1224,18 @@ mod tests {
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
         assert!(service_inner
             .status_store
-            .resolve_invocation(MOCK_PARTITION, &sid_2)
+            .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
             .is_none());
         assert!(!service_inner.quota.is_slot_available());
 
         // Send the close signal
         service_inner
-            .handle_invocation_task_closed(MOCK_PARTITION, sid_1.clone())
+            .handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1)
             .await;
 
         // Slot should be available again
@@ -1148,16 +1244,16 @@ mod tests {
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
                 .await
         );
         assert!(service_inner
             .status_store
-            .resolve_invocation(MOCK_PARTITION, &sid_1)
+            .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
             .is_none());
         assert!(service_inner
             .status_store
-            .resolve_invocation(MOCK_PARTITION, &sid_2)
+            .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
             .unwrap()
             .in_flight());
         assert!(!service_inner.quota.is_slot_available());
@@ -1165,17 +1261,28 @@ mod tests {
 
     #[test(tokio::test)]
     async fn reclaim_quota_after_abort() {
-        let fid = mock_sid();
+        let invoker_options = InvokerOptionsBuilder::default()
+            // fixed amount of retries so that an invocation eventually completes with a failure
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .message_size_warning(1024)
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+        let invocation_id = InvocationId::mock_random();
 
-        let (_, mut service_inner) = ServiceInner::mock(
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
             |partition,
-             full_invocation_id,
+             invocation_id,
+             _service_id,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
              _,
              _| {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
-                    full_invocation_id,
+                    invocation_id,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
                         entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default()),
@@ -1184,7 +1291,6 @@ mod tests {
                 });
                 pending() // Never ends
             },
-            Default::default(),
             Some(2),
         );
         let _ = service_inner.register_mock_partition();
@@ -1192,15 +1298,17 @@ mod tests {
         // Invoke the service
         service_inner
             .handle_invoke(
+                &invoker_options,
                 MOCK_PARTITION,
-                fid.clone(),
+                invocation_id,
+                InvocationTarget::mock_virtual_object(),
                 InvokeInputJournal::NoCachedJournal,
             )
             .await;
 
         // We should receive the new entry here
         let invoker_effect = service_inner.invocation_tasks_rx.recv().await.unwrap();
-        assert_eq!(invoker_effect.full_invocation_id, fid);
+        assert_eq!(invoker_effect.invocation_id, invocation_id);
         check!(let InvocationTaskOutputInner::NewEntry { .. } = invoker_effect.inner);
 
         // Check the quota
@@ -1208,7 +1316,7 @@ mod tests {
         assert_eq!(*available_slots, 1);
 
         // Abort the invocation
-        service_inner.handle_abort_invocation(MOCK_PARTITION, fid.clone());
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id);
 
         // Check the quota
         let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
@@ -1218,7 +1326,7 @@ mod tests {
         service_inner
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
-                fid.clone(),
+                invocation_id,
                 InvocationTaskError::EmptySuspensionMessage, /* any error is fine */
             )
             .await;

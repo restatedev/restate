@@ -16,13 +16,18 @@ use datafusion::arrow::datatypes::DataType;
 
 define_table!(journal(
     partition_key: DataType::UInt64,
-    invocation_id: DataType::LargeUtf8,
+    id: DataType::LargeUtf8,
+
     index: DataType::UInt32,
     entry_type: DataType::LargeUtf8,
+    name: DataType::LargeUtf8,
+
     completed: DataType::Boolean,
+
     invoked_id: DataType::LargeUtf8,
-    invoked_component: DataType::LargeUtf8,
-    invoked_handler: DataType::LargeUtf8,
-    invoked_component_key: DataType::LargeUtf8,
+    invoked_target: DataType::LargeUtf8,
+
     sleep_wakeup_at: DataType::Date64,
+
+    raw: DataType::LargeBinary,
 ));

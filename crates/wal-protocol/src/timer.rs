@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_types::identifiers::{EntryIndex, FullInvocationId, InvocationId, WithPartitionKey};
+use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
@@ -32,37 +32,37 @@ impl TimerValue {
     }
 
     pub fn new_sleep(
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
         let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
+            invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         });
 
         Self {
             timer_key,
-            value: Timer::CompleteSleepEntry(full_invocation_id.service_id),
+            value: Timer::CompleteSleepEntry(invocation_id.partition_key()),
         }
     }
 
     pub fn new_invoke(
-        full_invocation_id: FullInvocationId,
+        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
         let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: full_invocation_id.invocation_uuid,
+            invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
         });
 
         Self {
             timer_key,
-            value: Timer::Invoke(full_invocation_id.service_id, service_invocation),
+            value: Timer::Invoke(service_invocation),
         }
     }
 
@@ -79,10 +79,7 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::new(
-            self.value.service_id().partition_key(),
-            self.timer_key.0.invocation_uuid,
-        )
+        InvocationId::from_parts(self.value.partition_key(), self.timer_key.0.invocation_uuid)
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {
@@ -105,7 +102,7 @@ impl PartialEq for TimerValue {
 
 impl Eq for TimerValue {}
 
-/// New type wrapper to implement [`restate_timer::TimerKey`] for [`TimerKey`].
+/// New type wrapper to implement [`restate_types::timer::TimerKey`] for [`TimerKey`].
 ///
 /// # Important
 /// We use the [`TimerKey`] to read the timers in an absolute order. The timer service

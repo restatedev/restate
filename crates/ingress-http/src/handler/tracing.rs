@@ -12,14 +12,14 @@ use super::ConnectInfo;
 
 use http::Request;
 use opentelemetry::trace::{SpanContext, TraceContextExt};
-use restate_types::identifiers::FullInvocationId;
-use restate_types::invocation::SpanRelation;
+use restate_types::identifiers::InvocationId;
+use restate_types::invocation::{InvocationTarget, SpanRelation};
 use tracing::{info_span, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub(crate) fn prepare_tracing_span<B>(
-    fid: &FullInvocationId,
-    handler_name: &str,
+    invocation_id: &InvocationId,
+    invocation_target: &InvocationTarget,
     req: &Request<B>,
 ) -> (Span, SpanContext) {
     let connect_info: &ConnectInfo = req
@@ -31,14 +31,16 @@ pub(crate) fn prepare_tracing_span<B>(
     // Create the ingress span and attach it to the next async block.
     // This span is committed once the async block terminates, recording the execution time of the invocation.
     // Another span is created later by the ServiceInvocationFactory, for the ServiceInvocation itself,
-    // which is used by the Restate components to correctly link to a single parent span
+    // which is used by the Restate services to correctly link to a single parent span
     // to commit intermediate results of the processing.
     let ingress_span = info_span!(
         "ingress_invoke",
-        otel.name = format!("ingress_invoke {}/{}", fid.service_id.service_name, handler_name),
+        otel.name = format!("ingress_invoke {}", invocation_target),
         rpc.system = "restate",
-        rpc.service = %fid.service_id.service_name,
-        rpc.method = %handler_name,
+        rpc.service = %invocation_target.service_name(),
+        rpc.method = %invocation_target.handler_name(),
+        restate.invocation.id = %invocation_id,
+        restate.invocation.target = %invocation_target,
         client.socket.address = %client_addr,
         client.socket.port = %client_port,
     );

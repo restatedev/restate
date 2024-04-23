@@ -11,10 +11,8 @@
 mod handler;
 mod metrics;
 mod multiplex;
-mod options;
 mod prometheus_helpers;
 mod service;
 mod state;
 
-pub use options::Options;
 pub use service::{AdminDependencies, NetworkServer, WorkerDependencies};

@@ -11,10 +11,8 @@
 mod handler;
 mod layers;
 mod metric_definitions;
-mod options;
 mod server;
 
-pub use options::{Options, OptionsBuilder, OptionsBuilderError};
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
@@ -41,8 +39,14 @@ impl ConnectInfo {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use restate_schema_api::component::mocks::MockComponentMetadataResolver;
-    use restate_schema_api::component::ComponentMetadata;
+    use restate_schema_api::invocation_target::mocks::MockInvocationTargetResolver;
+    use restate_schema_api::invocation_target::{
+        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
+    };
+    use restate_schema_api::service::mocks::MockServiceMetadataResolver;
+    use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
+    use restate_types::identifiers::DeploymentId;
+    use restate_types::invocation::{HandlerType, ServiceType};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,24 +59,90 @@ mod mocks {
         pub greeting: String,
     }
 
-    pub(super) fn mock_component_resolver() -> MockComponentMetadataResolver {
-        let mut components = MockComponentMetadataResolver::default();
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct MockSchemas(
+        pub(crate) MockServiceMetadataResolver,
+        pub(crate) MockInvocationTargetResolver,
+    );
 
-        components.add(ComponentMetadata::mock_service(
+    impl MockSchemas {
+        pub fn add_service_and_target(
+            &mut self,
+            service_name: &str,
+            handler_name: &str,
+            invocation_target_metadata: InvocationTargetMetadata,
+        ) {
+            self.0.add(ServiceMetadata {
+                name: service_name.to_string(),
+                handlers: vec![HandlerMetadata {
+                    name: handler_name.to_string(),
+                    ty: invocation_target_metadata.handler_ty,
+                    input_description: "any".to_string(),
+                    output_description: "any".to_string(),
+                }],
+                ty: invocation_target_metadata.service_ty,
+                deployment_id: DeploymentId::default(),
+                revision: 0,
+                public: invocation_target_metadata.public,
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
+            });
+            self.1
+                .add(service_name, [(handler_name, invocation_target_metadata)]);
+        }
+
+        pub fn with_service_and_target(
+            mut self,
+            service_name: &str,
+            handler_name: &str,
+            invocation_target_metadata: InvocationTargetMetadata,
+        ) -> Self {
+            self.add_service_and_target(service_name, handler_name, invocation_target_metadata);
+            self
+        }
+    }
+
+    impl ServiceMetadataResolver for MockSchemas {
+        fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
+            self.0.resolve_latest_service(service_name)
+        }
+
+        fn resolve_latest_service_type(
+            &self,
+            service_name: impl AsRef<str>,
+        ) -> Option<ServiceType> {
+            self.0.resolve_latest_service_type(service_name)
+        }
+
+        fn list_services(&self) -> Vec<ServiceMetadata> {
+            self.0.list_services()
+        }
+    }
+
+    impl InvocationTargetResolver for MockSchemas {
+        fn resolve_latest_invocation_target(
+            &self,
+            service_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> Option<InvocationTargetMetadata> {
+            self.1
+                .resolve_latest_invocation_target(service_name, handler_name)
+        }
+    }
+
+    pub(super) fn mock_schemas() -> MockSchemas {
+        let mut mock_schemas = MockSchemas::default();
+
+        mock_schemas.add_service_and_target(
             "greeter.Greeter",
-            ["greet"],
-        ));
-        components.add(ComponentMetadata::mock_virtual_object(
+            "greet",
+            InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared),
+        );
+        mock_schemas.add_service_and_target(
             "greeter.GreeterObject",
-            ["greet"],
-        ));
-        components.add({
-            let mut private_component_metadata =
-                ComponentMetadata::mock_service("greeter.GreeterPrivate", ["greet"]);
-            private_component_metadata.public = false;
-            private_component_metadata
-        });
+            "greet",
+            InvocationTargetMetadata::mock(ServiceType::VirtualObject, HandlerType::Exclusive),
+        );
 
-        components
+        mock_schemas
     }
 }

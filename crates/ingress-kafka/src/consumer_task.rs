@@ -10,17 +10,17 @@
 
 use base64::Engine;
 use bytes::Bytes;
-use opentelemetry_api::trace::TraceContextExt;
+use opentelemetry::trace::TraceContextExt;
 use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressRequest,
+    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
 use restate_pb::restate::internal::Event;
 use restate_schema_api::subscription::{
-    EventReceiverComponentType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
+    EventReceiverServiceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
 };
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::SpanRelation;
@@ -68,8 +68,8 @@ impl DeduplicationId for KafkaDeduplicationId {
                     ordering_key_format: KafkaOrderingKeyFormat::ConsumerGroupTopicPartition,
                     ..
                 },
-                Sink::Component {
-                    ty: EventReceiverComponentType::VirtualObject {
+                Sink::Service {
+                    ty: EventReceiverServiceType::VirtualObject {
                         ordering_key_is_key: true,
                     },
                     ..
@@ -130,7 +130,7 @@ impl MessageSender {
             attributes: Self::generate_events_attributes(msg, self.subscription.id()),
         };
 
-        let req = IngressRequest::event(
+        let req = IngressDispatcherRequest::event(
             &self.subscription,
             event,
             SpanRelation::Parent(ingress_span_context),

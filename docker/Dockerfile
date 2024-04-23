@@ -48,6 +48,5 @@ COPY --from=builder /restate/NOTICE /NOTICE
 COPY --from=builder /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=builder /etc/ssl /etc/ssl
-ENV RUST_LOG="warn,restate=info"
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]

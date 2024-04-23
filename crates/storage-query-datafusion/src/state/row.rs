@@ -23,8 +23,8 @@ pub(crate) fn append_state_row(builder: &mut StateBuilder, state_row: OwnedState
 
     let mut row = builder.row();
     row.partition_key(partition_key);
-    row.component(&service);
-    row.component_key(std::str::from_utf8(&service_key).expect("The key must be a string!"));
+    row.service_name(&service);
+    row.service_key(&service_key);
     if row.is_key_defined() {
         if let Ok(str) = std::str::from_utf8(&state_key) {
             row.key(str);

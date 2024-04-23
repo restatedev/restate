@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::journal::EntryType;
+
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
 const VERSION_MASK: u64 = 0x03FF_0000_0000;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
@@ -44,6 +46,7 @@ pub enum MessageType {
     BackgroundInvokeEntry,
     AwakeableEntry,
     CompleteAwakeableEntry,
+    SideEffectEntry,
     CustomEntry(u16),
 }
 
@@ -68,6 +71,7 @@ impl MessageType {
             MessageType::BackgroundInvokeEntry => MessageKind::Syscall,
             MessageType::AwakeableEntry => MessageKind::Syscall,
             MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
+            MessageType::SideEffectEntry => MessageKind::Syscall,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -113,6 +117,7 @@ const INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C01;
 const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
 const AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C03;
 const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
+const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
 
 impl From<MessageType> for MessageTypeId {
     fn from(mt: MessageType) -> Self {
@@ -135,6 +140,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::BackgroundInvokeEntry => BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE,
             MessageType::AwakeableEntry => AWAKEABLE_ENTRY_MESSAGE_TYPE,
             MessageType::CompleteAwakeableEntry => COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE,
+            MessageType::SideEffectEntry => SIDE_EFFECT_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -167,8 +173,38 @@ impl TryFrom<MessageTypeId> for MessageType {
             BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::BackgroundInvokeEntry),
             AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::AwakeableEntry),
             COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
+            SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::SideEffectEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
+        }
+    }
+}
+
+impl TryFrom<MessageType> for EntryType {
+    type Error = MessageType;
+
+    fn try_from(value: MessageType) -> Result<Self, Self::Error> {
+        match value {
+            MessageType::InputEntry => Ok(EntryType::Input),
+            MessageType::OutputEntry => Ok(EntryType::Output),
+            MessageType::GetStateEntry => Ok(EntryType::GetState),
+            MessageType::SetStateEntry => Ok(EntryType::SetState),
+            MessageType::ClearStateEntry => Ok(EntryType::ClearState),
+            MessageType::GetStateKeysEntry => Ok(EntryType::GetStateKeys),
+            MessageType::ClearAllStateEntry => Ok(EntryType::ClearAllState),
+            MessageType::SleepEntry => Ok(EntryType::Sleep),
+            MessageType::InvokeEntry => Ok(EntryType::Call),
+            MessageType::BackgroundInvokeEntry => Ok(EntryType::OneWayCall),
+            MessageType::AwakeableEntry => Ok(EntryType::Awakeable),
+            MessageType::CompleteAwakeableEntry => Ok(EntryType::CompleteAwakeable),
+            MessageType::SideEffectEntry => Ok(EntryType::Run),
+            MessageType::CustomEntry(_) => Ok(EntryType::Custom),
+            MessageType::Start
+            | MessageType::Completion
+            | MessageType::Suspension
+            | MessageType::Error
+            | MessageType::End
+            | MessageType::EntryAck => Err(value),
         }
     }
 }

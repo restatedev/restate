@@ -17,16 +17,23 @@ use restate_node_protocol::codec::{deserialize_message, serialize_message, Targe
 use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::node::{Header, Message};
 use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
-use restate_types::nodes_config::{AdvertisedAddress, NodeConfig, NodesConfiguration, Role};
+use restate_types::logs::metadata::{create_static_metadata, ProviderKind};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+};
+use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
 
+use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
     Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkSendError, NetworkSender,
 };
 use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
-use crate::{TaskCenter, TaskCenterFactory};
+use crate::{TaskCenter, TaskCenterBuilder};
 
 #[derive(Clone, Default)]
 pub struct MockNetworkSender {
@@ -125,32 +132,16 @@ pub struct TestCoreEnvBuilder<N> {
     pub nodes_config: NodesConfiguration,
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
+    pub partition_table: FixedPartitionTable,
+    pub metadata_store_client: MetadataStoreClient,
 }
 
 impl TestCoreEnvBuilder<MockNetworkSender> {
     pub fn new_with_mock_network() -> TestCoreEnvBuilder<MockNetworkSender> {
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
-
         let (tx, rx) = mpsc::unbounded_channel();
         let network_sender = MockNetworkSender::from_sender(tx);
-        let my_node_id = GenerationalNodeId::new(1, 1);
-        let metadata_manager = MetadataManager::build(network_sender.clone());
-        let metadata = metadata_manager.metadata();
-        let metadata_writer = metadata_manager.writer();
-        let router_builder = MessageRouterBuilder::default();
-        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        tc.try_set_global_metadata(metadata.clone());
-        TestCoreEnvBuilder {
-            tc,
-            my_node_id,
-            network_rx: Some(rx),
-            metadata_manager,
-            metadata_writer,
-            metadata,
-            network_sender,
-            nodes_config,
-            router_builder,
-        }
+
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, Some(rx))
     }
 }
 
@@ -159,30 +150,50 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(network_sender: N) -> Self {
-        let tc = TaskCenterFactory::create(tokio::runtime::Handle::current());
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None)
+    }
+
+    fn new_with_network_tx_rx(
+        network_sender: N,
+        network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
+    ) -> Self {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
 
         let my_node_id = GenerationalNodeId::new(1, 1);
-        let metadata_manager = MetadataManager::build(network_sender.clone());
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
+        let metadata_manager =
+            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
         let metadata = metadata_manager.metadata();
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let partition_table = FixedPartitionTable::new(Version::MIN, 10);
         tc.try_set_global_metadata(metadata.clone());
         TestCoreEnvBuilder {
             tc,
             my_node_id,
-            network_rx: None,
+            network_rx,
             metadata_manager,
             metadata_writer,
             metadata,
             network_sender,
             nodes_config,
             router_builder,
+            partition_table,
+            metadata_store_client,
         }
     }
 
     pub fn with_nodes_config(mut self, nodes_config: NodesConfiguration) -> Self {
         self.nodes_config = nodes_config;
+        self
+    }
+
+    pub fn with_partition_table(mut self, partition_table: FixedPartitionTable) -> Self {
+        self.partition_table = partition_table;
         self
     }
 
@@ -232,7 +243,36 @@ where
             None => None,
         };
 
+        self.metadata_store_client
+            .put(
+                NODES_CONFIG_KEY.clone(),
+                self.nodes_config.clone(),
+                Precondition::None,
+            )
+            .await
+            .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
+
+        // todo: Allow client to update logs configuration and remove this bit here.
+        let logs = create_static_metadata(
+            ProviderKind::InMemory,
+            self.partition_table.num_partitions(),
+        );
+        self.metadata_store_client
+            .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
+            .await
+            .expect("to store bifrost config in metadata store");
+        self.metadata_writer.submit(logs.clone());
+
+        self.metadata_store_client
+            .put(
+                PARTITION_TABLE_KEY.clone(),
+                self.partition_table.clone(),
+                Precondition::None,
+            )
+            .await
+            .expect("to store partition table in metadata store");
+        self.metadata_writer.submit(self.partition_table);
 
         self.tc
             .run_in_scope("test-env", None, async {
@@ -256,6 +296,7 @@ where
             metadata_writer: self.metadata_writer,
             network_sender: self.network_sender,
             router,
+            metadata_store_client: self.metadata_store_client,
         }
     }
 }
@@ -269,6 +310,7 @@ pub struct TestCoreEnv<N> {
     pub network_task: Option<TaskId>,
     pub metadata_manager_task: TaskId,
     pub router: Arc<RwLock<MessageRouter>>,
+    pub metadata_store_client: MetadataStoreClient,
 }
 
 impl TestCoreEnv<MockNetworkSender> {

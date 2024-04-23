@@ -8,13 +8,69 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{analyzer, physical_optimizer};
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use codederror::CodedError;
+use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use std::sync::Arc;
+use restate_invoker_api::StatusHandle;
+use restate_schema_api::deployment::DeploymentResolver;
+use restate_schema_api::service::ServiceMetadataResolver;
+use restate_storage_rocksdb::RocksDBStorage;
+use restate_types::config::QueryEngineOptions;
+
+use crate::{analyzer, physical_optimizer};
+
+const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
+            ss.id,
+            ss.target,
+            ss.target_service_name,
+            ss.target_service_key,
+            ss.target_handler_name,
+            ss.target_service_ty,
+            ss.invoked_by,
+            ss.invoked_by_service_name,
+            ss.invoked_by_id,
+            ss.invoked_by_target,
+            ss.pinned_deployment_id,
+            ss.trace_id,
+            ss.journal_size,
+            ss.created_at,
+            ss.modified_at,
+
+            sis.retry_count,
+            sis.last_start_at,
+            sis.next_retry_at,
+            sis.last_attempt_deployment_id,
+            sis.last_attempt_server,
+            sis.last_failure,
+            sis.last_failure_error_code,
+            sis.last_failure_related_entry_index,
+            sis.last_failure_related_entry_name,
+            sis.last_failure_related_entry_type,
+
+            CASE
+                WHEN ss.status = 'inboxed' THEN 'pending'
+                WHEN ss.status = 'completed' THEN 'completed'
+                WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN sis.in_flight THEN 'running'
+                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
+                ELSE 'ready'
+            END AS status
+        FROM sys_invocation_status ss
+        LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
+
+#[derive(Debug, thiserror::Error, CodedError)]
+pub enum BuildError {
+    #[error(transparent)]
+    #[code(unknown)]
+    Datafusion(#[from] DataFusionError),
+}
 
 #[derive(Clone)]
 pub struct QueryContext {
@@ -28,7 +84,48 @@ impl Default for QueryContext {
 }
 
 impl QueryContext {
-    pub fn new(
+    pub fn from_options(
+        options: &QueryEngineOptions,
+        rocksdb: RocksDBStorage,
+        status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
+        schemas: impl DeploymentResolver
+            + ServiceMetadataResolver
+            + Send
+            + Sync
+            + Debug
+            + Clone
+            + 'static,
+    ) -> Result<QueryContext, BuildError> {
+        let ctx = QueryContext::new(
+            options.memory_limit,
+            options.tmp_dir.clone(),
+            options.query_parallelism,
+        );
+        crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
+        crate::keyed_service_status::register_self(&ctx, rocksdb.clone())?;
+        crate::state::register_self(&ctx, rocksdb.clone())?;
+        crate::journal::register_self(&ctx, rocksdb.clone())?;
+        crate::invocation_state::register_self(&ctx, status)?;
+        crate::inbox::register_self(&ctx, rocksdb.clone())?;
+        crate::deployment::register_self(&ctx, schemas.clone())?;
+        crate::service::register_self(&ctx, schemas)?;
+        crate::idempotency::register_self(&ctx, rocksdb)?;
+
+        // todo: Fix me
+        // we need this now because we can't make new async.
+        // i'm ashamed!
+        let ctx = futures::executor::block_on(async move {
+            let ctx = ctx;
+            ctx.datafusion_context
+                .sql(SYS_INVOCATION_VIEW)
+                .await
+                .map(|_| ctx)
+        })?;
+
+        Ok(ctx)
+    }
+
+    fn new(
         memory_limit: Option<usize>,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,

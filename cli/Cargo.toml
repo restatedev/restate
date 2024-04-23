@@ -16,11 +16,12 @@ default = []
 [dependencies]
 restate-meta-rest-model = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-service-protocol = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
-arrow = { workspace = true, features = ["ipc", "prettyprint"] }
+arrow = { version = "51.0.0", features = ["ipc", "prettyprint"] }
+arrow_convert = { version = "0.6.6" }
 bytes = { workspace = true }
 base64 = { workspace = true}
 chrono = { workspace = true }

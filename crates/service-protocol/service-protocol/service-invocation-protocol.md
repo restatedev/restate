@@ -11,8 +11,8 @@ The system is composed of two actors:
   - SDK, which contains the implementation of the Restate Protocol
   - User business logic, which interacts with the SDK to access Restate system calls (or syscalls)
 
-Each service method invocation is modeled by the protocol as a state machine, where state transitions can be caused
-either by user code or by _Runtime events_.
+Each invocation is modeled by the protocol as a state machine, where state transitions can be caused either by user code
+or by _Runtime events_.
 
 Every state transition is logged in the _Invocation journal_, used to implement Restate's durable execution model. The
 journal is also used to suspend an invocation and resume it at a later point in time. The _Invocation journal_ is
@@ -32,11 +32,12 @@ The state machine is summarized in the following diagram:
 ```mermaid
 sequenceDiagram
     Note over Runtime,SDK: Start
-    Runtime->>SDK: HTTP Request to /invoke/{service}/{method}
+    Runtime->>SDK: HTTP Request to /invoke/{service}/{handler}
     Runtime->>SDK: StartMessage
     Note over Runtime,SDK: Replaying
     Runtime->>SDK: [...]EntryMessage(s)
     Note over Runtime,SDK: Processing
+    SDK->>Runtime: HTTP Response headers
     loop
         SDK->>Runtime: [...]EntryMessage
         Runtime->>SDK: CompletionMessage and/or EntryAckMessage
@@ -102,9 +103,9 @@ protocol mandates the following messages:
 
 ### Message stream
 
-In order to execute a service method invocation, service deployment and restate Runtime open a single stream between the
-runtime and the service deployment. Given 10 concurrent service method invocations to a service deployment, there are 10
-concurrent streams, each of them mapping to a specific invocation.
+In order to execute an invocation, service deployment and restate Runtime open a single stream between the runtime and
+the service deployment. Given 10 concurrent invocations to a service deployment, there are 10 concurrent streams, each
+of them mapping to a specific invocation.
 
 Every unit of the stream contains a Message serialized using the
 [Protobuf encoding](https://protobuf.dev/programming-guides/encoding/), using the definitions in
@@ -119,23 +120,6 @@ in two modes:
   runtime. Once the service deployment starts sending messages to the runtime, the runtime cannot send messages anymore
   back to the service deployment.
 
-When opening the stream, the request method MUST be `POST` and the request path MUST have the following format:
-
-```
-/invoke/{fullyQualifiedServiceName}/{methodName}
-```
-
-For example:
-
-```
-/invoke/counter.Counter/Add
-```
-
-An arbitrary path MAY prepend the aforementioned path format.
-
-In case the path format is not respected, or `fullyQualifiedServiceName` or `methodName` is unknown, the SDK MUST close
-the stream replying back with a `404` status code.
-
 A message stream MUST start with `StartMessage` and MUST end with either:
 
 - One [`SuspensionMessage`](#suspension)
@@ -146,6 +130,41 @@ If the message stream does not end with any of these two messages, it will be co
 `ErrorMessage` with an [unknown failure](#failures).
 
 The `EndMessage` marks the end of the invocation lifecycle, that is the end of the journal.
+
+### Initiating the stream
+
+When opening the stream, the HTTP request method MUST be `POST` and the request path MUST have the following format:
+
+```
+/invoke/{serviceName}/{handlerName}
+```
+
+For example:
+
+```
+/invoke/counter.Counter/Add
+```
+
+An arbitrary path MAY prepend the aforementioned path format.
+
+In case the path format is not respected, or `serviceName` or `handlerName` is unknown, the SDK MUST close the stream
+replying back with a `404` status code.
+
+In case the invocation is accepted, `200` status code MUST be returned.
+
+Additionally, the header `x-restate-server` MAY be sent back, with the following format:
+
+```http request
+x-restate-server: <sdk-name> / <sdk-version>
+```
+
+E.g.:
+
+```http request
+x-restate-server: restate-sdk-java/0.8.0
+```
+
+This header is used for observability purposes by the Restate observability tools.
 
 ### Message header
 
@@ -275,6 +294,11 @@ index of the corresponding entry.
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
+#### Entry names
+
+Every Journal entry has a field `string name = 12`, which can be set by the SDK when recording the entry. This field is
+used for observability purposes by Restate observability tools.
+
 ### Journal entries reference
 
 The following tables describe the currently available journal entries. For more details, check the protobuf message
@@ -286,14 +310,15 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 | `GetStateEntryMessage`          | `0x0800` | Yes         | No       | Get the value of a service instance state key.                                                                                                                   |
 | `GetStateKeysEntryMessage`      | `0x0804` | Yes         | No       | Get all the known state keys for this service instance. Note: the completion value for this message is a protobuf of type `GetStateKeysEntryMessage.StateKeys`.  |
 | `SleepEntryMessage`             | `0x0C00` | Yes         | No       | Initiate a timer that completes after the given time.                                                                                                            |
-| `InvokeEntryMessage`            | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                  |
+| `CallEntryMessage`              | `0x0C01` | Yes         | Yes      | Invoke another Restate service.                                                                                                                                  |
 | `AwakeableEntryMessage`         | `0x0C03` | Yes         | No       | Arbitrary result container which can be completed from another service, given a specific id. See [Awakeable identifier](#awakeable-identifier) for more details. |
-| `BackgroundInvokeEntryMessage`  | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                              |
+| `OneWayCallEntryMessage`        | `0x0C02` | No          | Yes      | Invoke another Restate service at the given time, without waiting for the response.                                                                              |
 | `CompleteAwakeableEntryMessage` | `0x0C04` | No          | Yes      | Complete an `Awakeable`, given its id. See [Awakeable identifier](#awakeable-identifier) for more details.                                                       |
 | `OutputEntryMessage`            | `0x0401` | No          | No       | Carries the invocation output message(s) or terminal failure of the invocation.                                                                                  |
 | `SetStateEntryMessage`          | `0x0800` | No          | No       | Set the value of a service instance state key.                                                                                                                   |
 | `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                 |
 | `ClearAllStateEntryMessage`     | `0x0802` | No          | No       | Clear all the values of the service instance state.                                                                                                              |
+| `RunEntryMessage`               | `0x0C05` | No          | No       | Run non-deterministic user provided code and persist the result.                                                                                                 |
 
 #### Awakeable identifier
 
@@ -364,6 +389,11 @@ additional features to the users.
 
 The protocol allows the SDK to register an arbitrary entry type within the journal. The type MUST be `>= 0xFC00`. The
 runtime will treat this entry as any other entry, persisting it and sending it during replay in the correct order.
+
+Custom entries MAY have the entry name field `12`, as described in [entry names](#entry-names).
+
+The field numbers 13, 14 and 15 MUST not be used, as they're reserved for completable journal entries, as described in
+[completable journal entries](#completable-journal-entries-and-completionmessage).
 
 **Header**
 

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_types::errors::InvocationError;
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 
@@ -17,7 +17,8 @@ pub trait EntryEnricher {
     fn enrich_entry(
         &self,
         entry: PlainRawEntry,
-        invocation_span_context: &ServiceInvocationSpanContext,
+        current_invocation_target: &InvocationTarget,
+        current_invocation_span_context: &ServiceInvocationSpanContext,
     ) -> Result<EnrichedRawEntry, InvocationError>;
 }
 
@@ -26,9 +27,9 @@ pub mod mocks {
     use super::*;
 
     use restate_types::identifiers::{InvocationId, InvocationUuid};
-    use restate_types::invocation::ServiceInvocationSpanContext;
+    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::enriched::{
-        AwakeableEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry, InvokeEnrichmentResult,
+        AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
     use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
 
@@ -38,10 +39,11 @@ pub mod mocks {
     impl EntryEnricher for MockEntryEnricher {
         fn enrich_entry(
             &self,
-            raw_entry: PlainRawEntry,
-            invocation_span_context: &ServiceInvocationSpanContext,
+            entry: PlainRawEntry,
+            _current_invocation_target: &InvocationTarget,
+            current_invocation_span_context: &ServiceInvocationSpanContext,
         ) -> Result<EnrichedRawEntry, InvocationError> {
-            let (header, entry) = raw_entry.into_inner();
+            let (header, entry) = entry.into_inner();
             let enriched_header = match header {
                 PlainEntryHeader::Input {} => EnrichedEntryHeader::Input {},
                 PlainEntryHeader::Output {} => EnrichedEntryHeader::Output {},
@@ -57,46 +59,43 @@ pub mod mocks {
                 PlainEntryHeader::Sleep { is_completed } => {
                     EnrichedEntryHeader::Sleep { is_completed }
                 }
-                PlainEntryHeader::Invoke { is_completed, .. } => {
+                PlainEntryHeader::Call { is_completed, .. } => {
                     if !is_completed {
-                        EnrichedEntryHeader::Invoke {
+                        EnrichedEntryHeader::Call {
                             is_completed,
-                            enrichment_result: Some(InvokeEnrichmentResult {
-                                invocation_uuid: Default::default(),
-                                service_key: Default::default(),
-                                service_name: Default::default(),
-                                span_context: invocation_span_context.clone(),
+                            enrichment_result: Some(CallEnrichmentResult {
+                                invocation_id: InvocationId::mock_random(),
+                                invocation_target: InvocationTarget::service("", ""),
+                                span_context: current_invocation_span_context.clone(),
                             }),
                         }
                     } else {
                         // No need to service resolution if the entry was completed by the service
-                        EnrichedEntryHeader::Invoke {
+                        EnrichedEntryHeader::Call {
                             is_completed,
                             enrichment_result: None,
                         }
                     }
                 }
-                PlainEntryHeader::BackgroundInvoke { .. } => {
-                    EnrichedEntryHeader::BackgroundInvoke {
-                        enrichment_result: InvokeEnrichmentResult {
-                            invocation_uuid: Default::default(),
-                            service_key: Default::default(),
-                            service_name: Default::default(),
-                            span_context: invocation_span_context.clone(),
-                        },
-                    }
-                }
+                PlainEntryHeader::OneWayCall { .. } => EnrichedEntryHeader::OneWayCall {
+                    enrichment_result: CallEnrichmentResult {
+                        invocation_id: InvocationId::mock_random(),
+                        invocation_target: InvocationTarget::service("", ""),
+                        span_context: current_invocation_span_context.clone(),
+                    },
+                },
                 PlainEntryHeader::Awakeable { is_completed } => {
                     EnrichedEntryHeader::Awakeable { is_completed }
                 }
                 PlainEntryHeader::CompleteAwakeable { .. } => {
                     EnrichedEntryHeader::CompleteAwakeable {
                         enrichment_result: AwakeableEnrichmentResult {
-                            invocation_id: InvocationId::new(0, InvocationUuid::new()),
+                            invocation_id: InvocationId::from_parts(0, InvocationUuid::new()),
                             entry_index: 1,
                         },
                     }
                 }
+                PlainEntryHeader::Run {} => EnrichedEntryHeader::Run {},
                 PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
             };
 

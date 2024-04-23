@@ -10,48 +10,71 @@
 
 use anyhow::Context;
 use codederror::CodedError;
-use restate_network::Networking;
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_types::arc_util::ArcSwapExt;
+use std::time::Duration;
 use tonic::transport::Channel;
 use tracing::info;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
-use restate_core::{task_center, TaskKind};
-use restate_meta::{FileMetaReader, FileMetaStorage, MetaService};
-use restate_worker::KafkaIngressOptions;
-
-use crate::Options;
+use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::{task_center, MetadataWriter, TaskKind};
+use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::config::{IngressOptions, UpdateableConfiguration};
+use restate_types::retries::RetryPolicy;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
-    #[error("failed creating meta: {0}")]
-    Meta(
-        #[from]
-        #[code]
-        restate_meta::BuildError,
-    ),
+    #[error("unknown")]
+    #[code(unknown)]
+    Unknown,
+    #[error("failed building the admin service: {0}")]
+    #[code(unknown)]
+    AdminService(#[from] restate_admin::service::BuildError),
+    #[error("failed building the service client: {0}")]
+    #[code(unknown)]
+    ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-#[derive(Debug)]
 pub struct AdminRole {
+    updateable_config: UpdateableConfiguration,
     controller: restate_cluster_controller::Service,
-    admin: AdminService,
-    meta: MetaService<FileMetaStorage, KafkaIngressOptions>,
+    admin: AdminService<IngressOptions>,
 }
 
 impl AdminRole {
-    pub fn new(options: Options, _networking: Networking) -> Result<Self, AdminRoleBuildError> {
-        let meta = options.meta.build(options.worker.kafka.clone())?;
-        let admin = options
-            .admin
-            .build(meta.schemas(), meta.meta_handle(), meta.schema_reader());
+    pub fn new(
+        updateable_config: UpdateableConfiguration,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Result<Self, AdminRoleBuildError> {
+        let config = updateable_config.pinned();
+
+        // Total duration roughly 66 seconds
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(100),
+            2.0,
+            10,
+            Some(Duration::from_secs(20)),
+        );
+        let client =
+            ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
+        let service_discovery = ServiceDiscovery::new(retry_policy, client);
+
+        let admin = AdminService::new(
+            metadata_writer,
+            metadata_store_client,
+            config.ingress.clone(),
+            service_discovery,
+        );
 
         Ok(AdminRole {
-            controller: restate_cluster_controller::Service::new(options.cluster_controller),
+            updateable_config,
+            controller: restate_cluster_controller::Service::default(),
             admin,
-            meta,
         })
     }
 
@@ -59,28 +82,16 @@ impl AdminRole {
         self.controller.handle()
     }
 
-    pub fn schema_reader(&self) -> FileMetaReader {
-        self.meta.schema_reader()
-    }
-
     pub async fn start(
-        mut self,
+        self,
         _bootstrap_cluster: bool,
         bifrost: Bifrost,
     ) -> Result<(), anyhow::Error> {
         info!("Running admin role");
 
-        // Init the meta. This will reload the schemas in memory.
-        self.meta.init().await?;
+        let tc = task_center();
 
-        task_center().spawn_child(
-            TaskKind::SystemService,
-            "meta-service",
-            None,
-            self.meta.run(),
-        )?;
-
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
@@ -96,11 +107,15 @@ impl AdminRole {
         .connect_lazy();
         let node_svc_client = NodeSvcClient::new(worker_channel);
 
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
             None,
-            self.admin.run(node_svc_client, bifrost),
+            self.admin.run(
+                self.updateable_config.map_as_updateable_owned(|c| &c.admin),
+                node_svc_client,
+                bifrost,
+            ),
         )?;
 
         Ok(())

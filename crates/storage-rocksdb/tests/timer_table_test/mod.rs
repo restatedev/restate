@@ -28,7 +28,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry(ServiceId::new("svc-1", "key-1")),
+        Timer::CompleteSleepEntry(1337),
     )
     .await;
 
@@ -39,12 +39,11 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 1,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry(ServiceId::new("svc-1", "key-1")),
+        Timer::CompleteSleepEntry(1337),
     )
     .await;
 
     let service_invocation = ServiceInvocation {
-        method_name: "mymethod".into(),
         ..mock_service_invocation(ServiceId::new("svc-2", "key-2"))
     };
     txn.add_timer(
@@ -54,7 +53,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 2,
             timestamp: 1,
         },
-        Timer::Invoke(ServiceId::new("svc-1", "key-1"), service_invocation),
+        Timer::Invoke(service_invocation),
     )
     .await;
 
@@ -68,7 +67,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry(ServiceId::new("", "")),
+        Timer::CompleteSleepEntry(1336),
     )
     .await;
 
@@ -79,7 +78,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
             journal_index: 0,
             timestamp: 0,
         },
-        Timer::CompleteSleepEntry(ServiceId::new("", "")),
+        Timer::CompleteSleepEntry(1338),
     )
     .await;
 }

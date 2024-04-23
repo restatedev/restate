@@ -16,8 +16,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::identifiers::{FullInvocationId, InvocationId};
 use restate_types::journal::raw::PlainRawEntry;
 use std::vec::IntoIter;
 
@@ -47,23 +47,19 @@ where
 
     async fn read_journal<'a>(
         &'a mut self,
-        fid: &'a FullInvocationId,
+        invocation_id: &'a InvocationId,
     ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-        let invocation_status = self
-            .0
-            .get_invocation_status(&InvocationId::from(fid))
-            .await?;
+        let invocation_status = self.0.get_invocation_status(invocation_id).await?;
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             let journal_metadata = JournalMetadata::new(
                 invoked_status.journal_metadata.length,
                 invoked_status.journal_metadata.span_context,
-                invoked_status.method,
                 invoked_status.deployment_id,
             );
             let journal_stream = self
                 .0
-                .get_journal(&InvocationId::from(fid), journal_metadata.length)
+                .get_journal(invocation_id, journal_metadata.length)
                 .map(|entry| {
                     entry
                         .map_err(InvokerStorageReaderError::Storage)

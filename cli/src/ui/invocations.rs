@@ -45,7 +45,7 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
             if let Some(modified_at) = invocation.state_modified_at {
                 let suspend_duration = chrono::Local::now().signed_duration_since(modified_at);
                 // its keyed and in suspension
-                if suspend_duration.num_seconds() > 5 && invocation.key.is_some() {
+                if suspend_duration.num_seconds() > 5 && invocation.target_service_ty.is_keyed() {
                     let dur = duration_to_human_precise(suspend_duration, Tense::Present);
                     let dur_style = if suspend_duration.num_seconds() > 5 {
                         // too long...
@@ -93,21 +93,6 @@ pub fn invocation_status_note(invocation: &Invocation) -> String {
     msg
 }
 
-// [TicketDb @ my-user-200]::trySomethingNew
-pub fn invocation_qualified_name(invocation: &Invocation) -> String {
-    let svc = if let Some(key) = &invocation.key {
-        format!(
-            "[{} {} {}]",
-            invocation.component,
-            style("@").dim(),
-            style(key).dim(),
-        )
-    } else {
-        invocation.component.to_string()
-    };
-    format!("{}{}{}", svc, style("::").dim(), invocation.handler)
-}
-
 // ❯ [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
 fn invocation_header(invocation: &Invocation) -> String {
     // Unkeyed -> [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout
@@ -115,12 +100,7 @@ fn invocation_header(invocation: &Invocation) -> String {
     let date_style = DStyle::new().dim();
     let created_at = date_style.apply_to(format!("[{}]", invocation.created_at));
 
-    format!(
-        "❯ {} {} {}",
-        created_at,
-        style(&invocation.id).bold(),
-        invocation_qualified_name(invocation),
-    )
+    format!("❯ {} {}", created_at, style(&invocation.id).bold())
 }
 
 pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationState> {
@@ -131,11 +111,14 @@ pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationStat
         InvocationState::Running => DStyle::new().green(),
         InvocationState::Suspended => DStyle::new().dim(),
         InvocationState::BackingOff => DStyle::new().red(),
+        InvocationState::Completed => DStyle::new().blue(),
     };
     status_style.apply_to(status)
 }
 
 pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
+    table.add_kv_row("Target:", &invocation.target);
+
     // Status: backing-off (Retried 1198 time(s). Next retry in 5 seconds and 78 ms) (if not pending....)
     let status_msg = invocation_status_note(invocation);
     let status = format!("{} {}", invocation_status(invocation.status), status_msg);
@@ -146,7 +129,7 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         let invoked_by_msg = format!(
             "{} {}",
             invocation
-                .invoked_by_component
+                .invoked_by_target
                 .as_ref()
                 .map(|x| style(x.to_owned()).italic().blue())
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
@@ -199,6 +182,26 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 "Error:",
                 format!("{}\n{}", style(when).dim(), style(error).red()),
             );
+
+            table.add_kv_row(
+                "Caused by:",
+                format!(
+                    "{}{}",
+                    invocation
+                        .last_failure_entry_ty
+                        .as_deref()
+                        .unwrap_or("UNKNOWN"),
+                    invocation
+                        .last_failure_entry_name
+                        .as_deref()
+                        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+                        .map(|n| format!(" [{}]", n))
+                        .or_else(|| invocation
+                            .last_failure_entry_index
+                            .map(|idx| format!(" [{}]", idx)))
+                        .unwrap_or("".to_string())
+                ),
+            );
         }
     }
 }
@@ -216,7 +219,7 @@ pub fn render_invocation_compact(env: &CliEnv, invocation: &Invocation) {
 }
 
 pub fn format_journal_entry(entry: &JournalEntry) -> String {
-    let completed_icon = if entry.is_completed() {
+    let state_icon = if entry.is_completed() {
         Icon("☑️ ", "[DONE]")
     } else if matches!(entry.entry_type, JournalEntryType::Sleep { .. }) {
         Icon("⏰", "[PENDING]")
@@ -231,11 +234,16 @@ pub fn format_journal_entry(entry: &JournalEntry) -> String {
     };
 
     let seq = format!("#{}", entry.seq);
+    let entry_ty_and_name = if let Some(name) = &entry.name {
+        format!("{} [{}]", entry.entry_type, name)
+    } else {
+        entry.entry_type.to_string()
+    };
     format!(
         " {} {} {} {}",
-        completed_icon,
+        state_icon,
         type_style.apply_to(seq),
-        type_style.apply_to(entry.entry_type.to_string()),
+        type_style.apply_to(entry_ty_and_name),
         format_entry_type_details(&entry.entry_type)
     )
 }
@@ -253,12 +261,10 @@ pub fn format_entry_type_details(entry_type: &JournalEntryType) -> String {
                 format!("until {}", style(wakeup_at).dim())
             }
         }
-        JournalEntryType::Invoke(inv) | JournalEntryType::BackgroundInvoke(inv) => {
+        JournalEntryType::Call(inv) | JournalEntryType::OneWayCall(inv) => {
             format!(
-                "{}{}{} {}",
-                inv.invoked_component.as_ref().unwrap(),
-                style("::").dim(),
-                inv.invoked_handler.as_ref().unwrap(),
+                "{} {}",
+                inv.invoked_target.as_ref().unwrap(),
                 inv.invocation_id.as_deref().unwrap_or(""),
             )
         }

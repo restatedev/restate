@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::schema_registry::error::{
+    DeploymentError, SchemaError, SchemaRegistryError, ServiceError,
+};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -16,8 +19,7 @@ use okapi_operation::anyhow::Error;
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
-use restate_meta::Error as MetaError;
-use restate_schema_impl::{ComponentError, DeploymentError, ErrorKind};
+use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -30,21 +32,19 @@ pub enum MetaApiError {
     InvalidField(&'static str, String),
     #[error("The requested deployment '{0}' does not exist")]
     DeploymentNotFound(DeploymentId),
-    #[error("The requested component '{0}' does not exist")]
-    ComponentNotFound(String),
-    #[error(
-        "The requested handler '{handler_name}' on component '{component_name}' does not exist"
-    )]
+    #[error("The requested service '{0}' does not exist")]
+    ServiceNotFound(String),
+    #[error("The requested handler '{handler_name}' on service '{service_name}' does not exist")]
     HandlerNotFound {
-        component_name: String,
+        service_name: String,
         handler_name: String,
     },
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
     #[error(transparent)]
-    Meta(#[from] MetaError),
+    Schema(#[from] SchemaError),
     #[error(transparent)]
-    Worker(#[from] restate_worker_api::Error),
+    Discovery(#[from] restate_service_protocol::discovery::DiscoveryError),
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -64,31 +64,32 @@ struct ErrorDescriptionResponse {
 impl IntoResponse for MetaApiError {
     fn into_response(self) -> Response {
         let status_code = match &self {
-            MetaApiError::ComponentNotFound(_)
+            MetaApiError::ServiceNotFound(_)
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
-            MetaApiError::Worker(_) => StatusCode::SERVICE_UNAVAILABLE,
-            MetaApiError::Meta(MetaError::SchemaRegistry(schema_registry_error)) => {
-                match schema_registry_error.kind() {
-                    ErrorKind::NotFound => StatusCode::NOT_FOUND,
-                    ErrorKind::Override
-                    | ErrorKind::Component(ComponentError::DifferentType { .. })
-                    | ErrorKind::Component(ComponentError::RemovedHandlers { .. })
-                    | ErrorKind::Deployment(DeploymentError::IncorrectId { .. }) => {
-                        StatusCode::CONFLICT
-                    }
-                    ErrorKind::Component(_) => StatusCode::BAD_REQUEST,
-                    _ => StatusCode::BAD_REQUEST,
+            MetaApiError::Schema(schema_error) => match schema_error {
+                SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
+                SchemaError::Override(_)
+                | SchemaError::Service(ServiceError::DifferentType { .. })
+                | SchemaError::Service(ServiceError::RemovedHandlers { .. })
+                | SchemaError::Deployment(DeploymentError::IncorrectId { .. }) => {
+                    StatusCode::CONFLICT
                 }
-            }
+                SchemaError::Service(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_REQUEST,
+            },
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {
-            MetaApiError::Meta(m) => ErrorDescriptionResponse {
+            MetaApiError::Schema(m) => ErrorDescriptionResponse {
                 message: m.decorate().to_string(),
                 restate_code: m.code().map(Code::code),
+            },
+            MetaApiError::Discovery(err) => ErrorDescriptionResponse {
+                message: err.decorate().to_string(),
+                restate_code: err.code().map(Code::code),
             },
             e => ErrorDescriptionResponse {
                 message: e.to_string(),
@@ -127,5 +128,22 @@ impl ToResponses for MetaApiError {
             },
             ..Default::default()
         })
+    }
+}
+
+impl From<SchemaRegistryError> for MetaApiError {
+    fn from(value: SchemaRegistryError) -> Self {
+        match value {
+            SchemaRegistryError::Schema(err) => MetaApiError::Schema(err),
+            SchemaRegistryError::Internal(msg) => MetaApiError::Internal(msg),
+            SchemaRegistryError::Shutdown(err) => MetaApiError::Internal(err.to_string()),
+            SchemaRegistryError::Discovery(err) => MetaApiError::Discovery(err),
+        }
+    }
+}
+
+impl From<ShutdownError> for MetaApiError {
+    fn from(value: ShutdownError) -> Self {
+        MetaApiError::Internal(value.to_string())
     }
 }

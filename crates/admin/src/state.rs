@@ -9,19 +9,15 @@
 // by the Apache License, Version 2.0.
 //
 
+use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 use restate_core::TaskCenter;
-use restate_meta::{FileMetaReader, MetaHandle};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_impl::Schemas;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState {
-    meta_handle: MetaHandle,
-    schemas: Schemas,
-    node_svc_client: NodeSvcClient<Channel>,
-    schema_reader: FileMetaReader,
+pub struct AdminServiceState<V> {
+    pub schema_registry: SchemaRegistry<V>,
     pub bifrost: Bifrost,
     pub task_center: TaskCenter,
 }
@@ -31,38 +27,16 @@ pub struct QueryServiceState {
     pub node_svc_client: NodeSvcClient<Channel>,
 }
 
-impl AdminServiceState {
+impl<V> AdminServiceState<V> {
     pub fn new(
-        meta_handle: MetaHandle,
-        schemas: Schemas,
-        node_svc_client: NodeSvcClient<Channel>,
-        schema_reader: FileMetaReader,
+        schema_registry: SchemaRegistry<V>,
         bifrost: Bifrost,
         task_center: TaskCenter,
     ) -> Self {
         Self {
-            meta_handle,
-            schemas,
-            node_svc_client,
-            schema_reader,
+            schema_registry,
             bifrost,
             task_center,
         }
-    }
-
-    pub fn meta_handle(&self) -> &MetaHandle {
-        &self.meta_handle
-    }
-
-    pub fn schemas(&self) -> &Schemas {
-        &self.schemas
-    }
-
-    pub fn node_svc_client(&self) -> NodeSvcClient<Channel> {
-        self.node_svc_client.clone()
-    }
-
-    pub fn schema_reader(&self) -> &FileMetaReader {
-        &self.schema_reader
     }
 }

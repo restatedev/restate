@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::{Version, Versioned};
+use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::borrow::Borrow;
 use std::ops::RangeInclusive;
 
@@ -24,8 +24,7 @@ pub trait FindPartition {
     ) -> Result<PartitionId, PartitionTableError>;
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FixedPartitionTable {
     version: Version,
     num_partitions: u64,
@@ -41,12 +40,35 @@ impl FixedPartitionTable {
         }
     }
 
+    pub fn num_partitions(&self) -> u64 {
+        self.num_partitions
+    }
+
+    pub fn partition_range(
+        &self,
+        partition_id: PartitionId,
+    ) -> Option<RangeInclusive<PartitionKey>> {
+        if partition_id >= self.num_partitions {
+            None
+        } else {
+            Some(Self::partition_id_to_partition_range(
+                self.num_partitions,
+                partition_id,
+            ))
+        }
+    }
+
     pub fn version(&self) -> Version {
         self.version
     }
 
     pub fn increment_version(&mut self) {
         self.version = self.version.next();
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_version(&mut self, version: Version) {
+        self.version = version;
     }
 
     pub fn partitioner(&self) -> Partitioner {
@@ -97,11 +119,9 @@ impl Versioned for FixedPartitionTable {
     fn version(&self) -> Version {
         self.version()
     }
-
-    fn increment_version(&mut self) {
-        self.increment_version();
-    }
 }
+
+flexbuffers_storage_encode_decode!(FixedPartitionTable);
 
 impl<T> FindPartition for T
 where

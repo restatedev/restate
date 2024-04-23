@@ -12,30 +12,29 @@
 //! Utilities for benchmarking the Restate runtime
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
+use restate_rocksdb::RocksDbManager;
+use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_types::arc_util::Constant;
+use restate_types::config::{
+    CommonOptionsBuilder, Configuration, ConfigurationBuilder, UpdateableConfiguration,
+    WorkerOptionsBuilder,
+};
 use tokio::runtime::Runtime;
 
-use restate_core::{TaskCenter, TaskCenterFactory};
+use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
 use restate_node::Node;
-use restate_node::{
-    MetaOptionsBuilder, NodeOptionsBuilder, RocksdbOptionsBuilder, WorkerOptionsBuilder,
-};
-use restate_server::config::ConfigurationBuilder;
-use restate_server::Configuration;
 use restate_types::retries::RetryPolicy;
-
-pub mod counter {
-    include!(concat!(env!("OUT_DIR"), "/counter.rs"));
-}
 
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
-            .retry_operation(|| {
+            .retry(|| {
                 hyper::Client::new()
                     .request(
                         hyper::Request::post("http://localhost:9070/deployments")
@@ -59,25 +58,55 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
         .expect("Discovery must be successful")
         .status()
         .is_success(),);
-}
 
-pub fn spawn_restate(config: Configuration) -> (TaskCenter, Runtime) {
-    let rt = config
-        .tokio_runtime
-        .build()
-        .expect("Tokio runtime must build");
-
-    let tc = TaskCenterFactory::create(rt.handle().clone());
-    let cloned_tc = tc.clone();
-    rt.block_on(async move {
-        let node = Node::new(config.node).expect("Restate node must build");
-        cloned_tc
-            .run_in_scope("startup", None, node.start())
+    // wait for ingress being available
+    // todo replace with node get_ident/status once it signals that the node is fully up and running
+    let health_response = current_thread_rt.block_on(async {
+        RetryPolicy::fixed_delay(Duration::from_millis(200), 50)
+            .retry(|| {
+                hyper::Client::new()
+                    .request(
+                        hyper::Request::get("http://localhost:8080/restate/health")
+                            .body(Body::empty())
+                            .expect("building health request should not fail"),
+                    )
+                    .map_err(anyhow::Error::from)
+                    .and_then(|response| {
+                        if response.status().is_success() {
+                            future::ready(Ok(response))
+                        } else {
+                            future::ready(Err(anyhow::anyhow!("health request was unsuccessful.")))
+                        }
+                    })
+            })
             .await
-            .expect("Restate node must boot");
     });
 
-    (tc, rt)
+    assert!(health_response
+        .expect("Discovery must be successful")
+        .status()
+        .is_success(),);
+}
+
+pub fn spawn_restate(config: Configuration) -> TaskCenter {
+    let tc = TaskCenterBuilder::default()
+        .options(config.common.clone())
+        .build()
+        .expect("task_center builds");
+    let cloned_tc = tc.clone();
+    restate_types::config::set_current_config(config.clone());
+    let updateable_config = UpdateableConfiguration::new(ArcSwap::from_pointee(config.clone()));
+
+    tc.run_in_scope_sync("db-manager-init", None, || {
+        RocksDbManager::init(Constant::new(config.common))
+    });
+    tc.spawn(TaskKind::TestRunner, "benchmark", None, async move {
+        let node = Node::new(updateable_config).expect("Restate node must build");
+        cloned_tc.run_in_scope("startup", None, node.start()).await
+    })
+    .unwrap();
+
+    tc
 }
 
 pub fn flamegraph_options<'a>() -> Options<'a> {
@@ -91,34 +120,29 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 }
 
 pub fn restate_configuration() -> Configuration {
-    let meta_options = MetaOptionsBuilder::default()
-        .storage_path(tempfile::tempdir().expect("tempdir failed").into_path())
+    let common_options = CommonOptionsBuilder::default()
+        .base_dir(tempfile::tempdir().expect("tempdir failed").into_path())
         .build()
-        .expect("building meta options should work");
-
-    let rocksdb_options = RocksdbOptionsBuilder::default()
-        .path(tempfile::tempdir().expect("tempdir failed").into_path())
-        .build()
-        .expect("building rocksdb options should work");
+        .expect("building common options should work");
 
     let worker_options = WorkerOptionsBuilder::default()
-        .partitions(10)
-        .storage_rocksdb(rocksdb_options)
+        .bootstrap_num_partitions(10)
         .build()
         .expect("building worker options should work");
 
-    let node_options = NodeOptionsBuilder::default()
-        .worker(worker_options)
-        .meta(meta_options)
-        .build()
-        .expect("building the configuration should work");
-
     let config = ConfigurationBuilder::default()
-        .node(node_options)
+        .common(common_options)
+        .worker(worker_options)
         .build()
         .expect("building the configuration should work");
 
-    Configuration::load_with_default(config, None).expect("configuration loading should not fail")
+    ConfigLoaderBuilder::default()
+        .load_env(true)
+        .custom_default(config)
+        .build()
+        .expect("builder should build")
+        .load_once()
+        .expect("configuration loading should not fail")
 }
 
 pub struct BenchmarkSettings {

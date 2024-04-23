@@ -13,9 +13,12 @@ use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+/// Error type which abstracts away the actual [`std::error::Error`] type. Use this type
+/// if you don't know the actual error type or if it is not important.
+pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 
 impl InvocationErrorCode {
@@ -72,13 +75,13 @@ pub mod codes {
     pub const UNKNOWN: InvocationErrorCode = INTERNAL;
     pub const ABORTED: InvocationErrorCode = InvocationErrorCode(409);
     pub const KILLED: InvocationErrorCode = ABORTED;
+    pub const GONE: InvocationErrorCode = InvocationErrorCode(410);
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
 }
 
 /// This struct represents errors arisen when processing a service invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvocationError {
     code: InvocationErrorCode,
     message: Cow<'static, str>,
@@ -131,21 +134,21 @@ impl InvocationError {
         }
     }
 
-    pub fn component_not_found(component: impl fmt::Display) -> Self {
+    pub fn service_not_found(service: impl fmt::Display) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Component '{}' not found. Check whether the deployment containing the component is registered.", component)),
+            message: Cow::Owned(format!("Service '{}' not found. Check whether the deployment containing the service is registered.", service)),
             description: None,
         }
     }
 
-    pub fn component_handler_not_found(
-        component: impl fmt::Display,
+    pub fn service_handler_not_found(
+        service: impl fmt::Display,
         handler: impl fmt::Display,
     ) -> Self {
         Self {
             code: codes::NOT_FOUND,
-            message: Cow::Owned(format!("Component handler '{}/{}' not found. Check whether you've registered the correct version of your component.", component, handler)),
+            message: Cow::Owned(format!("Service handler '{}/{}' not found. Check whether you've registered the correct version of your service.", service, handler)),
             description: None,
         }
     }
@@ -198,6 +201,8 @@ pub const KILLED_INVOCATION_ERROR: InvocationError =
 //  UserErrorCode::Cancelled, we need to add a new RestateErrorCode.
 pub const CANCELED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "canceled");
+
+pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
 
 /// Error parsing/decoding a resource ID.
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]

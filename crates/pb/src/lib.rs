@@ -45,13 +45,6 @@ pub const AWAKEABLES_RESOLVE_HANDLER_NAME: &str = "Resolve";
 pub const AWAKEABLES_REJECT_HANDLER_NAME: &str = "Reject";
 pub const PROXY_SERVICE_NAME: &str = "restate_internal_pp_proxy";
 pub const PROXY_PROXY_THROUGH_METHOD_NAME: &str = "ProxyThrough";
-pub const REMOTE_CONTEXT_SERVICE_NAME: &str = "restate_remote_context";
-pub const REMOTE_CONTEXT_INTERNAL_ON_COMPLETION_METHOD_NAME: &str = "InternalOnCompletion";
-pub const REMOTE_CONTEXT_INTERNAL_ON_KILL_METHOD_NAME: &str = "InternalOnKill";
-pub const IDEMPOTENT_INVOKER_SERVICE_NAME: &str = "restate_internal_idempotent_invoker";
-pub const IDEMPOTENT_INVOKER_INVOKE_METHOD_NAME: &str = "Invoke";
-pub const IDEMPOTENT_INVOKER_INTERNAL_ON_RESPONSE_METHOD_NAME: &str = "InternalOnResponse";
-pub const IDEMPOTENT_INVOKER_INTERNAL_ON_TIMER_METHOD_NAME: &str = "InternalOnTimer";
 
 #[cfg(feature = "builtin-service")]
 pub mod builtin_service {
@@ -86,7 +79,7 @@ pub mod builtin_service {
         }
 
         pub fn serialize_failure(&self, err: InvocationError) -> ResponseResult {
-            ResponseResult::Failure(err.code(), err.message().into())
+            ResponseResult::Failure(err)
         }
     }
 
@@ -102,7 +95,9 @@ pub mod builtin_service {
                 ) => Ok(ResponseResult::Success(s)),
                 Some(
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(e),
-                ) => Ok(ResponseResult::Failure(e.code.into(), e.message.into())),
+                ) => Ok(ResponseResult::Failure(InvocationError::new(
+                    e.code, e.message,
+                ))),
                 None => Err("response_result field must be set"),
             }
         }
@@ -115,11 +110,11 @@ pub mod builtin_service {
                     crate::restate::internal::service_invocation_sink_request::Response::Success(s)
                 }
 
-                ResponseResult::Failure(code, message) => {
+                ResponseResult::Failure(err) => {
                     crate::restate::internal::service_invocation_sink_request::Response::Failure(
                         crate::restate::internal::InvocationFailure {
-                            code: code.into(),
-                            message: message.to_string(),
+                            code: err.code().into(),
+                            message: err.message().to_string(),
                         },
                     )
                 }

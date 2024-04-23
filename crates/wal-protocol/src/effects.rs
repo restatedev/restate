@@ -13,28 +13,26 @@ use std::borrow::Cow;
 use bytes::Bytes;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{EntryIndex, FullInvocationId};
+use restate_types::identifiers::InvocationId;
 use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{ServiceInvocationResponseSink, Source as InvocationSource};
-use restate_types::time::MillisSinceEpoch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BuiltinServiceEffects {
-    full_invocation_id: FullInvocationId,
+    invocation_id: InvocationId,
     effects: Vec<BuiltinServiceEffect>,
 }
 
 impl BuiltinServiceEffects {
-    pub fn new(full_invocation_id: FullInvocationId, effects: Vec<BuiltinServiceEffect>) -> Self {
+    pub fn new(invocation_id: InvocationId, effects: Vec<BuiltinServiceEffect>) -> Self {
         Self {
-            full_invocation_id,
+            invocation_id,
             effects,
         }
     }
 
-    pub fn into_inner(self) -> (FullInvocationId, Vec<BuiltinServiceEffect>) {
-        (self.full_invocation_id, self.effects)
+    pub fn into_inner(self) -> (InvocationId, Vec<BuiltinServiceEffect>) {
+        (self.invocation_id, self.effects)
     }
 }
 
@@ -48,16 +46,6 @@ pub enum BuiltinServiceEffect {
     ClearState(Cow<'static, str>),
 
     OutboxMessage(OutboxMessage),
-    DelayedInvoke {
-        target_fid: FullInvocationId,
-        target_method: String,
-        argument: Bytes,
-        source: InvocationSource,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        time: MillisSinceEpoch,
-        timer_index: EntryIndex,
-    },
-
     End(
         // NBIS can optionally fail, depending on the context the error might or might not be used.
         Option<InvocationError>,

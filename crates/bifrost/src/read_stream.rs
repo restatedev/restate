@@ -79,18 +79,16 @@ impl LogReadStream {
 #[cfg(test)]
 mod tests {
 
+    use crate::Bifrost;
+
     use super::*;
 
     use googletest::prelude::*;
-    use restate_core::TestCoreEnv;
-    use tokio::task::JoinHandle;
+    use restate_core::{TaskKind, TestCoreEnv};
     use tracing::info;
     use tracing_test::traced_test;
 
     use restate_types::logs::Payload;
-
-    use crate::loglet::ProviderKind;
-    use crate::Options;
 
     #[tokio::test]
     #[traced_test]
@@ -98,19 +96,9 @@ mod tests {
         let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            // start a simple bifrost service with 5 logs.
-            let num_partitions = 5;
             let read_after = Lsn::from(5);
 
-            let bifrost_opts = Options {
-                default_provider: ProviderKind::Memory,
-                ..Options::default()
-            };
-            let bifrost_svc = bifrost_opts.build(num_partitions);
-            let mut bifrost = bifrost_svc.handle();
-
-            // start bifrost service in the background
-            bifrost_svc.start().await.unwrap();
+            let mut bifrost = Bifrost::init().await;
 
             let mut reader = bifrost.create_reader(LogId::from(0), Lsn::from(5));
             assert_eq!(read_after, reader.current_read_pointer());
@@ -121,7 +109,7 @@ mod tests {
             assert_eq!(read_after, reader.current_read_pointer());
 
             // spawn a reader that reads 5 records and exits.
-            let reader_bg_handle: JoinHandle<Result<()>> = tokio::spawn(async move {
+            let id = tc.spawn(TaskKind::Disposable, "read-records", None, async move {
                 for i in 1..=5 {
                     let record = reader.read_next().await?;
                     let expected_lsn = Lsn::from(i) + read_after;
@@ -134,7 +122,9 @@ mod tests {
                     assert_eq!(expected_lsn, reader.current_read_pointer());
                 }
                 Ok(())
-            });
+            })?;
+
+            let reader_bg_handle = tc.take_task(id).expect("read-records task to exist");
 
             tokio::task::yield_now().await;
             // Not finished, we still didn't append records
@@ -162,7 +152,7 @@ mod tests {
             }
 
             // reader has finished
-            assert!(reader_bg_handle.await.unwrap().is_ok());
+            reader_bg_handle.await?;
             assert!(logs_contain("read record"));
 
             Ok(())

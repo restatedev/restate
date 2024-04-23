@@ -2,19 +2,25 @@ use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient};
 use crate::ui::console::StyledTable;
 use anyhow::{anyhow, bail, Context};
-use arrow::array::{BinaryArray, StringArray};
+use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_meta_rest_model::components::{ComponentType, ModifyComponentStateRequest};
+use restate_meta_rest_model::services::{ModifyServiceStateRequest, ServiceType};
 use restate_types::state_mut::StateMutationVersion;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+pub struct StateEntriesQueryResult {
+    key: Option<String>,
+    value: Option<Vec<u8>>,
+}
 
 pub(crate) async fn get_current_state(
     env: &CliEnv,
@@ -25,8 +31,8 @@ pub(crate) async fn get_current_state(
     // 0. require that this is a keyed service
     //
     let client = MetasClient::new(env)?;
-    let service_meta = client.get_component(service).await?.into_body().await?;
-    if service_meta.ty != ComponentType::VirtualObject {
+    let service_meta = client.get_service(service).await?.into_body().await?;
+    if service_meta.ty != ServiceType::VirtualObject {
         bail!("Only virtual objects support state");
     }
     //
@@ -34,35 +40,18 @@ pub(crate) async fn get_current_state(
     //
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     let sql = format!(
-        "select key, value from state where component = '{}' and component_key = '{}' ;",
+        "select key, value from state where service_name = '{}' and service_key = '{}' ;",
         service, key
     );
-    let res = sql_client.run_query(sql).await?;
+    let query_result_iter = sql_client
+        .run_query_and_map_results::<StateEntriesQueryResult>(sql)
+        .await?;
     //
     // 2. convert the state to a map from str keys -> byte values.
     //
     let mut user_state = HashMap::new();
-    for batch in res.batches {
-        let n = batch.num_rows();
-        if n == 0 {
-            continue;
-        }
-        user_state.reserve(n);
-        let keys = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("bug: unexpected column type");
-        let vals = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<BinaryArray>()
-            .expect("bug: unexpected column type");
-        for i in 0..n {
-            let key = keys.value(i).to_string();
-            let val = Bytes::copy_from_slice(vals.value(i));
-            user_state.insert(key, val);
-        }
+    for row in query_result_iter {
+        user_state.insert(row.key.expect("key"), row.value.expect("value").into());
     }
     Ok(user_state)
 }
@@ -74,7 +63,7 @@ pub(crate) async fn update_state(
     service_key: &str,
     new_state: HashMap<String, Bytes>,
 ) -> anyhow::Result<()> {
-    let req = ModifyComponentStateRequest {
+    let req = ModifyServiceStateRequest {
         version: expected_version,
         new_state,
         object_key: service_key.to_string(),

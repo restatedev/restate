@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_core::{ShutdownError, SyncError};
+use std::sync::Arc;
 use thiserror::Error;
 
 use restate_types::logs::{LogId, Lsn};
 
+use crate::loglets::local_loglet::LogStoreError;
 use crate::types::SealReason;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
@@ -22,8 +25,18 @@ pub enum Error {
     UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}")]
     InvalidLsn(Lsn),
-    #[error("cannot fetch log metadata")]
-    MetadataSync,
     #[error("operation failed due to an ongoing shutdown")]
-    Shutdown,
+    Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    LogStoreError(#[from] LogStoreError),
+    #[error("failed syncing logs metadata: {0}")]
+    // unfortunately, we have to use Arc here, because the SyncError is not Clone.
+    MetadataSync(#[from] Arc<SyncError>),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ProviderError {
+    Shutdown(#[from] ShutdownError),
+    Other(#[from] anyhow::Error),
 }

@@ -13,13 +13,13 @@ use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;
 
+use restate_types::config::QueryEngineOptions;
+use restate_types::errors::GenericError;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::select;
 use tracing::warn;
-
-pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -39,6 +39,13 @@ pub struct PostgresQueryService {
 }
 
 impl PostgresQueryService {
+    pub fn from_options(options: &QueryEngineOptions, query_context: QueryContext) -> Self {
+        Self {
+            bind_address: options.pgsql_bind_address,
+            query_context,
+        }
+    }
+
     pub async fn run(self) -> anyhow::Result<()> {
         let PostgresQueryService {
             bind_address,

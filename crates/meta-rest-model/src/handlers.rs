@@ -11,10 +11,10 @@
 use serde::{Deserialize, Serialize};
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::component::HandlerMetadata;
+pub use restate_schema_api::service::HandlerMetadata;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ListComponentHandlersResponse {
+pub struct ListServiceHandlersResponse {
     pub handlers: Vec<HandlerMetadata>,
 }

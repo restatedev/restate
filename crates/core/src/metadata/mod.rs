@@ -16,17 +16,29 @@ pub use manager::MetadataManager;
 
 use std::sync::{Arc, OnceLock};
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
-use restate_node_protocol::metadata::{MetadataContainer, MetadataKind};
+pub use restate_node_protocol::metadata::MetadataKind;
+use restate_node_protocol::metadata::{MetadataContainer, Schema, UpdateableSchema};
+use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, Version, Versioned};
 
+use crate::metadata::manager::Command;
+use crate::metadata_store::ReadError;
 use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error("failed syncing with metadata store: {0}")]
+    MetadataStore(#[from] ReadError),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
+}
 
 /// The kind of versioned metadata that can be synchronized across nodes.
 
@@ -61,22 +73,58 @@ impl Metadata {
         }
     }
 
-    /// Panics if partition table is not loaded yet.
-    #[track_caller]
-    pub fn partition_table(&self) -> Arc<FixedPartitionTable> {
-        self.inner
-            .partition_table
-            .load_full()
-            .expect("partition table is loaded")
+    pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
+        self.inner.partition_table.load_full()
     }
 
-    /// Returns Version::INVALID if nodes configuration has not been loaded yet.
+    /// Returns Version::INVALID if partition table has not been loaded yet.
     pub fn partition_table_version(&self) -> Version {
         let c = self.inner.partition_table.load();
         match c.as_deref() {
             Some(c) => c.version(),
             None => Version::INVALID,
         }
+    }
+
+    /// Waits until the partition table of at least min_version is available and returns it.
+    pub async fn wait_for_partition_table(
+        &self,
+        min_version: Version,
+    ) -> Result<Arc<FixedPartitionTable>, ShutdownError> {
+        if let Some(partition_table) = self.partition_table() {
+            if partition_table.version() >= min_version {
+                return Ok(partition_table);
+            }
+        }
+
+        self.wait_for_version(MetadataKind::PartitionTable, min_version)
+            .await?;
+        Ok(self.partition_table().unwrap())
+    }
+
+    pub fn logs(&self) -> Option<Arc<Logs>> {
+        self.inner.logs.load_full()
+    }
+
+    /// Returns Version::INVALID if logs has not been loaded yet.
+    pub fn logs_version(&self) -> Version {
+        let c = self.inner.logs.load();
+        match c.as_deref() {
+            Some(c) => c.version(),
+            None => Version::INVALID,
+        }
+    }
+
+    pub fn schema(&self) -> Arc<Schema> {
+        self.inner.schema.load_full()
+    }
+
+    pub fn schema_version(&self) -> Version {
+        self.inner.schema.load().version()
+    }
+
+    pub fn schema_updateable(&self) -> UpdateableSchema {
+        UpdateableSchema::from(Arc::clone(&self.inner.schema))
     }
 
     // Returns when the metadata kind is at the provided version (or newer)
@@ -97,6 +145,17 @@ impl Metadata {
     pub fn watch(&self, metadata_kind: MetadataKind) -> watch::Receiver<Version> {
         self.inner.write_watches[metadata_kind].receive.clone()
     }
+
+    /// Syncs the given metadata_kind from the underlying metadata store.
+    pub async fn sync(&self, metadata_kind: MetadataKind) -> Result<(), SyncError> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.sender
+            .send(Command::SyncMetadata(metadata_kind, result_tx))
+            .map_err(|_| ShutdownError)?;
+        result_rx.await.map_err(|_| ShutdownError)??;
+
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -104,6 +163,8 @@ struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: ArcSwapOption<NodesConfiguration>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
+    logs: ArcSwapOption<Logs>,
+    schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
 

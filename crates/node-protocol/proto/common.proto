@@ -31,5 +31,7 @@ enum TargetName {
   TargetName_UNKNOWN = 0;
   METADATA_MANAGER = 1;
   INGRESS = 2;
+  LOCAL_METADATA_STORE = 3;
+  LOCAL_METADATA_STORE_CLIENT = 4;
 }
 

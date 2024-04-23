@@ -11,48 +11,20 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use enum_map::Enum;
 
+use restate_types::config::Configuration;
+use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
 
-use crate::metadata::LogletParams;
-use crate::{Error, LogRecord, LsnExt, Options};
+use crate::{Error, LogRecord, LsnExt, ProviderError};
 
-/// An enum with the list of supported loglet providers.
-/// For each variant we must have a corresponding implementation of the
-/// [`crate::loglet::Loglet`] trait
-#[derive(
-    Debug,
-    Clone,
-    Hash,
-    Eq,
-    PartialEq,
-    Copy,
-    serde::Serialize,
-    serde::Deserialize,
-    Enum,
-    strum_macros::EnumIter,
-)]
-pub enum ProviderKind {
-    /// A file-backed loglet.
-    File,
-    #[cfg(any(test, feature = "memory_loglet"))]
-    Memory,
-}
-
-pub fn provider_default_config(kind: ProviderKind) -> serde_json::Value {
+pub fn create_provider(kind: ProviderKind) -> Result<Arc<dyn LogletProvider>, ProviderError> {
     match kind {
-        ProviderKind::File => crate::loglets::file_loglet::default_config(),
-        #[cfg(any(test, feature = "memory_loglet"))]
-        ProviderKind::Memory => crate::loglets::memory_loglet::default_config(),
-    }
-}
-
-pub fn create_provider(kind: ProviderKind, options: &Options) -> Arc<dyn LogletProvider> {
-    match kind {
-        ProviderKind::File => crate::loglets::file_loglet::FileLogletProvider::new(options),
-        #[cfg(any(test, feature = "memory_loglet"))]
-        ProviderKind::Memory => crate::loglets::memory_loglet::MemoryLogletProvider::new(),
+        ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
+            Configuration::current().load().bifrost.local.data_dir(),
+            Configuration::mapped_updateable(|c| &c.bifrost.local.rocksdb),
+        )?),
+        ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),
     }
 }
 
@@ -95,12 +67,10 @@ pub trait LogletProvider: Send + Sync {
     async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>, Error>;
 
     // Hook for handling lazy initialization
-    async fn start(&self) -> Result<(), Error> {
-        Ok(())
-    }
+    fn start(&self) -> Result<(), ProviderError>;
 
     // Hook for handling graceful shutdown
-    async fn shutdown(&self) -> Result<(), Error> {
+    async fn shutdown(&self) -> Result<(), ProviderError> {
         Ok(())
     }
 }
