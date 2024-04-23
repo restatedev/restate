@@ -18,6 +18,8 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_serde_util::ByteCount;
+
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 use crate::PlainNodeId;
@@ -35,7 +37,6 @@ const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 pub struct CommonOptions {
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.
-    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
     pub roles: EnumSet<Role>,
 
     /// # Node Name
@@ -161,11 +162,13 @@ pub struct CommonOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_low_priority_bg_threads: Option<NonZeroUsize>,
 
-    /// # Total memory limit for rocksdb caches and memtables. This includes memory
-    /// for uncompressed block cache and all memtables by all open databases.
+    /// # Total memory limit for rocksdb caches and memtables.
     ///
-    /// The memory size used for rocksdb caches. Default is 4GB.
-    pub rocksdb_total_memory_limit: u64,
+    /// This includes memory for uncompressed block cache and all memtables by all open databases.
+    /// The memory size used for rocksdb caches.
+    #[serde_as(as = "ByteCount<false>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount<false>"))]
+    pub rocksdb_total_memory_size: u64,
 
     /// # Rocksdb total memtable size limit
     ///
@@ -173,9 +176,9 @@ pub struct CommonOptions {
     /// memtables can eat up from the value in rocksdb_total_memory_limit. When
     /// set to 0, memtables can take all available memory up to the value specified
     /// in rocksdb_total_memory_limit.
-    ///
-    /// Default is 0
-    pub rocksdb_total_memtables_size_limit: u64,
+    #[serde_as(as = "ByteCount<true>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount<true>"))]
+    pub rocksdb_total_memtables_size: u64,
 
     /// # Rocksdb Background Threads
     ///
@@ -187,7 +190,6 @@ pub struct CommonOptions {
     /// # Rocksdb High Priority Background Threads
     ///
     /// The number of threads to reserve to high priority Rocksdb background tasks.
-    /// Defaults to 2.
     pub rocksdb_high_priority_bg_threads: NonZeroU32,
 
     /// RocksDb base settings and memory limits that get applied on every database
@@ -279,8 +281,8 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_size_limit: 0,
-            rocksdb_total_memory_limit: 4_000_000_000, // 4GB
+            rocksdb_total_memtables_size: 0,
+            rocksdb_total_memory_size: 4_000_000_000, // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb: Default::default(),

@@ -337,7 +337,7 @@ mod tests {
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
         assert!(invocation_state_machine.handle_task_error().is_some());
@@ -354,7 +354,7 @@ mod tests {
     async fn handle_requires_ack() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), 10),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
         );
 
         let abort_handle = tokio::spawn(async {}).abort_handle();

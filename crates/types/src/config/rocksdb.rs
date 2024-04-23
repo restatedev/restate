@@ -11,7 +11,11 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
+use restate_serde_util::ByteCount;
+
+#[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "RocksDbOptions", default))]
@@ -24,13 +28,16 @@ pub struct RocksDbOptions {
     /// The size of a single memtable. Once memtable exceeds this size, it is marked
     /// immutable and a new one is created. Default is 256MB per memtable.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<ByteCount<false>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<ByteCount<false>>"))]
     rocksdb_write_buffer_size: Option<usize>,
 
     /// # Maximum total WAL size
     ///
     /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
-    /// Default is 2GB.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<ByteCount<false>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<ByteCount<false>>"))]
     rocksdb_max_total_wal_size: Option<u64>,
 
     /// # Disable WAL
@@ -45,8 +52,6 @@ pub struct RocksDbOptions {
     ///
     /// when WAL is enabled, this allows Restate server to control WAL flushes in batches.
     /// This trades off latency for IO throughput.
-    ///
-    /// Default: True.
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_batch_wal_flushes: Option<bool>,
 
@@ -67,9 +72,9 @@ pub struct RocksDbOptions {
     /// If non-zero, we perform bigger reads when doing compaction. If you're
     /// running RocksDB on spinning disks, you should set this to at least 2MB.
     /// That way RocksDB's compaction is doing sequential instead of random reads.
-    ///
-    /// Default: 2MB (2 * 1024 * 1024)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<ByteCount<true>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<ByteCount<true>>"))]
     rocksdb_compaction_readahead_size: Option<usize>,
 
     /// # RocksDB statistics level
@@ -114,7 +119,7 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_max_total_wal_size(&self) -> u64 {
-        self.rocksdb_max_total_wal_size.unwrap_or(2 * (1 << 30))
+        self.rocksdb_max_total_wal_size.unwrap_or(2_000_000_000)
     }
 
     pub fn rocksdb_disable_wal(&self) -> bool {
@@ -139,8 +144,7 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_compaction_readahead_size(&self) -> usize {
-        self.rocksdb_compaction_readahead_size
-            .unwrap_or(2 * 1024 * 1024)
+        self.rocksdb_compaction_readahead_size.unwrap_or(2_000_000)
     }
 
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {

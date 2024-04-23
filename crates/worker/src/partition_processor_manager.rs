@@ -146,8 +146,8 @@ impl PartitionProcessorManager {
         PartitionProcessor::new(
             partition_id,
             partition_key_range,
-            options.num_timers_in_memory_limit,
-            options.internal_queue_length,
+            options.num_timers_in_memory_limit(),
+            options.internal_queue_length(),
             self.invoker_handle.clone(),
             self.rocksdb_storage.clone(),
         )
