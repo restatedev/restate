@@ -62,7 +62,7 @@ The profiler will generate a flamegraph under `target/criterion/<name_of_benchma
 ## Changing Restate's configuration
 
 The benchmarks spawn Restate with a default configuration.
-You can [overwrite this configuration by specifying environment variables](https://docs.restate.dev/restate/configuration) of the form `RESTATE_WORKER__PARTITIONS=1337`.
+You can [overwrite this configuration by specifying environment variables](https://docs.restate.dev/operate/configuration) of the form `RESTATE_WORKER__PARTITIONS=1337`.
 
 ## Changing the benchmark parameters
 
