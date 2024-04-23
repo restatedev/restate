@@ -239,11 +239,6 @@ impl InboxedInvocation {
             idempotency: service_invocation.idempotency,
         }
     }
-
-    pub fn append_response_sink(&mut self, new_sink: ServiceInvocationResponseSink) {
-        self.response_sinks.insert(new_sink);
-        self.timestamps.update();
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
