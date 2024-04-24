@@ -103,6 +103,8 @@ pub struct LocalMetadataStore {
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
+    manual_wal_flush: bool,
+
     // for creating other senders
     request_tx: RequestSender,
 }
@@ -111,7 +113,7 @@ impl LocalMetadataStore {
     pub fn new(
         data_dir: impl AsRef<Path>,
         request_queue_length: usize,
-        rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
+        mut rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> std::result::Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(request_queue_length);
 
@@ -127,23 +129,32 @@ impl LocalMetadataStore {
         .ensure_column_families(cfs)
         .build_as_db();
 
+        let options = rocksdb_options.load();
+        let write_opts = Self::write_options(options);
+        let manual_wal_flush =
+            !options.rocksdb_disable_wal() && options.rocksdb_batch_wal_flushes();
+
         let db = db_manager.open_db(rocksdb_options, db_spec)?;
 
         Ok(Self {
             db,
-            write_opts: Self::default_write_options(),
+            write_opts,
             buffer: BytesMut::default(),
+            manual_wal_flush,
             request_rx,
             request_tx,
         })
     }
 
-    fn default_write_options() -> WriteOptions {
+    fn write_options(rocks_db_options: &RocksDbOptions) -> WriteOptions {
         let mut write_opts = WriteOptions::default();
 
-        // make sure that we write to wal and sync to disc
-        write_opts.disable_wal(false);
-        write_opts.set_sync(true);
+        write_opts.disable_wal(rocks_db_options.rocksdb_disable_wal());
+
+        if !rocks_db_options.rocksdb_disable_wal() {
+            // always sync if we have wal enabled
+            write_opts.set_sync(true);
+        }
 
         write_opts
     }
@@ -270,6 +281,11 @@ impl LocalMetadataStore {
         let cf_handle = self.kv_cf_handle();
         self.db
             .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &self.write_opts)?;
+
+        if self.manual_wal_flush {
+            self.db.flush_wal(true)?;
+        }
+
         Ok(())
     }
 

@@ -182,7 +182,7 @@ impl LogStoreWriter {
         write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
 
         if !self.manual_wal_flush && !opts.rocksdb.rocksdb_disable_wal() {
-             // if we are not manually flushing the wal, we need to configure the sync behaviour
+            // if we are not manually flushing the wal, we need to configure the sync behaviour
             // for the write operation explicitly
             write_opts.set_sync(opts.sync_wal_before_ack);
         }

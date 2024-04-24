@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{data_dir, RocksDbOptions};
+use super::{data_dir, RocksDbOptions, RocksDbOptionsBuilder};
 use crate::net::BindAddress;
 
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -45,10 +45,15 @@ impl MetadataStoreOptions {
 
 impl Default for MetadataStoreOptions {
     fn default() -> Self {
+        let rocksdb = RocksDbOptionsBuilder::default()
+            .rocksdb_disable_wal(Some(false))
+            .rocksdb_batch_wal_flushes(Some(false))
+            .build()
+            .expect("valid RocksDbOptions");
         Self {
             bind_address: "0.0.0.0:5123".parse().expect("valid bind address"),
             request_queue_length: NonZeroUsize::new(32).unwrap(),
-            rocksdb: Default::default(),
+            rocksdb,
         }
     }
 }
