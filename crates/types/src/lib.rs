@@ -17,6 +17,7 @@ mod node_id;
 mod version;
 
 pub mod arc_util;
+pub mod art;
 pub mod config;
 pub mod deployment;
 pub mod epoch;

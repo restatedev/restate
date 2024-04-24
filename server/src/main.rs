@@ -8,8 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::error::Error;
+use std::io::IsTerminal;
+use std::io::Write as _;
+use std::ops::Div;
+use std::path::PathBuf;
+use std::time::Duration;
+
 use clap::Parser;
 use codederror::CodedError;
+use tokio::io;
+use tracing::debug;
+use tracing::error;
+use tracing::{info, trace, warn};
+
 use restate_core::TaskCenterBuilder;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
@@ -18,16 +30,9 @@ use restate_server::build_info;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
+use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::Configuration;
-use std::error::Error;
-use std::ops::Div;
-use std::path::PathBuf;
-use std::time::Duration;
-use tokio::io;
-use tracing::debug;
-use tracing::error;
-use tracing::{info, trace, warn};
 
 mod signal;
 
@@ -139,6 +144,16 @@ fn main() {
     if cli_args.dump_config {
         println!("{}", config.dump().expect("config is toml serializable"));
         std::process::exit(0);
+    }
+    if std::io::stdout().is_terminal() {
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "{}",
+            render_restate_logo(!config.common.log_disable_ansi_codes)
+        );
+        let _ = writeln!(&mut stdout, "            Restate");
+        let _ = writeln!(&mut stdout, "       https://restate.dev/");
     }
 
     // Setting initial configuration as global current

@@ -13,7 +13,6 @@ use codederror::CodedError;
 use restate_types::arc_util::ArcSwapExt;
 use std::time::Duration;
 use tonic::transport::Channel;
-use tracing::info;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -87,8 +86,6 @@ impl AdminRole {
         _bootstrap_cluster: bool,
         bifrost: Bifrost,
     ) -> Result<(), anyhow::Error> {
-        info!("Running admin role");
-
         let tc = task_center();
 
         tc.spawn_child(
