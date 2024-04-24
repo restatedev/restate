@@ -98,14 +98,7 @@ jobs:
         uses: addnab/docker-run-action@v3
         with:
           image: ghcr.io/restatedev/dev-tools:latest
-          options: -v ${{ github.workspace }}:/workspace -w /workspace -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
-          run: git rev-parse --is-inside-work-tree
-
-      - name: Test rev-parse in docker in server
-        uses: addnab/docker-run-action@v3
-        with:
-          image: ghcr.io/restatedev/dev-tools:latest
-          options: -v ${{ github.workspace }}:/workspace -w /workspace/server -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
+          options: -v ${{ github.workspace }}:/restate -w /restate -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
           run: git rev-parse --is-inside-work-tree
 
       - name: Compile Linux binaries
@@ -113,7 +106,7 @@ jobs:
         uses: addnab/docker-run-action@v3
         with:
           image: ghcr.io/restatedev/dev-tools:latest
-          options: -v ${{ github.workspace }}:/workspace -w /workspace -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
+          options: -v ${{ github.workspace }}:/restate -w /restate -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
           run: |
             cargo build -vv --release --bins --target ${{ matrix.build.target }}
 
