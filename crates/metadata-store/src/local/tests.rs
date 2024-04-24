@@ -299,11 +299,9 @@ async fn start_metadata_store(
     rocksdb_path: impl AsRef<Path> + Sized,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let store = LocalMetadataStore::new(
-        rocksdb_path,
-        32,
-        Configuration::mapped_updateable(|config| &config.common.rocksdb),
-    )?;
+    let store = LocalMetadataStore::new(rocksdb_path, 32, || {
+        Configuration::mapped_updateable(|config| &config.common.rocksdb)
+    })?;
 
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
