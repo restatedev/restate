@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, Owner, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::arc_util::Updateable;
-use restate_types::config::RocksDbOptions;
+use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use rocksdb::{BoundColumnFamily, DBCompressionType, DB};
 
@@ -50,22 +49,28 @@ pub struct RocksDbLogStore {
 
 impl RocksDbLogStore {
     pub fn new(
-        data_dir: PathBuf,
+        options: &LocalLogletOptions,
         updateable_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> Result<Self, LogStoreError> {
         let db_manager = RocksDbManager::get();
 
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let db_spec =
-            DbSpecBuilder::new(DbName::new(DB_NAME), Owner::Bifrost, data_dir, db_options())
-                .add_cf_pattern(CfExactPattern::new(DATA_CF), cf_data_options)
-                .add_cf_pattern(CfExactPattern::new(METADATA_CF), cf_metadata_options)
-                // not very important but it's to reduce the number of merges by flushing.
-                // it's also a small cf so it should be quick.
-                .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-                .ensure_column_families(cfs)
-                .build_as_db();
+        let data_dir = options.data_dir();
+
+        let db_spec = DbSpecBuilder::new(
+            DbName::new(DB_NAME),
+            Owner::Bifrost,
+            data_dir,
+            db_options(options),
+        )
+        .add_cf_pattern(CfExactPattern::new(DATA_CF), cf_data_options)
+        .add_cf_pattern(CfExactPattern::new(METADATA_CF), cf_metadata_options)
+        // not very important but it's to reduce the number of merges by flushing.
+        // it's also a small cf so it should be quick.
+        .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+        .ensure_column_families(cfs)
+        .build_as_db();
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
         let _ = db_manager.open_db(updateable_options, db_spec)?;
@@ -106,12 +111,17 @@ impl RocksDbLogStore {
     }
 }
 
-fn db_options() -> rocksdb::Options {
+fn db_options(options: &LocalLogletOptions) -> rocksdb::Options {
     let mut opts = rocksdb::Options::default();
     //
     // no need to retain 1000 log files by default.
     //
     opts.set_keep_log_file_num(10);
+
+    if !options.rocksdb.rocksdb_disable_wal() {
+        opts.set_manual_wal_flush(options.batch_wal_flushes);
+    }
+
     opts
 }
 

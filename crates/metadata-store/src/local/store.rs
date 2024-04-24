@@ -103,8 +103,6 @@ pub struct LocalMetadataStore {
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
-    manual_wal_flush: bool,
-
     // for creating other senders
     request_tx: RequestSender,
 }
@@ -131,8 +129,6 @@ impl LocalMetadataStore {
 
         let options = rocksdb_options.load();
         let write_opts = Self::write_options(options);
-        let manual_wal_flush =
-            !options.rocksdb_disable_wal() && options.rocksdb_batch_wal_flushes();
 
         let db = db_manager.open_db(rocksdb_options, db_spec)?;
 
@@ -140,7 +136,6 @@ impl LocalMetadataStore {
             db,
             write_opts,
             buffer: BytesMut::default(),
-            manual_wal_flush,
             request_rx,
             request_tx,
         })
@@ -281,10 +276,6 @@ impl LocalMetadataStore {
         let cf_handle = self.kv_cf_handle();
         self.db
             .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &self.write_opts)?;
-
-        if self.manual_wal_flush {
-            self.db.flush_wal(true)?;
-        }
 
         Ok(())
     }

@@ -67,6 +67,14 @@ pub struct LocalLogletOptions {
     /// prior to the background sync, the write is still durable if the OS didn't crash.
     pub sync_wal_before_ack: bool,
 
+    /// # Flush WAL in batches
+    ///
+    /// when WAL is enabled, this allows Restate server to control WAL flushes in batches.
+    /// This trades off latency for IO throughput.
+    ///
+    /// Default: True.
+    pub batch_wal_flushes: bool,
+
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
     data_dir: std::sync::Arc<tempfile::TempDir>,
@@ -92,6 +100,7 @@ impl Default for LocalLogletOptions {
             .unwrap();
         Self {
             rocksdb,
+            batch_wal_flushes: true,
             sync_wal_before_ack: true,
             writer_batch_commit_count: 500,
             writer_batch_commit_duration: Duration::from_nanos(5).into(),

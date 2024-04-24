@@ -47,7 +47,6 @@ impl Default for MetadataStoreOptions {
     fn default() -> Self {
         let rocksdb = RocksDbOptionsBuilder::default()
             .rocksdb_disable_wal(Some(false))
-            .rocksdb_batch_wal_flushes(Some(false))
             .build()
             .expect("valid RocksDbOptions");
         Self {
