@@ -18,14 +18,10 @@ use rdkafka::{ClientConfig, Message};
 use restate_ingress_dispatcher::{
     DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
 };
-use restate_pb::restate::internal::Event;
-use restate_schema_api::subscription::{
-    EventReceiverServiceType, KafkaOrderingKeyFormat, Sink, Source, Subscription,
-};
+use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::SubscriptionId;
-use restate_types::invocation::SpanRelation;
+use restate_types::invocation::{Header, SpanRelation};
 use restate_types::message::MessageIndex;
-use std::collections::HashMap;
 use std::fmt;
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
@@ -51,7 +47,8 @@ pub enum Error {
 
 type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
 
-pub struct KafkaDeduplicationId(String);
+#[derive(Debug, Hash)]
+pub struct KafkaDeduplicationId(String, String, i32);
 
 impl fmt::Display for KafkaDeduplicationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -61,20 +58,12 @@ impl fmt::Display for KafkaDeduplicationId {
 
 impl DeduplicationId for KafkaDeduplicationId {
     fn requires_proxying(subscription: &Subscription) -> bool {
-        !matches!(
-            (subscription.source(), subscription.sink()),
-            (
-                Source::Kafka {
-                    ordering_key_format: KafkaOrderingKeyFormat::ConsumerGroupTopicPartition,
-                    ..
-                },
-                Sink::Service {
-                    ty: EventReceiverServiceType::VirtualObject {
-                        ordering_key_is_key: true,
-                    },
-                    ..
-                },
-            )
+        matches!(
+            subscription.sink(),
+            Sink::Service {
+                ty: EventReceiverServiceType::Service,
+                ..
+            },
         )
     }
 }
@@ -98,11 +87,6 @@ impl MessageSender {
         consumer_group_id: &str,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), Error> {
-        let Source::Kafka {
-            ordering_key_format,
-            ..
-        } = self.subscription.source();
-
         // Prepare ingress span
         let ingress_span = info_span!(
             "kafka_ingress_consume",
@@ -115,27 +99,25 @@ impl MessageSender {
         info!(parent: &ingress_span, "Processing Kafka ingress request");
         let ingress_span_context = ingress_span.context().span().span_context().clone();
 
-        let event = Event {
-            ordering_key: Self::generate_ordering_key(ordering_key_format, consumer_group_id, msg),
-            key: if let Some(k) = msg.key() {
-                Bytes::copy_from_slice(k)
-            } else {
-                Bytes::default()
-            },
-            payload: if let Some(p) = msg.payload() {
-                Bytes::copy_from_slice(p)
-            } else {
-                Bytes::default()
-            },
-            attributes: Self::generate_events_attributes(msg, self.subscription.id()),
+        let key = if let Some(k) = msg.key() {
+            Bytes::copy_from_slice(k)
+        } else {
+            Bytes::default()
         };
+        let payload = if let Some(p) = msg.payload() {
+            Bytes::copy_from_slice(p)
+        } else {
+            Bytes::default()
+        };
+        let headers = Self::generate_events_attributes(msg, self.subscription.id());
 
         let req = IngressDispatcherRequest::event(
             &self.subscription,
-            event,
+            key,
+            payload,
             SpanRelation::Parent(ingress_span_context),
             Some(Self::generate_deduplication_id(consumer_group_id, msg)),
-            vec![],
+            headers,
         )
         .map_err(|cause| Error::Event {
             topic: msg.topic().to_string(),
@@ -152,44 +134,30 @@ impl MessageSender {
         Ok(())
     }
 
-    fn generate_ordering_key(
-        ordering_key_format: &KafkaOrderingKeyFormat,
-        ordering_key_prefix: &str,
-        msg: &impl Message,
-    ) -> String {
-        let partition = msg.partition().to_string();
-
-        let mut buf =
-            String::with_capacity(ordering_key_prefix.len() + msg.topic().len() + partition.len());
-        buf.push_str(ordering_key_prefix);
-        buf.push_str(msg.topic());
-        buf.push_str(&partition);
-
-        if let (KafkaOrderingKeyFormat::ConsumerGroupTopicPartitionKey, Some(key)) =
-            (ordering_key_format, msg.key())
-        {
-            buf.push_str(&base64::prelude::BASE64_STANDARD.encode(key));
-        }
-
-        buf
-    }
-
     fn generate_events_attributes(
         msg: &impl Message,
         subscription_id: SubscriptionId,
-    ) -> HashMap<String, String> {
-        let mut attributes = HashMap::with_capacity(3);
-        attributes.insert("kafka.offset".to_string(), msg.offset().to_string());
-        attributes.insert("kafka.topic".to_string(), msg.topic().to_string());
-        attributes.insert("kafka.partition".to_string(), msg.partition().to_string());
+    ) -> Vec<Header> {
+        let mut headers = Vec::with_capacity(6);
+        headers.push(Header::new("kafka.offset", msg.offset().to_string()));
+        headers.push(Header::new("kafka.topic", msg.topic()));
+        headers.push(Header::new("kafka.partition", msg.partition().to_string()));
         if let Some(timestamp) = msg.timestamp().to_millis() {
-            attributes.insert("kafka.timestamp".to_string(), timestamp.to_string());
+            headers.push(Header::new("kafka.timestamp", timestamp.to_string()));
         }
-        attributes.insert(
+        headers.push(Header::new(
             "restate.subscription.id".to_string(),
             subscription_id.to_string(),
-        );
-        attributes
+        ));
+
+        if let Some(key) = msg.key() {
+            headers.push(Header::new(
+                "kafka.key",
+                &*base64::prelude::BASE64_URL_SAFE.encode(key),
+            ));
+        }
+
+        headers
     }
 
     fn generate_deduplication_id(
@@ -197,11 +165,11 @@ impl MessageSender {
         msg: &impl Message,
     ) -> (KafkaDeduplicationId, MessageIndex) {
         (
-            KafkaDeduplicationId(format!(
-                "{consumer_group}-{}-{}",
-                msg.topic(),
-                msg.partition()
-            )),
+            KafkaDeduplicationId(
+                consumer_group.to_owned(),
+                msg.topic().to_owned(),
+                msg.partition(),
+            ),
             msg.offset() as u64,
         )
     }

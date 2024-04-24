@@ -290,7 +290,6 @@ impl SchemaUpdater {
                 Source::Kafka {
                     cluster: cluster_name.to_string(),
                     topic: topic_name.to_string(),
-                    ordering_key_format: Default::default(),
                 }
             }
             _ => {
@@ -323,17 +322,23 @@ impl SchemaUpdater {
                             sink.clone(),
                         ))
                     })?;
-                if !service_schemas.handlers.contains_key(handler_name) {
-                    return Err(SchemaError::Subscription(
-                        SubscriptionError::SinkServiceNotFound(sink),
-                    ));
-                }
+                let handler_schemas =
+                    service_schemas.handlers.get(handler_name).ok_or_else(|| {
+                        SchemaError::Subscription(SubscriptionError::SinkServiceNotFound(
+                            sink.clone(),
+                        ))
+                    })?;
 
-                let ty = match service_schemas.ty {
-                    ServiceType::VirtualObject => EventReceiverServiceType::VirtualObject {
-                        ordering_key_is_key: false,
-                    },
-                    ServiceType::Service => EventReceiverServiceType::Service,
+                let ty = match (service_schemas.ty, handler_schemas.target_meta.handler_ty) {
+                    (ServiceType::VirtualObject, HandlerType::Exclusive) => {
+                        EventReceiverServiceType::VirtualObject
+                    }
+                    (ServiceType::VirtualObject, HandlerType::Shared) => {
+                        return Err(SchemaError::Subscription(
+                            SubscriptionError::InvalidSinkSharedHandler(sink),
+                        ))
+                    }
+                    (ServiceType::Service, _) => EventReceiverServiceType::Service,
                 };
 
                 Sink::Service {
