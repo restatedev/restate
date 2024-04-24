@@ -181,6 +181,12 @@ impl LogStoreWriter {
         let mut write_opts = rocksdb::WriteOptions::new();
         write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
 
+        if !self.manual_wal_flush && !opts.rocksdb.rocksdb_disable_wal() {
+             // if we are not manually flushing the wal, we need to configure the sync behaviour
+            // for the write operation explicitly
+            write_opts.set_sync(opts.sync_wal_before_ack);
+        }
+
         trace!(
             "Committing local loglet current write batch: {} items",
             write_batch.len(),
@@ -197,7 +203,7 @@ impl LogStoreWriter {
         }
 
         if self.manual_wal_flush {
-            // WAL flush is done in the forground, but sync will happen in the background to avoid
+            // WAL flush is done in the foreground, but sync will happen in the background to avoid
             // blocking IO.
             if let Err(e) = self.rocksdb.flush_wal(opts.sync_wal_before_ack) {
                 warn!("Failed to flush rocksdb WAL in local loglet : {}", e);
