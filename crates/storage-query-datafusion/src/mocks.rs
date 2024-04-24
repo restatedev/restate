@@ -28,7 +28,6 @@ use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::identifiers::{DeploymentId, ServiceRevision};
 use restate_types::invocation::ServiceType;
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
 
 #[derive(Default, Clone, Debug)]
@@ -87,35 +86,27 @@ impl MockQueryEngine {
             + Debug
             + Clone
             + 'static,
-    ) -> (Self, impl Future<Output = ()>) {
+    ) -> Self {
         // Prepare Rocksdb
         task_center().run_in_scope_sync("db-manager-init", None, || {
             RocksDbManager::init(Constant::new(CommonOptions::default()))
         });
         let worker_options = WorkerOptions::default();
-        let (rocksdb, writer) = RocksDBStorage::open(
-            worker_options.data_dir(),
-            Constant::new(worker_options.rocksdb),
+        let rocksdb = RocksDBStorage::open(
+            Constant::new(worker_options.storage.clone()),
+            Constant::new(worker_options.storage.rocksdb),
         )
         .await
         .expect("RocksDB storage creation should succeed");
-        let (signal, watch) = drain::channel();
-        let writer_join_handle = writer.run(watch);
 
-        let query_engine = Self(
+        Self(
             rocksdb.clone(),
             QueryContext::from_options(&QueryEngineOptions::default(), rocksdb, status, schemas)
                 .unwrap(),
-        );
-
-        // Return shutdown future
-        (query_engine, async {
-            signal.drain().await;
-            writer_join_handle.await.unwrap().unwrap();
-        })
+        )
     }
 
-    pub async fn create() -> (Self, impl Future<Output = ()>) {
+    pub async fn create() -> Self {
         Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
     }
 

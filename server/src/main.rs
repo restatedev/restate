@@ -211,7 +211,7 @@ fn main() {
 
                 WipeMode::wipe(
                     cli_args.wipe.as_ref(),
-                    config.worker.data_dir(),
+                    config.worker.storage.data_dir(),
                     config.bifrost.local.data_dir(),
                     config.metadata_store.data_dir(),
                 )

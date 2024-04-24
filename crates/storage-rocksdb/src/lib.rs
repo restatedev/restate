@@ -21,11 +21,9 @@ pub mod scan;
 pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;
-mod writer;
 
 use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
-use crate::writer::{Writer, WriterHandle};
 use crate::TableKind::{
     Deduplication, Idempotency, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine,
     ServiceStatus, State, Timers,
@@ -38,7 +36,7 @@ use restate_rocksdb::{
 };
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
-use restate_types::config::RocksDbOptions;
+use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::BoundColumnFamily;
 use rocksdb::DBCompressionType;
@@ -47,11 +45,9 @@ use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::MultiThreaded;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use writer::JoinHandle as RocksDBWriterJoinHandle;
-pub use writer::Writer as RocksDBWriter;
+use self::keys::KeyKind;
 
 pub type DB = rocksdb::OptimisticTransactionDB<MultiThreaded>;
 type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
@@ -59,21 +55,11 @@ type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
 
-type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
-
 // matches the default directory name
 const DB_NAME: &str = "db";
 
-const STATE_TABLE_NAME: &str = "state";
-const INVOCATION_STATUS_TABLE_NAME: &str = "invocation_status";
-const SERVICE_STATUS_TABLE_NAME: &str = "service_status";
-const IDEMPOTENCY_TABLE_NAME: &str = "idempotency";
-const INBOX_TABLE_NAME: &str = "inbox";
-const OUTBOX_TABLE_NAME: &str = "outbox";
-const DEDUP_TABLE_NAME: &str = "dedup";
-const FSM_TABLE_NAME: &str = "fsm";
-const TIMERS_TABLE_NAME: &str = "timers";
-const JOURNAL_TABLE_NAME: &str = "journal";
+pub const PARTITION_DATA_CF: &str = "partition-data";
+pub const PARTITION_KV_CF: &str = "partition-kv";
 
 pub(crate) type Result<T> = std::result::Result<T, StorageError>;
 
@@ -85,18 +71,17 @@ pub enum TableScanIterationDecision<R> {
 }
 
 #[inline]
-const fn cf_name(kind: TableKind) -> &'static str {
+const fn cf_name_prefix(kind: TableKind) -> &'static str {
     match kind {
-        State => STATE_TABLE_NAME,
-        InvocationStatus => INVOCATION_STATUS_TABLE_NAME,
-        ServiceStatus => SERVICE_STATUS_TABLE_NAME,
-        Inbox => INBOX_TABLE_NAME,
-        Outbox => OUTBOX_TABLE_NAME,
-        Deduplication => DEDUP_TABLE_NAME,
-        PartitionStateMachine => FSM_TABLE_NAME,
-        Timers => TIMERS_TABLE_NAME,
-        Journal => JOURNAL_TABLE_NAME,
-        Idempotency => IDEMPOTENCY_TABLE_NAME,
+        // KV - Point Lookups
+        State
+        | InvocationStatus
+        | ServiceStatus
+        | Idempotency
+        | Deduplication
+        | PartitionStateMachine => PARTITION_KV_CF,
+        // DATA - Scans
+        Inbox | Journal | Outbox | Timers => PARTITION_DATA_CF,
     }
 }
 
@@ -115,9 +100,9 @@ pub enum TableKind {
 }
 
 impl TableKind {
-    pub const fn cf_name(&self) -> &'static str {
-        cf_name(*self)
-    }
+    // pub const fn cf_name(&self) -> &'static str {
+    //     cf_name_prefix(*self)
+    // }
 
     pub fn all() -> core::slice::Iter<'static, TableKind> {
         static VARIANTS: &[TableKind] = &[
@@ -133,6 +118,37 @@ impl TableKind {
             Journal,
         ];
         VARIANTS.iter()
+    }
+
+    pub const fn key_kinds(self) -> &'static [KeyKind] {
+        match self {
+            State => &[KeyKind::State],
+            InvocationStatus => &[KeyKind::InvocationStatus],
+            ServiceStatus => &[KeyKind::ServiceStatus],
+            Idempotency => &[KeyKind::Idempotency],
+            Inbox => &[KeyKind::Inbox],
+            Outbox => &[KeyKind::Outbox],
+            Deduplication => &[KeyKind::Deduplication],
+            PartitionStateMachine => &[KeyKind::Fsm],
+            Timers => &[KeyKind::Timers],
+            Journal => &[KeyKind::Journal],
+        }
+    }
+
+    pub fn valid_key_prefix(self, prefix: &[u8]) -> bool {
+        self.extract_key_kind(prefix).is_some()
+    }
+
+    pub fn extract_key_kind(self, prefix: &[u8]) -> Option<KeyKind> {
+        if prefix.len() < KeyKind::SERIALIZED_LENGTH {
+            return None;
+        }
+        let slice = prefix[..KeyKind::SERIALIZED_LENGTH].try_into().unwrap();
+        let Some(kind) = KeyKind::from_bytes(slice) else {
+            // warning
+            return None;
+        };
+        self.key_kinds().iter().find(|k| **k == kind).copied()
     }
 }
 
@@ -157,7 +173,6 @@ pub enum BuildError {
 
 pub struct RocksDBStorage {
     db: Arc<DB>,
-    writer_handle: WriterHandle,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -166,7 +181,6 @@ impl std::fmt::Debug for RocksDBStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RocksDBStorage")
             .field("db", &self.db)
-            .field("writer_handle", &self.writer_handle)
             .field("key_buffer", &self.key_buffer)
             .field("value_buffer", &self.value_buffer)
             .finish()
@@ -177,7 +191,6 @@ impl Clone for RocksDBStorage {
     fn clone(&self) -> Self {
         RocksDBStorage {
             db: self.db.clone(),
-            writer_handle: self.writer_handle.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -189,6 +202,12 @@ fn db_options() -> rocksdb::Options {
     // no need to retain 1000 log files by default.
     //
     db_options.set_keep_log_file_num(1);
+
+    // we always need to enable atomic flush in case that the user disables wal at runtime
+    db_options.set_atomic_flush(true);
+
+    // we always enable manual wal flushing in case that the user enables wal at runtime
+    db_options.set_manual_wal_flush(true);
 
     db_options
 }
@@ -224,34 +243,35 @@ impl RocksDBStorage {
     }
 
     pub async fn open(
-        data_dir: PathBuf,
+        mut storage_opts: impl Updateable<StorageOptions> + Send + 'static,
         updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
-    ) -> std::result::Result<(Self, Writer), BuildError> {
+    ) -> std::result::Result<Self, BuildError> {
         let cfs = vec![
             //
             // keyed by partition key + user key
             //
-            CfName::new(cf_name(Inbox)),
-            CfName::new(cf_name(State)),
-            CfName::new(cf_name(InvocationStatus)),
-            CfName::new(cf_name(ServiceStatus)),
-            CfName::new(cf_name(Journal)),
-            CfName::new(cf_name(Idempotency)),
+            CfName::new(cf_name_prefix(Inbox)),
+            CfName::new(cf_name_prefix(State)),
+            CfName::new(cf_name_prefix(InvocationStatus)),
+            CfName::new(cf_name_prefix(ServiceStatus)),
+            CfName::new(cf_name_prefix(Journal)),
+            CfName::new(cf_name_prefix(Idempotency)),
             //
             // keyed by partition id + suffix
             //
-            CfName::new(cf_name(Outbox)),
-            CfName::new(cf_name(Timers)),
+            CfName::new(cf_name_prefix(Outbox)),
+            CfName::new(cf_name_prefix(Timers)),
             // keyed by partition_id + partition_id
-            CfName::new(cf_name(Deduplication)),
+            CfName::new(cf_name_prefix(Deduplication)),
             // keyed by partition_id + u64
-            CfName::new(cf_name(PartitionStateMachine)),
+            CfName::new(cf_name_prefix(PartitionStateMachine)),
         ];
 
+        let options = storage_opts.load();
         let db_spec = DbSpecBuilder::new(
             DbName::new(DB_NAME),
             Owner::PartitionProcessor,
-            data_dir,
+            options.data_dir(),
             db_options(),
         )
         // At the moment, all CFs get the same options, that might change in the future.
@@ -266,22 +286,15 @@ impl RocksDBStorage {
         .await
         .map_err(|_| ShutdownError)??;
 
-        let writer = Writer::new(rdb.clone());
-        let writer_handle = writer.create_writer_handle();
-
-        Ok((
-            Self {
-                db: rdb,
-                writer_handle,
-                key_buffer: BytesMut::default(),
-                value_buffer: BytesMut::default(),
-            },
-            writer,
-        ))
+        Ok(Self {
+            db: rdb,
+            key_buffer: BytesMut::default(),
+            value_buffer: BytesMut::default(),
+        })
     }
 
     fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
-        self.db.cf_handle(cf_name(table_kind)).expect(
+        self.db.cf_handle(cf_name_prefix(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
     }
@@ -302,6 +315,7 @@ impl RocksDBStorage {
         self.db.raw_iterator_cf_opt(&table, opts)
     }
 
+    #[track_caller]
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
@@ -309,17 +323,24 @@ impl RocksDBStorage {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, prefix) => {
+                assert!(table.valid_key_prefix(&prefix));
                 let mut it = self.prefix_iterator(table, prefix.clone());
                 it.seek(prefix);
                 it
             }
             PhysicalScan::RangeExclusive(table, start, end) => {
+                assert!(table.valid_key_prefix(&start));
+                assert!(table.valid_key_prefix(&end));
                 let mut it = self.range_iterator(table, start.clone()..end);
                 it.seek(start);
                 it
             }
             PhysicalScan::RangeOpen(table, start) => {
-                let mut it = self.range_iterator(table, start.clone()..);
+                let upper_bound = table
+                    .extract_key_kind(&start)
+                    .expect("valid start prefix in table")
+                    .exclusive_upper_bound();
+                let mut it = self.range_iterator(table, start.as_ref()..&upper_bound);
                 it.seek(start);
                 it
             }
@@ -335,7 +356,6 @@ impl RocksDBStorage {
             db,
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
-            writer_handle: &self.writer_handle,
         }
     }
 }
@@ -400,7 +420,6 @@ pub struct RocksDBTransaction<'a> {
     db: Arc<DB>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
-    writer_handle: &'a WriterHandle,
 }
 
 impl<'a> RocksDBTransaction<'a> {
@@ -428,7 +447,7 @@ impl<'a> RocksDBTransaction<'a> {
     }
 
     fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
-        self.db.cf_handle(cf_name(table_kind)).expect(
+        self.db.cf_handle(cf_name_prefix(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
     }
@@ -440,8 +459,16 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
         // because there can only be a single writer (the leading PartitionProcessor).
         let write_batch = self.txn.get_writebatch();
-
-        self.writer_handle.write(write_batch).await
+        // todo: make async and use configuration to control use of WAL
+        if write_batch.is_empty() {
+            return Ok(());
+        }
+        let mut opts = rocksdb::WriteOptions::default();
+        // We disable WAL since bifrost is our durable distributed log.
+        opts.disable_wal(true);
+        self.db
+            .write_opt(&write_batch, &rocksdb::WriteOptions::default())
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
@@ -455,17 +482,27 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, prefix) => {
+                assert!(table.valid_key_prefix(&prefix));
                 let mut it = self.prefix_iterator(table, prefix.clone());
                 it.seek(prefix);
                 it
             }
             PhysicalScan::RangeExclusive(table, start, end) => {
+                assert!(table.valid_key_prefix(&start));
+                assert!(table.valid_key_prefix(&end));
+                assert_eq!(table.extract_key_kind(&start), table.extract_key_kind(&end));
                 let mut it = self.range_iterator(table, start.clone()..end);
                 it.seek(start);
                 it
             }
+            // no such thing as range open, we must limit the iterator to the the prefix
             PhysicalScan::RangeOpen(table, start) => {
-                let mut it = self.range_iterator(table, start.clone()..);
+                let upper_bound = table
+                    .extract_key_kind(&start)
+                    .expect("valid start prefix in table")
+                    .exclusive_upper_bound();
+                let start = start.as_ref();
+                let mut it = self.range_iterator(table, start..&upper_bound);
                 it.seek(start);
                 it
             }
@@ -533,7 +570,7 @@ trait StorageAccess {
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
-        self.put_cf(K::table(), key_buffer, value);
+        self.put_cf(K::TABLE, key_buffer, value);
     }
 
     #[inline]
@@ -546,7 +583,7 @@ trait StorageAccess {
         StorageCodec::encode(&value, value_buffer).unwrap();
         let value_buffer = value_buffer.split();
 
-        self.put_cf(K::table(), key_buffer, value_buffer);
+        self.put_cf(K::TABLE, key_buffer, value_buffer);
     }
 
     #[inline]
@@ -555,7 +592,7 @@ trait StorageAccess {
         key.serialize_to(buffer);
         let buffer = buffer.split();
 
-        self.delete_cf(K::table(), buffer);
+        self.delete_cf(K::TABLE, buffer);
     }
 
     #[inline]
@@ -568,7 +605,7 @@ trait StorageAccess {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::table(), &buf) {
+        match self.get(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
@@ -605,7 +642,7 @@ trait StorageAccess {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::table(), &buf) {
+        match self.get(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
                 f(&buf, slice)

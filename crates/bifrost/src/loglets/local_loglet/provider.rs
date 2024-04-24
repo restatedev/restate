@@ -9,13 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use restate_types::arc_util::Updateable;
-use restate_types::config::{Configuration, RocksDbOptions};
+use restate_types::config::{Configuration, LocalLogletOptions, RocksDbOptions};
 use restate_types::logs::metadata::LogletParams;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
@@ -36,10 +35,10 @@ pub struct LocalLogletProvider {
 
 impl LocalLogletProvider {
     pub fn new(
-        data_dir: PathBuf,
+        options: &LocalLogletOptions,
         updateable_rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> Result<Arc<Self>, ProviderError> {
-        let log_store = RocksDbLogStore::new(data_dir, updateable_rocksdb_options)
+        let log_store = RocksDbLogStore::new(options, updateable_rocksdb_options)
             .context("RocksDb LogStore")?;
 
         metric_definitions::describe_metrics();
@@ -92,8 +91,8 @@ impl LogletProvider for LocalLogletProvider {
 
     fn start(&self) -> Result<(), ProviderError> {
         let mut updateable = Configuration::mapped_updateable(|c| &c.bifrost.local);
-        let opts = &updateable.load().rocksdb;
-        let manual_wal_flush = opts.rocksdb_batch_wal_flushes() && !opts.rocksdb_disable_wal();
+        let opts = updateable.load();
+        let manual_wal_flush = opts.batch_wal_flushes && !opts.rocksdb.rocksdb_disable_wal();
         let log_writer = self
             .log_store
             .create_writer(manual_wal_flush)

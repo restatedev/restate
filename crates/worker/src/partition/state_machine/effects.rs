@@ -987,9 +987,21 @@ impl Effects {
         }
 
         let span = if is_leader {
-            debug_span!("state_machine_effects")
+            debug_span!(
+                "state_machine_effects",
+                restate.invocation.id = tracing::field::Empty,
+                restate.invocation.target = tracing::field::Empty,
+                rpc.service = tracing::field::Empty,
+                rpc.method = tracing::field::Empty,
+            )
         } else {
-            trace_span!("state_machine_effects")
+            trace_span!(
+                "state_machine_effects",
+                restate.invocation.id = tracing::field::Empty,
+                restate.invocation.target = tracing::field::Empty,
+                rpc.service = tracing::field::Empty,
+                rpc.method = tracing::field::Empty,
+            )
         };
 
         if let Some(invocation_id) = &self.related_invocation_id {

@@ -27,6 +27,7 @@ derive_more = { workspace = true }
 drain = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+once_cell = "1.18.0"
 paste = { workspace = true }
 prost = { workspace = true }
 rocksdb = { workspace = true }
@@ -38,8 +39,6 @@ sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-once_cell = "1.18.0"
-log = "0.4.20"
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

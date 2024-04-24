@@ -35,8 +35,7 @@ pub struct WorkerOptions {
     /// The number of timers in memory limit is used to bound the amount of timers loaded in memory. If this limit is set, when exceeding it, the timers farther in the future will be spilled to disk.
     num_timers_in_memory_limit: Option<NonZeroUsize>,
 
-    #[serde(flatten)]
-    pub rocksdb: RocksDbOptions,
+    pub storage: StorageOptions,
 
     pub invoker: InvokerOptions,
 
@@ -50,23 +49,9 @@ pub struct WorkerOptions {
     ///
     /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
     bootstrap_num_partitions: NonZeroU64,
-
-    #[cfg(any(test, feature = "test-util"))]
-    #[serde(skip, default = "super::default_arc_tmp")]
-    data_dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl WorkerOptions {
-    #[cfg(not(any(test, feature = "test-util")))]
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("db")
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn data_dir(&self) -> PathBuf {
-        self.data_dir.path().join("db")
-    }
-
     pub fn internal_queue_length(&self) -> usize {
         self.internal_queue_length.into()
     }
@@ -82,19 +67,12 @@ impl WorkerOptions {
 
 impl Default for WorkerOptions {
     fn default() -> Self {
-        let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_disable_wal(Some(true))
-            .build()
-            .unwrap();
-
         Self {
             internal_queue_length: NonZeroUsize::new(64).unwrap(),
             num_timers_in_memory_limit: None,
-            rocksdb,
+            storage: StorageOptions::default(),
             invoker: Default::default(),
             bootstrap_num_partitions: NonZeroU64::new(64).unwrap(),
-            #[cfg(any(test, feature = "test-util"))]
-            data_dir: super::default_arc_tmp(),
         }
     }
 }
@@ -205,6 +183,54 @@ impl Default for InvokerOptions {
             tmp_dir: None,
             concurrent_invocations_limit: None,
             disable_eager_state: false,
+        }
+    }
+}
+
+/// # Storage options
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "StorageOptions", default))]
+#[serde(rename_all = "kebab-case")]
+#[builder(default)]
+pub struct StorageOptions {
+    #[serde(flatten)]
+    pub rocksdb: RocksDbOptions,
+
+    /// # Sync WAL on flushes
+    ///
+    /// If WAL is enabled, this option defines whether the WAL will also be synced on flushes.
+    pub sync_wal_on_flush: bool,
+
+    #[cfg(any(test, feature = "test-util"))]
+    #[serde(skip, default = "super::default_arc_tmp")]
+    data_dir: std::sync::Arc<tempfile::TempDir>,
+}
+
+impl StorageOptions {
+    #[cfg(not(any(test, feature = "test-util")))]
+    pub fn data_dir(&self) -> PathBuf {
+        super::data_dir("db")
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.path().join("db")
+    }
+}
+
+impl Default for StorageOptions {
+    fn default() -> Self {
+        let rocksdb = RocksDbOptionsBuilder::default()
+            .rocksdb_disable_wal(Some(true))
+            .build()
+            .expect("valid RocksDbOptions");
+
+        StorageOptions {
+            rocksdb,
+            sync_wal_on_flush: false,
+            #[cfg(any(test, feature = "test-util"))]
+            data_dir: super::default_arc_tmp(),
         }
     }
 }

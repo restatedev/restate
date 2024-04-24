@@ -119,9 +119,11 @@ impl Node {
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
                 &config.metadata_store,
-                updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|config| &config.common.rocksdb),
+                || {
+                    updateable_config
+                        .clone()
+                        .map_as_updateable_owned(|config| &config.common.rocksdb)
+                },
             )?)
         } else {
             None

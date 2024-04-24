@@ -99,7 +99,7 @@ pub enum BuildError {
 /// store in a single thread.
 pub struct LocalMetadataStore {
     db: Arc<DB>,
-    write_opts: WriteOptions,
+    opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
@@ -108,11 +108,15 @@ pub struct LocalMetadataStore {
 }
 
 impl LocalMetadataStore {
-    pub fn new(
+    pub fn new<F, V>(
         data_dir: impl AsRef<Path>,
         request_queue_length: usize,
-        rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
-    ) -> std::result::Result<Self, BuildError> {
+        rocksdb_options: F,
+    ) -> std::result::Result<Self, BuildError>
+    where
+        F: Fn() -> V,
+        V: Updateable<RocksDbOptions> + Send + 'static,
+    {
         let (request_tx, request_rx) = mpsc::channel(request_queue_length);
 
         let db_manager = RocksDbManager::get();
@@ -127,23 +131,27 @@ impl LocalMetadataStore {
         .ensure_column_families(cfs)
         .build_as_db();
 
-        let db = db_manager.open_db(rocksdb_options, db_spec)?;
+        let db = db_manager.open_db(rocksdb_options(), db_spec)?;
 
         Ok(Self {
             db,
-            write_opts: Self::default_write_options(),
+            opts: Box::new(rocksdb_options()),
             buffer: BytesMut::default(),
             request_rx,
             request_tx,
         })
     }
 
-    fn default_write_options() -> WriteOptions {
+    fn write_options(&mut self) -> WriteOptions {
+        let rocks_db_options = self.opts.load();
         let mut write_opts = WriteOptions::default();
 
-        // make sure that we write to wal and sync to disc
-        write_opts.disable_wal(false);
-        write_opts.set_sync(true);
+        write_opts.disable_wal(rocks_db_options.rocksdb_disable_wal());
+
+        if !rocks_db_options.rocksdb_disable_wal() {
+            // always sync if we have wal enabled
+            write_opts.set_sync(true);
+        }
 
         write_opts
     }
@@ -267,13 +275,15 @@ impl LocalMetadataStore {
         self.buffer.clear();
         Self::encode(value, &mut self.buffer)?;
 
+        let write_options = self.write_options();
         let cf_handle = self.kv_cf_handle();
         self.db
-            .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &self.write_opts)?;
+            .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &write_options)?;
+
         Ok(())
     }
 
-    fn delete(&self, key: &ByteString, precondition: Precondition) -> Result<()> {
+    fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<()> {
         match precondition {
             Precondition::None => self.delete_kv_pair(key),
             // this condition does not really make sense for the delete operation
@@ -299,9 +309,10 @@ impl LocalMetadataStore {
         }
     }
 
-    fn delete_kv_pair(&self, key: &ByteString) -> Result<()> {
+    fn delete_kv_pair(&mut self, key: &ByteString) -> Result<()> {
+        let write_options = self.write_options();
         self.db
-            .delete_cf_opt(&self.kv_cf_handle(), key, &self.write_opts)
+            .delete_cf_opt(&self.kv_cf_handle(), key, &write_options)
             .map_err(Into::into)
     }
 

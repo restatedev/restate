@@ -29,7 +29,7 @@ pub use subscription_integration::SubscriptionControllerHandle;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::{cancellation_watcher, metadata, task_center, TaskKind};
+use restate_core::{metadata, task_center, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -42,8 +42,7 @@ use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_storage_rocksdb::{RocksDBStorage, RocksDBWriter};
-use tracing::debug;
+use restate_storage_rocksdb::RocksDBStorage;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
@@ -83,15 +82,6 @@ pub enum Error {
         thread: &'static str,
         cause: restate_types::errors::ThreadJoinError,
     },
-    #[error("rocksdb writer failed: {0}")]
-    #[code(unknown)]
-    RocksDBWriter(#[from] anyhow::Error),
-}
-
-impl Error {
-    fn thread_panic(thread: &'static str, cause: restate_types::errors::ThreadJoinError) -> Self {
-        Error::ThreadPanic { thread, cause }
-    }
 }
 
 pub struct Worker {
@@ -110,7 +100,6 @@ pub struct Worker {
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
-    rocksdb_writer: RocksDBWriter,
     rocksdb_storage: RocksDBStorage,
 }
 
@@ -165,11 +154,13 @@ impl Worker {
         // a really ugly hack (I'm ashamed) until we can decouple opening database(s)
         // from worker creation, or we make worker creation async. This is a stop gap
         // to avoid unraveling the entire worker creation process to be async in this change.
-        let (rocksdb_storage, rocksdb_writer) = futures::executor::block_on(RocksDBStorage::open(
-            config.worker.data_dir(),
+        let rocksdb_storage = futures::executor::block_on(RocksDBStorage::open(
             updateable_config
                 .clone()
-                .map_as_updateable_owned(|c| &c.worker.rocksdb),
+                .map_as_updateable_owned(|c| &c.worker.storage),
+            updateable_config
+                .clone()
+                .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
         ))?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
@@ -202,7 +193,6 @@ impl Worker {
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
-            rocksdb_writer,
             rocksdb_storage,
             metadata_store_client,
         })
@@ -222,16 +212,6 @@ impl Worker {
 
     pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
         let tc = task_center();
-        let (shutdown_signal, shutdown_watch) = drain::channel();
-
-        // RocksDB Writer
-        tc.spawn_child(TaskKind::SystemService, "rocksdb-writer", None, async {
-            let handle = self.rocksdb_writer.run(shutdown_watch);
-            Ok(handle
-                .await
-                .map_err(|err| Error::thread_panic("rocksdb writer", err))?
-                .map_err(Error::RocksDBWriter)?)
-        })?;
 
         // Ingress RPC server
         tc.spawn_child(
@@ -275,8 +255,6 @@ impl Worker {
             ),
         )?;
 
-        let shutdown = cancellation_watcher();
-
         let mut partition_processor_manager = PartitionProcessorManager::new(
             self.updateable_config.clone(),
             metadata().my_node_id(),
@@ -296,16 +274,6 @@ impl Worker {
                 .collect(),
         );
         partition_processor_manager.apply_plan(plan).await?;
-
-        tokio::select! {
-            _ = shutdown => {
-                debug!("Initiating shutdown of worker");
-
-                // This will only shutdown rocksdb writer thread. Everything else will respond to
-                // the cancellation signal independently.
-                shutdown_signal.drain().await;
-            },
-        }
 
         Ok(())
     }

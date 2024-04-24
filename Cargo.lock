@@ -6129,7 +6129,6 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
- "log",
  "num-bigint",
  "once_cell",
  "paste",

@@ -34,7 +34,7 @@ async fn get_entries() {
         .default_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("task_center builds");
-    let (mut engine, shutdown) = tc
+    let mut engine = tc
         .run_in_scope("mock-query-engine", None, MockQueryEngine::create())
         .await;
 
@@ -127,6 +127,4 @@ async fn get_entries() {
             )
         )
     );
-
-    shutdown.await;
 }

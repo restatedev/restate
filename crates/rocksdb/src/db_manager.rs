@@ -289,10 +289,6 @@ impl RocksDbManager {
         db_options.set_wal_ttl_seconds(0);
 
         if !opts.rocksdb_disable_wal() {
-            // Disable automatic WAL flushing.
-            // We will call flush manually, when we commit a storage transaction.
-            //
-            db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
             // Once the WAL logs exceed this size, rocksdb will start flush memtables to disk.
             db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size().get() as u64);
         }

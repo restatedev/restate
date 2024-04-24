@@ -13,9 +13,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{data_dir, RocksDbOptions};
+use super::{data_dir, RocksDbOptions, RocksDbOptionsBuilder};
 use crate::net::BindAddress;
 
+/// # Metadata store options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
@@ -25,11 +26,20 @@ use crate::net::BindAddress;
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct MetadataStoreOptions {
+    /// # Bind address of the metadata store
+    ///
     /// Address to which the metadata store will bind to.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub bind_address: BindAddress,
+
+    /// # Limit number of in-flight requests
+    ///
     /// Number of in-flight metadata store requests.
     request_queue_length: NonZeroUsize,
+
+    /// # RocksDB options for metadata store's RocksDB instance
+    ///
+    /// The RocksDB options which will be used to configure the metadata store's RocksDB instance.
     pub rocksdb: RocksDbOptions,
 }
 
@@ -45,10 +55,14 @@ impl MetadataStoreOptions {
 
 impl Default for MetadataStoreOptions {
     fn default() -> Self {
+        let rocksdb = RocksDbOptionsBuilder::default()
+            .rocksdb_disable_wal(Some(false))
+            .build()
+            .expect("valid RocksDbOptions");
         Self {
             bind_address: "0.0.0.0:5123".parse().expect("valid bind address"),
             request_queue_length: NonZeroUsize::new(32).unwrap(),
-            rocksdb: Default::default(),
+            rocksdb,
         }
     }
 }
