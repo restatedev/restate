@@ -23,7 +23,7 @@ use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherReques
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    Header, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
+    Header, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation, Source, SpanRelation,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
@@ -144,38 +144,34 @@ where
             let headers = parse_headers(parts.headers)?;
 
             // Parse delay query parameter
-            let delay = parse_delay(parts.uri.query())?;
+            let execution_time = parse_delay(parts.uri.query())?;
 
-            let span_relation = SpanRelation::Parent(ingress_span_context);
+            // Prepare service invocation
+            let mut service_invocation =
+                ServiceInvocation::initialize(invocation_id, invocation_target, Source::Ingress);
+            service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
+            service_invocation.idempotency = idempotency;
+            service_invocation.headers = headers;
+            service_invocation.argument = body;
+
             match invoke_ty {
                 InvokeType::Call => {
-                    if delay.is_some() {
+                    if execution_time.is_some() {
                         return Err(HandlerError::UnsupportedDelay);
                     }
                     Self::handle_service_call(
-                        invocation_id,
-                        invocation_target,
-                        idempotency,
-                        body,
-                        span_relation,
-                        headers,
+                        service_invocation,
                         invocation_target_meta,
                         self.dispatcher,
                     )
                     .await
                 }
                 InvokeType::Send => {
-                    Self::handle_service_send(
-                        invocation_id,
-                        invocation_target,
-                        idempotency,
-                        body,
-                        span_relation,
-                        headers,
-                        delay,
-                        self.dispatcher,
-                    )
-                    .await
+                    service_invocation.execution_time = execution_time
+                        .map(|d| SystemTime::now() + d)
+                        .map(Into::into);
+
+                    Self::handle_service_send(service_invocation, self.dispatcher).await
                 }
             }
         }
@@ -201,26 +197,15 @@ where
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_service_call(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        idempotency: Option<Idempotency>,
-        body: Bytes,
-        span_relation: SpanRelation,
-        headers: Vec<Header>,
+        service_invocation: ServiceInvocation,
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        let (invocation, response_rx) = IngressDispatcherRequest::invocation(
-            invocation_id,
-            invocation_target,
-            body,
-            span_relation,
-            idempotency,
-            headers,
-        );
-        let ingress_correlation_id = invocation.correlation_id.clone();
+        let invocation_id = service_invocation.invocation_id;
+        let (invocation, ingress_correlation_id, response_rx) =
+            IngressDispatcherRequest::invocation(service_invocation);
+
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
                 restate.invocation.id = %invocation_id,
@@ -274,31 +259,16 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn handle_service_send(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        idempotency: Option<Idempotency>,
-        body: Bytes,
-        span_relation: SpanRelation,
-        headers: Vec<Header>,
-        delay: Option<Duration>,
+        service_invocation: ServiceInvocation,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
-        // Establish execution_time
-        let execution_time = delay.map(|d| SystemTime::now() + d);
+        let invocation_id = service_invocation.invocation_id;
+        let execution_time = service_invocation.execution_time;
 
         // Send the service invocation
-        let invocation = IngressDispatcherRequest::background_invocation(
-            invocation_id,
-            invocation_target,
-            body,
-            span_relation,
-            None,
-            idempotency,
-            headers,
-            execution_time,
-        );
+        let invocation = IngressDispatcherRequest::one_way_invocation(service_invocation);
+
         if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
             warn!(
                 restate.invocation.id = %invocation_id,
@@ -315,7 +285,7 @@ where
             .body(Full::new(
                 serde_json::to_vec(&SendResponse {
                     invocation_id,
-                    execution_time: execution_time.map(Into::into),
+                    execution_time: execution_time.map(SystemTime::from).map(Into::into),
                 })
                 .unwrap()
                 .into(),

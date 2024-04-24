@@ -54,19 +54,22 @@ async fn call_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, _, response_tx, headers) =
-            ingress_req.expect_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-        assert_eq!(invocation_target.handler_name(), "greet");
+        let (service_invocation, _, response_tx) = ingress_req.expect_invocation();
         assert_eq!(
-            headers,
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+        assert_eq!(
+            service_invocation.headers,
             vec![
                 Header::new("content-type", "application/json"),
                 Header::new("my-header", "my-value")
             ]
         );
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
@@ -114,12 +117,14 @@ async fn call_service_with_get() {
         ),
         |ingress_req| {
             // Get the function invocation and assert on it
-            let (_, invocation_target, argument, _, _, response_tx, _) =
-                ingress_req.expect_invocation();
-            assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-            assert_eq!(invocation_target.handler_name(), "greet");
+            let (service_invocation, _, response_tx) = ingress_req.expect_invocation();
+            assert_eq!(
+                service_invocation.invocation_target.service_name(),
+                "greeter.Greeter"
+            );
+            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-            assert!(argument.is_empty());
+            assert!(service_invocation.argument.is_empty());
 
             response_tx
                 .send(
@@ -162,13 +167,19 @@ async fn call_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, _, response_tx, _) =
-            ingress_req.expect_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.GreeterObject");
-        assert_eq!(invocation_target.key().unwrap(), &"my-key");
-        assert_eq!(invocation_target.handler_name(), "greet");
+        let (service_invocation, _, response_tx) = ingress_req.expect_invocation();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.GreeterObject"
+        );
+        assert_eq!(
+            service_invocation.invocation_target.key().unwrap(),
+            &"my-key"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
@@ -211,11 +222,15 @@ async fn send_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, _) = ingress_req.expect_background_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-        assert_eq!(invocation_target.handler_name(), "greet");
+        let service_invocation = ingress_req.expect_one_way_invocation();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
     })
     .await;
@@ -244,13 +259,16 @@ async fn send_with_delay_service() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, execution_time) =
-            ingress_req.expect_background_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-        assert_eq!(invocation_target.handler_name(), "greet");
-        assert!(execution_time.is_some());
+        let service_invocation = ingress_req.expect_one_way_invocation();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+        assert!(service_invocation.execution_time.is_some());
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
     })
     .await;
@@ -279,12 +297,19 @@ async fn send_virtual_object() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (_, invocation_target, argument, _, _) = ingress_req.expect_background_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.GreeterObject");
-        assert_eq!(invocation_target.key().unwrap(), &"my-key");
-        assert_eq!(invocation_target.handler_name(), "greet");
+        let service_invocation = ingress_req.expect_one_way_invocation();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.GreeterObject"
+        );
+        assert_eq!(
+            service_invocation.invocation_target.key().unwrap(),
+            &"my-key"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
     })
     .await;
@@ -313,27 +338,28 @@ async fn idempotency_key_parsing() {
         .unwrap();
 
     let response = handle(req, |ingress_req| {
-        let correlation_id = ingress_req.correlation_id.clone();
-
         // Get the function invocation and assert on it
-        let (invocation_id, invocation_target, argument, _, idempotency, response_tx, _) =
-            ingress_req.expect_invocation();
-        assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-        assert_eq!(invocation_target.handler_name(), "greet");
+        let (service_invocation, correlation_id, response_tx) = ingress_req.expect_invocation();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-        let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
         assert_eq!(&greeting_req.person, "Francesco");
 
         assert_eq!(
             correlation_id,
             IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
-                invocation_id,
-                &invocation_target,
+                service_invocation.invocation_id,
+                &service_invocation.invocation_target,
                 ByteString::from_static("123456")
             ))
         );
         assert_eq!(
-            idempotency,
+            service_invocation.idempotency,
             Some(Idempotency {
                 key: ByteString::from_static("123456"),
                 retention: Duration::from_secs(60 * 60 * 24)
@@ -624,14 +650,14 @@ fn request_handler_not_reached(_req: IngressDispatcherRequest) {
 }
 
 fn expect_invocation_and_reply_with_empty(req: IngressDispatcherRequest) {
-    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
+    let (_, _, response_tx) = req.expect_invocation();
     response_tx
         .send(ResponseResult::Success(Bytes::new()).into())
         .unwrap();
 }
 
 fn expect_invocation_and_reply_with_non_empty(req: IngressDispatcherRequest) {
-    let (_, _, _, _, _, response_tx, _) = req.expect_invocation();
+    let (_, _, response_tx) = req.expect_invocation();
     response_tx
         .send(ResponseResult::Success(Bytes::from_static(b"123")).into())
         .unwrap();
