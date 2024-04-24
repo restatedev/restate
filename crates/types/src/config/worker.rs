@@ -187,7 +187,7 @@ impl Default for InvokerOptions {
     }
 }
 
-/// Storage options
+/// # Storage options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "StorageOptions", default))]
@@ -197,6 +197,8 @@ pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
+    /// # Sync WAL on flushes
+    ///
     /// If WAL is enabled, this option defines whether the WAL will also be synced on flushes.
     pub sync_wal_on_flush: bool,
 
