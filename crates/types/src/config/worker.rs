@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::retries::RetryPolicy;
+use restate_serde_util::NonZeroByteCount;
 
 use super::{RocksDbOptions, RocksDbOptionsBuilder};
+use crate::retries::RetryPolicy;
 
 /// # Worker options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -26,12 +28,12 @@ use super::{RocksDbOptions, RocksDbOptionsBuilder};
 #[builder(default)]
 pub struct WorkerOptions {
     /// # Internal queue for partition processor communication
-    pub internal_queue_length: usize,
+    internal_queue_length: NonZeroUsize,
 
     /// # Num timers in memory limit
     ///
     /// The number of timers in memory limit is used to bound the amount of timers loaded in memory. If this limit is set, when exceeding it, the timers farther in the future will be spilled to disk.
-    pub num_timers_in_memory_limit: Option<usize>,
+    num_timers_in_memory_limit: Option<NonZeroUsize>,
 
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
@@ -47,7 +49,7 @@ pub struct WorkerOptions {
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
     /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    pub bootstrap_num_partitions: u64,
+    bootstrap_num_partitions: NonZeroU64,
 
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
@@ -64,6 +66,18 @@ impl WorkerOptions {
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.path().join("db")
     }
+
+    pub fn internal_queue_length(&self) -> usize {
+        self.internal_queue_length.into()
+    }
+
+    pub fn bootstrap_num_partitions(&self) -> u64 {
+        self.bootstrap_num_partitions.into()
+    }
+
+    pub fn num_timers_in_memory_limit(&self) -> Option<usize> {
+        self.num_timers_in_memory_limit.map(Into::into)
+    }
 }
 
 impl Default for WorkerOptions {
@@ -74,11 +88,11 @@ impl Default for WorkerOptions {
             .unwrap();
 
         Self {
-            internal_queue_length: 64,
+            internal_queue_length: NonZeroUsize::new(64).unwrap(),
             num_timers_in_memory_limit: None,
             rocksdb,
             invoker: Default::default(),
-            bootstrap_num_partitions: 64,
+            bootstrap_num_partitions: NonZeroU64::new(64).unwrap(),
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
         }
@@ -130,12 +144,16 @@ pub struct InvokerOptions {
     /// # Message size warning
     ///
     /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
-    pub message_size_warning: usize,
+    #[serde_as(as = "NonZeroByteCount")]
+    #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
+    pub message_size_warning: NonZeroUsize,
 
     /// # Message size limit
     ///
     /// Threshold to fail the invocation in case protocol messages coming from a service are larger than the specified amount.
-    pub message_size_limit: Option<usize>,
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
+    message_size_limit: Option<NonZeroUsize>,
 
     /// # Temporary directory
     ///
@@ -146,10 +164,11 @@ pub struct InvokerOptions {
     /// # Limit number of concurrent invocations from this node
     ///
     /// Number of concurrent invocations that can be processed by the invoker.
-    pub concurrent_invocations_limit: Option<usize>,
+    concurrent_invocations_limit: Option<NonZeroUsize>,
 
     // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
 }
 
@@ -158,6 +177,14 @@ impl InvokerOptions {
         self.tmp_dir.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new()))
         })
+    }
+
+    pub fn concurrent_invocations_limit(&self) -> Option<usize> {
+        self.concurrent_invocations_limit.map(Into::into)
+    }
+
+    pub fn message_size_limit(&self) -> Option<usize> {
+        self.message_size_limit.map(Into::into)
     }
 }
 
@@ -168,12 +195,12 @@ impl Default for InvokerOptions {
                 Duration::from_millis(50),
                 2.0,
                 // see https://github.com/toml-rs/toml/issues/705
-                i64::MAX as usize,
+                None,
                 Some(Duration::from_secs(10)),
             ),
             inactivity_timeout: Duration::from_secs(60).into(),
             abort_timeout: Duration::from_secs(60).into(),
-            message_size_warning: 1024 * 1024 * 10, // 10mb
+            message_size_warning: NonZeroUsize::new(10_000_000).unwrap(), // 10MB
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: None,

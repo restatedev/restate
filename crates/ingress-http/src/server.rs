@@ -75,7 +75,7 @@ where
         crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) = HyperServerIngress::new(
             ingress_options.bind_address,
-            ingress_options.concurrent_api_requests_limit,
+            ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
         );

@@ -325,7 +325,7 @@ async fn start_metadata_store(
     let health_client = HealthClient::new(create_grpc_channel_from_advertised_address(
         advertised_address.clone(),
     )?);
-    let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, usize::MAX, None);
+    let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);
 
     retry_policy
         .retry(|| async {

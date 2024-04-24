@@ -126,8 +126,8 @@ where
                 opts.inactivity_timeout.into(),
                 opts.abort_timeout.into(),
                 opts.disable_eager_state,
-                opts.message_size_warning,
-                opts.message_size_limit,
+                opts.message_size_warning.get(),
+                opts.message_size_limit(),
                 self.journal_reader.clone(),
                 self.state_reader.clone(),
                 self.entry_enricher.clone(),
@@ -193,7 +193,7 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
                 },
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit),
+                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
@@ -991,6 +991,7 @@ mod tests {
     use super::*;
 
     use std::future::{pending, ready};
+    use std::num::NonZeroUsize;
     use std::time::Duration;
 
     use bytes::Bytes;
@@ -1102,11 +1103,11 @@ mod tests {
         let tc = node_env.tc;
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(Duration::ZERO.into())
             .abort_timeout(Duration::ZERO.into())
             .disable_eager_state(false)
-            .message_size_warning(1024)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
             .build()
             .unwrap();
@@ -1167,11 +1168,11 @@ mod tests {
     async fn quota_allows_one_concurrent_invocation() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(Duration::ZERO.into())
             .abort_timeout(Duration::ZERO.into())
             .disable_eager_state(false)
-            .message_size_warning(1024)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
             .build()
             .unwrap();
@@ -1263,11 +1264,11 @@ mod tests {
     async fn reclaim_quota_after_abort() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, 1))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(Duration::ZERO.into())
             .abort_timeout(Duration::ZERO.into())
             .disable_eager_state(false)
-            .message_size_warning(1024)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
             .build()
             .unwrap();

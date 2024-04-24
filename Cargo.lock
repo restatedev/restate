@@ -3612,7 +3612,7 @@ dependencies = [
 [[package]]
 name = "librocksdb-sys"
 version = "0.17.0+9.0.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#caec8ab62cf053679f409c69a4ee72483a8b9688"
+source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -5840,7 +5840,6 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
- "bytesize",
  "bytestring",
  "codederror",
  "derive-getters",
@@ -5854,6 +5853,7 @@ dependencies = [
  "rayon",
  "restate-core",
  "restate-errors",
+ "restate-serde-util",
  "restate-test-util",
  "restate-types",
  "rocksdb",
@@ -5910,6 +5910,7 @@ version = "0.9.0"
 dependencies = [
  "base64 0.21.7",
  "bytes",
+ "bytesize",
  "http 0.2.12",
  "prost",
  "schemars",
@@ -6246,6 +6247,7 @@ dependencies = [
  "opentelemetry",
  "rand",
  "restate-base64-util",
+ "restate-serde-util",
  "restate-test-util",
  "schemars",
  "serde",
@@ -6406,7 +6408,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.22.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#caec8ab62cf053679f409c69a4ee72483a8b9688"
+source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "libc",
  "librocksdb-sys",
@@ -6529,6 +6531,7 @@ checksum = "45a28f4c49489add4ce10783f7911893516f15afe45d015608d41faca6bc4d29"
 dependencies = [
  "bytes",
  "dyn-clone",
+ "enumset",
  "indexmap 1.9.3",
  "schemars_derive",
  "serde",

@@ -14,15 +14,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use bytesize::ByteSize;
 use parking_lot::RwLock;
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
-
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_types::arc_util::Updateable;
-use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_serde_util::ByteCount;
+use restate_types::arc_util::Updateable;
+use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
 
 use crate::background::ReadyStorageTask;
 use crate::{
@@ -77,9 +77,9 @@ impl RocksDbManager {
         }
         metric_definitions::describe_metrics();
         let opts = base_opts.load();
-        let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_limit as usize);
+        let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
-            opts.rocksdb_total_memtables_size_limit as usize,
+            opts.rocksdb_total_memtables_size,
             true,
             cache.clone(),
         );
@@ -294,13 +294,13 @@ impl RocksDbManager {
             //
             db_options.set_manual_wal_flush(opts.rocksdb_batch_wal_flushes());
             // Once the WAL logs exceed this size, rocksdb will start flush memtables to disk.
-            db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size());
+            db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size().get() as u64);
         }
         //
         // Let rocksdb decide for level sizes.
         //
         db_options.set_level_compaction_dynamic_level_bytes(true);
-        db_options.set_compaction_readahead_size(opts.rocksdb_compaction_readahead_size());
+        db_options.set_compaction_readahead_size(opts.rocksdb_compaction_readahead_size().get());
         //
         // [Not important setting, consider removing], allows to shard compressed
         // block cache to up to 64 shards in memory.
@@ -316,7 +316,7 @@ impl RocksDbManager {
         let mut cf_options = rocksdb::Options::default();
         // write buffer
         //
-        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size());
+        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size().get());
         //
         // bloom filters and block cache.
         //
@@ -494,32 +494,32 @@ impl DbWatchdog {
         }
         // Memory budget changed?
         let new_common_opts = self.updateable_common_opts.load();
-        if new_common_opts.rocksdb_total_memory_limit
-            != self.current_common_opts.rocksdb_total_memory_limit
+        if new_common_opts.rocksdb_total_memory_size
+            != self.current_common_opts.rocksdb_total_memory_size
         {
             info!(
-                old = self.current_common_opts.rocksdb_total_memory_limit,
-                new = new_common_opts.rocksdb_total_memory_limit,
+                old = self.current_common_opts.rocksdb_total_memory_size,
+                new = new_common_opts.rocksdb_total_memory_size,
                 "[config update] Setting rocksdb total memory limit to {}",
-                ByteSize::b(new_common_opts.rocksdb_total_memory_limit)
+                ByteCount::from(new_common_opts.rocksdb_total_memory_size)
             );
             self.cache
-                .set_capacity(new_common_opts.rocksdb_total_memory_limit as usize);
+                .set_capacity(new_common_opts.rocksdb_total_memory_size.get());
         }
 
         // update memtable total memory
-        if new_common_opts.rocksdb_total_memtables_size_limit
-            != self.current_common_opts.rocksdb_total_memtables_size_limit
+        if new_common_opts.rocksdb_total_memtables_size
+            != self.current_common_opts.rocksdb_total_memtables_size
         {
             info!(
-                old = self.current_common_opts.rocksdb_total_memtables_size_limit,
-                new = new_common_opts.rocksdb_total_memtables_size_limit,
+                old = self.current_common_opts.rocksdb_total_memtables_size,
+                new = new_common_opts.rocksdb_total_memtables_size,
                 "[config update] Setting rocksdb total memtables size limit to {}",
-                ByteSize::b(new_common_opts.rocksdb_total_memtables_size_limit)
+                ByteCount::from(new_common_opts.rocksdb_total_memtables_size)
             );
             self.manager
                 .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size_limit as usize);
+                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size);
         }
 
         // todo: Apply other changes to the databases.

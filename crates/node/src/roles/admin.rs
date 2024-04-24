@@ -57,7 +57,7 @@ impl AdminRole {
         let retry_policy = RetryPolicy::exponential(
             Duration::from_millis(100),
             2.0,
-            10,
+            Some(10),
             Some(Duration::from_secs(20)),
         );
         let client =
