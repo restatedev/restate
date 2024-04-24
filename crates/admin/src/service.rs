@@ -81,7 +81,7 @@ where
                     }))
                     .layer(tower::load_shed::LoadShedLayer::new())
                     .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                        opts.concurrent_api_requests_limit,
+                        opts.concurrent_api_requests_limit(),
                     )),
             );
 

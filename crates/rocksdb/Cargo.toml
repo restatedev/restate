@@ -12,13 +12,13 @@ default = []
 test-util = ["restate-types/test-util"]
 
 [dependencies]
-restate-errors = { workspace = true }
-restate-types = { workspace = true }
 restate-core = { workspace = true }
+restate-errors = { workspace = true }
+restate-serde-util = { workspace = true }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
-bytesize = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 derive-getters = { workspace = true }

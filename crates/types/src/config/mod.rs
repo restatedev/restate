@@ -111,15 +111,7 @@ pub fn set_current_config(config: Configuration) {
 
 /// # Restate configuration file
 ///
-/// Configuration for the Restate single binary deployment.
-///
-/// You can specify the configuration file to use through the `--config-file <PATH>` argument or
-/// with `RESTATE_CONFIG=<PATH>` environment variable.
-///
-/// Each configuration entry can be overridden using environment variables,
-/// prefixing them with `RESTATE_` and separating nested structs with `__` (double underscore).
-///
-/// For example, to configure `admin.bind_address`, the corresponding environment variable is `RESTATE_ADMIN__BIND_ADDRESS`.
+/// Configuration for Restate server.
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
