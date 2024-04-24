@@ -35,7 +35,7 @@ const IDEMPOTENCY_ID_3: IdempotencyId =
 
 #[tokio::test]
 async fn test_idempotency_key() {
-    let (mut rocksdb, close) = storage_test_environment().await;
+    let mut rocksdb = storage_test_environment().await;
 
     // Fill in some data
     let mut txn = rocksdb.transaction();
@@ -114,6 +114,4 @@ async fn test_idempotency_key() {
             .unwrap(),
         None
     );
-
-    close.await;
 }
