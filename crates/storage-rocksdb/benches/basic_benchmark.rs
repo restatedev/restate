@@ -24,15 +24,12 @@ async fn writing_to_rocksdb(worker_options: WorkerOptions) {
     //
     // setup
     //
-    let (mut rocksdb, writer) = RocksDBStorage::open(
+    let mut rocksdb = RocksDBStorage::open(
         worker_options.data_dir(),
         Constant::new(worker_options.rocksdb),
     )
     .await
     .expect("RocksDB storage creation should succeed");
-
-    let (signal, watch) = drain::channel();
-    let writer_join_handler = writer.run(watch);
 
     //
     // write
@@ -45,9 +42,6 @@ async fn writing_to_rocksdb(worker_options: WorkerOptions) {
         }
         txn.commit().await.unwrap();
     }
-
-    signal.drain().await;
-    writer_join_handler.await.unwrap().unwrap();
 }
 
 fn basic_writing_reading_benchmark(c: &mut Criterion) {
