@@ -122,6 +122,10 @@ fn db_options(options: &LocalLogletOptions) -> rocksdb::Options {
         opts.set_manual_wal_flush(options.batch_wal_flushes);
     }
 
+    // unconditionally enable atomic flushes to not persist inconsistent data in case WAL
+    // is disabled
+    opts.set_atomic_flush(true);
+
     opts
 }
 
