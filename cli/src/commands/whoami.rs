@@ -10,6 +10,7 @@
 
 use cling::prelude::*;
 use comfy_table::Table;
+use restate_types::art::render_restate_logo;
 
 use crate::build_info;
 use crate::cli_env::CliEnv;
@@ -21,12 +22,10 @@ use crate::{c_eprintln, c_error, c_println, c_success};
 pub struct WhoAmI {}
 
 pub async fn run(State(env): State<CliEnv>) {
-    if crate::console::colors_enabled() {
-        c_println!("{}", crate::art::render_logo());
-        c_println!("            Restate");
-        c_println!("       https://restate.dev/");
-        c_println!();
-    }
+    c_println!("{}", render_restate_logo(crate::console::colors_enabled()));
+    c_println!("            Restate");
+    c_println!("       https://restate.dev/");
+    c_println!();
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec!["Ingress base URL", env.ingress_base_url.as_ref()]);

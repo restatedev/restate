@@ -17,7 +17,7 @@ use std::time::Instant;
 use parking_lot::RwLock;
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_serde_util::ByteCount;
@@ -184,7 +184,7 @@ impl RocksDbManager {
                 e
             );
         }
-        info!(
+        debug!(
             db = %name,
             owner = %owner,
             path = %path.display(),

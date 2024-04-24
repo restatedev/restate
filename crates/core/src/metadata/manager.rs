@@ -235,7 +235,7 @@ where
 
     /// Start and wait for shutdown signal.
     pub async fn run(mut self) -> anyhow::Result<()> {
-        info!("Metadata manager started");
+        debug!("Metadata manager started");
 
         loop {
             tokio::select! {
