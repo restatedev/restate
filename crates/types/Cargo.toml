@@ -10,10 +10,12 @@ publish = false
 [features]
 default = []
 
+schemars = ["dep:schemars", "restate-serde-util/schema"]
 test-util = ["dep:tempfile"]
 
 [dependencies]
 restate-base64-util = { workspace = true }
+restate-serde-util = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
