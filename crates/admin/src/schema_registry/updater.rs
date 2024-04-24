@@ -450,18 +450,19 @@ impl DiscoveredHandlerMetadata {
         }
 
         // Add content-type validation rule
-        let content_type = schema
+        if let Some(content_type) = schema
             .content_type
             .map(|s| {
                 s.parse()
                     .map_err(|e| ServiceError::BadInputContentType(handler_name.to_owned(), e))
             })
             .transpose()?
-            .unwrap_or_default();
-        if schema.json_schema.is_some() {
-            input_validation_rules.push(InputValidationRule::JsonValue { content_type });
-        } else {
-            input_validation_rules.push(InputValidationRule::ContentType { content_type });
+        {
+            if schema.json_schema.is_some() {
+                input_validation_rules.push(InputValidationRule::JsonValue { content_type });
+            } else {
+                input_validation_rules.push(InputValidationRule::ContentType { content_type });
+            }
         }
 
         Ok(InputRules {
