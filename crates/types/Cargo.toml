@@ -43,6 +43,7 @@ strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
+tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
 toml = { version = "0.8.12" }
 tracing = { workspace = true }

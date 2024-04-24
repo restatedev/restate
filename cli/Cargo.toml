@@ -50,7 +50,6 @@ serde_json = { workspace = true }
 termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }

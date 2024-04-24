@@ -64,7 +64,7 @@ impl Watchdog {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
-        info!("Bifrost watchdog started");
+        debug!("Bifrost watchdog started");
 
         loop {
             tokio::select! {
@@ -83,7 +83,7 @@ impl Watchdog {
 
     async fn shutdown(mut self) {
         let shutdown_timeout = Duration::from_secs(5);
-        info!("Bifrost watchdog shutdown started");
+        debug!("Bifrost watchdog shutdown started");
         // Stop accepting new commands
         self.inner.set_shutdown();
         self.inbound.close();
