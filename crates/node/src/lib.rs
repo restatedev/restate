@@ -122,7 +122,7 @@ impl Node {
                 || {
                     updateable_config
                         .clone()
-                        .map_as_updateable_owned(|config| &config.common.rocksdb)
+                        .map_as_updateable_owned(|config| &config.metadata_store.rocksdb)
                 },
             )?)
         } else {
