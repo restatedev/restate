@@ -4,23 +4,23 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'ref to build eg v0.5.1'
+        description: "ref to build eg v0.5.1"
         required: false
         type: string
       npmVersion:
-        description: 'if provided, also push npm packages with this version'
-        default: ''
+        description: "if provided, also push npm packages with this version"
+        default: ""
         required: false
         type: string
   workflow_dispatch:
     inputs:
       ref:
-        description: 'ref to build eg v0.5.1'
+        description: "ref to build eg v0.5.1"
         required: false
         type: string
       npmVersion:
-        description: 'if provided, also push npm packages with this version'
-        default: ''
+        description: "if provided, also push npm packages with this version"
+        default: ""
         required: false
         type: string
 
@@ -33,10 +33,10 @@ jobs:
     strategy:
       matrix:
         build:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
+          # - target: aarch64-apple-darwin
+          #   os: macos-latest
+          # - target: x86_64-apple-darwin
+          #   os: macos-latest
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
@@ -98,7 +98,7 @@ jobs:
           image: ghcr.io/restatedev/dev-tools:latest
           options: -v ${{ github.workspace }}:/workspace -w /workspace -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
           run: |
-            cargo build --release --bins --target ${{ matrix.build.target }}
+            cargo build -vv --release --bins --target ${{ matrix.build.target }}
 
       - name: Sign binaries
         if: ${{ matrix.build.os == 'macos-latest' }}
@@ -122,7 +122,7 @@ jobs:
   publish-npm:
     name: Publish to NPM
     if: ${{ inputs.npmVersion != '' }}
-    needs: [ build ]
+    needs: [build]
     uses: ./.github/workflows/npm.yml
     secrets: inherit
     with:
