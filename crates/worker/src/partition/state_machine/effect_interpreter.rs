@@ -10,7 +10,6 @@
 
 use super::{Effects, Error};
 
-use crate::partition::services::non_deterministic;
 use crate::partition::state_machine::actions::Action;
 use crate::partition::state_machine::effects::Effect;
 use assert2::let_assert;
@@ -26,7 +25,7 @@ use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{HandlerType, InvocationInput};
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::message::MessageIndex;
@@ -563,60 +562,32 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             )
             .await?;
 
-        let input_entry = if non_deterministic::ServiceInvoker::is_supported(
-            in_flight_invocation_metadata
-                .invocation_target
-                .service_name(),
-        ) {
-            debug_assert!(
-                in_flight_invocation_metadata.response_sinks.len() <= 1,
-                "At most one response sink is supported for built-in services"
-            );
+        let input_entry =
+            Codec::serialize_as_input_entry(invocation_input.headers, invocation_input.argument);
+        let (entry_header, serialized_entry) = input_entry.into_inner();
 
-            collector.push(Action::InvokeBuiltInService {
-                invocation_id,
-                invocation_target: in_flight_invocation_metadata.invocation_target,
-                span_context: in_flight_invocation_metadata.journal_metadata.span_context,
-                response_sink: in_flight_invocation_metadata
-                    .response_sinks
-                    .into_iter()
-                    .next(),
-                argument: invocation_input.argument.clone(),
-            });
-
-            // TODO clean up custom entry hack by allowing to store bytes directly?
-            EnrichedRawEntry::new(
-                EnrichedEntryHeader::Custom { code: 0 },
-                invocation_input.argument,
-            )
-        } else {
-            let input_entry = Codec::serialize_as_input_entry(
-                invocation_input.headers,
-                invocation_input.argument,
-            );
-            let (entry_header, serialized_entry) = input_entry.into_inner();
-
-            collector.push(Action::Invoke {
-                invocation_id,
-                invocation_target: in_flight_invocation_metadata.invocation_target,
-                invoke_input_journal: InvokeInputJournal::CachedJournal(
-                    restate_invoker_api::JournalMetadata::new(
-                        in_flight_invocation_metadata.journal_metadata.length,
-                        in_flight_invocation_metadata.journal_metadata.span_context,
-                        None,
-                    ),
-                    vec![PlainRawEntry::new(
-                        entry_header.clone().erase_enrichment(),
-                        serialized_entry.clone(),
-                    )],
+        collector.push(Action::Invoke {
+            invocation_id,
+            invocation_target: in_flight_invocation_metadata.invocation_target,
+            invoke_input_journal: InvokeInputJournal::CachedJournal(
+                restate_invoker_api::JournalMetadata::new(
+                    in_flight_invocation_metadata.journal_metadata.length,
+                    in_flight_invocation_metadata.journal_metadata.span_context,
+                    None,
                 ),
-            });
-
-            EnrichedRawEntry::new(entry_header, serialized_entry)
-        };
+                vec![PlainRawEntry::new(
+                    entry_header.clone().erase_enrichment(),
+                    serialized_entry.clone(),
+                )],
+            ),
+        });
 
         state_storage
-            .store_journal_entry(&invocation_id, 0, input_entry)
+            .store_journal_entry(
+                &invocation_id,
+                0,
+                EnrichedRawEntry::new(entry_header, serialized_entry),
+            )
             .await?;
 
         Ok(())

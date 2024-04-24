@@ -5183,7 +5183,6 @@ dependencies = [
  "restate-futures-util",
  "restate-meta-rest-model",
  "restate-node-services",
- "restate-pb",
  "restate-schema",
  "restate-schema-api",
  "restate-serde-util",
@@ -5804,19 +5803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "restate-pb"
-version = "0.9.0"
-dependencies = [
- "convert_case 0.6.0",
- "prost",
- "prost-build",
- "prost-types",
- "restate-types",
- "tonic 0.10.2",
- "tonic-build",
-]
-
-[[package]]
 name = "restate-queue"
 version = "0.9.0"
 dependencies = [
@@ -6328,7 +6314,6 @@ dependencies = [
  "restate-metadata-store",
  "restate-network",
  "restate-node-protocol",
- "restate-pb",
  "restate-rocksdb",
  "restate-schema",
  "restate-schema-api",

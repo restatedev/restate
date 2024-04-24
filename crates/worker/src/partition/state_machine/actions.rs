@@ -8,15 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerValue;
@@ -28,13 +25,6 @@ pub enum Action {
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         invoke_input_journal: InvokeInputJournal,
-    },
-    InvokeBuiltInService {
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        span_context: ServiceInvocationSpanContext,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        argument: Bytes,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,

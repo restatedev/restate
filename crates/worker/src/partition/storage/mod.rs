@@ -65,10 +65,6 @@ impl<Storage> PartitionStorage<Storage> {
             storage,
         }
     }
-
-    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) {
-        assert_partition_key(&self.partition_key_range, partition_key);
-    }
 }
 
 impl<Storage> PartitionStorage<Storage>
@@ -142,43 +138,6 @@ where
     {
         self.storage
             .invoked_invocations(self.partition_key_range.clone())
-    }
-
-    pub fn get_invocation_status<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
-    ) -> impl Future<Output = Result<InvocationStatus, StorageError>> + Send + '_ {
-        self.assert_partition_key(invocation_id);
-
-        async { self.storage.get_invocation_status(invocation_id).await }
-    }
-
-    pub fn load_journal_entry<'a>(
-        &'a mut self,
-        invocation_id: &'a InvocationId,
-        entry_index: EntryIndex,
-    ) -> impl Future<Output = Result<Option<EnrichedRawEntry>, StorageError>> + Send + '_ {
-        self.assert_partition_key(invocation_id);
-        async move {
-            let result = self
-                .storage
-                .get_journal_entry(invocation_id, entry_index)
-                .await?;
-
-            Ok(result.and_then(|journal_entry| match journal_entry {
-                JournalEntry::Entry(entry) => Some(entry),
-                JournalEntry::Completion(_) => None,
-            }))
-        }
-    }
-
-    pub async fn load_state(
-        &mut self,
-        service_id: &ServiceId,
-        key: &Bytes,
-    ) -> StorageResult<Option<Bytes>> {
-        self.assert_partition_key(service_id);
-        self.storage.get_user_state(service_id, key).await
     }
 }
 

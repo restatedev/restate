@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use prost::Message;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, Source, SpanRelation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocationResponseSink,
 };
 use restate_wal_protocol::Command;
 
@@ -81,28 +79,6 @@ pub fn create_response_message(
                 idempotency_id,
                 response: result,
             })
-        }
-        ServiceInvocationResponseSink::NewInvocation {
-            target,
-            id,
-            caller_context,
-        } => {
-            ResponseMessage::Outbox(OutboxMessage::ServiceInvocation(ServiceInvocation::new(
-                id,
-                target,
-                // Methods receiving responses MUST accept this input type
-                restate_pb::restate::internal::ServiceInvocationSinkRequest {
-                    response: Some(result.into()),
-                    caller_context,
-                }
-                .encode_to_vec(),
-                Source::Internal,
-                None,
-                SpanRelation::None,
-                vec![],
-                None,
-                None,
-            )))
         }
     }
 }

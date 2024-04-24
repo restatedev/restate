@@ -26,7 +26,6 @@ use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
 mod leadership;
-mod services;
 pub mod shuffle;
 mod state_machine;
 pub mod storage;

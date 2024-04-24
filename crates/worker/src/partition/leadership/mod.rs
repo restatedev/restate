@@ -10,7 +10,6 @@
 
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage};
-use assert2::let_assert;
 use futures::future::OptionFuture;
 use futures::{future, StreamExt};
 use restate_core::network::NetworkSender;
@@ -23,7 +22,6 @@ use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
-use std::panic;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tracing::{trace, warn};
@@ -31,18 +29,14 @@ use tracing::{trace, warn};
 mod action_collector;
 
 use crate::partition::action_effect_handler::ActionEffectHandler;
-use crate::partition::services::non_deterministic;
-use crate::partition::services::non_deterministic::ServiceInvoker;
 use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::journal::EntryType;
 use restate_wal_protocol::timer::TimerValue;
 
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
@@ -53,7 +47,6 @@ pub(crate) struct LeaderState {
     shuffle_hint_tx: HintSender,
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
-    non_deterministic_service_invoker: non_deterministic::ServiceInvoker,
     action_effect_handler: ActionEffectHandler,
     actions_effects_tx: mpsc::Sender<ActionEffect>,
 }
@@ -142,14 +135,10 @@ where
         partition_storage: &mut PartitionStorage,
     ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower(mut follower_state) = self {
-            let (mut service_invoker, service_invoker_output_rx) =
-                non_deterministic::ServiceInvoker::new(partition_storage.clone());
-
             let leader_epoch = epoch_sequence_number.leader_epoch;
 
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,
-                &mut service_invoker,
                 (follower_state.partition_id, leader_epoch),
                 follower_state.partition_key_range.clone(),
                 partition_storage,
@@ -205,16 +194,10 @@ where
                         shuffle_hint_tx,
                         timer_service,
                         action_effect_handler,
-                        non_deterministic_service_invoker: service_invoker,
                         actions_effects_tx,
                     },
                 },
-                ActionEffectStream::leader(
-                    invoker_rx,
-                    shuffle_rx,
-                    service_invoker_output_rx,
-                    actions_effects_rx,
-                ),
+                ActionEffectStream::leader(invoker_rx, shuffle_rx, actions_effects_rx),
             ))
         } else {
             unreachable!("This method should only be called if I am a follower!");
@@ -223,7 +206,6 @@ where
 
     async fn resume_invoked_invocations(
         invoker_handle: &mut InvokerInputSender,
-        built_in_service_invoker: &mut non_deterministic::ServiceInvoker,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_storage: &mut PartitionStorage,
@@ -236,68 +218,22 @@ where
             .await
             .map_err(Error::Invoker)?;
 
-        let mut built_in_invoked_services = Vec::new();
-
         {
             let invoked_invocations = partition_storage.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
             while let Some(invocation_id_and_target) = invoked_invocations.next().await {
                 let (invocation_id, invocation_target) = invocation_id_and_target?;
-
-                if !non_deterministic::ServiceInvoker::is_supported(
-                    invocation_target.service_name(),
-                ) {
-                    invoker_handle
-                        .invoke(
-                            partition_leader_epoch,
-                            invocation_id,
-                            invocation_target,
-                            InvokeInputJournal::NoCachedJournal,
-                        )
-                        .await
-                        .map_err(Error::Invoker)?;
-                } else {
-                    built_in_invoked_services.push(invocation_id);
-                }
+                invoker_handle
+                    .invoke(
+                        partition_leader_epoch,
+                        invocation_id,
+                        invocation_target,
+                        InvokeInputJournal::NoCachedJournal,
+                    )
+                    .await
+                    .map_err(Error::Invoker)?;
             }
-        }
-
-        for invocation_id in built_in_invoked_services {
-            let input_entry = partition_storage
-                .load_journal_entry(&invocation_id, 0)
-                .await?
-                .expect("first journal entry must be present; if not, this indicates a bug.");
-
-            assert_eq!(
-                input_entry.header().as_entry_type(),
-                EntryType::Custom,
-                "first journal entry must be a '{}' for built in services",
-                EntryType::Custom
-            );
-
-            let status = partition_storage
-                .get_invocation_status(&invocation_id)
-                .await?;
-
-            let_assert!(InvocationStatus::Invoked(metadata) = status);
-
-            // Built-in services support only one response_sink
-            debug_assert!(
-                metadata.response_sinks.len() <= 1,
-                "Built-in services support only one response_sink"
-            );
-            let response_sink = metadata.response_sinks.into_iter().next();
-            let argument = input_entry.serialized_entry().clone();
-            built_in_service_invoker
-                .invoke(
-                    invocation_id,
-                    metadata.invocation_target,
-                    metadata.journal_metadata.span_context,
-                    response_sink,
-                    argument,
-                )
-                .await;
         }
 
         Ok(invoker_rx)
@@ -380,7 +316,6 @@ where
                         &mut follower_state.invoker_tx,
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
-                        &mut leader_state.non_deterministic_service_invoker,
                         &mut leader_state.actions_effects_tx,
                         &follower_state.networking,
                     )
@@ -399,7 +334,6 @@ where
         invoker_tx: &mut InvokerInputSender,
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
-        non_deterministic_service_invoker: &mut ServiceInvoker,
         actions_effects_tx: &mut mpsc::Sender<ActionEffect>,
         networking: &Networking,
     ) -> Result<(), Error> {
@@ -445,23 +379,6 @@ where
                 .abort_invocation(partition_leader_epoch, invocation_id)
                 .await
                 .map_err(Error::Invoker)?,
-            Action::InvokeBuiltInService {
-                invocation_id,
-                invocation_target,
-                span_context,
-                response_sink,
-                argument,
-            } => {
-                non_deterministic_service_invoker
-                    .invoke(
-                        invocation_id,
-                        invocation_target,
-                        span_context,
-                        response_sink,
-                        argument,
-                    )
-                    .await;
-            }
             Action::IngressResponse(ingress_response) => {
                 let invocation_id: InvocationId = ingress_response.invocation_id;
                 // NOTE: We dispatch the response in a non-blocking task-center task to avoid
