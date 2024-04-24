@@ -25,8 +25,8 @@ async fn writing_to_rocksdb(worker_options: WorkerOptions) {
     // setup
     //
     let (mut rocksdb, writer) = RocksDBStorage::open(
-        worker_options.data_dir(),
-        Constant::new(worker_options.rocksdb),
+        Constant::new(worker_options.storage.clone()),
+        Constant::new(worker_options.storage.rocksdb),
     )
     .await
     .expect("RocksDB storage creation should succeed");

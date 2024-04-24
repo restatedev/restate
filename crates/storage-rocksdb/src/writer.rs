@@ -13,7 +13,10 @@ use futures::ready;
 use futures_util::FutureExt;
 use log::debug;
 use restate_storage_api::StorageError;
+use restate_types::arc_util::Updateable;
+use restate_types::config::StorageOptions;
 use restate_types::errors::ThreadJoinError;
+use rocksdb::WriteOptions;
 use std::future::Future;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -41,6 +44,7 @@ type Error = anyhow::Error;
 
 pub struct Writer {
     db: Arc<DB>,
+    opts: Box<dyn Updateable<StorageOptions> + Send + 'static>,
     rx: UnboundedReceiver<WriteCommand>,
 
     // for creating `WriterHandle`s
@@ -48,9 +52,14 @@ pub struct Writer {
 }
 
 impl Writer {
-    pub fn new(db: Arc<DB>) -> Self {
+    pub fn new(db: Arc<DB>, opts: impl Updateable<StorageOptions> + Send + 'static) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        Self { db, rx, tx }
+        Self {
+            db,
+            opts: Box::new(opts),
+            rx,
+            tx,
+        }
     }
 
     pub fn create_writer_handle(&self) -> WriterHandle {
@@ -111,7 +120,11 @@ impl Writer {
         replies: &mut Vec<Sender<Result<(), StorageError>>>,
     ) -> Result<(), Error> {
         replies.push(response_tx);
-        if !try_write_batch(&self.db, replies, &write_batch) {
+        let mut write_options = WriteOptions::default();
+        let opts = self.opts.load();
+        write_options.disable_wal(opts.rocksdb.rocksdb_disable_wal());
+
+        if !try_write_batch(&self.db, replies, &write_batch, &write_options) {
             return Ok(());
         }
         //
@@ -123,14 +136,17 @@ impl Writer {
         }) = self.rx.try_recv()
         {
             replies.push(response_tx);
-            if !try_write_batch(&self.db, replies, &write_batch) {
+            if !try_write_batch(&self.db, replies, &write_batch, &write_options) {
                 return Ok(());
             }
         }
-        //
-        // okay now that we wrote everything, let us commit
-        //
-        self.db.flush_wal(true)?;
+
+        if !opts.rocksdb.rocksdb_disable_wal() {
+            //
+            // okay now that we wrote everything, let us commit
+            //
+            self.db.flush_wal(opts.sync_wal_on_flush)?;
+        }
         //
         // notify everyone of the success
         //
@@ -146,9 +162,10 @@ fn try_write_batch(
     db: &Arc<DB>,
     futures: &mut Vec<Sender<Result<(), StorageError>>>,
     batch: &WriteBatch,
+    write_opts: &WriteOptions,
 ) -> bool {
     let result = db
-        .write(batch)
+        .write_opt(batch, write_opts)
         .map_err(|error| StorageError::Generic(error.into()));
     if result.is_ok() {
         return true;

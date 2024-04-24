@@ -166,10 +166,12 @@ impl Worker {
         // from worker creation, or we make worker creation async. This is a stop gap
         // to avoid unraveling the entire worker creation process to be async in this change.
         let (rocksdb_storage, rocksdb_writer) = futures::executor::block_on(RocksDBStorage::open(
-            config.worker.data_dir(),
             updateable_config
                 .clone()
-                .map_as_updateable_owned(|c| &c.worker.rocksdb),
+                .map_as_updateable_owned(|c| &c.worker.storage),
+            updateable_config
+                .clone()
+                .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
         ))?;
 
         let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());

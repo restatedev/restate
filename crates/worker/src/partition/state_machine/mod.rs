@@ -150,11 +150,11 @@ mod tests {
             let worker_options = WorkerOptions::default();
             info!(
                 "Using RocksDB temp directory {}",
-                worker_options.data_dir().display()
+                worker_options.storage.data_dir().display()
             );
             let (rocksdb_storage, writer) = restate_storage_rocksdb::RocksDBStorage::open(
-                worker_options.data_dir(),
-                Constant::new(worker_options.rocksdb),
+                Constant::new(worker_options.storage.clone()),
+                Constant::new(worker_options.storage.rocksdb),
             )
             .await
             .unwrap();

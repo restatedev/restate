@@ -38,7 +38,7 @@ use restate_rocksdb::{
 };
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
-use restate_types::config::RocksDbOptions;
+use restate_types::config::{RocksDbOptions, StorageOptions};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use rocksdb::BoundColumnFamily;
 use rocksdb::DBCompressionType;
@@ -47,7 +47,6 @@ use rocksdb::DBRawIteratorWithThreadMode;
 use rocksdb::MultiThreaded;
 use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use writer::JoinHandle as RocksDBWriterJoinHandle;
@@ -190,6 +189,12 @@ fn db_options() -> rocksdb::Options {
     //
     db_options.set_keep_log_file_num(1);
 
+    // we always need to enable atomic flush in case that the user disables wal at runtime
+    db_options.set_atomic_flush(true);
+
+    // we always enable manual wal flushing in case that the user enables wal at runtime
+    db_options.set_manual_wal_flush(true);
+
     db_options
 }
 
@@ -224,7 +229,7 @@ impl RocksDBStorage {
     }
 
     pub async fn open(
-        data_dir: PathBuf,
+        mut storage_opts: impl Updateable<StorageOptions> + Send + 'static,
         updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> std::result::Result<(Self, Writer), BuildError> {
         let cfs = vec![
@@ -248,10 +253,11 @@ impl RocksDBStorage {
             CfName::new(cf_name(PartitionStateMachine)),
         ];
 
+        let options = storage_opts.load();
         let db_spec = DbSpecBuilder::new(
             DbName::new(DB_NAME),
             Owner::PartitionProcessor,
-            data_dir,
+            options.data_dir(),
             db_options(),
         )
         // At the moment, all CFs get the same options, that might change in the future.
@@ -266,7 +272,7 @@ impl RocksDBStorage {
         .await
         .map_err(|_| ShutdownError)??;
 
-        let writer = Writer::new(rdb.clone());
+        let writer = Writer::new(rdb.clone(), storage_opts);
         let writer_handle = writer.create_writer_handle();
 
         Ok((

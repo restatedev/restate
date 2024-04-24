@@ -181,7 +181,10 @@ impl Configuration {
     }
 
     pub fn apply_rocksdb_common(mut self) -> Self {
-        self.worker.rocksdb.apply_common(&self.common.rocksdb);
+        self.worker
+            .storage
+            .rocksdb
+            .apply_common(&self.common.rocksdb);
         self.bifrost
             .local
             .rocksdb
