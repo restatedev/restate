@@ -188,6 +188,28 @@ pub struct Idempotency {
 }
 
 impl ServiceInvocation {
+    pub fn initialize(
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
+        source: Source,
+    ) -> Self {
+        Self {
+            invocation_id,
+            invocation_target,
+            argument: Default::default(),
+            source,
+            response_sink: None,
+            span_context: ServiceInvocationSpanContext::empty(),
+            headers: vec![],
+            execution_time: None,
+            idempotency: None,
+        }
+    }
+
+    pub fn with_related_span(&mut self, span_relation: SpanRelation) {
+        self.span_context = ServiceInvocationSpanContext::start(&self.invocation_id, span_relation);
+    }
+
     /// Create a new [`ServiceInvocation`].
     ///
     /// This method returns the [`Span`] associated to the created [`ServiceInvocation`].
@@ -239,6 +261,12 @@ pub struct InvocationResponse {
     pub id: InvocationId,
     pub entry_index: EntryIndex,
     pub result: ResponseResult,
+}
+
+impl WithPartitionKey for InvocationResponse {
+    fn partition_key(&self) -> PartitionKey {
+        self.id.partition_key()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

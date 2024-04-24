@@ -15,7 +15,6 @@ mocks = ["dep:restate-test-util"]
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-node-protocol = { workspace = true }
-restate-pb = { workspace = true, features = ["restate-types"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 # todo: only needed for DedupInformation :-( Probably fixed by merging restate-storage-api with restate-types
 restate-storage-api = { workspace = true }
@@ -28,7 +27,6 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 dashmap = { workspace = true }
 drain = { workspace = true }
-prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
