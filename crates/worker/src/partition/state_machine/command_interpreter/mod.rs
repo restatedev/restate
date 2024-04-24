@@ -171,6 +171,13 @@ where
 
                 Self::handle_completion(id, completion, state, effects).await
             }
+            Command::ProxyThrough(service_invocation) => {
+                self.handle_outgoing_message(
+                    OutboxMessage::ServiceInvocation(service_invocation),
+                    effects,
+                );
+                Ok(())
+            }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
                 effects.truncate_outbox(index);
