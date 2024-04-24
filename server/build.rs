@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .git_commit_date()
         .git_commit_timestamp()
         .git_sha(true)
+        .fail_on_error()
         .emit()?;
     Ok(())
 }
