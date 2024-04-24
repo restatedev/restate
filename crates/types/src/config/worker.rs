@@ -84,6 +84,7 @@ impl Default for WorkerOptions {
     fn default() -> Self {
         let rocksdb = RocksDbOptionsBuilder::default()
             .rocksdb_disable_wal(Some(true))
+            .rocksdb_batch_wal_flushes(Some(false))
             .build()
             .unwrap();
 

@@ -134,8 +134,6 @@ mod tests {
         //  Perhaps we could make these tests faster by having those.
         rocksdb_storage: RocksDBStorage,
         effects_buffer: Effects,
-        signal: drain::Signal,
-        writer_join_handle: restate_storage_rocksdb::RocksDBWriterJoinHandle,
     }
 
     impl MockStateMachine {
@@ -152,15 +150,12 @@ mod tests {
                 "Using RocksDB temp directory {}",
                 worker_options.data_dir().display()
             );
-            let (rocksdb_storage, writer) = restate_storage_rocksdb::RocksDBStorage::open(
+            let rocksdb_storage = restate_storage_rocksdb::RocksDBStorage::open(
                 worker_options.data_dir(),
                 Constant::new(worker_options.rocksdb),
             )
             .await
             .unwrap();
-
-            let (signal, watch) = drain::channel();
-            let writer_join_handle = writer.run(watch);
 
             Self {
                 state_machine: StateMachine::new(
@@ -170,8 +165,6 @@ mod tests {
                 ),
                 rocksdb_storage,
                 effects_buffer: Default::default(),
-                signal,
-                writer_join_handle,
             }
         }
 
@@ -213,13 +206,6 @@ mod tests {
         pub fn storage(&mut self) -> &mut RocksDBStorage {
             &mut self.rocksdb_storage
         }
-
-        async fn shutdown(self) -> Result<(), anyhow::Error> {
-            self.signal.drain().await;
-            self.writer_join_handle.await??;
-
-            Ok(())
-        }
     }
 
     type TestResult = Result<(), anyhow::Error>;
@@ -242,8 +228,7 @@ mod tests {
             .await
             .unwrap();
         assert_that!(invocation_status, pat!(InvocationStatus::Invoked(_)));
-
-        state_machine.shutdown().await
+        Ok(())
     }
 
     #[test(tokio::test)]
@@ -290,8 +275,7 @@ mod tests {
                 }
             )))
         );
-
-        state_machine.shutdown().await
+        Ok(())
     }
 
     #[test(tokio::test)]
@@ -381,8 +365,7 @@ mod tests {
                 invocation_id: eq(invocation_id)
             }))
         );
-
-        state_machine.shutdown().await
+        Ok(())
     }
 
     #[test(tokio::test)]
@@ -477,7 +460,7 @@ mod tests {
             some((ge(0), outbox_message_matcher(caller_id)))
         );
 
-        state_machine.shutdown().await
+        Ok(())
     }
 
     #[test(tokio::test)]
@@ -639,8 +622,7 @@ mod tests {
                 ))
             }))
         );
-
-        state_machine.shutdown().await
+        Ok(())
     }
 
     #[test(tokio::test)]
@@ -726,7 +708,7 @@ mod tests {
             )
         );
 
-        state_machine.shutdown().await
+        Ok(())
     }
 
     mod idempotency {
@@ -847,8 +829,6 @@ mod tests {
                     response_result: eq(ResponseResult::Success(response_bytes))
                 })))
             );
-
-            state_machine.shutdown().await.unwrap();
         }
 
         #[test(tokio::test)]
@@ -924,8 +904,6 @@ mod tests {
                     .unwrap(),
                 pat!(InvocationStatus::Free)
             );
-
-            state_machine.shutdown().await.unwrap();
         }
 
         #[test(tokio::test)]
@@ -989,8 +967,6 @@ mod tests {
                     .unwrap(),
                 pat!(InvocationStatus::Free)
             );
-
-            state_machine.shutdown().await.unwrap();
         }
 
         #[test(tokio::test)]
@@ -1091,8 +1067,6 @@ mod tests {
                     })))),
                 )
             );
-
-            state_machine.shutdown().await.unwrap();
         }
 
         #[test(tokio::test)]
@@ -1163,8 +1137,6 @@ mod tests {
                     .unwrap(),
                 none()
             );
-
-            state_machine.shutdown().await.unwrap();
         }
     }
 

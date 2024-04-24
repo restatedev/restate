@@ -27,7 +27,7 @@ async fn get_idempotency_key() {
         .default_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("task_center builds");
-    let (mut engine, shutdown) = tc
+    let mut engine = tc
         .run_in_scope("mock-query-engine", None, MockQueryEngine::create())
         .await;
 
@@ -96,6 +96,4 @@ async fn get_idempotency_key() {
             )
         )
     );
-
-    shutdown.await;
 }
