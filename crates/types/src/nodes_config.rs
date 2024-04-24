@@ -34,6 +34,7 @@ pub enum NodesConfigError {
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
 #[derive(Debug, Hash, EnumSetType, strum_macros::Display, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[enumset(serialize_repr = "list")]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ pub struct MetadataStoreOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub bind_address: BindAddress,
     /// Number of in-flight metadata store requests.
-    pub request_queue_length: usize,
+    request_queue_length: NonZeroUsize,
     pub rocksdb: RocksDbOptions,
 }
 
@@ -36,13 +37,17 @@ impl MetadataStoreOptions {
     pub fn data_dir(&self) -> PathBuf {
         data_dir("local-metadata-store")
     }
+
+    pub fn request_queue_length(&self) -> usize {
+        self.request_queue_length.get()
+    }
 }
 
 impl Default for MetadataStoreOptions {
     fn default() -> Self {
         Self {
             bind_address: "0.0.0.0:5123".parse().expect("valid bind address"),
-            request_queue_length: 32,
+            request_queue_length: NonZeroUsize::new(32).unwrap(),
             rocksdb: Default::default(),
         }
     }

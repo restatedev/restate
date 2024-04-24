@@ -127,7 +127,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         ),
     )?;
 
-    let res = RetryPolicy::fixed_delay(Duration::from_millis(100), 20)
+    let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
         .retry(|| async {
             reqwest::Client::builder()
                 .build()?
