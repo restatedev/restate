@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
-use crate::TableScan::PartitionKeyRange;
+use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{RocksDBStorage, TableKind, TableScanIterationDecision};
 use crate::{RocksDBTransaction, StorageAccess};
 use futures::Stream;
@@ -87,7 +87,7 @@ fn invoked_invocations<S: StorageAccess>(
     partition_key_range: RangeInclusive<PartitionKey>,
 ) -> Vec<Result<(InvocationId, InvocationTarget)>> {
     storage.for_each_key_value_in_place(
-        PartitionKeyRange::<InvocationStatusKey>(partition_key_range),
+        FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
             let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
             if let Some(res) = result {
@@ -172,7 +172,7 @@ impl RocksDBStorage {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedInvocationStatusRow> + '_ {
-        let iter = self.iterator_from(PartitionKeyRange::<InvocationStatusKey>(range));
+        let iter = self.iterator_from(FullScanPartitionKeyRange::<InvocationStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = InvocationStatusKey::deserialize_from(&mut key).unwrap();
             let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value).unwrap();
