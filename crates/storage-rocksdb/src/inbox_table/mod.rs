@@ -70,13 +70,16 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        self.get_first_blocking(TableScan::KeyPrefix(key), |kv| match kv {
-            Some((k, v)) => {
-                let entry = decode_inbox_key_value(k, v)?;
-                Ok(Some(entry))
-            }
-            None => Ok(None),
-        })
+        self.get_first_blocking(
+            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+            |kv| match kv {
+                Some((k, v)) => {
+                    let entry = decode_inbox_key_value(k, v)?;
+                    Ok(Some(entry))
+                }
+                None => Ok(None),
+            },
+        )
     }
 
     async fn pop_inbox(
@@ -102,12 +105,13 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             .service_name(service_id.service_name.clone())
             .service_key(service_id.key.clone());
 
-        stream::iter(
-            self.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
+        stream::iter(self.for_each_key_value_in_place(
+            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+            |k, v| {
                 let inbox_entry = decode_inbox_key_value(k, v);
                 TableScanIterationDecision::Emit(inbox_entry)
-            }),
-        )
+            },
+        ))
     }
 
     fn all_inboxes(
@@ -115,7 +119,7 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
         stream::iter(self.for_each_key_value_in_place(
-            TableScan::PartitionKeyRange::<InboxKey>(range),
+            TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
             |k, v| {
                 let inbox_entry = decode_inbox_key_value(k, v);
                 TableScanIterationDecision::Emit(inbox_entry)

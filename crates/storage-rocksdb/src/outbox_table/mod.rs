@@ -51,7 +51,7 @@ fn get_next_outbox_message<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(u64::MAX);
 
-    storage.get_first_blocking(TableScan::KeyRangeInclusive(start, end), |kv| {
+    storage.get_first_blocking(TableScan::KeyRangeInclusiveInSinglePartition(partition_id, start, end), |kv| {
         if let Some((k, v)) = kv {
             let t = decode_key_value(k, v)?;
             Ok(Some(t))

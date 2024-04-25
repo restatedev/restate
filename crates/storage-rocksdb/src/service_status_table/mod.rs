@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
-use crate::TableScan::PartitionKeyRange;
+use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{RocksDBStorage, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytestring::ByteString;
@@ -120,7 +120,7 @@ impl RocksDBStorage {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedVirtualObjectStatusRow> + '_ {
-        let iter = self.iterator_from(PartitionKeyRange::<ServiceStatusKey>(range));
+        let iter = self.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range));
         OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
             let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value).unwrap();
