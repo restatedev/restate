@@ -264,12 +264,16 @@ mod tests {
         let (address, input, handle) = bootstrap_test().await;
         let process_fut = tokio::task::spawn(async move {
             // Get the function invocation and assert on it
-            let (_, invocation_target, argument, _, _, response_tx, _) =
+            let (service_invocation, _, response_tx) =
                 input.await.unwrap().unwrap().expect_invocation();
-            assert_eq!(invocation_target.service_name(), "greeter.Greeter");
-            assert_eq!(invocation_target.handler_name(), "greet");
+            assert_eq!(
+                service_invocation.invocation_target.service_name(),
+                "greeter.Greeter"
+            );
+            assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
 
-            let greeting_req: GreetingRequest = serde_json::from_slice(&argument).unwrap();
+            let greeting_req: GreetingRequest =
+                serde_json::from_slice(&service_invocation.argument).unwrap();
             assert_eq!(&greeting_req.person, "Francesco");
 
             response_tx

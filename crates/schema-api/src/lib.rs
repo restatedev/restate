@@ -459,24 +459,11 @@ pub mod subscription {
     use restate_types::identifiers::SubscriptionId;
     use tracing::warn;
 
-    #[derive(Debug, Clone, Eq, PartialEq, Default)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
-    pub enum KafkaOrderingKeyFormat {
-        #[default]
-        ConsumerGroupTopicPartition,
-        ConsumerGroupTopicPartitionKey,
-    }
-
     #[derive(Debug, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum Source {
-        Kafka {
-            cluster: String,
-            topic: String,
-            ordering_key_format: KafkaOrderingKeyFormat,
-        },
+        Kafka { cluster: String, topic: String },
     }
 
     impl fmt::Display for Source {
@@ -500,10 +487,7 @@ pub mod subscription {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum EventReceiverServiceType {
-        VirtualObject {
-            // If true, event.ordering_key is the key, otherwise event.key is the key
-            ordering_key_is_key: bool,
-        },
+        VirtualObject,
         Service,
     }
 
@@ -676,7 +660,6 @@ pub mod subscription {
                     source: Source::Kafka {
                         cluster: "my-cluster".to_string(),
                         topic: "my-topic".to_string(),
-                        ordering_key_format: Default::default(),
                     },
                     sink: Sink::Service {
                         name: "MySvc".to_string(),

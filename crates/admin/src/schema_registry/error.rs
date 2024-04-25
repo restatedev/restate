@@ -107,6 +107,8 @@ pub enum SubscriptionError {
     InvalidServiceSinkAuthority(Uri),
     #[error("invalid sink URI '{0}': cannot find service/handler specified in the sink URI.")]
     SinkServiceNotFound(Uri),
+    #[error("invalid sink URI '{0}': virtual object shared handlers cannot be used as sinks.")]
+    InvalidSinkSharedHandler(Uri),
 
     #[error(transparent)]
     #[code(unknown)]

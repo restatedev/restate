@@ -13,7 +13,7 @@ use super::APPLICATION_JSON;
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
 use restate_schema_api::invocation_target::InputValidationError;
-use restate_types::errors::InvocationError;
+use restate_types::errors::{IdDecodeError, InvocationError};
 use serde::Serialize;
 use std::string;
 
@@ -55,6 +55,8 @@ pub(crate) enum HandlerError {
         "cannot use the delay query parameter with calls. The delay is supported only with sends"
     )]
     UnsupportedDelay,
+    #[error("bad awakeable id '{0}': {1}")]
+    BadAwakeableId(String, IdDecodeError),
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +88,7 @@ impl HandlerError {
             | HandlerError::BadAwakeablesPath
             | HandlerError::UnsupportedDelay
             | HandlerError::BadHeader(_, _)
+            | HandlerError::BadAwakeableId(_, _)
             | HandlerError::InputValidation(_) => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,

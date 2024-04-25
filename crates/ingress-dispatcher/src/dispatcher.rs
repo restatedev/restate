@@ -10,7 +10,7 @@
 
 use crate::error::IngressDispatchError;
 use crate::{
-    wrap_service_invocation_in_envelope, IngressCorrelationId, IngressDispatcherRequest,
+    IngressCorrelationId, IngressDispatcherRequest, IngressDispatcherRequestInner,
     IngressDispatcherResponse, IngressRequestMode, IngressResponseSender,
 };
 use dashmap::DashMap;
@@ -19,12 +19,16 @@ use restate_core::metadata;
 use restate_core::network::MessageHandler;
 use restate_node_protocol::codec::Targeted;
 use restate_node_protocol::ingress::IngressMessage;
-use restate_types::invocation::{self, ServiceInvocation, ServiceInvocationResponseSink};
+use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::append_envelope_to_bifrost;
+use restate_types::GenerationalNodeId;
+use restate_wal_protocol::{
+    append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
+};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 /// Dispatches a request from ingress to bifrost
 pub trait DispatchIngressRequest {
@@ -74,61 +78,44 @@ impl DispatchIngressRequest for IngressDispatcher {
         ingress_request: IngressDispatcherRequest,
     ) -> Result<(), IngressDispatchError> {
         let mut bifrost = self.bifrost.clone();
-        let my_node_id = metadata().my_node_id();
         let IngressDispatcherRequest {
-            correlation_id,
-            invocation_id,
-            invocation_target,
-            argument,
-            span_context,
+            inner,
             request_mode,
-            idempotency,
-            headers,
-            execution_time,
         } = ingress_request;
 
-        let response_sink = if matches!(request_mode, IngressRequestMode::RequestResponse(_)) {
-            Some(ServiceInvocationResponseSink::Ingress(my_node_id))
-        } else {
-            None
-        };
-
-        let service_invocation = ServiceInvocation {
-            invocation_id,
-            invocation_target,
-            argument,
-            source: invocation::Source::Ingress,
-            response_sink,
-            span_context,
-            headers,
-            execution_time,
-            idempotency,
-        };
-
-        let (dedup_source, msg_index) = match request_mode {
-            IngressRequestMode::RequestResponse(response_sender) => {
+        let (dedup_source, msg_index, proxying_partition_key) = match request_mode {
+            IngressRequestMode::RequestResponse(correlation_id, response_sender) => {
                 self.state
                     .waiting_responses
                     .insert(correlation_id, response_sender);
-                (None, self.state.get_and_increment_msg_index())
+                (None, self.state.get_and_increment_msg_index(), None)
             }
             IngressRequestMode::FireAndForget => {
                 let msg_index = self.state.get_and_increment_msg_index();
-                (None, msg_index)
+                (None, msg_index, None)
             }
-            IngressRequestMode::DedupFireAndForget(dedup_id) => (Some(dedup_id.0), dedup_id.1),
+            IngressRequestMode::DedupFireAndForget {
+                deduplication_id,
+                proxying_partition_key,
+            } => (
+                Some(deduplication_id.0),
+                deduplication_id.1,
+                proxying_partition_key,
+            ),
         };
 
+        let partition_key = proxying_partition_key.unwrap_or_else(|| inner.partition_key());
+
         let envelope = wrap_service_invocation_in_envelope(
-            service_invocation,
-            my_node_id,
+            partition_key,
+            inner,
+            metadata().my_node_id(),
             dedup_source,
             msg_index,
         );
         let (log_id, lsn) = append_envelope_to_bifrost(&mut bifrost, envelope).await?;
 
-        info!(
-            restate.invocation.id = %invocation_id,
+        debug!(
             log_id = %log_id,
             lsn = %lsn,
             "Ingress request written to bifrost"
@@ -181,10 +168,39 @@ impl MessageHandler for IngressDispatcher {
     }
 }
 
+fn wrap_service_invocation_in_envelope(
+    partition_key: PartitionKey,
+    inner: IngressDispatcherRequestInner,
+    from_node_id: GenerationalNodeId,
+    deduplication_source: Option<String>,
+    msg_index: MessageIndex,
+) -> Envelope {
+    let header = Header {
+        source: Source::Ingress {
+            node_id: from_node_id,
+            nodes_config_version: metadata().nodes_config_version(),
+        },
+        dest: Destination::Processor {
+            partition_key,
+            dedup: deduplication_source.map(|src| DedupInformation::ingress(src, msg_index)),
+        },
+    };
+
+    Envelope::new(
+        header,
+        match inner {
+            IngressDispatcherRequestInner::Invoke(si) => Command::Invoke(si),
+            IngressDispatcherRequestInner::ProxyThrough(si) => Command::ProxyThrough(si),
+            IngressDispatcherRequestInner::InvocationResponse(ir) => {
+                Command::InvocationResponse(ir)
+            }
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     use bytes::Bytes;
     use bytestring::ByteString;
@@ -195,13 +211,14 @@ mod tests {
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::{IdempotencyId, InvocationId, WithPartitionKey};
     use restate_types::invocation::{
-        HandlerType, Idempotency, InvocationTarget, ResponseResult, SpanRelation,
+        HandlerType, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation,
     };
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::partition_table::{FindPartition, FixedPartitionTable};
     use restate_types::Version;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
+    use std::time::Duration;
     use test_log::test;
 
     #[test(tokio::test)]
@@ -242,18 +259,18 @@ mod tests {
                     idempotency_key.clone(),
                 );
 
-                let (invocation, res) = IngressDispatcherRequest::invocation(
+                let mut invocation = ServiceInvocation::initialize(
                     invocation_id,
                     invocation_target.clone(),
-                    argument.clone(),
-                    SpanRelation::None,
-                    Some(Idempotency {
-                        key: idempotency_key.clone(),
-                        retention: Duration::from_secs(60),
-                    }),
-                    vec![],
+                    restate_types::invocation::Source::Ingress,
                 );
-                dispatcher.dispatch_ingress_request(invocation).await?;
+                invocation.argument = argument.clone();
+                invocation.idempotency = Some(Idempotency {
+                    key: idempotency_key.clone(),
+                    retention: Duration::from_secs(60),
+                });
+                let (ingress_req, _, res) = IngressDispatcherRequest::invocation(invocation);
+                dispatcher.dispatch_ingress_request(ingress_req).await?;
 
                 // Let's check we correct have generated a bifrost write
                 let partition_id = node_env

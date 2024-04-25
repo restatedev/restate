@@ -101,7 +101,7 @@ pub mod v1 {
             OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
         };
         use crate::storage::v1::service_invocation_response_sink::{
-            Ingress, NewInvocation, PartitionProcessor, ResponseSink,
+            Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::storage::v1::{
             enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
@@ -1252,20 +1252,6 @@ pub mod v1 {
                             ),
                         )
                     }
-                    ResponseSink::NewInvocation(new_invocation) => {
-                            let target = restate_types::invocation::InvocationTarget::try_from(
-                                new_invocation
-                                    .invocation_target
-                                    .ok_or(ConversionError::missing_field("invocation_target"))?,
-                            )?;
-                            Some(
-                                restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
-                                    id: restate_types::identifiers::InvocationId::from_slice(&new_invocation.invocation_id)?,
-                                    target,
-                                    caller_context: new_invocation.caller_context,
-                                },
-                            )
-                        }
                     ResponseSink::None(_) => None,
                 };
 
@@ -1294,15 +1280,6 @@ pub mod v1 {
                             node_id: Some(super::GenerationalNodeId::from(node_id)),
                         })
                     },
-                    Some(
-                        restate_types::invocation::ServiceInvocationResponseSink::NewInvocation {
-                            target, id, caller_context
-                        },
-                    ) => ResponseSink::NewInvocation(NewInvocation {
-                      invocation_id: id.into(),
-                            invocation_target: Some(target.into()),
-                            caller_context
-                    }),
                     None => ResponseSink::None(Default::default()),
                 };
 

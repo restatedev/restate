@@ -18,10 +18,7 @@ restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-schema-api = { workspace = true, features = ["service", "invocation_target"]}
 restate-types = { workspace = true }
-
-# To invoke the awakeables built-in service
-restate-pb = { workspace = true }
-prost = { workspace = true }
+restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
 
 # Encoding/Decoding
 bytes = { workspace = true }

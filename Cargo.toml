@@ -49,7 +49,6 @@ restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
 restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
-restate-pb = { path = "crates/pb" }
 restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-schema = { path = "crates/schema" }

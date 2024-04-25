@@ -176,12 +176,6 @@ message ServiceInvocationResponseSink {
         uint32 entry_index = 2;
     }
 
-    message NewInvocation {
-        bytes invocation_id = 1;
-        InvocationTarget invocation_target = 2;
-        bytes caller_context = 3;
-    }
-
     message Ingress {
         GenerationalNodeId node_id = 1;
     }
@@ -193,7 +187,6 @@ message ServiceInvocationResponseSink {
         None none = 1;
         PartitionProcessor partition_processor = 2;
         Ingress ingress = 3;
-        NewInvocation new_invocation = 4;
     }
 }
 

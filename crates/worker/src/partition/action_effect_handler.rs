@@ -15,7 +15,6 @@ use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNu
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::effects::BuiltinServiceEffects;
 use restate_wal_protocol::timer::TimerValue;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
@@ -74,31 +73,6 @@ impl ActionEffectHandler {
                     Envelope::new(header, Command::Timer(timer)),
                 )
                 .await?;
-            }
-            ActionEffect::BuiltInInvoker(invoker_output) => {
-                // TODO Super BAD code to mitigate https://github.com/restatedev/restate/issues/851
-                //  until we properly fix it.
-                //  By proposing the effects one by one we avoid the read your own writes issue,
-                //  because for each proposal the state machine goes through a transaction commit,
-                //  to make sure the next command can see the effects of the previous one.
-                //  A problematic example case is a sequence of CreateVirtualJournal and AppendJournalEntry:
-                //  to append a journal entry we must have stored the JournalMetadata first.
-                let (id, effects) = invoker_output.into_inner();
-
-                for effect in effects {
-                    let header = self.create_header(id.partition_key());
-                    append_envelope_to_bifrost(
-                        &mut self.bifrost,
-                        Envelope::new(
-                            header.clone(),
-                            Command::BuiltInInvokerEffect(BuiltinServiceEffects::new(
-                                id,
-                                vec![effect],
-                            )),
-                        ),
-                    )
-                    .await?;
-                }
             }
             ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
                 // We need this self proposal because we need to agree between leaders and followers on the wakeup time.

@@ -127,6 +127,8 @@ pub enum Command {
     Invoke(ServiceInvocation),
     /// Outbox can be truncated up to this index
     TruncateOutbox(MessageIndex),
+    /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
+    ProxyThrough(ServiceInvocation),
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.

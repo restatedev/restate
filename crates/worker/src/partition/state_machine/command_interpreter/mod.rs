@@ -10,7 +10,6 @@
 
 use super::Error;
 
-use crate::partition::services::deterministic;
 use crate::partition::state_machine::effects::Effects;
 use crate::partition::types::{
     create_response_message, InvokerEffect, InvokerEffectKind, OutboxMessageExt, ResponseMessage,
@@ -171,6 +170,13 @@ where
 
                 Self::handle_completion(id, completion, state, effects).await
             }
+            Command::ProxyThrough(service_invocation) => {
+                self.handle_outgoing_message(
+                    OutboxMessage::ServiceInvocation(service_invocation),
+                    effects,
+                );
+                Ok(())
+            }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
                 effects.truncate_outbox(index);
@@ -254,15 +260,6 @@ where
                 span_context,
             );
             // The span will be created later on invocation
-            return Ok(());
-        }
-
-        // If deterministic built-in service, just go and execute it
-        if deterministic::ServiceInvoker::is_supported(
-            service_invocation.invocation_target.service_name(),
-        ) {
-            self.handle_deterministic_built_in_service_invocation(service_invocation, effects)
-                .await;
             return Ok(());
         }
 
@@ -1543,32 +1540,6 @@ where
                 Ok(e)
             })
             .transpose()
-    }
-
-    async fn handle_deterministic_built_in_service_invocation(
-        &mut self,
-        invocation: ServiceInvocation,
-        effects: &mut Effects,
-    ) {
-        // Invoke built-in service
-        for effect in deterministic::ServiceInvoker::invoke(
-            &invocation.invocation_id,
-            &invocation.invocation_target,
-            &invocation.span_context,
-            invocation.response_sink.as_ref(),
-            invocation.argument.clone(),
-        )
-        .await
-        {
-            match effect {
-                deterministic::Effect::OutboxMessage(outbox_message) => {
-                    self.handle_outgoing_message(outbox_message, effects)
-                }
-                deterministic::Effect::IngressResponse(ingress_response) => {
-                    self.ingress_response(ingress_response, effects);
-                }
-            }
-        }
     }
 
     fn notify_invocation_result(

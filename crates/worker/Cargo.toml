@@ -32,7 +32,6 @@ restate-invoker-impl = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
-restate-pb = { workspace = true, features = ["builtin-service"] }
 restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = [ "service", "subscription"] }
 restate-serde-util = { workspace = true, features = ["proto"] }
@@ -59,7 +58,6 @@ humantime = { workspace = true }
 metrics =  { workspace = true }
 opentelemetry = { workspace = true }
 pin-project = { workspace = true }
-prost = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -78,6 +76,7 @@ restate-service-protocol = { workspace = true, features = ["mocks"] }
 restate-storage-api = { workspace = true, features = ["mocks"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
+prost = { workspace = true }
 
 googletest = { workspace = true }
 tempfile = { workspace = true }
