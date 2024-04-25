@@ -101,8 +101,11 @@ impl fmt::Display for InputRules {
             1 => write!(f, "{}", self.input_validation_rules[0]),
             _ => write!(
                 f,
-                "one of {:?}",
-                self.input_validation_rules.iter().join(" or ")
+                "one of [{}]",
+                self.input_validation_rules
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .join(", ")
             ),
         }
     }
@@ -131,12 +134,12 @@ pub enum InputValidationRule {
 impl fmt::Display for InputValidationRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InputValidationRule::NoBodyAndContentType => write!(f, "empty"),
+            InputValidationRule::NoBodyAndContentType => write!(f, "none"),
             InputValidationRule::ContentType { content_type } => {
-                write!(f, "value of content-type {}", content_type)
+                write!(f, "value of content-type '{}'", content_type)
             }
             InputValidationRule::JsonValue { content_type } => {
-                write!(f, "JSON value with content-type {}", content_type)
+                write!(f, "JSON value of content-type '{}'", content_type)
             }
         }
     }
@@ -342,7 +345,7 @@ impl Default for OutputContentTypeRule {
 impl fmt::Display for OutputContentTypeRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OutputContentTypeRule::None => write!(f, "Empty"),
+            OutputContentTypeRule::None => write!(f, "none"),
             OutputContentTypeRule::Set {
                 content_type,
                 has_json_schema,
@@ -354,7 +357,11 @@ impl fmt::Display for OutputContentTypeRule {
                 if *has_json_schema {
                     write!(f, "JSON ")?;
                 }
-                write!(f, "value with content-type {:?}", content_type)
+                write!(
+                    f,
+                    "value of content-type '{}'",
+                    String::from_utf8_lossy(content_type.as_bytes())
+                )
             }
         }
     }

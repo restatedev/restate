@@ -17,7 +17,7 @@ use restate_meta_rest_model::services::ServiceType;
 
 pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);
-    table.set_styled_header(vec!["HANDLER", "INPUT TYPE", "OUTPUT TYPE"]);
+    table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT"]);
 
     for handler in handlers {
         table.add_row(vec![
@@ -40,7 +40,7 @@ pub fn create_service_handlers_table_diff(
         .collect::<std::collections::HashMap<_, _>>();
 
     let mut table = Table::new_styled(ui_config);
-    table.set_styled_header(vec!["", "HANDLER", "INPUT TYPE", "OUTPUT TYPE"]);
+    table.set_styled_header(vec!["", "HANDLER", "INPUT", "OUTPUT"]);
 
     // Additions and updates
     for handler in new_service_handlers {
