@@ -4,9 +4,9 @@ Restate artifacts:
 
 * Runtime (this repo)
 * [SDK-Typescript](https://github.com/restatedev/sdk-typescript) and [Node template](https://github.com/restatedev/node-template-generator)
-* [Proto](https://github.com/restatedev/proto/)
 * [Documentation](https://github.com/restatedev/documentation/) and [Tour of Restate - Typescript](https://github.com/restatedev/tour-of-restate-typescript)
 * [Examples](https://github.com/restatedev/examples)
+* [Service protocol](https://github.com/restatedev/service-protocol) (follows a different versioning scheme)
 
 ## Versioning policy
 
@@ -28,8 +28,6 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 When performing a full release of all the artifacts, this order should be followed:
 
 1. [Runtime](#releasing-the-restate-runtime)
-1. [Proto](https://github.com/restatedev/proto/)
-1. After releasing proto you might need to update the descriptors in the SDKs and examples (`buf.lock` files or `git subtree` updates, refer to the specific release docs of repos)
 1. [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
 1. [Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Node template generator](https://github.com/restatedev/node-template-generator#releasing)
 1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
