@@ -8,67 +8,91 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keys::{KeyCodec, TableKey};
-use crate::scan::TableScan::{KeyPrefix, KeyRangeInclusive, Partition, PartitionKeyRange};
+use crate::keys::{KeyCodec, KeyKind, TableKey};
+use crate::scan::TableScan::{
+    FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartitionId,
+    SinglePartitionKeyPrefix,
+};
 use crate::TableKind;
 use bytes::BytesMut;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::ops::RangeInclusive;
 
+// Note: we take extra arguments like (PartitionId or PartitionKey) only to make sure that
+// call-sites know what they are opting to. Those values might not actually be used to perform the
+// query, albeit this might change at any time.
+#[derive(Debug)]
 pub enum TableScan<K> {
     /// Scan an entire partition of a given table.
-    Partition(PartitionId),
-    /// Scan an inclusive key-range.
-    PartitionKeyRange(RangeInclusive<PartitionKey>),
-    /// Key Prefix
-    KeyPrefix(K),
-    /// Inclusive Key Range
-    KeyRangeInclusive(K, K),
+    SinglePartitionId(PartitionId),
+    /// Scan an inclusive key-range across potentially across partitions.
+    /// Requires total seek order
+    FullScanPartitionKeyRange(RangeInclusive<PartitionKey>),
+    /// Scan within a single partition key
+    SinglePartitionKeyPrefix(PartitionKey, K),
+    /// Inclusive Key Range in a single partition.
+    KeyRangeInclusiveInSinglePartition(PartitionId, K, K),
 }
 
 pub(crate) enum PhysicalScan {
-    Prefix(TableKind, BytesMut),
-    RangeExclusive(TableKind, BytesMut, BytesMut),
-    RangeOpen(TableKind, BytesMut),
+    Prefix(TableKind, KeyKind, PartitionId, BytesMut),
+    RangeExclusive(TableKind, KeyKind, Option<PartitionId>, BytesMut, BytesMut),
+    // Exclusively used for cross-partition full-scan queries.
+    RangeOpen(TableKind, KeyKind, BytesMut),
 }
 
 impl<K: TableKey> From<TableScan<K>> for PhysicalScan {
     fn from(scan: TableScan<K>) -> Self {
         match scan {
-            KeyPrefix(key) => PhysicalScan::Prefix(K::table(), key.serialize()),
-            KeyRangeInclusive(start, end) => {
+            SinglePartitionKeyPrefix(partition_id, key) => {
+                PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, partition_id, key.serialize())
+            }
+            KeyRangeInclusiveInSinglePartition(partition_id, start, end) => {
                 let start = start.serialize();
                 let mut end = end.serialize();
                 if try_increment(&mut end) {
-                    PhysicalScan::RangeExclusive(K::table(), start, end)
+                    PhysicalScan::RangeExclusive(
+                        K::TABLE,
+                        K::KEY_KIND,
+                        Some(partition_id),
+                        start,
+                        end,
+                    )
                 } else {
-                    PhysicalScan::RangeOpen(K::table(), start)
+                    // not allowed to happen since we guarantee that KeyKind is
+                    // always incrementable.
+                    panic!("Key range end overflowed, start key {:x?}", &start);
                 }
             }
-            Partition(partition_id) => {
-                let mut kind = BytesMut::with_capacity(
-                    partition_id.serialized_length() + K::serialized_key_kind_length(),
+            SinglePartitionId(partition_id) => {
+                let mut prefix_start = BytesMut::with_capacity(
+                    partition_id.serialized_length() + KeyKind::SERIALIZED_LENGTH,
                 );
-                K::serialize_key_kind(&mut kind);
-                partition_id.encode(&mut kind);
-                PhysicalScan::Prefix(K::table(), kind)
+                K::serialize_key_kind(&mut prefix_start);
+                partition_id.encode(&mut prefix_start);
+                PhysicalScan::Prefix(K::TABLE, K::KEY_KIND, partition_id, prefix_start)
             }
-            PartitionKeyRange(range) => {
+            FullScanPartitionKeyRange(range) => {
                 let (start, end) = (range.start(), range.end());
-                let mut start_bytes = BytesMut::with_capacity(
-                    start.serialized_length() + K::serialized_key_kind_length(),
-                );
+                let mut start_bytes =
+                    BytesMut::with_capacity(start.serialized_length() + KeyKind::SERIALIZED_LENGTH);
                 K::serialize_key_kind(&mut start_bytes);
                 start.encode(&mut start_bytes);
                 match end.checked_add(1) {
-                    None => PhysicalScan::RangeOpen(K::table(), start_bytes),
+                    None => PhysicalScan::RangeOpen(K::TABLE, K::KEY_KIND, start_bytes),
                     Some(end) => {
                         let mut end_bytes = BytesMut::with_capacity(
-                            end.serialized_length() + K::serialized_key_kind_length(),
+                            end.serialized_length() + KeyKind::SERIALIZED_LENGTH,
                         );
                         K::serialize_key_kind(&mut end_bytes);
                         end.encode(&mut end_bytes);
-                        PhysicalScan::RangeExclusive(K::table(), start_bytes, end_bytes)
+                        PhysicalScan::RangeExclusive(
+                            K::TABLE,
+                            K::KEY_KIND,
+                            None,
+                            start_bytes,
+                            end_bytes,
+                        )
                     }
                 }
             }
@@ -78,7 +102,7 @@ impl<K: TableKey> From<TableScan<K>> for PhysicalScan {
 
 impl<K: TableKey> TableScan<K> {
     pub fn table(&self) -> TableKind {
-        K::table()
+        K::TABLE
     }
 }
 

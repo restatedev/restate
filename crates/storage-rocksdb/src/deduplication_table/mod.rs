@@ -47,7 +47,7 @@ fn get_all_sequence_numbers<S: StorageAccess>(
     partition_id: PartitionId,
 ) -> impl Stream<Item = Result<DedupInformation>> + Send {
     stream::iter(storage.for_each_key_value_in_place(
-        TableScan::Partition::<DeduplicationKey>(partition_id),
+        TableScan::SinglePartitionId::<DeduplicationKey>(partition_id),
         move |k, mut v| {
             let key =
                 DeduplicationKey::deserialize_from(&mut Cursor::new(k)).map(|key| key.producer_id);

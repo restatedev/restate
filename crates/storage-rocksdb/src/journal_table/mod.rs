@@ -11,7 +11,7 @@
 use crate::keys::TableKey;
 use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
-use crate::scan::TableScan::PartitionKeyRange;
+use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::TableKind::Journal;
 use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
@@ -74,24 +74,27 @@ fn get_journal<S: StorageAccess>(
         .invocation_uuid(invocation_id.invocation_uuid());
 
     let mut n = 0;
-    storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), move |k, mut v| {
-        let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
-            journal_key
-                .journal_index
-                .expect("The journal index must be part of the journal key.")
-        });
-        let entry = StorageCodec::decode::<JournalEntry, _>(&mut v)
-            .map_err(|error| StorageError::Generic(error.into()));
+    storage.for_each_key_value_in_place(
+        TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
+        move |k, mut v| {
+            let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
+                journal_key
+                    .journal_index
+                    .expect("The journal index must be part of the journal key.")
+            });
+            let entry = StorageCodec::decode::<JournalEntry, _>(&mut v)
+                .map_err(|error| StorageError::Generic(error.into()));
 
-        let result = key.and_then(|key| entry.map(|entry| (key, entry)));
+            let result = key.and_then(|key| entry.map(|entry| (key, entry)));
 
-        n += 1;
-        if n < journal_length {
-            TableScanIterationDecision::Emit(result)
-        } else {
-            TableScanIterationDecision::BreakWith(result)
-        }
-    })
+            n += 1;
+            if n < journal_length {
+                TableScanIterationDecision::Emit(result)
+            } else {
+                TableScanIterationDecision::BreakWith(result)
+            }
+        },
+    )
 }
 
 fn delete_journal<S: StorageAccess>(
@@ -170,7 +173,7 @@ impl RocksDBStorage {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedJournalRow> + '_ {
-        let iter = self.iterator_from(PartitionKeyRange::<JournalKey>(range));
+        let iter = self.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
         OwnedIterator::new(iter).map(|(mut key, mut value)| {
             let journal_key = JournalKey::deserialize_from(&mut key)
                 .expect("journal key must deserialize into JournalKey");
