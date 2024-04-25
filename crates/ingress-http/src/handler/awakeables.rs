@@ -52,7 +52,6 @@ where
             .to_bytes();
         trace!(rpc.request = ?collected_request_bytes);
 
-        // Wrap payload in request object for awakeables built in service
         let (awakeable_identifier, result) = match awakeable_request_type {
             AwakeableRequestType::Resolve { awakeable_id } => (
                 AwakeableIdentifier::from_str(&awakeable_id)

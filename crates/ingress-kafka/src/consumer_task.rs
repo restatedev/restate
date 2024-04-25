@@ -48,11 +48,19 @@ pub enum Error {
 type MessageConsumer = StreamConsumer<DefaultConsumerContext>;
 
 #[derive(Debug, Hash)]
-pub struct KafkaDeduplicationId(String, String, i32);
+pub struct KafkaDeduplicationId {
+    consumer_group: String,
+    topic: String,
+    partition: i32,
+}
 
 impl fmt::Display for KafkaDeduplicationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        write!(
+            f,
+            "{}-{}-{}",
+            self.consumer_group, self.topic, self.partition
+        )
     }
 }
 
@@ -165,11 +173,11 @@ impl MessageSender {
         msg: &impl Message,
     ) -> (KafkaDeduplicationId, MessageIndex) {
         (
-            KafkaDeduplicationId(
-                consumer_group.to_owned(),
-                msg.topic().to_owned(),
-                msg.partition(),
-            ),
+            KafkaDeduplicationId {
+                consumer_group: consumer_group.to_owned(),
+                topic: msg.topic().to_owned(),
+                partition: msg.partition(),
+            },
             msg.offset() as u64,
         )
     }

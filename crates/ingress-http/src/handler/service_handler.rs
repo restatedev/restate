@@ -144,7 +144,7 @@ where
             let headers = parse_headers(parts.headers)?;
 
             // Parse delay query parameter
-            let execution_time = parse_delay(parts.uri.query())?;
+            let delay = parse_delay(parts.uri.query())?;
 
             // Prepare service invocation
             let mut service_invocation =
@@ -156,7 +156,7 @@ where
 
             match invoke_ty {
                 InvokeType::Call => {
-                    if execution_time.is_some() {
+                    if delay.is_some() {
                         return Err(HandlerError::UnsupportedDelay);
                     }
                     Self::handle_service_call(
@@ -167,9 +167,8 @@ where
                     .await
                 }
                 InvokeType::Send => {
-                    service_invocation.execution_time = execution_time
-                        .map(|d| SystemTime::now() + d)
-                        .map(Into::into);
+                    service_invocation.execution_time =
+                        delay.map(|d| SystemTime::now() + d).map(Into::into);
 
                     Self::handle_service_send(service_invocation, self.dispatcher).await
                 }
