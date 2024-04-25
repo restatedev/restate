@@ -4,23 +4,23 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'ref to build eg v0.5.1'
+        description: "ref to build eg v0.5.1"
         required: false
         type: string
       npmVersion:
-        description: 'if provided, also push npm packages with this version'
-        default: ''
+        description: "if provided, also push npm packages with this version"
+        default: ""
         required: false
         type: string
   workflow_dispatch:
     inputs:
       ref:
-        description: 'ref to build eg v0.5.1'
+        description: "ref to build eg v0.5.1"
         required: false
         type: string
       npmVersion:
-        description: 'if provided, also push npm packages with this version'
-        default: ''
+        description: "if provided, also push npm packages with this version"
+        default: ""
         required: false
         type: string
 
@@ -60,6 +60,10 @@ jobs:
           toolchain: stable
 
       # necessary because the toolchain@v1 action would install this target for stable only, whereas this command respects rust-toolchain.toml
+      - name: Install x86_64-apple-darwin Rust toolchain
+        if: ${{ matrix.build.target == 'x86_64-apple-darwin' }}
+        run: rustup target add x86_64-apple-darwin
+
       - name: Install aarch64-apple-darwin Rust toolchain
         if: ${{ matrix.build.target == 'aarch64-apple-darwin' }}
         run: rustup target add aarch64-apple-darwin
@@ -122,7 +126,7 @@ jobs:
   publish-npm:
     name: Publish to NPM
     if: ${{ inputs.npmVersion != '' }}
-    needs: [ build ]
+    needs: [build]
     uses: ./.github/workflows/npm.yml
     secrets: inherit
     with:
