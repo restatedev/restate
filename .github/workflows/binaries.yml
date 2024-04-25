@@ -53,11 +53,9 @@ jobs:
       - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # need to provide a toolchain version because this action cannot read rust-toolchain.toml. See https://github.com/actions-rs/toolchain/issues/126
-          # note, however, that this does not just install stable but also whatever is in rust-toolchain.toml, which is what we will use
-          toolchain: stable
+          rustflags: "" # set to empty value to not overwrite rustflags from .cargo/config.toml
 
       # necessary because the toolchain@v1 action would install this target for stable only, whereas this command respects rust-toolchain.toml
       - name: Install x86_64-apple-darwin Rust toolchain
