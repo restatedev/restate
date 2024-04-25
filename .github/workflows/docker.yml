@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: restate.tar
           path: restate.tar
@@ -133,7 +133,7 @@ jobs:
       # This won't actually build again, it'll just use cache
       - name: Push Docker image
         if: ${{ inputs.uploadImageAsTarball && github.ref == 'refs/heads/main' }}
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: "docker/Dockerfile"
