@@ -21,7 +21,6 @@ use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source, Spa
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::future::Future;
 use std::pin::pin;
 use tokio_stream::StreamExt;
 
@@ -34,7 +33,7 @@ mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
-async fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>) {
+async fn storage_test_environment() -> RocksDBStorage {
     //
     // create a rocksdb storage from options
     //
@@ -46,25 +45,17 @@ async fn storage_test_environment() -> (RocksDBStorage, impl Future<Output = ()>
         RocksDbManager::init(Constant::new(CommonOptions::default()))
     });
     let worker_options = WorkerOptions::default();
-    let (rocksdb, writer) = RocksDBStorage::open(
+    RocksDBStorage::open(
         Constant::new(worker_options.storage.clone()),
         Constant::new(worker_options.storage.rocksdb),
     )
     .await
-    .expect("RocksDB storage creation should succeed");
-
-    let (signal, watch) = drain::channel();
-    let writer_join_handle = writer.run(watch);
-
-    (rocksdb, async {
-        signal.drain().await;
-        writer_join_handle.await.unwrap().unwrap();
-    })
+    .expect("RocksDB storage creation should succeed")
 }
 
 #[tokio::test]
 async fn test_read_write() {
-    let (rocksdb, close) = storage_test_environment().await;
+    let rocksdb = storage_test_environment().await;
 
     //
     // run the tests
@@ -76,8 +67,6 @@ async fn test_read_write() {
     invocation_status_table_test::run_tests(rocksdb.clone()).await;
     virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
-
-    close.await;
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {

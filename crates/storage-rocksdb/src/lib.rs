@@ -21,11 +21,9 @@ pub mod scan;
 pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;
-mod writer;
 
 use crate::keys::TableKey;
 use crate::scan::{PhysicalScan, TableScan};
-use crate::writer::{Writer, WriterHandle};
 use crate::TableKind::{
     Deduplication, Idempotency, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine,
     ServiceStatus, State, Timers,
@@ -49,16 +47,11 @@ use rocksdb::PrefixRange;
 use rocksdb::ReadOptions;
 use std::sync::Arc;
 
-pub use writer::JoinHandle as RocksDBWriterJoinHandle;
-pub use writer::Writer as RocksDBWriter;
-
 pub type DB = rocksdb::OptimisticTransactionDB<MultiThreaded>;
 type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
 
 pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
-
-type WriteBatch = rocksdb::WriteBatchWithTransaction<true>;
 
 // matches the default directory name
 const DB_NAME: &str = "db";
@@ -156,7 +149,6 @@ pub enum BuildError {
 
 pub struct RocksDBStorage {
     db: Arc<DB>,
-    writer_handle: WriterHandle,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -165,7 +157,6 @@ impl std::fmt::Debug for RocksDBStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RocksDBStorage")
             .field("db", &self.db)
-            .field("writer_handle", &self.writer_handle)
             .field("key_buffer", &self.key_buffer)
             .field("value_buffer", &self.value_buffer)
             .finish()
@@ -176,7 +167,6 @@ impl Clone for RocksDBStorage {
     fn clone(&self) -> Self {
         RocksDBStorage {
             db: self.db.clone(),
-            writer_handle: self.writer_handle.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -231,7 +221,7 @@ impl RocksDBStorage {
     pub async fn open(
         mut storage_opts: impl Updateable<StorageOptions> + Send + 'static,
         updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
-    ) -> std::result::Result<(Self, Writer), BuildError> {
+    ) -> std::result::Result<Self, BuildError> {
         let cfs = vec![
             //
             // keyed by partition key + user key
@@ -272,18 +262,11 @@ impl RocksDBStorage {
         .await
         .map_err(|_| ShutdownError)??;
 
-        let writer = Writer::new(rdb.clone(), storage_opts);
-        let writer_handle = writer.create_writer_handle();
-
-        Ok((
-            Self {
-                db: rdb,
-                writer_handle,
-                key_buffer: BytesMut::default(),
-                value_buffer: BytesMut::default(),
-            },
-            writer,
-        ))
+        Ok(Self {
+            db: rdb,
+            key_buffer: BytesMut::default(),
+            value_buffer: BytesMut::default(),
+        })
     }
 
     fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
@@ -341,7 +324,6 @@ impl RocksDBStorage {
             db,
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
-            writer_handle: &self.writer_handle,
         }
     }
 }
@@ -406,7 +388,6 @@ pub struct RocksDBTransaction<'a> {
     db: Arc<DB>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
-    writer_handle: &'a WriterHandle,
 }
 
 impl<'a> RocksDBTransaction<'a> {
@@ -446,8 +427,16 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
         // because there can only be a single writer (the leading PartitionProcessor).
         let write_batch = self.txn.get_writebatch();
-
-        self.writer_handle.write(write_batch).await
+        // todo: make async and use configuration to control use of WAL
+        if write_batch.is_empty() {
+            return Ok(());
+        }
+        let mut opts = rocksdb::WriteOptions::default();
+        // We disable WAL since bifrost is our durable distributed log.
+        opts.disable_wal(true);
+        self.db
+            .write_opt(&write_batch, &rocksdb::WriteOptions::default())
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
