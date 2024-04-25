@@ -44,7 +44,7 @@ impl SigningKey {
 
         info!(
             kid,
-            path = request_identity_private_key_pem_file.to_string_lossy(),
+            path = %request_identity_private_key_pem_file.display(),
             "Loaded request identity key"
         );
 
