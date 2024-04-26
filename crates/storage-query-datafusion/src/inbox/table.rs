@@ -23,15 +23,15 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use futures::{Stream, StreamExt};
+use restate_partition_store::PartitionStore;
 use restate_storage_api::inbox_table::{InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::StorageError;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: RocksDBStorage,
+    storage: PartitionStore,
 ) -> datafusion::common::Result<()> {
     let table = GenericTableProvider::new(InboxBuilder::schema(), Arc::new(InboxScanner(storage)));
 
@@ -41,7 +41,7 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct InboxScanner(RocksDBStorage);
+struct InboxScanner(PartitionStore);
 
 impl RangeScanner for InboxScanner {
     fn scan(

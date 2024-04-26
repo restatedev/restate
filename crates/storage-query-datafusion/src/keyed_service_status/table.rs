@@ -22,14 +22,14 @@ use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::service_status_table::OwnedVirtualObjectStatusRow;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_partition_store::service_status_table::OwnedVirtualObjectStatusRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: RocksDBStorage,
+    storage: PartitionStore,
 ) -> datafusion::common::Result<()> {
     let status_table = GenericTableProvider::new(
         KeyedServiceStatusBuilder::schema(),
@@ -42,7 +42,7 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct VirtualObjectStatusScanner(RocksDBStorage);
+struct VirtualObjectStatusScanner(PartitionStore);
 
 impl RangeScanner for VirtualObjectStatusScanner {
     fn scan(

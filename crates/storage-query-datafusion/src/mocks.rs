@@ -17,18 +17,19 @@ use googletest::matcher::{Matcher, MatcherResult};
 use restate_core::task_center;
 use restate_invoker_api::status_handle::mocks::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
+use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_schema_api::service::mocks::MockServiceMetadataResolver;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
-use restate_types::identifiers::{DeploymentId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -74,7 +75,7 @@ impl DeploymentResolver for MockSchemas {
     }
 }
 
-pub(crate) struct MockQueryEngine(RocksDBStorage, QueryContext);
+pub(crate) struct MockQueryEngine(PartitionStore, QueryContext);
 
 impl MockQueryEngine {
     pub async fn create_with(
@@ -92,12 +93,22 @@ impl MockQueryEngine {
             RocksDbManager::init(Constant::new(CommonOptions::default()))
         });
         let worker_options = WorkerOptions::default();
-        let rocksdb = RocksDBStorage::open(
+        let manager = PartitionStoreManager::create(
             Constant::new(worker_options.storage.clone()),
-            Constant::new(worker_options.storage.rocksdb),
+            Constant::new(worker_options.storage.rocksdb.clone()),
+            &[(0, RangeInclusive::new(0, PartitionKey::MAX))],
         )
         .await
-        .expect("RocksDB storage creation should succeed");
+        .expect("DB creation succeeds");
+        let rocksdb = manager
+            .open_partition_store(
+                0,
+                RangeInclusive::new(0, PartitionKey::MAX),
+                OpenMode::CreateIfMissing,
+                &worker_options.storage.rocksdb,
+            )
+            .await
+            .expect("column family is open");
 
         Self(
             rocksdb.clone(),
@@ -110,7 +121,7 @@ impl MockQueryEngine {
         Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
     }
 
-    pub fn rocksdb_mut(&mut self) -> &mut RocksDBStorage {
+    pub fn rocksdb_mut(&mut self) -> &mut PartitionStore {
         &mut self.0
     }
 

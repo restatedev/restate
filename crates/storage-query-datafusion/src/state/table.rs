@@ -22,14 +22,14 @@ use crate::state::schema::StateBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::state_table::OwnedStateRow;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_partition_store::state_table::OwnedStateRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: RocksDBStorage,
+    storage: PartitionStore,
 ) -> datafusion::common::Result<()> {
     let table = GenericTableProvider::new(StateBuilder::schema(), Arc::new(StateScanner(storage)));
 
@@ -39,7 +39,7 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct StateScanner(RocksDBStorage);
+struct StateScanner(PartitionStore);
 
 impl RangeScanner for StateScanner {
     fn scan(

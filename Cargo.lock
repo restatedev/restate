@@ -3612,7 +3612,7 @@ dependencies = [
 [[package]]
 name = "librocksdb-sys"
 version = "0.17.0+9.0.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -5802,6 +5802,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-partition-store"
+version = "0.9.1"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "criterion",
+ "derive_builder",
+ "derive_more",
+ "drain",
+ "enum-map",
+ "futures",
+ "futures-util",
+ "googletest",
+ "num-bigint",
+ "once_cell",
+ "paste",
+ "prost",
+ "rand",
+ "restate-core",
+ "restate-errors",
+ "restate-rocksdb",
+ "restate-storage-api",
+ "restate-test-util",
+ "restate-types",
+ "rocksdb",
+ "schemars",
+ "serde",
+ "static_assertions",
+ "strum 0.26.2",
+ "strum_macros 0.26.2",
+ "sync_wrapper",
+ "tempfile",
+ "test-log",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "restate-queue"
 version = "0.9.1"
 dependencies = [
@@ -5922,7 +5964,6 @@ dependencies = [
  "restate-fs-util",
  "restate-node",
  "restate-rocksdb",
- "restate-storage-rocksdb",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-worker",
@@ -6049,11 +6090,11 @@ dependencies = [
  "prost",
  "restate-core",
  "restate-invoker-api",
+ "restate-partition-store",
  "restate-rocksdb",
  "restate-schema-api",
  "restate-service-protocol",
  "restate-storage-api",
- "restate-storage-rocksdb",
  "restate-types",
  "schemars",
  "serde",
@@ -6083,9 +6124,9 @@ dependencies = [
  "prost",
  "restate-core",
  "restate-errors",
+ "restate-partition-store",
  "restate-storage-api",
  "restate-storage-query-datafusion",
- "restate-storage-rocksdb",
  "restate-types",
  "schemars",
  "serde",
@@ -6093,46 +6134,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "restate-storage-rocksdb"
-version = "0.9.1"
-dependencies = [
- "anyhow",
- "bytes",
- "bytestring",
- "codederror",
- "criterion",
- "derive_builder",
- "derive_more",
- "drain",
- "futures",
- "futures-util",
- "googletest",
- "num-bigint",
- "once_cell",
- "paste",
- "prost",
- "rand",
- "restate-core",
- "restate-errors",
- "restate-rocksdb",
- "restate-storage-api",
- "restate-test-util",
- "restate-types",
- "rocksdb",
- "schemars",
- "serde",
- "static_assertions",
- "strum 0.26.2",
- "strum_macros 0.26.2",
- "sync_wrapper",
- "tempfile",
- "test-log",
- "thiserror",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -6317,6 +6318,7 @@ dependencies = [
  "restate-metadata-store",
  "restate-network",
  "restate-node-protocol",
+ "restate-partition-store",
  "restate-rocksdb",
  "restate-schema",
  "restate-schema-api",
@@ -6326,7 +6328,6 @@ dependencies = [
  "restate-storage-api",
  "restate-storage-query-datafusion",
  "restate-storage-query-postgres",
- "restate-storage-rocksdb",
  "restate-test-util",
  "restate-timer",
  "restate-types",
@@ -6388,7 +6389,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.22.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "libc",
  "librocksdb-sys",

@@ -33,15 +33,15 @@ use crate::partition::state_machine::Action;
 pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
 use restate_bifrost::Bifrost;
 use restate_errors::NotRunningError;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_wal_protocol::timer::TimerValue;
 
 use super::storage::invoker::InvokerStorageReader;
 
-type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
+type PartitionStorage = storage::PartitionStorage<PartitionStore>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
 
 pub(crate) struct LeaderState {
@@ -84,7 +84,7 @@ pub(crate) enum LeadershipState<InvokerInputSender> {
 
 impl<InvokerInputSender> LeadershipState<InvokerInputSender>
 where
-    InvokerInputSender: restate_invoker_api::ServiceHandle<InvokerStorageReader<RocksDBStorage>>,
+    InvokerInputSender: restate_invoker_api::ServiceHandle<InvokerStorageReader<PartitionStore>>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(

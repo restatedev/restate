@@ -12,8 +12,8 @@ use crate::journal::schema::JournalBuilder;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
+use restate_partition_store::journal_table::OwnedJournalRow;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_rocksdb::journal_table::OwnedJournalRow;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 

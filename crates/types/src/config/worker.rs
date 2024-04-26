@@ -197,11 +197,6 @@ pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// # Sync WAL on flushes
-    ///
-    /// If WAL is enabled, this option defines whether the WAL will also be synced on flushes.
-    pub sync_wal_on_flush: bool,
-
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
     data_dir: std::sync::Arc<tempfile::TempDir>,
@@ -228,7 +223,6 @@ impl Default for StorageOptions {
 
         StorageOptions {
             rocksdb,
-            sync_wal_on_flush: false,
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
         }

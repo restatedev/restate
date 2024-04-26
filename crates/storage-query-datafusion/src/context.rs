@@ -19,9 +19,9 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use restate_invoker_api::StatusHandle;
+use restate_partition_store::PartitionStore;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_storage_rocksdb::RocksDBStorage;
 use restate_types::config::QueryEngineOptions;
 
 use crate::{analyzer, physical_optimizer};
@@ -86,7 +86,7 @@ impl Default for QueryContext {
 impl QueryContext {
     pub fn from_options(
         options: &QueryEngineOptions,
-        rocksdb: RocksDBStorage,
+        rocksdb: PartitionStore,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
             + ServiceMetadataResolver

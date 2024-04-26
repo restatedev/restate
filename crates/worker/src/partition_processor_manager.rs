@@ -16,7 +16,7 @@ use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{UpdateableConfiguration, WorkerOptions};
 use restate_types::epoch::EpochMetadata;
@@ -36,10 +36,10 @@ pub struct PartitionProcessorManager {
     running_partition_processors: HashMap<PartitionId, TaskId>,
 
     metadata_store_client: MetadataStoreClient,
-    rocksdb_storage: RocksDBStorage,
+    partition_store_manager: PartitionStoreManager,
     networking: Networking,
     bifrost: Bifrost,
-    invoker_handle: InvokerHandle<InvokerStorageReader<RocksDBStorage>>,
+    invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
 }
 
 impl PartitionProcessorManager {
@@ -47,17 +47,17 @@ impl PartitionProcessorManager {
         updateable_config: UpdateableConfiguration,
         node_id: GenerationalNodeId,
         metadata_store_client: MetadataStoreClient,
-        rocksdb_storage: RocksDBStorage,
+        partition_store_manager: PartitionStoreManager,
         networking: Networking,
         bifrost: Bifrost,
-        invoker_handle: InvokerHandle<InvokerStorageReader<RocksDBStorage>>,
+        invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Self {
         Self {
             updateable_config,
             running_partition_processors: HashMap::default(),
             node_id,
             metadata_store_client,
-            rocksdb_storage,
+            partition_store_manager,
             networking,
             bifrost,
             invoker_handle,
@@ -121,19 +121,32 @@ impl PartitionProcessorManager {
             TaskKind::PartitionProcessor,
             "partition-processor",
             Some(processor.partition_id),
-            async move {
-                if role == Role::Leader {
-                    Self::claim_leadership(
-                        &mut bifrost,
-                        metadata_store_client,
-                        partition_id,
-                        partition_range,
-                        node_id,
-                    )
-                    .await?;
-                }
+            {
+                let storage_manager = self.partition_store_manager.clone();
+                let options = options.clone();
+                async move {
+                    let partition_store = storage_manager
+                        .open_partition_store(
+                            partition_id,
+                            partition_range.clone(),
+                            OpenMode::CreateIfMissing,
+                            &options.storage.rocksdb,
+                        )
+                        .await?;
+                    // ensure partition store has column families for this partition.
+                    if role == Role::Leader {
+                        Self::claim_leadership(
+                            &mut bifrost,
+                            metadata_store_client,
+                            partition_id,
+                            partition_range,
+                            node_id,
+                        )
+                        .await?;
+                    }
 
-                processor.run(networking, bifrost).await
+                    processor.run(networking, bifrost, partition_store).await
+                }
             },
         )
     }
@@ -150,7 +163,6 @@ impl PartitionProcessorManager {
             options.num_timers_in_memory_limit(),
             options.internal_queue_length(),
             self.invoker_handle.clone(),
-            self.rocksdb_storage.clone(),
         )
     }
 

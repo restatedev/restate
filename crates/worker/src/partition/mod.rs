@@ -17,7 +17,7 @@ use futures::StreamExt;
 use metrics::counter;
 use restate_core::metadata;
 use restate_network::Networking;
-use restate_storage_rocksdb::{RocksDBStorage, RocksDBTransaction};
+use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -53,8 +53,6 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
 
     invoker_tx: InvokerInputSender,
 
-    rocksdb_storage: RocksDBStorage,
-
     _entry_codec: PhantomData<RawEntryCodec>,
 }
 
@@ -62,7 +60,7 @@ impl<RawEntryCodec, InvokerInputSender> PartitionProcessor<RawEntryCodec, Invoke
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
     InvokerInputSender:
-        restate_invoker_api::ServiceHandle<InvokerStorageReader<RocksDBStorage>> + Clone,
+        restate_invoker_api::ServiceHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -71,7 +69,6 @@ where
         num_timers_in_memory_limit: Option<usize>,
         channel_size: usize,
         invoker_tx: InvokerInputSender,
-        rocksdb_storage: RocksDBStorage,
     ) -> Self {
         Self {
             partition_id,
@@ -80,24 +77,27 @@ where
             channel_size,
             invoker_tx,
             _entry_codec: Default::default(),
-            rocksdb_storage,
         }
     }
 
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
-    pub(super) async fn run(self, networking: Networking, bifrost: Bifrost) -> anyhow::Result<()> {
+    pub(super) async fn run(
+        self,
+        networking: Networking,
+        bifrost: Bifrost,
+        partition_store: PartitionStore,
+    ) -> anyhow::Result<()> {
         let PartitionProcessor {
             partition_id,
             partition_key_range,
             num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
-            rocksdb_storage,
             ..
         } = self;
 
         let mut partition_storage =
-            PartitionStorage::new(partition_id, partition_key_range.clone(), rocksdb_storage);
+            PartitionStorage::new(partition_id, partition_key_range.clone(), partition_store);
 
         let mut state_machine = Self::create_state_machine::<RawEntryCodec>(
             &mut partition_storage,
@@ -207,7 +207,7 @@ where
     }
 
     async fn create_state_machine<Codec>(
-        partition_storage: &mut PartitionStorage<RocksDBStorage>,
+        partition_storage: &mut PartitionStorage<PartitionStore>,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Result<StateMachine<Codec>, restate_storage_api::StorageError>
     where

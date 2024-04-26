@@ -11,13 +11,13 @@ publish = false
 default = []
 options_schema = [
   "dep:schemars",
-  "restate-timer/options_schema",
-  "restate-storage-rocksdb/options_schema",
+  "restate-ingress-http/options_schema",
+  "restate-ingress-kafka/options_schema",
+  "restate-invoker-impl/options_schema",
+  "restate-partition-store/options_schema",
   "restate-storage-query-datafusion/options_schema",
   "restate-storage-query-postgres/options_schema",
-  "restate-ingress-kafka/options_schema",
-  "restate-ingress-http/options_schema",
-  "restate-invoker-impl/options_schema",
+  "restate-timer/options_schema",
 ]
 
 [dependencies]
@@ -32,6 +32,8 @@ restate-invoker-impl = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = [ "service", "subscription"] }
 restate-serde-util = { workspace = true, features = ["proto"] }
@@ -40,7 +42,6 @@ restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-storage-query-postgres = { workspace = true }
-restate-storage-rocksdb = { workspace = true }
 restate-timer = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
