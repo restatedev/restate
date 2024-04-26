@@ -121,6 +121,22 @@ pub fn confirm_or_exit(env: &CliEnv, prompt: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn choose<T: ToString>(prompt: &str, choices: &[T]) -> anyhow::Result<usize> {
+    let theme = dialoguer::theme::ColorfulTheme::default();
+    Ok(dialoguer::Select::with_theme(&theme)
+        .with_prompt(prompt)
+        .items(choices)
+        .interact()?)
+}
+
+pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
+    let theme = dialoguer::theme::ColorfulTheme::default();
+    Ok(dialoguer::Input::with_theme(&theme)
+        .with_prompt(prompt)
+        .default(default)
+        .interact_text()?)
+}
+
 pub fn confirm(env: &CliEnv, prompt: &str) -> bool {
     let theme = dialoguer::theme::ColorfulTheme::default();
     if env.auto_confirm {

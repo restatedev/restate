@@ -15,3 +15,5 @@ pub mod services;
 pub mod sql;
 pub mod state;
 pub mod whoami;
+#[cfg(feature = "cloud")]
+pub mod cloud;

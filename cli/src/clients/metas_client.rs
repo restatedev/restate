@@ -122,8 +122,8 @@ impl MetasClient {
 
         Ok(Self {
             inner: raw_client,
-            base_url: env.admin_base_url.clone(),
-            bearer_token: env.bearer_token.clone(),
+            base_url: env.config.admin_base_url.clone(),
+            bearer_token: env.config.bearer_token.clone(),
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }

@@ -11,6 +11,7 @@
 use anyhow::Result;
 use clap_verbosity_flag::LogLevel;
 use cling::prelude::*;
+use figment::Profile;
 use tracing::info;
 use tracing_log::AsTrace;
 
@@ -64,6 +65,10 @@ pub struct GlobalOpts {
 
     #[clap(flatten)]
     pub ui_config: UiConfig,
+
+    /// Environment to select from the config file
+    #[arg(long, short, global = true)]
+    pub environment: Option<Profile>,
 }
 
 #[derive(Run, Subcommand, Clone)]
@@ -91,6 +96,11 @@ pub enum Command {
     #[clap(name = "state", alias = "kv")]
     #[clap(subcommand)]
     State(state::ServiceState),
+
+    #[cfg(feature = "cloud")]
+    #[clap(subcommand)]
+    /// Manage Restate Cloud
+    Cloud(cloud::Cloud),
 }
 
 fn init(

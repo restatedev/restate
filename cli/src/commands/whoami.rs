@@ -10,6 +10,7 @@
 
 use cling::prelude::*;
 use comfy_table::Table;
+use figment::Profile;
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
@@ -28,11 +29,14 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!();
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
-    table.add_row(vec!["Ingress base URL", env.ingress_base_url.as_ref()]);
+    table.add_row(vec![
+        "Ingress base URL",
+        env.config.ingress_base_url.as_ref(),
+    ]);
 
-    table.add_row(vec!["Admin base URL", env.admin_base_url.as_ref()]);
+    table.add_row(vec!["Admin base URL", env.config.admin_base_url.as_ref()]);
 
-    if env.bearer_token.is_some() {
+    if env.config.bearer_token.is_some() {
         table.add_row(vec!["Authentication Token", "(set)"]);
     }
 
@@ -54,6 +58,28 @@ pub async fn run(State(env): State<CliEnv>) {
             }
         ),
     ]);
+
+    table.add_row(vec![
+        "Environment File",
+        &format!(
+            "{} {}",
+            env.environment_file.display(),
+            if env.environment_file.exists() {
+                "(exists)"
+            } else {
+                "(does not exist)"
+            }
+        ),
+    ]);
+
+    if env.environment == Profile::Default {
+        table.add_row(vec!["Environment", "default"]);
+    } else {
+        table.add_row(vec![
+            "Environment",
+            &format!("{} (source: {})", env.environment, env.environment_source),
+        ]);
+    }
 
     table.add_row(vec![
         "Config File",
@@ -94,15 +120,44 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);
     c_println!("{}", table);
 
+    #[cfg(feature = "cloud")]
+    if let Some(environment_info) = &env.config.cloud.environment_info {
+        c_println!();
+        c_println!("Cloud");
+        let mut table = Table::new();
+
+        table.load_preset(comfy_table::presets::NOTHING);
+        table.add_row(vec!["Account ID", &environment_info.account_id]);
+        table.add_row(vec!["Environment ID", &environment_info.environment_id]);
+        if let Some(credentials) = &env.config.cloud.credentials {
+            if credentials.access_token_expiry
+                > std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            {
+                table.add_row(vec!["Logged in?", "true"]);
+            } else {
+                table.add_row(vec!["Logged in?", "false (token expired)"]);
+            }
+        } else {
+            table.add_row(vec!["Logged in?", "false (no token)"]);
+        }
+        c_println!("{}", table);
+    }
+
     c_println!();
     // Get admin client, don't fail completely if we can't get one!
     if let Ok(client) = crate::clients::MetasClient::new(&env) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
-                c_success!("Admin Service '{}' is healthy!", env.admin_base_url);
+                c_success!("Admin Service '{}' is healthy!", env.config.admin_base_url);
             }
             Ok(envelope) => {
-                c_error!("Admin Service '{}' is unhealthy:", env.admin_base_url);
+                c_error!(
+                    "Admin Service '{}' is unhealthy:",
+                    env.config.admin_base_url
+                );
                 let url = envelope.url().clone();
                 let status_code = envelope.status_code();
                 let body = envelope.into_text().await;
@@ -110,7 +165,10 @@ pub async fn run(State(env): State<CliEnv>) {
                 c_eprintln!("   >> {}", body.unwrap_or_default());
             }
             Err(e) => {
-                c_error!("Admin Service '{}' is unhealthy:", env.admin_base_url);
+                c_error!(
+                    "Admin Service '{}' is unhealthy:",
+                    env.config.admin_base_url
+                );
                 c_eprintln!("   >> {}", e);
             }
         }
