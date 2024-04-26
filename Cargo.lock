@@ -3612,7 +3612,7 @@ dependencies = [
 [[package]]
 name = "librocksdb-sys"
 version = "0.17.0+9.0.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -6107,6 +6107,7 @@ dependencies = [
  "derive_builder",
  "derive_more",
  "drain",
+ "enum-map",
  "futures",
  "futures-util",
  "googletest",
@@ -6133,6 +6134,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tracing",
 ]
 
 [[package]]
@@ -6388,7 +6390,7 @@ dependencies = [
 [[package]]
 name = "rocksdb"
 version = "0.22.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?branch=next#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7#c2181f2b5da6d7bc201dc858433ed9e1c4bba4b7"
 dependencies = [
  "libc",
  "librocksdb-sys",

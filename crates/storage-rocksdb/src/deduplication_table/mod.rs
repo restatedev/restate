@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Deduplication;
 use crate::{
-    RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+    PartitionStore, RocksDBTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
 use futures::Stream;
 use futures_util::stream;
@@ -67,7 +67,7 @@ fn get_all_sequence_numbers<S: StorageAccess>(
     ))
 }
 
-impl ReadOnlyDeduplicationTable for RocksDBStorage {
+impl ReadOnlyDeduplicationTable for PartitionStore {
     async fn get_dedup_sequence_number(
         &mut self,
         partition_id: PartitionId,
