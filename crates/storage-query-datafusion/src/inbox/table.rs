@@ -23,9 +23,9 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use futures::{Stream, StreamExt};
+use restate_partition_store::PartitionStore;
 use restate_storage_api::inbox_table::{InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::StorageError;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 

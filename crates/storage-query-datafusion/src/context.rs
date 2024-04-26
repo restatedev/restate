@@ -19,9 +19,9 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use restate_invoker_api::StatusHandle;
+use restate_partition_store::PartitionStore;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::config::QueryEngineOptions;
 
 use crate::{analyzer, physical_optimizer};
