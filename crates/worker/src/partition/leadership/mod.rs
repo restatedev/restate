@@ -39,6 +39,8 @@ use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
 use restate_wal_protocol::timer::TimerValue;
 
+use super::storage::invoker::InvokerStorageReader;
+
 type PartitionStorage = storage::PartitionStorage<RocksDBStorage>;
 type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
 
@@ -82,7 +84,7 @@ pub(crate) enum LeadershipState<InvokerInputSender> {
 
 impl<InvokerInputSender> LeadershipState<InvokerInputSender>
 where
-    InvokerInputSender: restate_invoker_api::ServiceHandle,
+    InvokerInputSender: restate_invoker_api::ServiceHandle<InvokerStorageReader<RocksDBStorage>>,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn follower(
@@ -213,8 +215,14 @@ where
     ) -> Result<mpsc::Receiver<restate_invoker_api::Effect>, Error> {
         let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
 
+        let storage = partition_storage.clone_storage();
         invoker_handle
-            .register_partition(partition_leader_epoch, partition_key_range, invoker_tx)
+            .register_partition(
+                partition_leader_epoch,
+                partition_key_range,
+                InvokerStorageReader::new(storage),
+                invoker_tx,
+            )
             .await
             .map_err(Error::Invoker)?;
 

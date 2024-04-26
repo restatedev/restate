@@ -101,8 +101,13 @@ where
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyJournalTable
         + ReadOnlyStateTable
+        + Clone
         + Send,
 {
+    pub fn clone_storage(&self) -> Storage {
+        self.storage.clone()
+    }
+
     pub fn load_inbox_seq_number(
         &mut self,
     ) -> impl Future<Output = Result<MessageIndex, StorageError>> + Send + '_ {

@@ -53,8 +53,8 @@ use tracing::instrument;
 use tracing::{debug, trace};
 
 use crate::invocation_task::InvocationTaskError;
-pub use input_command::ChannelServiceHandle;
 pub use input_command::ChannelStatusReader;
+pub use input_command::InvokerHandle;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
 use restate_types::invocation::InvocationTarget;
@@ -72,7 +72,7 @@ pub(crate) enum Notification {
 
 // -- InvocationTask factory: we use this to mock the state machine in tests
 
-trait InvocationTaskRunner {
+trait InvocationTaskRunner<SR> {
     #[allow(clippy::too_many_arguments)]
     fn start_invocation_task(
         &self,
@@ -80,6 +80,7 @@ trait InvocationTaskRunner {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -88,19 +89,16 @@ trait InvocationTaskRunner {
 }
 
 #[derive(Debug)]
-struct DefaultInvocationTaskRunner<JR, SR, EE, DMR> {
+struct DefaultInvocationTaskRunner<EE, DMR> {
     client: ServiceClient,
-    journal_reader: JR,
-    state_reader: SR,
     entry_enricher: EE,
     deployment_metadata_resolver: DMR,
 }
 
-impl<JR, SR, EE, DMR> InvocationTaskRunner for DefaultInvocationTaskRunner<JR, SR, EE, DMR>
+impl<SR, EE, DMR> InvocationTaskRunner<SR> for DefaultInvocationTaskRunner<EE, DMR>
 where
-    JR: JournalReader + Clone + Send + Sync + 'static,
-    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    SR: StateReader + Clone + Send + Sync + 'static,
+    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     DMR: DeploymentResolver + Clone + Send + 'static,
@@ -111,6 +109,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         input_journal: InvokeInputJournal,
@@ -128,8 +127,8 @@ where
                 opts.disable_eager_state,
                 opts.message_size_warning.get(),
                 opts.message_size_limit(),
-                self.journal_reader.clone(),
-                self.state_reader.clone(),
+                storage_reader.clone(),
+                storage_reader,
                 self.entry_enricher.clone(),
                 self.deployment_metadata_resolver.clone(),
                 invoker_tx,
@@ -143,9 +142,9 @@ where
 // -- Service implementation
 
 #[derive(Debug)]
-pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry> {
+pub struct Service<SR, EntryEnricher, DeploymentRegistry> {
     // Used for constructing the invoker sender and status reader
-    input_tx: mpsc::UnboundedSender<InputCommand>,
+    input_tx: mpsc::UnboundedSender<InputCommand<SR>>,
     status_tx: mpsc::UnboundedSender<
         restate_futures_util::command::Command<
             RangeInclusive<PartitionKey>,
@@ -156,21 +155,23 @@ pub struct Service<JournalReader, StateReader, EntryEnricher, DeploymentRegistry
     tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
-    inner: ServiceInner<
-        DefaultInvocationTaskRunner<JournalReader, StateReader, EntryEnricher, DeploymentRegistry>,
-    >,
+    inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, SR>,
 }
 
-impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
+impl<SR, EE, DMR> Service<SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(crate) fn new<JS>(
         options: &InvokerOptions,
         deployment_metadata_resolver: DMR,
         client: ServiceClient,
-        journal_reader: JR,
-        state_reader: SR,
         entry_enricher: EE,
-    ) -> Service<JR, SR, EE, DMR> {
+    ) -> Service<SR, EE, DMR>
+    where
+        SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
+        JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
+        EE: EntryEnricher,
+        DMR: DeploymentResolver,
+    {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
@@ -186,8 +187,6 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
-                    journal_reader,
-                    state_reader,
                     entry_enricher,
                     deployment_metadata_resolver,
                 },
@@ -203,13 +202,11 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
     pub fn from_options<JS>(
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
-        journal_reader: JR,
-        state_reader: SR,
         entry_enricher: EE,
         deployment_registry: DMR,
-    ) -> Result<Service<JR, SR, EE, DMR>, BuildError>
+    ) -> Result<Service<SR, EE, DMR>, BuildError>
     where
-        JR: JournalReader<JournalStream = JS> + Clone + Send + Sync + 'static,
+        SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
         JS: Stream<Item = PlainRawEntry> + Unpin + Send + 'static,
         EE: EntryEnricher,
         DMR: DeploymentResolver,
@@ -222,8 +219,6 @@ impl<JR, SR, EE, DMR> Service<JR, SR, EE, DMR> {
             invoker_options,
             deployment_registry,
             client,
-            journal_reader,
-            state_reader,
             entry_enricher,
         ))
     }
@@ -235,17 +230,16 @@ pub enum BuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-impl<JR, SR, EE, EMR> Service<JR, SR, EE, EMR>
+impl<SR, EE, EMR> Service<SR, EE, EMR>
 where
-    JR: JournalReader + Clone + Send + Sync + 'static,
-    <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    SR: StateReader + Clone + Send + Sync + 'static,
+    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + 'static,
     EMR: DeploymentResolver + Clone + Send + 'static,
 {
-    pub fn handle(&self) -> ChannelServiceHandle {
-        ChannelServiceHandle {
+    pub fn handle(&self) -> InvokerHandle<SR> {
+        InvokerHandle {
             input: self.input_tx.clone(),
         }
     }
@@ -289,8 +283,8 @@ where
 }
 
 #[derive(Debug)]
-struct ServiceInner<InvocationTaskRunner> {
-    input_rx: mpsc::UnboundedReceiver<InputCommand>,
+struct ServiceInner<InvocationTaskRunner, SR> {
+    input_rx: mpsc::UnboundedReceiver<InputCommand<SR>>,
     status_rx: mpsc::UnboundedReceiver<
         restate_futures_util::command::Command<
             RangeInclusive<PartitionKey>,
@@ -310,12 +304,15 @@ struct ServiceInner<InvocationTaskRunner> {
     retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
-    invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager,
+    invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager<SR>,
 }
 
-impl<ITR> ServiceInner<ITR>
+impl<ITR, SR> ServiceInner<ITR, SR>
 where
-    ITR: InvocationTaskRunner,
+    ITR: InvocationTaskRunner<SR>,
+    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
+    <SR as StateReader>::StateIter: Send,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
     async fn step<F>(
@@ -347,8 +344,9 @@ where
                         segmented_input_queue.enqueue(invoke_command).await;
                     },
                     // --- Other commands (they don't go through the segment queue)
-                    InputCommand::RegisterPartition { partition, partition_key_range, sender } => {
-                        self.handle_register_partition(partition, partition_key_range, sender);
+                    InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
+                        self.handle_register_partition(partition, partition_key_range,
+                                storage_reader, sender);
                     },
                     InputCommand::Abort { partition, invocation_id } => {
                         self.handle_abort_invocation(partition, invocation_id);
@@ -448,11 +446,13 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
+        storage_reader: SR,
         sender: mpsc::Sender<Effect>,
     ) {
         self.invocation_state_machine_manager.register_partition(
             partition,
             partition_key_range,
+            storage_reader,
             sender,
         );
     }
@@ -484,10 +484,15 @@ where
             .resolve_invocation(partition, &invocation_id)
             .is_none());
 
+        let storage_reader = self
+            .invocation_state_machine_manager
+            .partition_storage_reader(partition)
+            .expect("partition is registered");
         self.quota.reserve_slot();
         self.start_invocation_task(
             options,
             partition,
+            storage_reader.clone(),
             invocation_id,
             journal,
             InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
@@ -702,7 +707,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     ) {
-        if let Some((sender, _)) = self
+        if let Some((sender, _, _)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
@@ -736,7 +741,7 @@ where
         invocation_id: InvocationId,
         entry_indexes: HashSet<EntryIndex>,
     ) {
-        if let Some((sender, _)) = self
+        if let Some((sender, _, _)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
@@ -772,7 +777,7 @@ where
         invocation_id: InvocationId,
         error: InvocationTaskError,
     ) {
-        if let Some((_, ism)) = self
+        if let Some((_, _, ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
@@ -797,7 +802,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     ) {
-        if let Some((_, mut ism)) = self
+        if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
@@ -914,6 +919,7 @@ where
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
+        storage_reader: SR,
         invocation_id: InvocationId,
         journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
@@ -925,6 +931,7 @@ where
             partition,
             invocation_id,
             ism.invocation_target.clone(),
+            storage_reader,
             self.invocation_tasks_tx.clone(),
             completions_rx,
             journal,
@@ -952,16 +959,18 @@ where
     ) where
         FN: FnOnce(&mut InvocationStateMachine),
     {
-        if let Some((_, mut ism)) = self
+        if let Some((_, storage_reader, mut ism)) = self
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
             f(&mut ism);
             if ism.is_ready_to_retry() {
                 trace!("Going to retry now");
+                let storage_reader = storage_reader.clone();
                 self.start_invocation_task(
                     options,
                     partition,
+                    storage_reader,
                     invocation_id,
                     InvokeInputJournal::NoCachedJournal,
                     ism,
@@ -997,6 +1006,7 @@ mod tests {
     use bytes::Bytes;
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
+    use restate_invoker_api::mocks::EmptyStorageReader;
     use restate_types::arc_util::Constant;
     use restate_types::config::InvokerOptionsBuilder;
     use tempfile::tempdir;
@@ -1004,7 +1014,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use restate_invoker_api::{entry_enricher, journal_reader, state_reader, ServiceHandle};
+    use restate_invoker_api::{entry_enricher, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
     use restate_types::identifiers::LeaderEpoch;
@@ -1019,13 +1029,18 @@ mod tests {
 
     const MOCK_PARTITION: PartitionLeaderEpoch = (0, LeaderEpoch::INITIAL);
 
-    impl<ITR> ServiceInner<ITR> {
+    impl<ITR, SR> ServiceInner<ITR, SR>
+    where
+        SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+        <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
+        <SR as StateReader>::StateIter: Send,
+    {
         #[allow(clippy::type_complexity)]
         fn mock(
             invocation_task_runner: ITR,
             concurrency_limit: Option<usize>,
         ) -> (
-            mpsc::UnboundedSender<InputCommand>,
+            mpsc::UnboundedSender<InputCommand<SR>>,
             mpsc::UnboundedSender<
                 restate_futures_util::command::Command<
                     RangeInclusive<PartitionKey>,
@@ -1053,26 +1068,35 @@ mod tests {
             (input_tx, status_tx, service_inner)
         }
 
-        fn register_mock_partition(&mut self) -> mpsc::Receiver<Effect>
+        fn register_mock_partition(&mut self, storage_reader: SR) -> mpsc::Receiver<Effect>
         where
-            ITR: InvocationTaskRunner,
+            ITR: InvocationTaskRunner<SR>,
         {
             let (partition_tx, partition_rx) = mpsc::channel(1024);
-            self.handle_register_partition(MOCK_PARTITION, RangeInclusive::new(0, 0), partition_tx);
+            self.handle_register_partition(
+                MOCK_PARTITION,
+                RangeInclusive::new(0, 0),
+                storage_reader,
+                partition_tx,
+            );
             partition_rx
         }
     }
 
-    impl<F, Fut> InvocationTaskRunner for F
+    impl<SR, F, Fut> InvocationTaskRunner<SR> for F
     where
         F: Fn(
             PartitionLeaderEpoch,
             InvocationId,
             InvocationTarget,
+            SR,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
             InvokeInputJournal,
         ) -> Fut,
+        SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+        <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
+        <SR as StateReader>::StateIter: Send,
         Fut: Future<Output = ()> + Send + 'static,
     {
         fn start_invocation_task(
@@ -1081,6 +1105,7 @@ mod tests {
             partition: PartitionLeaderEpoch,
             invocation_id: InvocationId,
             invocation_target: InvocationTarget,
+            storage_reader: SR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             input_journal: InvokeInputJournal,
@@ -1090,6 +1115,7 @@ mod tests {
                 partition,
                 invocation_id,
                 invocation_target,
+                storage_reader,
                 invoker_tx,
                 invoker_rx,
                 input_journal,
@@ -1120,8 +1146,6 @@ mod tests {
                 restate_service_client::AssumeRoleCacheMode::None,
             )
             .unwrap(),
-            journal_reader::mocks::EmptyJournalReader,
-            state_reader::mocks::EmptyStateReader,
             entry_enricher::mocks::MockEntryEnricher,
         );
 
@@ -1143,7 +1167,12 @@ mod tests {
         let (output_tx, mut output_rx) = mpsc::channel(1);
 
         handle
-            .register_partition(partition_leader_epoch, RangeInclusive::new(0, 0), output_tx)
+            .register_partition(
+                partition_leader_epoch,
+                RangeInclusive::new(0, 0),
+                EmptyStorageReader,
+                output_tx,
+            )
             .await
             .unwrap();
         handle
@@ -1186,8 +1215,8 @@ mod tests {
         let invocation_id_2 = InvocationId::mock_random();
 
         let (_invoker_tx, _status_tx, mut service_inner) =
-            ServiceInner::mock(|_, _, _, _, _, _| ready(()), Some(1));
-        let _ = service_inner.register_mock_partition();
+            ServiceInner::mock(|_, _, _, _, _, _, _| ready(()), Some(1));
+        let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Enqueue sid_1 and sid_2
         segment_queue
@@ -1278,6 +1307,7 @@ mod tests {
             |partition,
              invocation_id,
              _service_id,
+             _storage_reader,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
              _,
              _| {
@@ -1294,7 +1324,7 @@ mod tests {
             },
             Some(2),
         );
-        let _ = service_inner.register_mock_partition();
+        let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Invoke the service
         service_inner

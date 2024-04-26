@@ -30,7 +30,7 @@ pub(crate) struct InvokeCommand {
 }
 
 #[derive(Debug)]
-pub(crate) enum InputCommand {
+pub(crate) enum InputCommand<SR> {
     Invoke(InvokeCommand),
     Completion {
         partition: PartitionLeaderEpoch,
@@ -58,6 +58,7 @@ pub(crate) enum InputCommand {
     RegisterPartition {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
+        storage_reader: SR,
         sender: mpsc::Sender<Effect>,
     },
 }
@@ -65,13 +66,12 @@ pub(crate) enum InputCommand {
 // -- Handles implementations. This is just glue code between the Input<Command> and the interfaces
 
 #[derive(Debug, Clone)]
-pub struct ChannelServiceHandle {
-    pub(super) input: mpsc::UnboundedSender<InputCommand>,
+pub struct InvokerHandle<SR> {
+    pub(super) input: mpsc::UnboundedSender<InputCommand<SR>>,
 }
 
-impl ServiceHandle for ChannelServiceHandle {
+impl<SR> ServiceHandle<SR> for InvokerHandle<SR> {
     type Future = futures::future::Ready<Result<(), NotRunningError>>;
-
     fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -152,6 +152,7 @@ impl ServiceHandle for ChannelServiceHandle {
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
+        storage_reader: SR,
         sender: mpsc::Sender<Effect>,
     ) -> Self::Future {
         futures::future::ready(
@@ -160,6 +161,7 @@ impl ServiceHandle for ChannelServiceHandle {
                     partition,
                     partition_key_range,
                     sender,
+                    storage_reader,
                 })
                 .map_err(|_| NotRunningError),
         )
