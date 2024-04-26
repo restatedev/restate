@@ -75,27 +75,3 @@ pub trait StateReader {
         service_id: &'a ServiceId,
     ) -> impl Future<Output = Result<EagerState<Self::StateIter>, Self::Error>> + Send;
 }
-
-#[cfg(any(test, feature = "mocks"))]
-pub mod mocks {
-    use crate::{EagerState, StateReader};
-    use bytes::Bytes;
-    use restate_types::identifiers::ServiceId;
-    use std::convert::Infallible;
-    use std::iter::empty;
-
-    #[derive(Debug, Clone)]
-    pub struct EmptyStateReader;
-
-    impl StateReader for EmptyStateReader {
-        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
-        type Error = Infallible;
-
-        async fn read_state<'a>(
-            &'a mut self,
-            _service_id: &'a ServiceId,
-        ) -> Result<EagerState<Self::StateIter>, Self::Error> {
-            Ok(EagerState::new_complete(empty()))
-        }
-    }
-}

@@ -240,7 +240,7 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<JR, SR, EE, DMR> {
+pub(super) struct InvocationTask<SR, JR, EE, DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -253,8 +253,8 @@ pub(super) struct InvocationTask<JR, SR, EE, DMR> {
     disable_eager_state: bool,
 
     // Invoker tx/rx
-    journal_reader: JR,
     state_reader: SR,
+    journal_reader: JR,
     entry_enricher: EE,
     deployment_metadata_resolver: DMR,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -297,11 +297,11 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<JR, SR, EE, DMR> InvocationTask<JR, SR, EE, DMR>
+impl<SR, JR, EE, DMR> InvocationTask<SR, JR, EE, DMR>
 where
+    SR: StateReader + StateReader + Clone + Send + Sync + 'static,
     JR: JournalReader + Clone + Send + Sync + 'static,
     <JR as JournalReader>::JournalStream: Unpin + Send + 'static,
-    SR: StateReader + Clone + Send + Sync + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher,
     DMR: DeploymentResolver,
@@ -318,8 +318,8 @@ where
         disable_eager_state: bool,
         message_size_warning: usize,
         message_size_limit: Option<usize>,
-        journal_reader: JR,
         state_reader: SR,
+        journal_reader: JR,
         entry_enricher: EE,
         deployment_metadata_resolver: DMR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -334,8 +334,8 @@ where
             abort_timeout,
             disable_eager_state,
             next_journal_index: 0,
-            journal_reader,
             state_reader,
+            journal_reader,
             entry_enricher,
             deployment_metadata_resolver,
             invoker_tx,

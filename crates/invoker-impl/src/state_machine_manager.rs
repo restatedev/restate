@@ -15,22 +15,41 @@ use restate_invoker_api::Effect;
 use restate_types::identifiers::PartitionKey;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
-#[derive(Debug, Default)]
-pub(super) struct InvocationStateMachineManager {
-    partitions: HashMap<PartitionLeaderEpoch, PartitionInvocationStateMachineCoordinator>,
+#[derive(Debug)]
+pub(super) struct InvocationStateMachineManager<SR> {
+    partitions: HashMap<PartitionLeaderEpoch, PartitionInvocationStateMachineCoordinator<SR>>,
+}
+
+impl<SR> Default for InvocationStateMachineManager<SR> {
+    fn default() -> Self {
+        InvocationStateMachineManager {
+            partitions: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
-struct PartitionInvocationStateMachineCoordinator {
+struct PartitionInvocationStateMachineCoordinator<SR> {
     output_tx: mpsc::Sender<Effect>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
+    storage_reader: SR,
 }
 
-impl InvocationStateMachineManager {
+impl<SR> InvocationStateMachineManager<SR>
+where
+    SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
+    <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
+    <SR as StateReader>::StateIter: Send,
+{
     #[inline]
     pub(super) fn has_partition(&self, partition: PartitionLeaderEpoch) -> bool {
         self.partitions.contains_key(&partition)
+    }
+
+    #[inline]
+    pub(super) fn partition_storage_reader(&self, partition: PartitionLeaderEpoch) -> Option<&SR> {
+        self.partitions.get(&partition).map(|p| &p.storage_reader)
     }
 
     #[inline]
@@ -59,11 +78,11 @@ impl InvocationStateMachineManager {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Effect>, InvocationStateMachine)> {
+    ) -> Option<(&mpsc::Sender<Effect>, &SR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .remove(invocation_id)
-                .map(|ism| (&p.output_tx, ism))
+                .map(|ism| (&p.output_tx, &p.storage_reader, ism))
         })
     }
 
@@ -82,6 +101,7 @@ impl InvocationStateMachineManager {
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
+        storage_reader: SR,
         sender: mpsc::Sender<Effect>,
     ) {
         self.partitions.insert(
@@ -90,6 +110,7 @@ impl InvocationStateMachineManager {
                 output_tx: sender,
                 invocation_state_machines: Default::default(),
                 partition_key_range,
+                storage_reader,
             },
         );
     }
@@ -134,7 +155,7 @@ impl InvocationStateMachineManager {
     fn resolve_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<&mut PartitionInvocationStateMachineCoordinator> {
+    ) -> Option<&mut PartitionInvocationStateMachineCoordinator<SR>> {
         self.partitions.get_mut(&partition)
     }
 }
