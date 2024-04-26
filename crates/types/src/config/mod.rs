@@ -100,12 +100,7 @@ pub fn set_current_config(config: Configuration) {
     // todo: potentially validate the config
     CONFIGURATION.store(Arc::new(config));
     #[cfg(not(any(test, feature = "test-util")))]
-    NODE_BASE_DIR.get_or_init(|| {
-        if let Err(e) = std::env::set_current_dir(&proposed_cwd) {
-            eprintln!("[WARN] Failed to set current working directory: {}", e);
-        };
-        proposed_cwd
-    });
+    NODE_BASE_DIR.get_or_init(|| proposed_cwd);
     notify_config_update();
 }
 
