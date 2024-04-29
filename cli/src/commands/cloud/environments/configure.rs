@@ -61,7 +61,7 @@ async fn configure(env: &CliEnv) -> Result<()> {
         _ => account_picker(&accounts)?,
     };
 
-    let environments = list_environments(env, &access_token, &accounts[account_i]).await?;
+    let environments = list_environments(env, access_token, &accounts[account_i]).await?;
 
     let environment_i = match environments.len() {
         0 => {

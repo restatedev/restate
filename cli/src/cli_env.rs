@@ -401,6 +401,8 @@ mod tests {
     fn test_base_url_override() -> Result<()> {
         // By default, we use the const value defined in this file.
         let mut os_env = OsEnv::default();
+        // avoid using any files from the test runner
+        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         assert_eq!(
             cli_env.config.ingress_base_url.to_string(),
@@ -461,6 +463,8 @@ mod tests {
     #[test]
     fn test_bearer_token_applied() {
         let mut os_env = OsEnv::default();
+        // avoid using any files from the test runner
+        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.config.bearer_token, None);
 
