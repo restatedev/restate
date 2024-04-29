@@ -219,7 +219,7 @@ fn main() {
                 .expect("Error when trying to wipe the configured storage path");
             }
 
-            let node = Node::new(Configuration::current().clone());
+            let node = Node::create(Configuration::current().clone()).await;
             if let Err(err) = node {
                 handle_error(err);
             }

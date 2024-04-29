@@ -27,9 +27,9 @@ pub struct QueryEngineOptions {
     /// # Memory size limit
     ///
     /// The total memory in bytes that can be used to preform sql queries
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    pub memory_size: Option<NonZeroUsize>,
+    #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
+    #[serde_as(as = "NonZeroByteCount")]
+    pub memory_size: NonZeroUsize,
 
     /// # Temp folder to use for spill
     ///
@@ -51,15 +51,11 @@ impl QueryEngineOptions {
     pub fn query_parallelism(&self) -> Option<usize> {
         self.query_parallelism.map(Into::into)
     }
-
-    pub fn memory_size(&self) -> Option<usize> {
-        self.memory_size.map(Into::into)
-    }
 }
 impl Default for QueryEngineOptions {
     fn default() -> Self {
         Self {
-            memory_size: None,
+            memory_size: NonZeroUsize::new(4_000_000_000).unwrap(), // 4GB
             tmp_dir: None,
             query_parallelism: None,
             pgsql_bind_address: "0.0.0.0:9071".parse().unwrap(),
