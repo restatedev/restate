@@ -79,9 +79,10 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    let keys = storage.for_each_key_value_in_place(TableScan::KeyPrefix(prefix_key), |k, _| {
-        TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k)))
-    });
+    let keys = storage.for_each_key_value_in_place(
+        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
+        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
+    );
 
     for k in keys {
         storage.delete_cf(State, &k?);
@@ -108,9 +109,10 @@ fn get_all_user_states<S: StorageAccess>(
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    storage.for_each_key_value_in_place(TableScan::KeyPrefix(key), |k, v| {
-        TableScanIterationDecision::Emit(decode_user_state_key_value(k, v))
-    })
+    storage.for_each_key_value_in_place(
+        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+        |k, v| TableScanIterationDecision::Emit(decode_user_state_key_value(k, v)),
+    )
 }
 
 impl ReadOnlyStateTable for RocksDBStorage {
@@ -195,7 +197,7 @@ impl RocksDBStorage {
         &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Iterator<Item = OwnedStateRow> + '_ {
-        let iter = self.iterator_from(TableScan::PartitionKeyRange::<StateKey>(range));
+        let iter = self.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
         OwnedIterator::new(iter).map(|(mut key, value)| {
             let row_key = StateKey::deserialize_from(&mut key).unwrap();
             OwnedStateRow {

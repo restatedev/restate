@@ -20,7 +20,9 @@ use strum_macros::EnumIter;
 /// # Important
 /// There must exist a bijective mapping between the enum variant and its byte representation.
 /// See [`KeyKind::as_bytes`] and [`KeyKind::from_bytes`].
-#[derive(Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display)]
+#[derive(
+    Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display, strum_macros::VariantArray,
+)]
 pub enum KeyKind {
     Deduplication,
     Fsm,
@@ -37,6 +39,17 @@ pub enum KeyKind {
 impl KeyKind {
     pub const SERIALIZED_LENGTH: usize = 2;
 
+    pub const fn exclusive_upper_bound(&self) -> [u8; Self::SERIALIZED_LENGTH] {
+        let start = self.as_bytes();
+        let num = u16::from_be_bytes(*start);
+        let num = if num == u16::MAX {
+            panic!("key kind to not saturate u16");
+        } else {
+            num + 1
+        };
+        num.to_be_bytes()
+    }
+
     /// A once assigned byte representation to a key kind variant must never be changed! Instead,
     /// create a new variant representing a new key.
     ///
@@ -45,7 +58,9 @@ impl KeyKind {
     /// ```ignore
     /// KeyKind::from_bytes(key_kind.as_bytes()) == key_kind
     /// ```
-    fn as_bytes(&self) -> &[u8; Self::SERIALIZED_LENGTH] {
+    pub const fn as_bytes(&self) -> &'static [u8; Self::SERIALIZED_LENGTH] {
+        // NOTE: do not use &[0xff, 0xff] as key byte prefix, ever!
+        // We should always be able to +1 the those bytes when interpreted as u16
         match self {
             KeyKind::Deduplication => b"de",
             KeyKind::Fsm => b"fs",
@@ -68,7 +83,7 @@ impl KeyKind {
     /// ```ignore
     /// KeyKind::from_bytes(key_kind.as_bytes()) == key_kind
     /// ```
-    fn from_bytes(bytes: &[u8; Self::SERIALIZED_LENGTH]) -> Option<Self> {
+    pub const fn from_bytes(bytes: &[u8; Self::SERIALIZED_LENGTH]) -> Option<Self> {
         match bytes {
             b"de" => Some(KeyKind::Deduplication),
             b"fs" => Some(KeyKind::Fsm),
@@ -101,12 +116,13 @@ impl KeyKind {
     }
 }
 
-pub trait TableKey: Sized + Send + 'static {
+pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
+    const TABLE: TableKind;
+    const KEY_KIND: KeyKind;
     fn is_complete(&self) -> bool;
     fn serialize_key_kind<B: BufMut>(bytes: &mut B);
     fn serialize_to<B: BufMut>(&self, bytes: &mut B);
     fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
-    fn table() -> TableKind;
 
     fn serialize(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.serialized_length());
@@ -115,7 +131,6 @@ pub trait TableKey: Sized + Send + 'static {
     }
 
     fn serialized_length(&self) -> usize;
-    fn serialized_key_kind_length() -> usize;
 }
 
 /// The following macro defines an ordered, named key tuple, that is used as a rocksdb key.
@@ -199,10 +214,6 @@ pub trait TableKey: Sized + Send + 'static {
 ///                 return Ok(this);
 ///       }
 ///
-///     fn serialized_key_kind_length() -> usize {
-///         KeyKind::SERIALIZED_LENGTH
-///     }
-///
 ///     fn table() -> TableKind {
 ///         FooBarTable
 ///     }
@@ -236,11 +247,8 @@ macro_rules! define_table_key {
 
         // serde
         impl crate::keys::TableKey for $key_name {
-
-            #[inline]
-            fn table() -> crate::TableKind {
-                $table_kind
-            }
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
 
             fn is_complete(&self) -> bool {
                 $(
@@ -284,16 +292,11 @@ macro_rules! define_table_key {
             #[inline]
             fn serialized_length(&self) -> usize {
                 // we always need space for the key kind
-                let mut serialized_length = Self::serialized_key_kind_length();
+                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
                     serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$element);
                 )+
                 serialized_length
-            }
-
-            #[inline]
-            fn serialized_key_kind_length() -> usize {
-                $crate::keys::KeyKind::SERIALIZED_LENGTH
             }
         }
     })
