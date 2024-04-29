@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-schema-api = { workspace = true, features = ["deployment"] }

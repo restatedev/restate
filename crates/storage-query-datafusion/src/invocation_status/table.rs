@@ -14,26 +14,27 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use tokio::sync::mpsc::Sender;
 
-use crate::context::QueryContext;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
+use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_types::identifiers::PartitionKey;
+
+use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::InvocationStatusBuilder;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
-use restate_partition_store::PartitionStore;
-use restate_types::identifiers::PartitionKey;
-use tokio::sync::mpsc::Sender;
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::table_providers::PartitionedTableProvider;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: PartitionStore,
+    partition_selector: impl SelectPartitions,
+    partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
-    let status_table = GenericTableProvider::new(
+    let status_table = PartitionedTableProvider::new(
+        partition_selector,
         InvocationStatusBuilder::schema(),
-        Arc::new(StatusScanner(storage)),
+        LocalPartitionsScanner::new(partition_store_manager, StatusScanner),
     );
 
     ctx.as_ref()
@@ -42,29 +43,21 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct StatusScanner(PartitionStore);
+struct StatusScanner;
 
-impl RangeScanner for StatusScanner {
-    fn scan(
-        &self,
+impl ScanLocalPartition for StatusScanner {
+    async fn scan_partition_store(
+        partition_store: PartitionStore,
+        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-    ) -> SendableRecordBatchStream {
-        let db = self.0.clone();
-        let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
-        let tx = stream_builder.tx();
-        let background_task = move || {
-            let rows = db.all_invocation_status(range);
-            for_each_status(schema, tx, rows);
-            Ok(())
-        };
-        stream_builder.spawn_blocking(background_task);
-        stream_builder.build()
+    ) {
+        let rows = partition_store.all_invocation_status(range);
+        for_each_status(projection, tx, rows).await;
     }
 }
 
-fn for_each_status<'a, I>(
+async fn for_each_status<'a, I>(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: I,
@@ -77,7 +70,7 @@ fn for_each_status<'a, I>(
         append_invocation_status_row(&mut builder, &mut temp, row);
         if builder.full() {
             let batch = builder.finish();
-            if tx.blocking_send(Ok(batch)).is_err() {
+            if tx.send(Ok(batch)).await.is_err() {
                 // not sure what to do here?
                 // the other side has hung up on us.
                 // we probably don't want to panic, is it will cause the entire process to exit
@@ -88,6 +81,6 @@ fn for_each_status<'a, I>(
     }
     if !builder.empty() {
         let result = builder.finish();
-        let _ = tx.blocking_send(Ok(result));
+        let _ = tx.send(Ok(result)).await;
     }
 }
