@@ -12,7 +12,8 @@ use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::PartitionProcessor;
 use anyhow::Context;
 use restate_bifrost::Bifrost;
-use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
+use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
+use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
@@ -25,50 +26,115 @@ use restate_types::logs::{LogId, Payload};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::{GenerationalNodeId, Version};
 use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Command as WalCommand, Destination, Envelope, Header, Source};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
-use tracing::debug;
+use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 pub struct PartitionProcessorManager {
     updateable_config: UpdateableConfiguration,
-    node_id: GenerationalNodeId,
     running_partition_processors: HashMap<PartitionId, TaskId>,
 
+    metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
     networking: Networking,
     bifrost: Bifrost,
     invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
+    rx: mpsc::Receiver<ProcessorsManagerCommand>,
+    _tx: mpsc::Sender<ProcessorsManagerCommand>,
 }
 
 impl PartitionProcessorManager {
     pub fn new(
         updateable_config: UpdateableConfiguration,
-        node_id: GenerationalNodeId,
+        metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
         partition_store_manager: PartitionStoreManager,
         networking: Networking,
         bifrost: Bifrost,
         invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Self {
+        let (_tx, rx) = mpsc::channel(updateable_config.load().worker.internal_queue_length());
         Self {
             updateable_config,
             running_partition_processors: HashMap::default(),
-            node_id,
+            metadata,
             metadata_store_client,
             partition_store_manager,
             networking,
             bifrost,
             invoker_handle,
+            rx,
+            _tx,
         }
+    }
+
+    pub fn _handle(&self) -> ProcessorsManagerHandle {
+        ProcessorsManagerHandle::new(self._tx.clone())
+    }
+
+    pub async fn run(mut self) -> anyhow::Result<()> {
+        self.attach_worker().await?;
+
+        // simulating a plan after initial attachement
+        let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
+        let plan = PartitionProcessorPlan::new(
+            partition_table.version(),
+            partition_table
+                .partitioner()
+                .map(|(partition_id, _)| (partition_id, Action::Start(Role::Leader)))
+                .collect(),
+        );
+        self.apply_plan(plan).await?;
+
+        let shutdown = cancellation_watcher();
+        tokio::pin!(shutdown);
+
+        loop {
+            tokio::select! {
+                Some(command) = self.rx.recv() => {
+                    self.handle_command(command).await;
+                    debug!("PartitionProcessorManager shutting down");
+                }
+              _ = &mut shutdown => {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    async fn handle_command(&mut self, command: ProcessorsManagerCommand) {
+        use ProcessorsManagerCommand::*;
+        match command {
+            GetLivePartitions(sender) => {
+                let live_partitions = self.running_partition_processors.keys().cloned().collect();
+                let _ = sender.send(live_partitions);
+            }
+        }
+    }
+
+    async fn attach_worker(&mut self) -> anyhow::Result<()> {
+        let admin_address = self
+            .metadata
+            .nodes_config()
+            .get_admin_node()
+            .expect("at least one admin node")
+            .address
+            .clone();
+
+        info!("Worker attaching to admin at '{admin_address}'");
+        // todo: use Networking to attach to a cluster admin node.
+        Ok(())
     }
 
     #[allow(clippy::map_entry)]
     pub async fn apply_plan(&mut self, plan: PartitionProcessorPlan) -> anyhow::Result<()> {
         let config = self.updateable_config.pinned();
         let options = &config.worker;
-        let partition_table = metadata()
+        let partition_table = self
+            .metadata
             .wait_for_partition_table(plan.min_required_partition_table_version)
             .await?;
 
@@ -115,7 +181,7 @@ impl PartitionProcessorManager {
         let networking = self.networking.clone();
         let mut bifrost = self.bifrost.clone();
         let metadata_store_client = self.metadata_store_client.clone();
-        let node_id = self.node_id;
+        let node_id = self.metadata.my_node_id();
 
         task_center().spawn_child(
             TaskKind::PartitionProcessor,
@@ -222,7 +288,7 @@ impl PartitionProcessorManager {
 
         let envelope = Envelope::new(
             header,
-            Command::AnnounceLeader(AnnounceLeader {
+            WalCommand::AnnounceLeader(AnnounceLeader {
                 node_id,
                 leader_epoch,
             }),

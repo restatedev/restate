@@ -100,7 +100,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(updateable_config: UpdateableConfiguration) -> Result<Self, BuildError> {
+    pub async fn create(updateable_config: UpdateableConfiguration) -> Result<Self, BuildError> {
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
@@ -140,7 +140,7 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let metadata = metadata_manager.metadata();
         let updating_schema_information = metadata.schema_updateable();
-        let bifrost = BifrostService::new(metadata);
+        let bifrost = BifrostService::new(metadata.clone());
 
         let admin_role = if config.has_role(Role::Admin) {
             Some(AdminRole::new(
@@ -153,14 +153,18 @@ impl Node {
         };
 
         let worker_role = if config.has_role(Role::Worker) {
-            Some(WorkerRole::new(
-                updateable_config.clone(),
-                &mut router_builder,
-                networking.clone(),
-                bifrost.handle(),
-                metadata_store_client,
-                updating_schema_information,
-            )?)
+            Some(
+                WorkerRole::create(
+                    metadata,
+                    updateable_config.clone(),
+                    &mut router_builder,
+                    networking.clone(),
+                    bifrost.handle(),
+                    metadata_store_client,
+                    updating_schema_information,
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -321,7 +325,7 @@ impl Node {
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(bifrost),
+                worker_role.start(),
             )?;
         }
 
