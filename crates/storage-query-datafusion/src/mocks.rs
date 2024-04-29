@@ -112,8 +112,15 @@ impl MockQueryEngine {
 
         Self(
             rocksdb.clone(),
-            QueryContext::from_options(&QueryEngineOptions::default(), rocksdb, status, schemas)
-                .unwrap(),
+            QueryContext::create(
+                &QueryEngineOptions::default(),
+                manager,
+                rocksdb,
+                status,
+                schemas,
+            )
+            .await
+            .unwrap(),
         )
     }
 
