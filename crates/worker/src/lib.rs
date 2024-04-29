@@ -34,7 +34,7 @@ use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::{
-    ChannelServiceHandle as InvokerChannelServiceHandle, Service as InvokerService,
+    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
@@ -51,8 +51,10 @@ use crate::partition_processor_manager::{
 };
 use restate_types::Version;
 
-type PartitionProcessor =
-    partition::PartitionProcessor<ProtobufRawEntryCodec, InvokerChannelServiceHandle>;
+type PartitionProcessor = partition::PartitionProcessor<
+    ProtobufRawEntryCodec,
+    InvokerChannelServiceHandle<InvokerStorageReader<RocksDBStorage>>,
+>;
 
 type ExternalClientIngress = HyperServerIngress<UpdateableSchema, IngressDispatcher>;
 
@@ -92,7 +94,6 @@ pub struct Worker {
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
     invoker: InvokerService<
-        InvokerStorageReader<RocksDBStorage>,
         InvokerStorageReader<RocksDBStorage>,
         EntryEnricher<UpdateableSchema, ProtobufRawEntryCodec>,
         UpdateableSchema,
@@ -163,12 +164,9 @@ impl Worker {
                 .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
         ))?;
 
-        let invoker_storage_reader = InvokerStorageReader::new(rocksdb_storage.clone());
         let invoker = InvokerService::from_options(
             &config.common.service_client,
             &config.worker.invoker,
-            invoker_storage_reader.clone(),
-            invoker_storage_reader,
             EntryEnricher::new(schema_view.clone()),
             schema_view.clone(),
         )?;

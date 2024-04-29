@@ -46,28 +46,3 @@ pub trait JournalReader {
         fid: &'a InvocationId,
     ) -> impl Future<Output = Result<(JournalMetadata, Self::JournalStream), Self::Error>> + Send;
 }
-
-#[cfg(any(test, feature = "mocks"))]
-pub mod mocks {
-    use super::*;
-    use restate_types::invocation::ServiceInvocationSpanContext;
-    use std::convert::Infallible;
-
-    #[derive(Debug, Clone)]
-    pub struct EmptyJournalReader;
-
-    impl JournalReader for EmptyJournalReader {
-        type JournalStream = futures::stream::Empty<PlainRawEntry>;
-        type Error = Infallible;
-
-        async fn read_journal<'a>(
-            &'a mut self,
-            _sid: &'a InvocationId,
-        ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
-            Ok((
-                JournalMetadata::new(0, ServiceInvocationSpanContext::empty(), None),
-                futures::stream::empty(),
-            ))
-        }
-    }
-}
