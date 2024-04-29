@@ -19,16 +19,13 @@ use std::hash::{Hash, Hasher};
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TimerValue {
-    timer_key: TimerKeyWrapper,
+    timer_key: TimerKey,
     value: Timer,
 }
 
 impl TimerValue {
     pub fn new(timer_key: TimerKey, value: Timer) -> Self {
-        Self {
-            timer_key: TimerKeyWrapper(timer_key),
-            value,
-        }
+        Self { timer_key, value }
     }
 
     pub fn new_sleep(
@@ -36,11 +33,11 @@ impl TimerValue {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
-        let timer_key = TimerKeyWrapper(TimerKey {
+        let timer_key = TimerKey {
             invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
-        });
+        };
 
         Self {
             timer_key,
@@ -54,11 +51,11 @@ impl TimerValue {
         entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
-        let timer_key = TimerKeyWrapper(TimerKey {
+        let timer_key = TimerKey {
             invocation_uuid: invocation_id.invocation_uuid(),
             timestamp: wake_up_time.as_u64(),
             journal_index: entry_index,
-        });
+        };
 
         Self {
             timer_key,
@@ -67,11 +64,11 @@ impl TimerValue {
     }
 
     pub fn into_inner(self) -> (TimerKey, Timer) {
-        (self.timer_key.0, self.value)
+        (self.timer_key, self.value)
     }
 
     pub fn key(&self) -> &TimerKey {
-        &self.timer_key.0
+        &self.timer_key
     }
 
     pub fn value(&self) -> &Timer {
@@ -79,11 +76,11 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::from_parts(self.value.partition_key(), self.timer_key.0.invocation_uuid)
+        InvocationId::from_parts(self.value.partition_key(), self.timer_key.invocation_uuid)
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.timer_key.0.timestamp)
+        MillisSinceEpoch::from(self.timer_key.timestamp)
     }
 }
 
@@ -102,52 +99,17 @@ impl PartialEq for TimerValue {
 
 impl Eq for TimerValue {}
 
-/// New type wrapper to implement [`restate_types::timer::TimerKey`] for [`TimerKey`].
-///
-/// # Important
-/// We use the [`TimerKey`] to read the timers in an absolute order. The timer service
-/// relies on this order in order to process each timer exactly once. That is the
-/// reason why the in-memory and in-rocksdb ordering of the TimerKey needs to be exactly
-/// the same.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TimerKeyWrapper(TimerKey);
-
-impl TimerKeyWrapper {
-    pub fn into_inner(self) -> TimerKey {
-        self.0
-    }
-}
-
-impl Borrow<TimerKeyWrapper> for TimerValue {
-    fn borrow(&self) -> &TimerKeyWrapper {
+impl Borrow<TimerKey> for TimerValue {
+    fn borrow(&self) -> &TimerKey {
         &self.timer_key
     }
 }
 
 impl restate_types::timer::Timer for TimerValue {
-    type TimerKey = TimerKeyWrapper;
+    type TimerKey = TimerKey;
 
     fn timer_key(&self) -> &Self::TimerKey {
         &self.timer_key
-    }
-}
-
-impl restate_types::timer::TimerKey for TimerKeyWrapper {
-    fn wake_up_time(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.0.timestamp)
-    }
-}
-
-impl From<TimerKey> for TimerKeyWrapper {
-    fn from(timer_key: TimerKey) -> Self {
-        TimerKeyWrapper(timer_key)
-    }
-}
-
-impl fmt::Display for TimerKeyWrapper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", TimerKeyDisplay(&self.0))
     }
 }
 

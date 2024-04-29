@@ -14,9 +14,15 @@ use restate_types::identifiers::{
     InvocationId, InvocationUuid, PartitionId, PartitionKey, WithPartitionKey,
 };
 use restate_types::invocation::ServiceInvocation;
+use restate_types::time::MillisSinceEpoch;
 use std::cmp::Ordering;
 use std::future::Future;
 
+/// # Important
+/// We use the [`TimerKey`] to read the timers in an absolute order. The timer service
+/// relies on this order in order to process each timer exactly once. That is the
+/// reason why the in-memory and in-rocksdb ordering of the TimerKey needs to be exactly
+/// the same.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TimerKey {
     pub timestamp: u64,
@@ -36,6 +42,12 @@ impl Ord for TimerKey {
             .cmp(&other.timestamp)
             .then_with(|| self.invocation_uuid.cmp(&other.invocation_uuid))
             .then_with(|| self.journal_index.cmp(&other.journal_index))
+    }
+}
+
+impl restate_types::timer::TimerKey for TimerKey {
+    fn wake_up_time(&self) -> MillisSinceEpoch {
+        self.timestamp.into()
     }
 }
 
