@@ -210,6 +210,7 @@ mod tests {
         let mut file = OpenOptions::new().create(true).write(true).open(path)?;
         serde_json::to_writer(&file, cluster_marker)?;
         file.flush()?;
+        file.sync_all()?;
 
         Ok(())
     }
@@ -253,8 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn cluster_marker_is_updated() {
-        let file = NamedTempFile::new().unwrap();
+    fn cluster_marker_is_updated() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new().unwrap();
         let previous_version = Version::new(1, 1, 6);
         let current_version = Version::new(1, 2, 3);
 
@@ -263,6 +264,7 @@ mod tests {
             file.path(),
         )
         .unwrap();
+        file.flush()?;
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
@@ -281,12 +283,13 @@ mod tests {
                 max_version: current_version,
                 cluster_name: CLUSTER_NAME.to_owned(),
             }
-        )
+        );
+        Ok(())
     }
 
     #[test]
-    fn max_version_is_maintained() {
-        let file = NamedTempFile::new().unwrap();
+    fn max_version_is_maintained() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new().unwrap();
         let max_version = Version::new(1, 2, 6);
         let current_version = Version::new(1, 1, 3);
 
@@ -295,6 +298,7 @@ mod tests {
             file.path(),
         )
         .unwrap();
+        file.flush()?;
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
@@ -313,12 +317,13 @@ mod tests {
                 max_version,
                 cluster_name: CLUSTER_NAME.to_owned(),
             }
-        )
+        );
+        Ok(())
     }
 
     #[test]
-    fn incompatible_cluster_name() {
-        let file = NamedTempFile::new().unwrap();
+    fn incompatible_cluster_name() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new().unwrap();
         let max_version = Version::new(1, 2, 6);
         let current_version = Version::new(1, 1, 3);
 
@@ -327,6 +332,7 @@ mod tests {
             file.path(),
         )
         .unwrap();
+        file.flush()?;
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
@@ -337,12 +343,13 @@ mod tests {
         assert!(matches!(
             result,
             Err(ClusterValidationError::IncorrectClusterName { .. })
-        ))
+        ));
+        Ok(())
     }
 
     #[test]
-    fn incompatible_version() {
-        let file = NamedTempFile::new().unwrap();
+    fn incompatible_version() -> anyhow::Result<()> {
+        let mut file = NamedTempFile::new().unwrap();
         let max_version = Version::new(1, 2, 6);
         let compatibility_boundary = Version::new(1, 1, 1);
         let current_version = Version::new(1, 0, 3);
@@ -352,6 +359,7 @@ mod tests {
             file.path(),
         )
         .unwrap();
+        file.flush()?;
 
         let mut compatibility_map = COMPATIBILITY_MAP.deref().clone();
         compatibility_map.insert(
@@ -368,6 +376,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(ClusterValidationError::IncompatibleVersion { .. })
-        ))
+        ));
+        Ok(())
     }
 }

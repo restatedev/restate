@@ -28,8 +28,20 @@ use crate::TableKind::{
     Deduplication, Idempotency, Inbox, InvocationStatus, Journal, Outbox, PartitionStateMachine,
     ServiceStatus, State, Timers,
 };
-use bytes::BytesMut;
+
+use std::sync::Arc;
+
+use bytes::{Bytes, BytesMut};
 use codederror::CodedError;
+use rocksdb::DBCompressionType;
+use rocksdb::DBPinnableSlice;
+use rocksdb::DBRawIteratorWithThreadMode;
+use rocksdb::MultiThreaded;
+use rocksdb::PrefixRange;
+use rocksdb::ReadOptions;
+use rocksdb::{BoundColumnFamily, SliceTransform};
+use static_assertions::const_assert_eq;
+
 use restate_core::ShutdownError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
@@ -37,15 +49,10 @@ use restate_rocksdb::{
 use restate_storage_api::{Storage, StorageError, Transaction};
 use restate_types::arc_util::Updateable;
 use restate_types::config::{RocksDbOptions, StorageOptions};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
-use rocksdb::BoundColumnFamily;
-use rocksdb::DBCompressionType;
-use rocksdb::DBPinnableSlice;
-use rocksdb::DBRawIteratorWithThreadMode;
-use rocksdb::MultiThreaded;
-use rocksdb::PrefixRange;
-use rocksdb::ReadOptions;
-use std::sync::Arc;
+
+use self::keys::KeyKind;
 
 pub type DB = rocksdb::OptimisticTransactionDB<MultiThreaded>;
 type TransactionDB<'a> = rocksdb::Transaction<'a, DB>;
@@ -56,16 +63,20 @@ pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Tr
 // matches the default directory name
 const DB_NAME: &str = "db";
 
-const STATE_TABLE_NAME: &str = "state";
-const INVOCATION_STATUS_TABLE_NAME: &str = "invocation_status";
-const SERVICE_STATUS_TABLE_NAME: &str = "service_status";
-const IDEMPOTENCY_TABLE_NAME: &str = "idempotency";
-const INBOX_TABLE_NAME: &str = "inbox";
-const OUTBOX_TABLE_NAME: &str = "outbox";
-const DEDUP_TABLE_NAME: &str = "dedup";
-const FSM_TABLE_NAME: &str = "fsm";
-const TIMERS_TABLE_NAME: &str = "timers";
-const JOURNAL_TABLE_NAME: &str = "journal";
+pub const PARTITION_CF: &str = "data-unpartitioned";
+
+//Key prefix is 10 bytes (KeyKind(2) + PartitionKey/Id(8))
+const DB_PREFIX_LENGTH: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
+
+// If this changes, we need to know.
+const_assert_eq!(DB_PREFIX_LENGTH, 10);
+
+// Ensures that both types have the same length, this makes it possible to
+// share prefix extractor in rocksdb.
+const_assert_eq!(
+    std::mem::size_of::<PartitionKey>(),
+    std::mem::size_of::<PartitionId>(),
+);
 
 pub(crate) type Result<T> = std::result::Result<T, StorageError>;
 
@@ -77,40 +88,27 @@ pub enum TableScanIterationDecision<R> {
 }
 
 #[inline]
-const fn cf_name(kind: TableKind) -> &'static str {
-    match kind {
-        State => STATE_TABLE_NAME,
-        InvocationStatus => INVOCATION_STATUS_TABLE_NAME,
-        ServiceStatus => SERVICE_STATUS_TABLE_NAME,
-        Inbox => INBOX_TABLE_NAME,
-        Outbox => OUTBOX_TABLE_NAME,
-        Deduplication => DEDUP_TABLE_NAME,
-        PartitionStateMachine => FSM_TABLE_NAME,
-        Timers => TIMERS_TABLE_NAME,
-        Journal => JOURNAL_TABLE_NAME,
-        Idempotency => IDEMPOTENCY_TABLE_NAME,
-    }
+const fn cf_name(_kind: TableKind) -> &'static str {
+    PARTITION_CF
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TableKind {
+    // By Partition ID
+    PartitionStateMachine,
+    Deduplication,
+    Outbox,
+    Timers,
+    // By Partition Key
     State,
     InvocationStatus,
     ServiceStatus,
     Idempotency,
     Inbox,
-    Outbox,
-    Deduplication,
-    PartitionStateMachine,
-    Timers,
     Journal,
 }
 
 impl TableKind {
-    pub const fn cf_name(&self) -> &'static str {
-        cf_name(*self)
-    }
-
     pub fn all() -> core::slice::Iter<'static, TableKind> {
         static VARIANTS: &[TableKind] = &[
             State,
@@ -125,6 +123,37 @@ impl TableKind {
             Journal,
         ];
         VARIANTS.iter()
+    }
+
+    pub const fn key_kinds(self) -> &'static [KeyKind] {
+        match self {
+            State => &[KeyKind::State],
+            InvocationStatus => &[KeyKind::InvocationStatus],
+            ServiceStatus => &[KeyKind::ServiceStatus],
+            Idempotency => &[KeyKind::Idempotency],
+            Inbox => &[KeyKind::Inbox],
+            Outbox => &[KeyKind::Outbox],
+            Deduplication => &[KeyKind::Deduplication],
+            PartitionStateMachine => &[KeyKind::Fsm],
+            Timers => &[KeyKind::Timers],
+            Journal => &[KeyKind::Journal],
+        }
+    }
+
+    pub fn has_key_kind(self, prefix: &[u8]) -> bool {
+        self.extract_key_kind(prefix).is_some()
+    }
+
+    pub fn extract_key_kind(self, prefix: &[u8]) -> Option<KeyKind> {
+        if prefix.len() < KeyKind::SERIALIZED_LENGTH {
+            return None;
+        }
+        let slice = prefix[..KeyKind::SERIALIZED_LENGTH].try_into().unwrap();
+        let Some(kind) = KeyKind::from_bytes(slice) else {
+            // warning
+            return None;
+        };
+        self.key_kinds().iter().find(|k| **k == kind).copied()
     }
 }
 
@@ -189,6 +218,10 @@ fn db_options() -> rocksdb::Options {
 }
 
 fn cf_options(mut cf_options: rocksdb::Options) -> rocksdb::Options {
+    // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
+    // in the C API nor the rust binding. That's okay and we can change it later.
+    cf_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(DB_PREFIX_LENGTH));
+    cf_options.set_memtable_prefix_bloom_ratio(0.2);
     // Most of the changes are highly temporal, we try to delay flushing
     // As much as we can to increase the chances to observe a deletion.
     //
@@ -222,26 +255,7 @@ impl RocksDBStorage {
         mut storage_opts: impl Updateable<StorageOptions> + Send + 'static,
         updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
     ) -> std::result::Result<Self, BuildError> {
-        let cfs = vec![
-            //
-            // keyed by partition key + user key
-            //
-            CfName::new(cf_name(Inbox)),
-            CfName::new(cf_name(State)),
-            CfName::new(cf_name(InvocationStatus)),
-            CfName::new(cf_name(ServiceStatus)),
-            CfName::new(cf_name(Journal)),
-            CfName::new(cf_name(Idempotency)),
-            //
-            // keyed by partition id + suffix
-            //
-            CfName::new(cf_name(Outbox)),
-            CfName::new(cf_name(Timers)),
-            // keyed by partition_id + partition_id
-            CfName::new(cf_name(Deduplication)),
-            // keyed by partition_id + u64
-            CfName::new(cf_name(PartitionStateMachine)),
-        ];
+        let cfs = vec![CfName::new(PARTITION_CF)];
 
         let options = storage_opts.load();
         let db_spec = DbSpecBuilder::new(
@@ -275,42 +289,75 @@ impl RocksDBStorage {
         )
     }
 
-    fn prefix_iterator<K: Into<Vec<u8>>>(&self, table: TableKind, prefix: K) -> DBIterator {
+    fn prefix_iterator(&self, table: TableKind, _key_kind: KeyKind, prefix: Bytes) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
-
-        opts.set_iterate_range(PrefixRange(prefix));
-
-        self.db.raw_iterator_cf_opt(&table, opts)
+        opts.set_prefix_same_as_start(true);
+        opts.set_iterate_range(PrefixRange(prefix.clone()));
+        opts.set_async_io(true);
+        opts.set_total_order_seek(false);
+        let mut it = self.db.raw_iterator_cf_opt(&table, opts);
+        it.seek(prefix);
+        it
     }
 
-    fn range_iterator(&self, table: TableKind, range: impl rocksdb::IterateBounds) -> DBIterator {
+    fn range_iterator(
+        &self,
+        table: TableKind,
+        _key: KeyKind,
+        scan_mode: ScanMode,
+        from: Bytes,
+        to: Bytes,
+    ) -> DBIterator {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
-        opts.set_iterate_range(range);
-        self.db.raw_iterator_cf_opt(&table, opts)
+        // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
+        // binding.
+        opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
+        opts.set_iterate_range(from.clone()..to);
+        opts.set_async_io(true);
+
+        let mut it = self.db.raw_iterator_cf_opt(&table, opts);
+        it.seek(from);
+        it
     }
 
+    #[track_caller]
     fn iterator_from<K: TableKey>(
         &self,
         scan: TableScan<K>,
     ) -> DBRawIteratorWithThreadMode<'_, DB> {
         let scan: PhysicalScan = scan.into();
         match scan {
-            PhysicalScan::Prefix(table, prefix) => {
-                let mut it = self.prefix_iterator(table, prefix.clone());
-                it.seek(prefix);
-                it
+            PhysicalScan::Prefix(table, key_kind, prefix) => {
+                assert!(table.has_key_kind(&prefix));
+                self.prefix_iterator(table, key_kind, prefix.freeze())
             }
-            PhysicalScan::RangeExclusive(table, start, end) => {
-                let mut it = self.range_iterator(table, start.clone()..end);
-                it.seek(start);
-                it
+            PhysicalScan::RangeExclusive(table, key_kind, scan_mode, start, end) => {
+                assert!(table.has_key_kind(&start));
+                self.range_iterator(table, key_kind, scan_mode, start.freeze(), end.freeze())
             }
-            PhysicalScan::RangeOpen(table, start) => {
-                let mut it = self.range_iterator(table, start.clone()..);
-                it.seek(start);
-                it
+            PhysicalScan::RangeOpen(table, key_kind, start) => {
+                // We delayed the generate the synthetic iterator upper bound until this point
+                // because we might have different prefix length requirements based on the
+                // table+key_kind combination and we should keep this knowledge as low-level as
+                // possible.
+                //
+                // make the end has the same length as all prefixes to ensure rocksdb key
+                // comparator can leverage bloom filters when applicable
+                // (if auto_prefix_mode is enabled)
+                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
+                // We want to ensure that Range scans fall within the same key kind.
+                // So, we limit the iterator to the upper bound of this prefix
+                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
+                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
+                self.range_iterator(
+                    table,
+                    key_kind,
+                    ScanMode::TotalOrder,
+                    start.freeze(),
+                    end.freeze(),
+                )
             }
         }
     }
@@ -390,31 +437,56 @@ pub struct RocksDBTransaction<'a> {
     value_buffer: &'a mut BytesMut,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ScanMode {
+    /// Scan is bound to a single fixed key prefix (partition id, or a single partition key).
+    WithinPrefix,
+    /// Scan/iterator requires total order seek, this means that the iterator is not bound to a
+    /// fixed prefix that matches the column family prefix extractor length. For instance, if
+    /// scanning data across multiple partition IDs or multiple partition keys.
+    TotalOrder,
+}
+
 impl<'a> RocksDBTransaction<'a> {
-    pub fn prefix_iterator<K: Into<Vec<u8>>>(
+    pub(crate) fn prefix_iterator(
         &self,
         table: TableKind,
-        prefix: K,
+        _key_kind: KeyKind,
+        prefix: Bytes,
     ) -> DBIteratorTransaction {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
-        opts.set_iterate_range(PrefixRange(prefix));
+        opts.set_iterate_range(PrefixRange(prefix.clone()));
+        opts.set_prefix_same_as_start(true);
+        opts.set_async_io(true);
+        opts.set_total_order_seek(false);
 
-        self.txn.raw_iterator_cf_opt(&table, opts)
+        let mut it = self.txn.raw_iterator_cf_opt(&table, opts);
+        it.seek(prefix);
+        it
     }
 
-    pub fn range_iterator(
+    pub(crate) fn range_iterator(
         &self,
         table: TableKind,
-        range: impl rocksdb::IterateBounds,
+        _key_kind: KeyKind,
+        scan_mode: ScanMode,
+        from: Bytes,
+        to: Bytes,
     ) -> DBIteratorTransaction {
         let table = self.table_handle(table);
         let mut opts = ReadOptions::default();
-        opts.set_iterate_range(range);
-        self.txn.raw_iterator_cf_opt(&table, opts)
+        // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
+        // binding.
+        opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
+        opts.set_iterate_range(from.clone()..to);
+        opts.set_async_io(true);
+        let mut it = self.txn.raw_iterator_cf_opt(&table, opts);
+        it.seek(from);
+        it
     }
 
-    fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
+    pub(crate) fn table_handle(&self, table_kind: TableKind) -> Arc<BoundColumnFamily> {
         self.db.cf_handle(cf_name(table_kind)).expect(
             "This should not happen, this is a Restate bug. Please contact the restate developers.",
         )
@@ -449,20 +521,33 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
     ) -> DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>> {
         let scan: PhysicalScan = scan.into();
         match scan {
-            PhysicalScan::Prefix(table, prefix) => {
-                let mut it = self.prefix_iterator(table, prefix.clone());
-                it.seek(prefix);
-                it
+            PhysicalScan::Prefix(table, key_kind, prefix) => {
+                self.prefix_iterator(table, key_kind, prefix.freeze())
             }
-            PhysicalScan::RangeExclusive(table, start, end) => {
-                let mut it = self.range_iterator(table, start.clone()..end);
-                it.seek(start);
-                it
+            PhysicalScan::RangeExclusive(table, key_kind, scan_mode, start, end) => {
+                self.range_iterator(table, key_kind, scan_mode, start.freeze(), end.freeze())
             }
-            PhysicalScan::RangeOpen(table, start) => {
-                let mut it = self.range_iterator(table, start.clone()..);
-                it.seek(start);
-                it
+            PhysicalScan::RangeOpen(table, key_kind, start) => {
+                // We delayed the generate the synthetic iterator upper bound until this point
+                // because we might have different prefix length requirements based on the
+                // table+key_kind combination and we should keep this knowledge as low-level as
+                // possible.
+                //
+                // make the end has the same length as all prefixes to ensure rocksdb key
+                // comparator can leverage bloom filters when applicable
+                // (if auto_prefix_mode is enabled)
+                let mut end = BytesMut::zeroed(DB_PREFIX_LENGTH);
+                // We want to ensure that Range scans fall within the same key kind.
+                // So, we limit the iterator to the upper bound of this prefix
+                let kind_upper_bound = K::KEY_KIND.exclusive_upper_bound();
+                end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
+                self.range_iterator(
+                    table,
+                    key_kind,
+                    ScanMode::WithinPrefix,
+                    start.freeze(),
+                    end.freeze(),
+                )
             }
         }
     }
@@ -528,7 +613,7 @@ trait StorageAccess {
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
-        self.put_cf(K::table(), key_buffer, value);
+        self.put_cf(K::TABLE, key_buffer, value);
     }
 
     #[inline]
@@ -541,7 +626,7 @@ trait StorageAccess {
         StorageCodec::encode(&value, value_buffer).unwrap();
         let value_buffer = value_buffer.split();
 
-        self.put_cf(K::table(), key_buffer, value_buffer);
+        self.put_cf(K::TABLE, key_buffer, value_buffer);
     }
 
     #[inline]
@@ -550,7 +635,7 @@ trait StorageAccess {
         key.serialize_to(buffer);
         let buffer = buffer.split();
 
-        self.delete_cf(K::table(), buffer);
+        self.delete_cf(K::TABLE, buffer);
     }
 
     #[inline]
@@ -563,7 +648,7 @@ trait StorageAccess {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::table(), &buf) {
+        match self.get(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
@@ -600,7 +685,7 @@ trait StorageAccess {
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::table(), &buf) {
+        match self.get(K::TABLE, &buf) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
                 f(&buf, slice)
