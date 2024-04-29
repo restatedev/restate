@@ -757,8 +757,10 @@ pub mod v1 {
                 {
                     source::Source::Ingress(_) => restate_types::invocation::Source::Ingress,
                     source::Source::Service(service) => restate_types::invocation::Source::Service(
-                        restate_types::identifiers::InvocationId::from_slice(
-                            &service.invocation_id,
+                        restate_types::identifiers::InvocationId::try_from(
+                            service
+                                .invocation_id
+                                .ok_or(ConversionError::missing_field("invocation_id"))?,
                         )?,
                         restate_types::invocation::InvocationTarget::try_from(
                             service
@@ -781,7 +783,7 @@ pub mod v1 {
                         invocation_id,
                         invocation_target,
                     ) => source::Source::Service(source::Service {
-                        invocation_id: invocation_id.into(),
+                        invocation_id: Some(InvocationId::from(invocation_id)),
                         invocation_target: Some(InvocationTarget::from(invocation_target)),
                     }),
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
@@ -806,8 +808,10 @@ pub mod v1 {
                                         .service_id
                                         .ok_or(ConversionError::missing_field("service_id"))?,
                                 )?,
-                                restate_types::identifiers::InvocationId::from_slice(
-                                    &invocation.invocation_id,
+                                restate_types::identifiers::InvocationId::try_from(
+                                    invocation
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                             )
                         }
@@ -829,7 +833,7 @@ pub mod v1 {
                     crate::inbox_table::InboxEntry::Invocation(service_id, invocation_id) => {
                         inbox_entry::Entry::Invocation(inbox_entry::Invocation {
                             service_id: Some(service_id.into()),
-                            invocation_id: invocation_id.into(),
+                            invocation_id: Some(InvocationId::from(invocation_id)),
                         })
                     }
                     crate::inbox_table::InboxEntry::StateMutation(state_mutation) => {
@@ -859,8 +863,9 @@ pub mod v1 {
                     idempotency,
                 } = value;
 
-                let invocation_id =
-                    restate_types::identifiers::InvocationId::from_slice(&invocation_id)?;
+                let invocation_id = restate_types::identifiers::InvocationId::try_from(
+                    invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
+                )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     invocation_target.ok_or(ConversionError::missing_field("invocation_target"))?,
@@ -911,7 +916,6 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocation> for ServiceInvocation {
             fn from(value: restate_types::invocation::ServiceInvocation) -> Self {
-                let invocation_id = Bytes::copy_from_slice(&value.invocation_id.to_bytes());
                 let invocation_target = InvocationTarget::from(value.invocation_target);
                 let span_context = SpanContext::from(value.span_context);
                 let response_sink = ServiceInvocationResponseSink::from(value.response_sink);
@@ -919,7 +923,7 @@ pub mod v1 {
                 let headers = value.headers.into_iter().map(Into::into).collect();
 
                 ServiceInvocation {
-                    invocation_id,
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(invocation_target),
                     span_context: Some(span_context),
                     response_sink: Some(response_sink),
@@ -1535,11 +1539,11 @@ pub mod v1 {
                     }) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::CompleteAwakeable {
                             enrichment_result: AwakeableEnrichmentResult {
-                                invocation_id:
-                                    restate_types::identifiers::InvocationId::from_slice(
-                                        &invocation_id,
-                                    )
-                                    .map_err(ConversionError::invalid_data)?,
+                                invocation_id: restate_types::identifiers::InvocationId::try_from(
+                                    invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                )
+                                .map_err(ConversionError::invalid_data)?,
                                 entry_index,
                             },
                         }
@@ -1618,9 +1622,7 @@ pub mod v1 {
                         enrichment_result,
                         ..
                     } => enriched_entry_header::Kind::CompleteAwakeable(CompleteAwakeable {
-                        invocation_id: Bytes::copy_from_slice(
-                            &enrichment_result.invocation_id.to_bytes(),
-                        ),
+                        invocation_id: Some(InvocationId::from(enrichment_result.invocation_id)),
                         entry_index: enrichment_result.entry_index,
                     }),
                     restate_types::journal::enriched::EnrichedEntryHeader::Run { .. } => {
@@ -1649,8 +1651,10 @@ pub mod v1 {
                 {
                     invocation_resolution_result::Result::None(_) => None,
                     invocation_resolution_result::Result::Success(success) => {
-                        let invocation_id = restate_types::identifiers::InvocationId::from_slice(
-                            &success.invocation_id,
+                        let invocation_id = restate_types::identifiers::InvocationId::try_from(
+                            success
+                                .invocation_id
+                                .ok_or(ConversionError::missing_field("invocation_id"))?,
                         )?;
 
                         let invocation_target =
@@ -1692,7 +1696,7 @@ pub mod v1 {
                             span_context,
                         } => invocation_resolution_result::Result::Success(
                             invocation_resolution_result::Success {
-                                invocation_id: invocation_id.into(),
+                                invocation_id: Some(InvocationId::from(invocation_id)),
                                 invocation_target: Some(invocation_target.into()),
                                 span_context: Some(SpanContext::from(span_context)),
                             },
@@ -1712,8 +1716,11 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: BackgroundCallResolutionResult) -> Result<Self, Self::Error> {
-                let invocation_id =
-                    restate_types::identifiers::InvocationId::from_slice(&value.invocation_id)?;
+                let invocation_id = restate_types::identifiers::InvocationId::try_from(
+                    value
+                        .invocation_id
+                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                )?;
 
                 let invocation_target = restate_types::invocation::InvocationTarget::try_from(
                     value
@@ -1740,7 +1747,7 @@ pub mod v1 {
         {
             fn from(value: restate_types::journal::enriched::CallEnrichmentResult) -> Self {
                 BackgroundCallResolutionResult {
-                    invocation_id: value.invocation_id.into(),
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(value.invocation_target.into()),
                     span_context: Some(SpanContext::from(value.span_context)),
                 }
@@ -1769,8 +1776,10 @@ pub mod v1 {
                     ) => crate::outbox_table::OutboxMessage::ServiceResponse(
                         restate_types::invocation::InvocationResponse {
                             entry_index: invocation_response.entry_index,
-                            id: restate_types::identifiers::InvocationId::from_slice(
-                                &invocation_response.invocation_id,
+                            id: restate_types::identifiers::InvocationId::try_from(
+                                invocation_response
+                                    .invocation_id
+                                    .ok_or(ConversionError::missing_field("invocation_id"))?,
                             )?,
                             result: restate_types::invocation::ResponseResult::try_from(
                                 invocation_response
@@ -1782,8 +1791,10 @@ pub mod v1 {
                     outbox_message::OutboxMessage::Kill(outbox_kill) => {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination::kill(
-                                restate_types::identifiers::InvocationId::from_slice(
-                                    &outbox_kill.invocation_id,
+                                restate_types::identifiers::InvocationId::try_from(
+                                    outbox_kill
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                             ),
                         )
@@ -1791,8 +1802,10 @@ pub mod v1 {
                     outbox_message::OutboxMessage::Cancel(outbox_cancel) => {
                         crate::outbox_table::OutboxMessage::InvocationTermination(
                             InvocationTermination::cancel(
-                                restate_types::identifiers::InvocationId::from_slice(
-                                    &outbox_cancel.invocation_id,
+                                restate_types::identifiers::InvocationId::try_from(
+                                    outbox_cancel
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                             ),
                         )
@@ -1819,7 +1832,7 @@ pub mod v1 {
                         outbox_message::OutboxMessage::ServiceInvocationResponse(
                             OutboxServiceInvocationResponse {
                                 entry_index: invocation_response.entry_index,
-                                invocation_id: invocation_response.id.into(),
+                                invocation_id: Some(InvocationId::from(invocation_response.id)),
                                 response_result: Some(ResponseResult::from(
                                     invocation_response.result,
                                 )),
@@ -1831,12 +1844,16 @@ pub mod v1 {
                     ) => match invocation_termination.flavor {
                         TerminationFlavor::Kill => {
                             outbox_message::OutboxMessage::Kill(OutboxKill {
-                                invocation_id: invocation_termination.invocation_id.into(),
+                                invocation_id: Some(InvocationId::from(
+                                    invocation_termination.invocation_id,
+                                )),
                             })
                         }
                         TerminationFlavor::Cancel => {
                             outbox_message::OutboxMessage::Cancel(OutboxCancel {
-                                invocation_id: invocation_termination.invocation_id.into(),
+                                invocation_id: Some(InvocationId::from(
+                                    invocation_termination.invocation_id,
+                                )),
                             })
                         }
                     },
@@ -1910,8 +1927,10 @@ pub mod v1 {
                         ),
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
                             crate::timer_table::Timer::CleanInvocationStatus(
-                                restate_types::identifiers::InvocationId::from_slice(
-                                    &clean_invocation_status.invocation_id,
+                                restate_types::identifiers::InvocationId::try_from(
+                                    clean_invocation_status
+                                        .invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                             )
                         }
@@ -1935,7 +1954,7 @@ pub mod v1 {
                         }
                         crate::timer_table::Timer::CleanInvocationStatus(invocation_id) => {
                             timer::Value::CleanInvocationStatus(timer::CleanInvocationStatus {
-                                invocation_id: Bytes::copy_from_slice(&invocation_id.to_bytes()),
+                                invocation_id: Some(InvocationId::from(invocation_id)),
                             })
                         }
                     }),
@@ -2024,7 +2043,7 @@ pub mod v1 {
         impl From<crate::idempotency_table::IdempotencyMetadata> for IdempotencyMetadata {
             fn from(value: crate::idempotency_table::IdempotencyMetadata) -> Self {
                 IdempotencyMetadata {
-                    invocation_id: Bytes::copy_from_slice(&value.invocation_id.to_bytes()),
+                    invocation_id: Some(InvocationId::from(value.invocation_id)),
                 }
             }
         }
@@ -2034,8 +2053,10 @@ pub mod v1 {
 
             fn try_from(value: IdempotencyMetadata) -> Result<Self, Self::Error> {
                 Ok(crate::idempotency_table::IdempotencyMetadata {
-                    invocation_id: restate_types::identifiers::InvocationId::from_slice(
-                        &value.invocation_id,
+                    invocation_id: restate_types::identifiers::InvocationId::try_from(
+                        value
+                            .invocation_id
+                            .ok_or(ConversionError::missing_field("invocation_id"))?,
                     )
                     .map_err(|e| ConversionError::invalid_data(e))?,
                 })
