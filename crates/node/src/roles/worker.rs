@@ -8,27 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use codederror::CodedError;
-use tracing::info;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::{cancellation_watcher, metadata, task_center};
+use restate_core::{cancellation_watcher, metadata, task_center, Metadata};
 use restate_core::{ShutdownError, TaskKind};
-use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
 use restate_node_protocol::metadata::MetadataKind;
-use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_node_services::cluster_ctrl::AttachmentRequest;
 use restate_schema::UpdateableSchema;
 use restate_schema_api::subscription::SubscriptionResolver;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::UpdateableConfiguration;
-use restate_types::net::AdvertisedAddress;
-use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::{SubscriptionControllerHandle, Worker};
@@ -41,12 +33,6 @@ pub enum WorkerRoleError {
         #[code]
         restate_worker::Error,
     ),
-    #[error("invalid cluster controller address: {0}")]
-    #[code(unknown)]
-    InvalidClusterControllerAddress(http::Error),
-    #[error("failed to attach to cluster at '{0}': {1}")]
-    #[code(unknown)]
-    Attachment(AdvertisedAddress, tonic::Status),
     #[error(transparent)]
     #[code(unknown)]
     Shutdown(#[from] ShutdownError),
@@ -77,7 +63,8 @@ pub struct WorkerRole {
 }
 
 impl WorkerRole {
-    pub fn new(
+    pub async fn create(
+        metadata: Metadata,
         updateable_config: UpdateableConfiguration,
         router_builder: &mut MessageRouterBuilder,
         networking: Networking,
@@ -85,14 +72,16 @@ impl WorkerRole {
         metadata_store_client: MetadataStoreClient,
         updating_schema_information: UpdateableSchema,
     ) -> Result<Self, WorkerRoleBuildError> {
-        let worker = Worker::from_options(
+        let worker = Worker::create(
             updateable_config,
+            metadata,
             networking,
             bifrost,
             router_builder,
             updating_schema_information,
             metadata_store_client,
-        )?;
+        )
+        .await?;
 
         Ok(WorkerRole { worker })
     }
@@ -105,50 +94,19 @@ impl WorkerRole {
         Some(self.worker.subscription_controller_handle())
     }
 
-    pub async fn start(self, bifrost: Bifrost) -> anyhow::Result<()> {
-        let admin_address = metadata()
-            .nodes_config()
-            .get_admin_node()
-            .expect("at least one admin node")
-            .address
-            .clone();
-
+    pub async fn start(self) -> anyhow::Result<()> {
+        let tc = task_center();
         // todo: only run subscriptions on node 0 once being distributed
-        task_center().spawn_child(
+        tc.spawn_child(
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
             None,
             Self::watch_subscriptions(self.worker.subscription_controller_handle()),
         )?;
 
-        task_center().spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
-            Self::attach_node(admin_address).await?;
-            self.worker.run(bifrost).await
+        tc.spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
+            self.worker.run().await
         })?;
-
-        Ok(())
-    }
-
-    async fn attach_node(admin_address: AdvertisedAddress) -> Result<(), WorkerRoleError> {
-        info!("Worker attaching to admin at '{admin_address}'");
-
-        let channel = create_grpc_channel_from_advertised_address(admin_address.clone())
-            .map_err(WorkerRoleError::InvalidClusterControllerAddress)?;
-
-        let cc_client = ClusterCtrlSvcClient::new(channel);
-
-        let _response = RetryPolicy::exponential(Duration::from_millis(50), 2.0, Some(10), None)
-            .retry(|| async {
-                cc_client
-                    .clone()
-                    .attach_node(AttachmentRequest {
-                        node_id: Some(metadata().my_node_id().into()),
-                    })
-                    .await
-            })
-            .await
-            .map_err(|err| WorkerRoleError::Attachment(admin_address, err))?
-            .into_inner();
 
         Ok(())
     }

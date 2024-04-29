@@ -102,7 +102,7 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
         RocksDbManager::init(Constant::new(config.common))
     });
     tc.spawn(TaskKind::TestRunner, "benchmark", None, async move {
-        let node = Node::new(updateable_config).expect("Restate node must build");
+        let node = Node::create(updateable_config).await.expect("Restate node must build");
         cloned_tc.run_in_scope("startup", None, node.start()).await
     })
     .unwrap();
