@@ -15,7 +15,7 @@ use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind, TimerTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 use restate_types::storage::StorageCodec;
@@ -26,8 +26,7 @@ define_table_key!(
     TimersKey(
         partition_id: PartitionId,
         timestamp: u64,
-        invocation_id: InvocationUuid,
-        journal_index: u32
+        kind: TimerKind,
     )
 );
 
@@ -36,8 +35,7 @@ fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey
     TimersKey::default()
         .partition_id(partition_id)
         .timestamp(timer_key.timestamp)
-        .invocation_id(timer_key.invocation_uuid)
-        .journal_index(timer_key.journal_index)
+        .kind(timer_key.kind.clone())
 }
 
 #[inline]
@@ -48,9 +46,8 @@ fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
         return Err(StorageError::DataIntegrityError);
     }
     let timer_key = TimerKey {
-        invocation_uuid: key.invocation_id.unwrap(),
-        journal_index: key.journal_index.unwrap(),
         timestamp: key.timestamp.unwrap(),
+        kind: key.kind.unwrap(),
     };
 
     Ok(timer_key)
@@ -71,11 +68,35 @@ fn exclusive_start_key_range(
     timer_key: Option<&TimerKey>,
 ) -> TableScan<TimersKey> {
     if let Some(timer_key) = timer_key {
-        let mut lower_bound = write_timer_key(partition_id, timer_key);
+        let next_timer_key = match timer_key.kind {
+            TimerKind::Invocation { invocation_uuid } => {
+                let invocation_uuid_value: u128 = invocation_uuid.into();
+                TimerKey {
+                    timestamp: timer_key.timestamp,
+                    kind: TimerKind::Invocation {
+                        invocation_uuid: InvocationUuid::from(
+                            invocation_uuid_value
+                                .checked_add(1)
+                                .expect("invocation_uuid should be smaller than u128::MAX"),
+                        ),
+                    },
+                }
+            }
+            TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            } => TimerKey {
+                timestamp: timer_key.timestamp,
+                kind: TimerKind::Journal {
+                    invocation_uuid,
+                    journal_index: journal_index
+                        .checked_add(1)
+                        .expect("journal index should be smaller than u64::MAX"),
+                },
+            },
+        };
 
-        let next_index = lower_bound.journal_index.map(|i| i + 1).unwrap_or(1);
-
-        lower_bound.journal_index = Some(next_index);
+        let lower_bound = write_timer_key(partition_id, &next_timer_key);
 
         let upper_bound = TimersKey::default()
             .partition_id(partition_id)
@@ -174,16 +195,35 @@ mod tests {
     use super::*;
     use crate::timer_table::TimerKey;
     use rand::Rng;
+    use restate_storage_api::timer_table::TimerKindDiscriminants;
     use restate_types::identifiers::InvocationUuid;
+    use strum::VariantArray;
 
     const FIXTURE_INVOCATION: InvocationUuid =
         InvocationUuid::from_parts(1706027034946, 12345678900001);
 
     #[test]
-    fn round_trip() {
+    fn round_trip_journal_kind() {
         let key = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 1448,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 1448,
+            },
+            timestamp: 87654321,
+        };
+
+        let key_bytes = write_timer_key(PartitionId::from(1337), &key).serialize();
+        let got = timer_key_from_key_slice(&key_bytes).expect("should not fail");
+
+        assert_eq!(got, key);
+    }
+
+    #[test]
+    fn round_trip_invocation_kind() {
+        let key = TimerKey {
+            kind: TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
             timestamp: 87654321,
         };
 
@@ -195,38 +235,83 @@ mod tests {
 
     #[test]
     fn test_lexicographical_sorting_by_timestamp() {
-        let a = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 0,
-            timestamp: 300,
-        };
-        let b = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 0,
-            timestamp: 301,
-        };
-        assert_in_range(a, b);
+        let kinds = [
+            TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 0,
+            },
+            TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+        ];
+
+        for first_kind in &kinds {
+            for second_kind in &kinds {
+                let a = TimerKey {
+                    kind: first_kind.clone(),
+                    timestamp: 300,
+                };
+                let b = TimerKey {
+                    kind: second_kind.clone(),
+                    timestamp: 301,
+                };
+                assert_in_range(a, b);
+            }
+        }
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation() {
+    fn test_lexicographical_sorting_by_invocation_journal_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 0,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 0,
+            },
             timestamp: 300,
         };
         let b = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION.increment_random(),
-            journal_index: 0,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
+                journal_index: 0,
+            },
             timestamp: 300,
         };
         assert_in_range(a.clone(), b);
 
         // Also ensure that higher timestamp is sorted correctly
         let b = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
-            journal_index: 0,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+                journal_index: 0,
+            },
+            timestamp: 300,
+        };
+        assert_in_range(a, b);
+    }
+
+    #[test]
+    fn test_lexicographical_sorting_by_invocation_invocation_kind() {
+        // Higher random part should be sorted correctly in bytes
+        let a = TimerKey {
+            kind: TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+            timestamp: 300,
+        };
+        let b = TimerKey {
+            kind: TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
+            },
+            timestamp: 300,
+        };
+        assert_in_range(a.clone(), b);
+
+        // Also ensure that higher timestamp is sorted correctly
+        let b = TimerKey {
+            kind: TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+            },
             timestamp: 300,
         };
         assert_in_range(a, b);
@@ -235,20 +320,46 @@ mod tests {
     #[test]
     fn test_lexicographical_sorting_by_journal_index() {
         let a = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 0,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 0,
+            },
             timestamp: 300,
         };
         let b = TimerKey {
-            invocation_uuid: FIXTURE_INVOCATION,
-            journal_index: 1,
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 1,
+            },
             timestamp: 300,
         };
         assert_in_range(a, b);
     }
 
+    #[test]
+    fn test_lexicographical_sorting_journal_invocation_kind() {
+        let a = TimerKey {
+            kind: TimerKind::Invocation {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+            timestamp: 300,
+        };
+
+        let b = TimerKey {
+            kind: TimerKind::Journal {
+                invocation_uuid: FIXTURE_INVOCATION,
+                journal_index: 0,
+            },
+            timestamp: 300,
+        };
+
+        assert_in_range(a, b);
+    }
+
     #[track_caller]
     fn assert_in_range(key_a: TimerKey, key_b: TimerKey) {
+        assert!(key_a < key_b);
+
         let key_a_bytes = write_timer_key(PartitionId::from(1), &key_a).serialize();
         let key_b_bytes = write_timer_key(PartitionId::from(1), &key_b).serialize();
 
@@ -296,9 +407,22 @@ mod tests {
     }
 
     pub fn random_timer_key() -> TimerKey {
+        let kind = {
+            match TimerKindDiscriminants::VARIANTS
+                [rand::thread_rng().gen_range(0..TimerKindDiscriminants::VARIANTS.len())]
+            {
+                TimerKindDiscriminants::Invocation => TimerKind::Invocation {
+                    invocation_uuid: InvocationUuid::new(),
+                },
+                TimerKindDiscriminants::Journal => TimerKind::Journal {
+                    invocation_uuid: InvocationUuid::new(),
+                    journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
+                },
+            }
+        };
+
         TimerKey {
-            invocation_uuid: InvocationUuid::new(),
-            journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
+            kind,
             timestamp: rand::thread_rng().gen_range(0..2 ^ 16),
         }
     }

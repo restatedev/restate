@@ -253,8 +253,6 @@ where
                 TimerValue::new_invoke(
                     service_invocation.invocation_id,
                     execution_time,
-                    // This entry_index here makes little sense
-                    0,
                     service_invocation,
                 ),
                 span_context,
@@ -754,11 +752,11 @@ where
                                 ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
                         );
 
-                        let timer_key = TimerKey {
-                            invocation_uuid: invocation_id.invocation_uuid(),
+                        let timer_key = TimerKey::new_journal_entry(
+                            wake_up_time,
+                            invocation_id.invocation_uuid(),
                             journal_index,
-                            timestamp: wake_up_time,
-                        };
+                        );
 
                         effects.delete_timer(timer_key);
                     }

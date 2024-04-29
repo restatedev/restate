@@ -19,7 +19,7 @@ pub trait Timer: Hash + Eq + Borrow<Self::TimerKey> {
     fn timer_key(&self) -> &Self::TimerKey;
 }
 
-/// Timer key establishes an absolute order on [`Timer`]. Naturally, this should be key under
+/// Timer key establishes an absolute order on [`Timer`]. Naturally, this should be the key under
 /// which the timer value is stored and can be retrieved.
 pub trait TimerKey: Ord + Clone + Hash + Debug {
     fn wake_up_time(&self) -> MillisSinceEpoch;

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind};
 use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
@@ -33,11 +33,11 @@ impl TimerValue {
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
-        let timer_key = TimerKey {
-            invocation_uuid: invocation_id.invocation_uuid(),
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        };
+        let timer_key = TimerKey::new_journal_entry(
+            wake_up_time.as_u64(),
+            invocation_id.invocation_uuid(),
+            entry_index,
+        );
 
         Self {
             timer_key,
@@ -48,18 +48,27 @@ impl TimerValue {
     pub fn new_invoke(
         invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
         service_invocation: ServiceInvocation,
     ) -> Self {
-        let timer_key = TimerKey {
-            invocation_uuid: invocation_id.invocation_uuid(),
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        };
+        let timer_key =
+            TimerKey::new_invocation(wake_up_time.as_u64(), invocation_id.invocation_uuid());
 
         Self {
             timer_key,
             value: Timer::Invoke(service_invocation),
+        }
+    }
+
+    pub fn new_clean_invocation_status(
+        invocation_id: InvocationId,
+        wake_up_time: MillisSinceEpoch,
+    ) -> Self {
+        TimerValue {
+            timer_key: TimerKey::new_invocation(
+                wake_up_time.as_u64(),
+                invocation_id.invocation_uuid(),
+            ),
+            value: Timer::CleanInvocationStatus(invocation_id),
         }
     }
 
@@ -76,7 +85,10 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::from_parts(self.value.partition_key(), self.timer_key.invocation_uuid)
+        InvocationId::from_parts(
+            self.value.partition_key(),
+            self.timer_key.kind.invocation_uuid(),
+        )
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {
@@ -119,6 +131,12 @@ pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}]({})", self.0.invocation_uuid, self.0.journal_index)
+        match self.0.kind {
+            TimerKind::Invocation { invocation_uuid } => write!(f, "{}", invocation_uuid),
+            TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            } => write!(f, "{}[{}]", invocation_uuid, journal_index),
+        }
     }
 }

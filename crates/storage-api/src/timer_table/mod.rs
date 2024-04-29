@@ -26,8 +26,30 @@ use std::future::Future;
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TimerKey {
     pub timestamp: u64,
-    pub invocation_uuid: InvocationUuid,
-    pub journal_index: u32,
+    pub kind: TimerKind,
+}
+
+impl TimerKey {
+    pub fn new_journal_entry(
+        timestamp: u64,
+        invocation_uuid: InvocationUuid,
+        journal_index: u32,
+    ) -> Self {
+        TimerKey {
+            timestamp,
+            kind: TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            },
+        }
+    }
+
+    pub fn new_invocation(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
+        TimerKey {
+            timestamp,
+            kind: TimerKind::Invocation { invocation_uuid },
+        }
+    }
 }
 
 impl PartialOrd for TimerKey {
@@ -40,8 +62,70 @@ impl Ord for TimerKey {
     fn cmp(&self, other: &Self) -> Ordering {
         self.timestamp
             .cmp(&other.timestamp)
-            .then_with(|| self.invocation_uuid.cmp(&other.invocation_uuid))
-            .then_with(|| self.journal_index.cmp(&other.journal_index))
+            .then_with(|| self.kind.cmp(&other.kind))
+    }
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum_macros::EnumDiscriminants,
+)]
+#[strum_discriminants(derive(strum_macros::VariantArray))]
+pub enum TimerKind {
+    /// Invocation-scoped timers (e.g. a service invocation or clean up of invocation state)
+    Invocation { invocation_uuid: InvocationUuid },
+    /// Journal-scoped timers (e.g. completing a sleep journal entry)
+    Journal {
+        invocation_uuid: InvocationUuid,
+        journal_index: u32,
+    },
+}
+
+impl TimerKind {
+    pub fn invocation_uuid(&self) -> InvocationUuid {
+        *match self {
+            TimerKind::Invocation { invocation_uuid } => invocation_uuid,
+            TimerKind::Journal {
+                invocation_uuid, ..
+            } => invocation_uuid,
+        }
+    }
+}
+
+impl PartialOrd for TimerKind {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TimerKind {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self {
+            TimerKind::Invocation { invocation_uuid } => match other {
+                TimerKind::Invocation {
+                    invocation_uuid: other_invocation_uuid,
+                } => invocation_uuid.cmp(other_invocation_uuid),
+                TimerKind::Journal { .. } => Ordering::Less,
+            },
+            TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            } => match other {
+                TimerKind::Invocation { .. } => Ordering::Greater,
+                TimerKind::Journal {
+                    invocation_uuid: other_invocation_uuid,
+                    journal_index: other_journal_index,
+                } => invocation_uuid
+                    .cmp(other_invocation_uuid)
+                    .then_with(|| journal_index.cmp(other_journal_index)),
+            },
+        }
     }
 }
 

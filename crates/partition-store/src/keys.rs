@@ -12,6 +12,7 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
+use std::mem;
 use strum_macros::EnumIter;
 
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
@@ -305,6 +306,7 @@ macro_rules! define_table_key {
 use crate::TableKind;
 pub(crate) use define_table_key;
 use restate_storage_api::deduplication_table::ProducerId;
+use restate_storage_api::timer_table::TimerKind;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
@@ -481,6 +483,74 @@ impl KeyCodec for ProducerId {
         1 + match self {
             ProducerId::Partition(p) => KeyCodec::serialized_length(p),
             ProducerId::Other(i) => KeyCodec::serialized_length(i),
+        }
+    }
+}
+
+impl KeyCodec for TimerKind {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        assert!(
+            self.serialized_length() <= target.remaining_mut(),
+            "serialization buffer has not enough space to serialize TimerKind: '{}' bytes required",
+            self.serialized_length()
+        );
+        match self {
+            TimerKind::Invocation { invocation_uuid } => {
+                target.put_u8(0);
+                invocation_uuid.encode(target);
+            }
+            TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            } => {
+                target.put_u8(1);
+                invocation_uuid.encode(target);
+                journal_index.encode(target);
+            }
+        }
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
+        if source.remaining() < mem::size_of::<u8>() {
+            return Err(StorageError::Generic(anyhow!(
+                "TimerKind discriminator byte is missing"
+            )));
+        }
+
+        Ok(match source.get_u8() {
+            0 => {
+                let invocation_uuid = InvocationUuid::decode(source)?;
+                TimerKind::Invocation { invocation_uuid }
+            }
+            1 => {
+                let invocation_uuid = InvocationUuid::decode(source)?;
+                let journal_index = u32::decode(source)?;
+                TimerKind::Journal {
+                    invocation_uuid,
+                    journal_index,
+                }
+            }
+            i => {
+                return Err(StorageError::Generic(anyhow!(
+                    "Unknown discriminator for TimerKind: '{}'",
+                    i
+                )))
+            }
+        })
+    }
+
+    fn serialized_length(&self) -> usize {
+        1 + match self {
+            TimerKind::Invocation { invocation_uuid } => {
+                KeyCodec::serialized_length(invocation_uuid)
+            }
+            TimerKind::Journal {
+                invocation_uuid,
+                journal_index,
+            } => {
+                KeyCodec::serialized_length(invocation_uuid)
+                    + KeyCodec::serialized_length(journal_index)
+            }
         }
     }
 }

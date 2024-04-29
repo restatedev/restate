@@ -294,6 +294,12 @@ impl From<u128> for InvocationUuid {
     }
 }
 
+impl From<InvocationUuid> for u128 {
+    fn from(value: InvocationUuid) -> Self {
+        value.0.into()
+    }
+}
+
 impl From<InvocationUuid> for opentelemetry::trace::TraceId {
     fn from(value: InvocationUuid) -> Self {
         Self::from_bytes(value.to_bytes())

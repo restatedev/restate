@@ -729,7 +729,7 @@ mod tests {
             IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
         };
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
-        use restate_storage_api::timer_table::{Timer, TimerKey};
+        use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
         use restate_types::invocation::{Idempotency, InvocationTarget};
@@ -1122,9 +1122,10 @@ mod tests {
             let _ = state_machine
                 .apply(Command::Timer(TimerValue::new(
                     TimerKey {
+                        kind: TimerKind::Invocation {
+                            invocation_uuid: invocation_id.invocation_uuid(),
+                        },
                         timestamp: 0,
-                        invocation_uuid: invocation_id.invocation_uuid(),
-                        journal_index: 0,
                     },
                     Timer::CleanInvocationStatus(invocation_id),
                 )))

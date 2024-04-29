@@ -12,7 +12,6 @@ use super::leadership::ActionEffect;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerValue;
@@ -82,14 +81,9 @@ impl ActionEffectHandler {
                     &mut self.bifrost,
                     Envelope::new(
                         header.clone(),
-                        Command::ScheduleTimer(TimerValue::new(
-                            TimerKey {
-                                timestamp: MillisSinceEpoch::from(SystemTime::now() + duration)
-                                    .as_u64(),
-                                invocation_uuid: invocation_id.invocation_uuid(),
-                                journal_index: 0,
-                            },
-                            Timer::CleanInvocationStatus(invocation_id),
+                        Command::ScheduleTimer(TimerValue::new_clean_invocation_status(
+                            invocation_id,
+                            MillisSinceEpoch::from(SystemTime::now() + duration),
                         )),
                     ),
                 )
