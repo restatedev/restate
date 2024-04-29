@@ -250,7 +250,7 @@ where
         if let Some(execution_time) = service_invocation.execution_time {
             let span_context = service_invocation.span_context.clone();
             effects.register_timer(
-                TimerValue::new_invoke(
+                TimerValue::invoke(
                     service_invocation.invocation_id,
                     execution_time,
                     service_invocation,
@@ -752,7 +752,7 @@ where
                                 ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
                         );
 
-                        let timer_key = TimerKey::new_journal_entry(
+                        let timer_key = TimerKey::complete_journal_entry(
                             wake_up_time,
                             invocation_id.invocation_uuid(),
                             journal_index,
@@ -810,7 +810,7 @@ where
         effects.delete_timer(key);
 
         match value {
-            Timer::CompleteSleepEntry(invocation_id, entry_index) => {
+            Timer::CompleteJournalEntry(invocation_id, entry_index) => {
                 Self::handle_completion(
                     invocation_id,
                     Completion {
@@ -1301,7 +1301,7 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
                 effects.register_timer(
-                    TimerValue::new_sleep(
+                    TimerValue::complete_journal_entry(
                         invocation_id,
                         MillisSinceEpoch::new(wake_up_time),
                         entry_index,

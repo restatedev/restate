@@ -28,12 +28,12 @@ impl TimerValue {
         Self { timer_key, value }
     }
 
-    pub fn new_sleep(
+    pub fn complete_journal_entry(
         invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         entry_index: EntryIndex,
     ) -> Self {
-        let timer_key = TimerKey::new_journal_entry(
+        let timer_key = TimerKey::complete_journal_entry(
             wake_up_time.as_u64(),
             invocation_id.invocation_uuid(),
             entry_index,
@@ -41,17 +41,16 @@ impl TimerValue {
 
         Self {
             timer_key,
-            value: Timer::CompleteSleepEntry(invocation_id, entry_index),
+            value: Timer::CompleteJournalEntry(invocation_id, entry_index),
         }
     }
 
-    pub fn new_invoke(
+    pub fn invoke(
         invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
         service_invocation: ServiceInvocation,
     ) -> Self {
-        let timer_key =
-            TimerKey::new_invocation(wake_up_time.as_u64(), invocation_id.invocation_uuid());
+        let timer_key = TimerKey::invoke(wake_up_time.as_u64(), invocation_id.invocation_uuid());
 
         Self {
             timer_key,
@@ -59,12 +58,12 @@ impl TimerValue {
         }
     }
 
-    pub fn new_clean_invocation_status(
+    pub fn clean_invocation_status(
         invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
     ) -> Self {
         TimerValue {
-            timer_key: TimerKey::new_invocation(
+            timer_key: TimerKey::clean_invocation_status(
                 wake_up_time.as_u64(),
                 invocation_id.invocation_uuid(),
             ),
@@ -132,11 +131,20 @@ pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.kind {
-            TimerKind::Invocation { invocation_uuid } => write!(f, "{}", invocation_uuid),
-            TimerKind::Journal {
+            TimerKind::Invoke { invocation_uuid } => {
+                write!(f, "Delayed invocation '{}'", invocation_uuid)
+            }
+            TimerKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
-            } => write!(f, "{}[{}]", invocation_uuid, journal_index),
+            } => write!(
+                f,
+                "Complete journal entry [{}] for '{}'",
+                journal_index, invocation_uuid
+            ),
+            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+                write!(f, "Clean invocation status '{}'", invocation_uuid)
+            }
         }
     }
 }

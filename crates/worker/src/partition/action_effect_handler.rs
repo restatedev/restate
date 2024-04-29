@@ -81,7 +81,7 @@ impl ActionEffectHandler {
                     &mut self.bifrost,
                     Envelope::new(
                         header.clone(),
-                        Command::ScheduleTimer(TimerValue::new_clean_invocation_status(
+                        Command::ScheduleTimer(TimerValue::clean_invocation_status(
                             invocation_id,
                             MillisSinceEpoch::from(SystemTime::now() + duration),
                         )),

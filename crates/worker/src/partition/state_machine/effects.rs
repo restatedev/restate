@@ -416,7 +416,7 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(invocation_id, entry_index) => {
+                Timer::CompleteJournalEntry(_, entry_index) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
@@ -450,7 +450,7 @@ impl Effect {
                         "Effect: Register background invoke timer"
                     )
                 }
-                Timer::CleanInvocationStatus(invocation_id) => {
+                Timer::CleanInvocationStatus(_) => {
                     debug_if_leader!(
                         is_leader,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),

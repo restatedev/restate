@@ -763,7 +763,7 @@ fn forward_canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<
 
 fn delete_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Effect> {
     pat!(Effect::DeleteTimer(pat!(TimerKey {
-        kind: pat!(TimerKind::Journal {
+        kind: pat!(TimerKind::CompleteJournalEntry {
             journal_index: eq(entry_index),
         }),
         timestamp: eq(1337),

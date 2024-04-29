@@ -1122,7 +1122,7 @@ mod tests {
             let _ = state_machine
                 .apply(Command::Timer(TimerValue::new(
                     TimerKey {
-                        kind: TimerKind::Invocation {
+                        kind: TimerKind::Invoke {
                             invocation_uuid: invocation_id.invocation_uuid(),
                         },
                         timestamp: 0,

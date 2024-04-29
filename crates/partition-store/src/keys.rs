@@ -495,17 +495,21 @@ impl KeyCodec for TimerKind {
             self.serialized_length()
         );
         match self {
-            TimerKind::Invocation { invocation_uuid } => {
+            TimerKind::Invoke { invocation_uuid } => {
                 target.put_u8(0);
                 invocation_uuid.encode(target);
             }
-            TimerKind::Journal {
+            TimerKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => {
                 target.put_u8(1);
                 invocation_uuid.encode(target);
                 journal_index.encode(target);
+            }
+            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+                target.put_u8(2);
+                invocation_uuid.encode(target);
             }
         }
     }
@@ -520,15 +524,19 @@ impl KeyCodec for TimerKind {
         Ok(match source.get_u8() {
             0 => {
                 let invocation_uuid = InvocationUuid::decode(source)?;
-                TimerKind::Invocation { invocation_uuid }
+                TimerKind::Invoke { invocation_uuid }
             }
             1 => {
                 let invocation_uuid = InvocationUuid::decode(source)?;
                 let journal_index = u32::decode(source)?;
-                TimerKind::Journal {
+                TimerKind::CompleteJournalEntry {
                     invocation_uuid,
                     journal_index,
                 }
+            }
+            2 => {
+                let invocation_uuid = InvocationUuid::decode(source)?;
+                TimerKind::CleanInvocationStatus { invocation_uuid }
             }
             i => {
                 return Err(StorageError::Generic(anyhow!(
@@ -541,15 +549,16 @@ impl KeyCodec for TimerKind {
 
     fn serialized_length(&self) -> usize {
         1 + match self {
-            TimerKind::Invocation { invocation_uuid } => {
-                KeyCodec::serialized_length(invocation_uuid)
-            }
-            TimerKind::Journal {
+            TimerKind::Invoke { invocation_uuid } => KeyCodec::serialized_length(invocation_uuid),
+            TimerKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => {
                 KeyCodec::serialized_length(invocation_uuid)
                     + KeyCodec::serialized_length(journal_index)
+            }
+            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+                KeyCodec::serialized_length(invocation_uuid)
             }
         }
     }
