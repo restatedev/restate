@@ -22,8 +22,8 @@ use crate::invocation_status::schema::InvocationStatusBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
-use restate_storage_rocksdb::PartitionStore;
+use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 

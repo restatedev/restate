@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_partition_store::PartitionStore;
 use restate_storage_api::service_status_table::{VirtualObjectStatus, VirtualObjectStatusTable};
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 
 const FIXTURE_INVOCATION: InvocationUuid =

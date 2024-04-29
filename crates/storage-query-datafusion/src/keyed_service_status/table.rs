@@ -22,8 +22,8 @@ use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::service_status_table::OwnedVirtualObjectStatusRow;
-use restate_storage_rocksdb::PartitionStore;
+use restate_partition_store::service_status_table::OwnedVirtualObjectStatusRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 

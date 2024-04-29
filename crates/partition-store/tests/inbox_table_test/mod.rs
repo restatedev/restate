@@ -10,9 +10,9 @@
 
 use crate::{assert_stream_eq, mock_state_mutation};
 use once_cell::sync::Lazy;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, ServiceId};
 
 static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {

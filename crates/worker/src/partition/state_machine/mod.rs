@@ -94,6 +94,7 @@ mod tests {
     use googletest::{all, assert_that, pat, property};
     use restate_core::{task_center, TaskCenterBuilder};
     use restate_invoker_api::InvokeInputJournal;
+    use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::invocation_status_table::{
@@ -107,7 +108,6 @@ mod tests {
     };
     use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::Transaction;
-    use restate_storage_rocksdb::{OpenMode, PartitionStore, PartitionStoreManager};
     use restate_test_util::matchers::*;
     use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, WorkerOptions};

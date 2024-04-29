@@ -12,9 +12,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{

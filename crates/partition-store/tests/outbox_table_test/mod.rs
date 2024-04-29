@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::mock_random_service_invocation;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::PartitionStore;
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())
