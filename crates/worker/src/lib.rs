@@ -38,11 +38,11 @@ use restate_invoker_impl::{
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_storage_rocksdb::{PartitionStore, PartitionStoreManager};
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
@@ -70,7 +70,7 @@ pub enum BuildError {
     RocksDB(
         #[from]
         #[code]
-        restate_storage_rocksdb::BuildError,
+        restate_partition_store::BuildError,
     ),
     #[error("failed opening partition store: {0}")]
     RocksDb(
