@@ -42,7 +42,7 @@ impl Ord for TimerKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Timer {
-    CompleteSleepEntry(PartitionKey),
+    CompleteSleepEntry(InvocationId, u32),
     Invoke(ServiceInvocation),
     CleanInvocationStatus(InvocationId),
 }
@@ -50,7 +50,7 @@ pub enum Timer {
 impl WithPartitionKey for Timer {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            Timer::CompleteSleepEntry(partition_key) => *partition_key,
+            Timer::CompleteSleepEntry(invocation_id, _) => invocation_id.partition_key(),
             Timer::Invoke(service_invocation) => service_invocation.partition_key(),
             Timer::CleanInvocationStatus(invocation_id) => invocation_id.partition_key(),
         }

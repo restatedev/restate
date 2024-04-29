@@ -416,15 +416,16 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(_) => {
+                Timer::CompleteSleepEntry(invocation_id, entry_index) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        restate.invocation.id = %timer_value.invocation_id(),
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.invocation.id = %invocation_id,
+                        restate.journal.index = entry_index,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         // without converting to i64 this field will encode as a string
                         // however, overflowing i64 seems unlikely
                         restate.internal.end_time = i64::try_from(timer_value.wake_up_time().as_u64()).expect("wake up time should fit into i64"),
@@ -432,8 +433,10 @@ impl Effect {
 
                     debug_if_leader!(
                         is_leader,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.journal.index = entry_index,
+                        restate.invocation.id = %invocation_id,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register Sleep timer"
                     )
                 }
@@ -445,8 +448,8 @@ impl Effect {
                         rpc.method = %service_invocation.invocation_target.handler_name(),
                         restate.invocation.id = %service_invocation.invocation_id,
                         restate.invocation.target = %service_invocation.invocation_target,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register background invoke timer"
                     )
                 }
@@ -454,8 +457,8 @@ impl Effect {
                     debug_if_leader!(
                         is_leader,
                         restate.invocation.id = %invocation_id,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register cleanup invocation status timer"
                     )
                 }

@@ -809,15 +809,12 @@ where
         effects: &mut Effects,
     ) -> Result<(), Error> {
         let (key, value) = timer_value.into_inner();
-        let invocation_uuid = key.invocation_uuid;
-        let entry_index = key.journal_index;
-
         effects.delete_timer(key);
 
         match value {
-            Timer::CompleteSleepEntry(partition_key) => {
+            Timer::CompleteSleepEntry(invocation_id, entry_index) => {
                 Self::handle_completion(
-                    InvocationId::from_parts(partition_key, invocation_uuid),
+                    invocation_id,
                     Completion {
                         entry_index,
                         result: CompletionResult::Empty,

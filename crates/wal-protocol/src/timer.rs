@@ -44,7 +44,7 @@ impl TimerValue {
 
         Self {
             timer_key,
-            value: Timer::CompleteSleepEntry(invocation_id.partition_key()),
+            value: Timer::CompleteSleepEntry(invocation_id, entry_index),
         }
     }
 

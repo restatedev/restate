@@ -1920,7 +1920,13 @@ pub mod v1 {
                 Ok(
                     match value.value.ok_or(ConversionError::missing_field("value"))? {
                         timer::Value::CompleteSleepEntry(cse) => {
-                            crate::timer_table::Timer::CompleteSleepEntry(cse.partition_key)
+                            crate::timer_table::Timer::CompleteSleepEntry(
+                                restate_types::identifiers::InvocationId::try_from(
+                                    cse.invocation_id
+                                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                                )?,
+                                cse.entry_index,
+                            )
                         }
                         timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(
                             restate_types::invocation::ServiceInvocation::try_from(si)?,
@@ -1943,11 +1949,13 @@ pub mod v1 {
             fn from(value: crate::timer_table::Timer) -> Self {
                 Timer {
                     value: Some(match value {
-                        crate::timer_table::Timer::CompleteSleepEntry(partition_key) => {
-                            timer::Value::CompleteSleepEntry(timer::CompleteSleepEntry {
-                                partition_key,
-                            })
-                        }
+                        crate::timer_table::Timer::CompleteSleepEntry(
+                            invocation_id,
+                            entry_index,
+                        ) => timer::Value::CompleteSleepEntry(timer::CompleteSleepEntry {
+                            invocation_id: Some(InvocationId::from(invocation_id)),
+                            entry_index,
+                        }),
 
                         crate::timer_table::Timer::Invoke(si) => {
                             timer::Value::Invoke(ServiceInvocation::from(si))

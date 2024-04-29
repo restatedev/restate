@@ -433,7 +433,8 @@ message OutboxMessage {
 message Timer {
 
     message CompleteSleepEntry {
-        uint64 partition_key = 1;
+        InvocationId invocation_id = 1;
+        uint32 entry_index = 2;
     }
 
     message CleanInvocationStatus {
