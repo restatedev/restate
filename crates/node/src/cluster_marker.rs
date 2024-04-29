@@ -210,6 +210,7 @@ mod tests {
         let mut file = OpenOptions::new().create(true).write(true).open(path)?;
         serde_json::to_writer(&file, cluster_marker)?;
         file.flush()?;
+        file.sync_all()?;
 
         Ok(())
     }
