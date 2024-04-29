@@ -46,6 +46,7 @@ use std::ops::RangeInclusive;
 
 pub mod invoker;
 
+// todo(asoli): merge into PartitionStore
 #[derive(Debug, Clone)]
 pub(crate) struct PartitionStorage<Storage> {
     partition_id: PartitionId,

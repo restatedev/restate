@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Timers;
 use crate::TableScanIterationDecision::Emit;
-use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -121,7 +121,7 @@ fn next_timers_greater_than<S: StorageAccess>(
     })
 }
 
-impl TimerTable for RocksDBStorage {
+impl TimerTable for PartitionStore {
     async fn add_timer(&mut self, partition_id: PartitionId, key: &TimerKey, timer: Timer) {
         add_timer(self, partition_id, key, timer)
     }

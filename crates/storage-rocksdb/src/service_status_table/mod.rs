@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::FullScanPartitionKeyRange;
-use crate::{RocksDBStorage, TableKind};
+use crate::{PartitionStore, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytestring::ByteString;
 use restate_storage_api::service_status_table::{
@@ -75,7 +75,7 @@ fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &
     storage.delete_key(&key);
 }
 
-impl ReadOnlyVirtualObjectStatusTable for RocksDBStorage {
+impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
     async fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
@@ -115,7 +115,7 @@ pub struct OwnedVirtualObjectStatusRow {
     pub status: VirtualObjectStatus,
 }
 
-impl RocksDBStorage {
+impl PartitionStore {
     pub fn all_virtual_object_status(
         &self,
         range: RangeInclusive<PartitionKey>,

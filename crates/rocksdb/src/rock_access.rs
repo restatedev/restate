@@ -14,6 +14,7 @@ use std::sync::Arc;
 use rocksdb::perf::MemoryUsageBuilder;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::MultiThreaded;
+use tracing::info;
 use tracing::trace;
 
 use crate::BoxedCfMatcher;
@@ -157,7 +158,7 @@ impl RocksAccess for rocksdb::DB {
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     ) -> Result<(), RocksError> {
         let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
-        Ok(rocksdb::DB::create_cf(self, name.as_str(), &options)?)
+        Ok(Self::create_cf(self, name.as_str(), &options)?)
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
@@ -272,6 +273,7 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
         cf_patterns: Arc<[(BoxedCfMatcher, BoxedCfOptionUpdater)]>,
     ) -> Result<(), RocksError> {
         let options = prepare_cf_options(&cf_patterns, default_cf_options, &name)?;
+        info!("Opening CF: {}", name);
         Ok(Self::create_cf(self, name.as_str(), &options)?)
     }
 

@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
-use crate::{RocksDBStorage, TableKind};
+use crate::{PartitionStore, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -96,7 +96,7 @@ fn delete_idempotency_metadata<S: StorageAccess>(storage: &mut S, idempotency_id
     storage.delete_key(&key);
 }
 
-impl ReadOnlyIdempotencyTable for RocksDBStorage {
+impl ReadOnlyIdempotencyTable for PartitionStore {
     async fn get_idempotency_metadata(
         &mut self,
         idempotency_id: &IdempotencyId,

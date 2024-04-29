@@ -32,6 +32,7 @@ restate-invoker-impl = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
+restate-rocksdb = { workspace = true }
 restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = [ "service", "subscription"] }
 restate-serde-util = { workspace = true, features = ["proto"] }

@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableScan::FullScanPartitionKeyRange;
-use crate::{RocksDBStorage, TableKind, TableScanIterationDecision};
+use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{RocksDBTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
@@ -113,7 +113,7 @@ fn read_invoked_full_invocation_id(
     }
 }
 
-impl ReadOnlyInvocationStatusTable for RocksDBStorage {
+impl ReadOnlyInvocationStatusTable for PartitionStore {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -167,7 +167,7 @@ pub struct OwnedInvocationStatusRow {
     pub invocation_status: InvocationStatus,
 }
 
-impl RocksDBStorage {
+impl PartitionStore {
     pub fn all_invocation_status(
         &self,
         range: RangeInclusive<PartitionKey>,
