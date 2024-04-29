@@ -13,7 +13,7 @@ use crate::keys::{define_table_key, KeyKind};
 use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan::FullScanPartitionKeyRange;
 use crate::TableKind::Journal;
-use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
@@ -110,7 +110,7 @@ fn delete_journal<S: StorageAccess>(
     }
 }
 
-impl ReadOnlyJournalTable for RocksDBStorage {
+impl ReadOnlyJournalTable for PartitionStore {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
@@ -168,7 +168,7 @@ pub struct OwnedJournalRow {
     pub journal_entry: JournalEntry,
 }
 
-impl RocksDBStorage {
+impl PartitionStore {
     pub fn all_journal(
         &self,
         range: RangeInclusive<PartitionKey>,

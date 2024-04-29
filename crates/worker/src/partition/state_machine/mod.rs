@@ -107,7 +107,7 @@ mod tests {
     };
     use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::Transaction;
-    use restate_storage_rocksdb::RocksDBStorage;
+    use restate_storage_rocksdb::{OpenMode, PartitionStore, PartitionStoreManager};
     use restate_test_util::matchers::*;
     use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, WorkerOptions};
@@ -132,7 +132,7 @@ mod tests {
         state_machine: StateMachine<ProtobufRawEntryCodec>,
         // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
         //  Perhaps we could make these tests faster by having those.
-        rocksdb_storage: RocksDBStorage,
+        rocksdb_storage: PartitionStore,
         effects_buffer: Effects,
     }
 
@@ -150,12 +150,22 @@ mod tests {
                 "Using RocksDB temp directory {}",
                 worker_options.storage.data_dir().display()
             );
-            let rocksdb_storage = restate_storage_rocksdb::RocksDBStorage::open(
+            let manager = PartitionStoreManager::create(
                 Constant::new(worker_options.storage.clone()),
-                Constant::new(worker_options.storage.rocksdb),
+                Constant::new(worker_options.storage.rocksdb.clone()),
+                &[],
             )
             .await
             .unwrap();
+            let rocksdb_storage = manager
+                .open_partition_store(
+                    0,
+                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                    OpenMode::CreateIfMissing,
+                    &worker_options.storage.rocksdb,
+                )
+                .await
+                .unwrap();
 
             Self {
                 state_machine: StateMachine::new(
@@ -203,7 +213,7 @@ mod tests {
             actions
         }
 
-        pub fn storage(&mut self) -> &mut RocksDBStorage {
+        pub fn storage(&mut self) -> &mut PartitionStore {
             &mut self.rocksdb_storage
         }
     }
