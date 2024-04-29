@@ -49,6 +49,7 @@ restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
 restate-node-protocol = { path = "crates/node-protocol" }
 restate-node-services = { path = "crates/node-services" }
+restate-partition-store = { path = "crates/partition-store" }
 restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-schema = { path = "crates/schema" }
@@ -60,7 +61,6 @@ restate-service-protocol = { path = "crates/service-protocol" }
 restate-storage-api = { path = "crates/storage-api" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
-restate-storage-rocksdb = { path = "crates/storage-rocksdb" }
 restate-test-util = { path = "crates/test-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }

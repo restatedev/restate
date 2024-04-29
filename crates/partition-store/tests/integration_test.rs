@@ -11,9 +11,9 @@
 use bytes::Bytes;
 use futures::Stream;
 use restate_core::TaskCenterBuilder;
+use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_storage_rocksdb::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};

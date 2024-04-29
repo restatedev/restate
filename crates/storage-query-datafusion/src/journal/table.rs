@@ -22,8 +22,8 @@ use crate::journal::schema::JournalBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::journal_table::OwnedJournalRow;
-use restate_storage_rocksdb::PartitionStore;
+use restate_partition_store::journal_table::OwnedJournalRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 

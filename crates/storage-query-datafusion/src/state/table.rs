@@ -22,8 +22,8 @@ use crate::state::schema::StateBuilder;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_storage_rocksdb::state_table::OwnedStateRow;
-use restate_storage_rocksdb::PartitionStore;
+use restate_partition_store::state_table::OwnedStateRow;
+use restate_partition_store::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
