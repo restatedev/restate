@@ -19,7 +19,7 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use restate_invoker_api::StatusHandle;
-use restate_partition_store::PartitionStore;
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::config::QueryEngineOptions;
@@ -77,15 +77,10 @@ pub struct QueryContext {
     datafusion_context: SessionContext,
 }
 
-impl Default for QueryContext {
-    fn default() -> Self {
-        QueryContext::new(None, None, None)
-    }
-}
-
 impl QueryContext {
-    pub fn from_options(
+    pub async fn create(
         options: &QueryEngineOptions,
+        _partition_store_manager: PartitionStoreManager,
         rocksdb: PartitionStore,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
@@ -97,7 +92,7 @@ impl QueryContext {
             + 'static,
     ) -> Result<QueryContext, BuildError> {
         let ctx = QueryContext::new(
-            options.memory_size(),
+            options.memory_size.get(),
             options.tmp_dir.clone(),
             options.query_parallelism(),
         );
@@ -111,33 +106,24 @@ impl QueryContext {
         crate::service::register_self(&ctx, schemas)?;
         crate::idempotency::register_self(&ctx, rocksdb)?;
 
-        // todo: Fix me
-        // we need this now because we can't make new async.
-        // i'm ashamed!
-        let ctx = futures::executor::block_on(async move {
-            let ctx = ctx;
-            ctx.datafusion_context
-                .sql(SYS_INVOCATION_VIEW)
-                .await
-                .map(|_| ctx)
-        })?;
+        let ctx = ctx
+            .datafusion_context
+            .sql(SYS_INVOCATION_VIEW)
+            .await
+            .map(|_| ctx)?;
 
         Ok(ctx)
     }
 
     fn new(
-        memory_limit: Option<usize>,
+        memory_limit: usize,
         temp_folder: Option<String>,
         default_parallelism: Option<usize>,
     ) -> Self {
         //
         // build the runtime
         //
-        let mut runtime_config = RuntimeConfig::default();
-        runtime_config = runtime_config.with_memory_limit(4 * 1024 * 1024 * 1024, 1.0);
-        if let Some(limit) = memory_limit {
-            runtime_config = runtime_config.with_memory_limit(limit, 1.0);
-        }
+        let mut runtime_config = RuntimeConfig::default().with_memory_limit(memory_limit, 1.0);
         if let Some(folder) = temp_folder {
             runtime_config = runtime_config.with_temp_file_path(folder);
         }
