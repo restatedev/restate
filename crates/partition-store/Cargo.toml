@@ -1,5 +1,5 @@
 [package]
-name = "restate-storage-rocksdb"
+name = "restate-partition-store"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

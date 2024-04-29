@@ -10,8 +10,8 @@
 
 use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
 use crate::table_util::format_using;
+use restate_partition_store::service_status_table::OwnedVirtualObjectStatusRow;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
-use restate_storage_rocksdb::service_status_table::OwnedVirtualObjectStatusRow;
 
 #[inline]
 pub(crate) fn append_virtual_object_status_row(

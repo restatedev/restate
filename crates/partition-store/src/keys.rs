@@ -143,7 +143,7 @@ pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
 /// This macro expands to:
 /// ```ignore
 /// use bytes::{Buf, BufMut, Bytes};
-/// use restate_storage_rocksdb::TableKind;
+/// use restate_partition_store::TableKind;
 /// #[derive(Debug, Eq, PartialEq)]
 /// pub struct FooBarKey {
 ///     pub foo: Option<u32>,

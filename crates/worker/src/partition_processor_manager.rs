@@ -16,7 +16,7 @@ use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
-use restate_storage_rocksdb::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{UpdateableConfiguration, WorkerOptions};
 use restate_types::epoch::EpochMetadata;
