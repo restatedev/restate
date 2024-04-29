@@ -8,22 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::DeploymentBuilder;
+use std::fmt::Debug;
+use std::sync::Arc;
 
-use crate::context::QueryContext;
-use crate::deployment::row::append_deployment_row;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
-use restate_schema_api::deployment::{Deployment, DeploymentResolver};
-use restate_types::identifiers::{PartitionKey, ServiceRevision};
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
+
+use restate_schema_api::deployment::{Deployment, DeploymentResolver};
+use restate_types::identifiers::ServiceRevision;
+
+use super::schema::DeploymentBuilder;
+use crate::context::QueryContext;
+use crate::deployment::row::append_deployment_row;
+use crate::table_providers::{GenericTableProvider, Scan};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
@@ -42,15 +43,14 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct DeploymentMetadataScanner<DMR>(DMR);
 
-/// TODO This trait makes little sense for sys_deployment,
-///  but it's fine nevertheless as the caller always uses the full range
-impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> RangeScanner
+impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> Scan
     for DeploymentMetadataScanner<DMR>
 {
     fn scan(
         &self,
-        _range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        _filters: &[Expr],
+        _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
