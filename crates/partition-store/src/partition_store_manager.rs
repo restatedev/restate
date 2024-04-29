@@ -99,17 +99,6 @@ impl PartitionStoreManager {
         self.lookup.lock().await.live.get(&partition_id).cloned()
     }
 
-    #[allow(non_snake_case)]
-    pub fn get_legacy_storage_REMOVE_ME(&self) -> PartitionStore {
-        PartitionStore::new(
-            self.raw_db.clone(),
-            self.rocksdb.clone(),
-            CfName::new("data-unpartitioned"),
-            0,
-            RangeInclusive::new(0, PartitionKey::MAX - 1),
-        )
-    }
-
     pub async fn open_partition_store(
         &self,
         partition_id: PartitionId,
