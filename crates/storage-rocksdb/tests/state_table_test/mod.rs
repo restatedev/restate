@@ -12,7 +12,7 @@ use crate::{assert_stream_eq, storage_test_environment};
 use bytes::Bytes;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::ServiceId;
 
 async fn populate_data<T: StateTable>(table: &mut T) {
@@ -95,7 +95,7 @@ async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
     assert_stream_eq(result, expected).await;
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;

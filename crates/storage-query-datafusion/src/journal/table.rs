@@ -23,13 +23,13 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 pub use datafusion_expr::UserDefinedLogicalNode;
 use restate_storage_rocksdb::journal_table::OwnedJournalRow;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::PartitionKey;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: RocksDBStorage,
+    storage: PartitionStore,
 ) -> datafusion::common::Result<()> {
     let journal_table =
         GenericTableProvider::new(JournalBuilder::schema(), Arc::new(JournalScanner(storage)));
@@ -40,7 +40,7 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct JournalScanner(RocksDBStorage);
+struct JournalScanner(PartitionStore);
 
 impl RangeScanner for JournalScanner {
     fn scan(

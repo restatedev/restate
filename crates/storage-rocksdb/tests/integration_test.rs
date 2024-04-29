@@ -13,14 +13,15 @@ use futures::Stream;
 use restate_core::TaskCenterBuilder;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source, SpanRelation};
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::ops::RangeInclusive;
 use std::pin::pin;
 use tokio_stream::StreamExt;
 
@@ -33,7 +34,7 @@ mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
 
-async fn storage_test_environment() -> RocksDBStorage {
+async fn storage_test_environment() -> PartitionStore {
     //
     // create a rocksdb storage from options
     //
@@ -45,12 +46,23 @@ async fn storage_test_environment() -> RocksDBStorage {
         RocksDbManager::init(Constant::new(CommonOptions::default()))
     });
     let worker_options = WorkerOptions::default();
-    RocksDBStorage::open(
+    let manager = PartitionStoreManager::create(
         Constant::new(worker_options.storage.clone()),
-        Constant::new(worker_options.storage.rocksdb),
+        Constant::new(worker_options.storage.rocksdb.clone()),
+        &[],
     )
     .await
-    .expect("RocksDB storage creation should succeed")
+    .expect("DB storage creation succeeds");
+    // A single partition store that spans all keys.
+    manager
+        .open_partition_store(
+            0,
+            RangeInclusive::new(0, PartitionKey::MAX - 1),
+            OpenMode::CreateIfMissing,
+            &worker_options.storage.rocksdb,
+        )
+        .await
+        .expect("DB storage creation succeeds")
 }
 
 #[tokio::test]

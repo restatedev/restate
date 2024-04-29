@@ -42,7 +42,7 @@ use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::{PartitionStore, PartitionStoreManager};
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
@@ -53,7 +53,7 @@ use restate_types::Version;
 
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
-    InvokerChannelServiceHandle<InvokerStorageReader<RocksDBStorage>>,
+    InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
 type ExternalClientIngress = HyperServerIngress<UpdateableSchema, IngressDispatcher>;
@@ -71,6 +71,12 @@ pub enum BuildError {
         #[from]
         #[code]
         restate_storage_rocksdb::BuildError,
+    ),
+    #[error("failed opening partition store: {0}")]
+    RocksDb(
+        #[from]
+        #[code]
+        restate_rocksdb::RocksError,
     ),
     #[code(unknown)]
     Invoker(#[from] restate_invoker_impl::BuildError),
@@ -94,14 +100,14 @@ pub struct Worker {
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
     invoker: InvokerService<
-        InvokerStorageReader<RocksDBStorage>,
+        InvokerStorageReader<PartitionStore>,
         EntryEnricher<UpdateableSchema, ProtobufRawEntryCodec>,
         UpdateableSchema,
     >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
-    rocksdb_storage: RocksDBStorage,
+    partition_store_manager: PartitionStoreManager,
 }
 
 impl Worker {
@@ -155,14 +161,17 @@ impl Worker {
         // a really ugly hack (I'm ashamed) until we can decouple opening database(s)
         // from worker creation, or we make worker creation async. This is a stop gap
         // to avoid unraveling the entire worker creation process to be async in this change.
-        let rocksdb_storage = futures::executor::block_on(RocksDBStorage::open(
+        let partition_store_manager = futures::executor::block_on(PartitionStoreManager::create(
             updateable_config
                 .clone()
                 .map_as_updateable_owned(|c| &c.worker.storage),
             updateable_config
                 .clone()
                 .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
+            &[],
         ))?;
+
+        let legacy_storage = partition_store_manager.get_legacy_storage_REMOVE_ME();
 
         let invoker = InvokerService::from_options(
             &config.common.service_client,
@@ -173,7 +182,7 @@ impl Worker {
 
         let storage_query_context = QueryContext::from_options(
             &config.admin.query_engine,
-            rocksdb_storage.clone(),
+            legacy_storage.clone(),
             invoker.status_reader(),
             schema_view.clone(),
         )?;
@@ -191,7 +200,7 @@ impl Worker {
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
-            rocksdb_storage,
+            partition_store_manager,
             metadata_store_client,
         })
     }
@@ -202,10 +211,6 @@ impl Worker {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         &self.storage_query_context
-    }
-
-    pub fn rocksdb_storage(&self) -> &RocksDBStorage {
-        &self.rocksdb_storage
     }
 
     pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
@@ -257,7 +262,7 @@ impl Worker {
             self.updateable_config.clone(),
             metadata().my_node_id(),
             self.metadata_store_client,
-            self.rocksdb_storage,
+            self.partition_store_manager,
             self.networking,
             bifrost,
             invoker_handle,

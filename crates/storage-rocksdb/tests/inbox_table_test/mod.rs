@@ -12,7 +12,7 @@ use crate::{assert_stream_eq, mock_state_mutation};
 use once_cell::sync::Lazy;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, ServiceId};
 
 static INBOX_ENTRIES: Lazy<Vec<SequenceNumberInboxEntry>> = Lazy::new(|| {
@@ -83,7 +83,7 @@ async fn peek_after_delete<T: InboxTable>(table: &mut T) {
     assert_eq!(result.unwrap(), Some(INBOX_ENTRIES[1].clone()));
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
 
