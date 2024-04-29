@@ -41,6 +41,8 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
+use self::storage::invoker::InvokerStorageReader;
+
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     pub partition_id: PartitionId,
@@ -59,7 +61,8 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
 impl<RawEntryCodec, InvokerInputSender> PartitionProcessor<RawEntryCodec, InvokerInputSender>
 where
     RawEntryCodec: restate_types::journal::raw::RawEntryCodec + Default + Debug,
-    InvokerInputSender: restate_invoker_api::ServiceHandle + Clone,
+    InvokerInputSender:
+        restate_invoker_api::ServiceHandle<InvokerStorageReader<RocksDBStorage>> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(

@@ -28,7 +28,7 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
-pub trait ServiceHandle {
+pub trait ServiceHandle<SR> {
     type Future: Future<Output = Result<(), NotRunningError>>;
 
     fn invoke(
@@ -65,6 +65,7 @@ pub trait ServiceHandle {
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
+        storage_reader: SR,
         sender: mpsc::Sender<Effect>,
     ) -> Self::Future;
 }

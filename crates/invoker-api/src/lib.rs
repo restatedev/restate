@@ -21,3 +21,44 @@ pub use handle::*;
 pub use journal_reader::{JournalMetadata, JournalReader};
 pub use state_reader::{EagerState, StateReader};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
+
+#[cfg(any(test, feature = "mocks"))]
+pub mod mocks {
+    use super::*;
+    use bytes::Bytes;
+    use restate_types::identifiers::{InvocationId, ServiceId};
+    use restate_types::invocation::ServiceInvocationSpanContext;
+    use restate_types::journal::raw::PlainRawEntry;
+    use std::convert::Infallible;
+    use std::iter::empty;
+
+    #[derive(Debug, Clone)]
+    pub struct EmptyStorageReader;
+
+    impl JournalReader for EmptyStorageReader {
+        type JournalStream = futures::stream::Empty<PlainRawEntry>;
+        type Error = Infallible;
+
+        async fn read_journal<'a>(
+            &'a mut self,
+            _sid: &'a InvocationId,
+        ) -> Result<(JournalMetadata, Self::JournalStream), Self::Error> {
+            Ok((
+                JournalMetadata::new(0, ServiceInvocationSpanContext::empty(), None),
+                futures::stream::empty(),
+            ))
+        }
+    }
+
+    impl StateReader for EmptyStorageReader {
+        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
+        type Error = Infallible;
+
+        async fn read_state<'a>(
+            &'a mut self,
+            _service_id: &'a ServiceId,
+        ) -> Result<EagerState<Self::StateIter>, Self::Error> {
+            Ok(EagerState::new_complete(empty()))
+        }
+    }
+}
