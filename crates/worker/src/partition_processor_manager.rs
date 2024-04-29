@@ -43,7 +43,7 @@ pub struct PartitionProcessorManager {
     bifrost: Bifrost,
     invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
-    _tx: mpsc::Sender<ProcessorsManagerCommand>,
+    tx: mpsc::Sender<ProcessorsManagerCommand>,
 }
 
 impl PartitionProcessorManager {
@@ -56,7 +56,7 @@ impl PartitionProcessorManager {
         bifrost: Bifrost,
         invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Self {
-        let (_tx, rx) = mpsc::channel(updateable_config.load().worker.internal_queue_length());
+        let (tx, rx) = mpsc::channel(updateable_config.load().worker.internal_queue_length());
         Self {
             updateable_config,
             running_partition_processors: HashMap::default(),
@@ -67,12 +67,12 @@ impl PartitionProcessorManager {
             bifrost,
             invoker_handle,
             rx,
-            _tx,
+            tx,
         }
     }
 
-    pub fn _handle(&self) -> ProcessorsManagerHandle {
-        ProcessorsManagerHandle::new(self._tx.clone())
+    pub fn handle(&self) -> ProcessorsManagerHandle {
+        ProcessorsManagerHandle::new(self.tx.clone())
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {

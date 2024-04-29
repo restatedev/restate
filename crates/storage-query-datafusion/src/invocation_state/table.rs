@@ -9,22 +9,22 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-
-use crate::context::QueryContext;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
-use crate::invocation_state::row::append_state_row;
-use crate::invocation_state::schema::StateBuilder;
+use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
+use tokio::sync::mpsc::Sender;
+
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
-use tokio::sync::mpsc::Sender;
+
+use crate::context::QueryContext;
+use crate::invocation_state::row::append_state_row;
+use crate::invocation_state::schema::StateBuilder;
+use crate::table_providers::{GenericTableProvider, Scan};
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
@@ -41,12 +41,14 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct StatusScanner<S>(S);
 
-impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> RangeScanner for StatusScanner<S> {
+impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> Scan for StatusScanner<S> {
     fn scan(
         &self,
-        range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        _filters: &[Expr],
+        _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
+        let range = PartitionKey::MIN..=PartitionKey::MAX;
         let status = self.0.clone();
         let schema = projection.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
