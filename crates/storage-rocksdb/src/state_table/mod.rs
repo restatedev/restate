@@ -11,7 +11,7 @@
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::owned_iter::OwnedIterator;
 use crate::TableKind::State;
-use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -115,7 +115,7 @@ fn get_all_user_states<S: StorageAccess>(
     )
 }
 
-impl ReadOnlyStateTable for RocksDBStorage {
+impl ReadOnlyStateTable for PartitionStore {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -192,7 +192,7 @@ pub struct OwnedStateRow {
     pub state_value: Bytes,
 }
 
-impl RocksDBStorage {
+impl PartitionStore {
     pub fn all_states(
         &self,
         range: RangeInclusive<PartitionKey>,

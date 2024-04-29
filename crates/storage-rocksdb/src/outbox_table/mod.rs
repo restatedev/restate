@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Outbox;
-use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess, TableScan};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess, TableScan};
 
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::{Result, StorageError};
@@ -90,7 +90,7 @@ fn truncate_outbox<S: StorageAccess>(
     }
 }
 
-impl OutboxTable for RocksDBStorage {
+impl OutboxTable for PartitionStore {
     async fn add_message(
         &mut self,
         partition_id: PartitionId,
