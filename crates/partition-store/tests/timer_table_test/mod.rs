@@ -10,9 +10,9 @@
 
 use crate::mock_service_invocation;
 use futures_util::StreamExt;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;

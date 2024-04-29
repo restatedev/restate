@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::state::schema::StateBuilder;
-use restate_storage_rocksdb::state_table::OwnedStateRow;
+use restate_partition_store::state_table::OwnedStateRow;
 
 #[inline]
 pub(crate) fn append_state_row(builder: &mut StateBuilder, state_row: OwnedStateRow) {

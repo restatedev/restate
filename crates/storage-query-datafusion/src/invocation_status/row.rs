@@ -10,10 +10,10 @@
 
 use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
 use crate::table_util::format_using;
+use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
-use restate_storage_rocksdb::invocation_status_table::OwnedInvocationStatusRow;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{ServiceType, Source, TraceId};
 

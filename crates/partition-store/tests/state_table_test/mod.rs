@@ -10,9 +10,9 @@
 
 use crate::{assert_stream_eq, storage_test_environment};
 use bytes::Bytes;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::ServiceId;
 
 async fn populate_data<T: StateTable>(table: &mut T) {
