@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::PartitionProcessor;
 use anyhow::Context;
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, task_center, ShutdownError, TaskId, TaskKind};
-use restate_invoker_impl::ChannelServiceHandle;
+use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
 use restate_storage_rocksdb::RocksDBStorage;
@@ -38,7 +39,7 @@ pub struct PartitionProcessorManager {
     rocksdb_storage: RocksDBStorage,
     networking: Networking,
     bifrost: Bifrost,
-    invoker_handle: ChannelServiceHandle,
+    invoker_handle: InvokerHandle<InvokerStorageReader<RocksDBStorage>>,
 }
 
 impl PartitionProcessorManager {
@@ -49,7 +50,7 @@ impl PartitionProcessorManager {
         rocksdb_storage: RocksDBStorage,
         networking: Networking,
         bifrost: Bifrost,
-        invoker_handle: ChannelServiceHandle,
+        invoker_handle: InvokerHandle<InvokerStorageReader<RocksDBStorage>>,
     ) -> Self {
         Self {
             updateable_config,
