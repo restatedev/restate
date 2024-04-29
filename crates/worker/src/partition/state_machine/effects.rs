@@ -422,7 +422,6 @@ impl Effect {
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        restate.invocation.id = %invocation_id,
                         restate.journal.index = entry_index,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
@@ -434,7 +433,6 @@ impl Effect {
                     debug_if_leader!(
                         is_leader,
                         restate.journal.index = entry_index,
-                        restate.invocation.id = %invocation_id,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register Sleep timer"
@@ -446,7 +444,6 @@ impl Effect {
                         is_leader,
                         rpc.service = %service_invocation.invocation_target.service_name(),
                         rpc.method = %service_invocation.invocation_target.handler_name(),
-                        restate.invocation.id = %service_invocation.invocation_id,
                         restate.invocation.target = %service_invocation.invocation_target,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
@@ -456,7 +453,6 @@ impl Effect {
                 Timer::CleanInvocationStatus(invocation_id) => {
                     debug_if_leader!(
                         is_leader,
-                        restate.invocation.id = %invocation_id,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
                         restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register cleanup invocation status timer"
