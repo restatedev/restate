@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind};
 use crate::TableKind::PartitionStateMachine;
-use crate::{RocksDBStorage, RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
 use restate_storage_api::Result;
 use restate_types::identifiers::PartitionId;
@@ -54,7 +54,7 @@ fn clear<S: StorageAccess>(storage: &mut S, partition_id: PartitionId, state_id:
     storage.delete_key(&key);
 }
 
-impl ReadOnlyFsmTable for RocksDBStorage {
+impl ReadOnlyFsmTable for PartitionStore {
     async fn get<T>(&mut self, partition_id: PartitionId, state_id: u64) -> Result<Option<T>>
     where
         T: StorageDecode,

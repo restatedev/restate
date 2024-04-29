@@ -14,7 +14,7 @@ use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
@@ -124,7 +124,7 @@ async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
     }
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;
