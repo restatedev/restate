@@ -147,8 +147,6 @@ impl Worker {
         )
         .await?;
 
-        let legacy_storage = partition_store_manager.get_legacy_storage_REMOVE_ME();
-
         let invoker = InvokerService::from_options(
             &config.common.service_client,
             &config.worker.invoker,
@@ -168,8 +166,8 @@ impl Worker {
 
         let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
-            partition_store_manager,
-            legacy_storage.clone(),
+            partition_processor_manager.handle(),
+            partition_store_manager.clone(),
             invoker.status_reader(),
             schema_view.clone(),
         )

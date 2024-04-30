@@ -38,7 +38,7 @@ async fn get_entries() {
         .run_in_scope("mock-query-engine", None, MockQueryEngine::create())
         .await;
 
-    let mut tx = engine.rocksdb_mut().transaction();
+    let mut tx = engine.partition_store().transaction();
     let journal_invocation_id = InvocationId::mock_random();
     tx.put_journal_entry(
         &journal_invocation_id,
