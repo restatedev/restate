@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,9 +31,23 @@ use crate::{metric_definitions, Metadata, TaskId, TaskKind};
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 const EXIT_CODE_FAILURE: i32 = 1;
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 #[error("system is shutting down")]
+struct ShutdownSourceErr;
+
+#[derive(Debug, Clone, Copy)]
 pub struct ShutdownError;
+impl Display for ShutdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("system is shutting down")
+    }
+}
+
+impl std::error::Error for ShutdownError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&ShutdownSourceErr)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TaskCenterBuildError {
@@ -530,9 +545,14 @@ impl TaskCenter {
                         .increment(1);
                 }
                 Ok(Err(err)) => {
-                    if err.root_cause().downcast_ref::<ShutdownError>().is_some() {
+                    if err
+                        .root_cause()
+                        .downcast_ref::<ShutdownSourceErr>()
+                        .is_some()
+                    {
                         // The task failed to spawn other tasks because the system
                         // is already shutting down, we ignore those errors.
+                        tracing::debug!(kind = ?kind, name = ?task.name, "[Shutdown] Task {} stopped due to shutdown", task_id);
                         return;
                     }
                     if should_shutdown_on_error {
