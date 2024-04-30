@@ -12,7 +12,7 @@ use crate::mock_service_invocation;
 use futures_util::StreamExt;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationUuid, ServiceId};
 use restate_types::invocation::ServiceInvocation;
 use std::pin::pin;
@@ -145,7 +145,7 @@ async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
     }
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;

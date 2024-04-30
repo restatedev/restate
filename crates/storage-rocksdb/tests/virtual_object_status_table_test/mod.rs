@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::service_status_table::{VirtualObjectStatus, VirtualObjectStatusTable};
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 
 const FIXTURE_INVOCATION: InvocationUuid =
@@ -41,7 +41,7 @@ async fn verify_point_lookups<T: VirtualObjectStatusTable>(txn: &mut T) {
     );
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
 

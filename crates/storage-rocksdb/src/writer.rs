@@ -11,7 +11,6 @@
 use crate::{WriteBatch, DB};
 use futures::ready;
 use futures_util::FutureExt;
-use log::debug;
 use restate_storage_api::StorageError;
 use restate_types::arc_util::Updateable;
 use restate_types::config::StorageOptions;
@@ -25,6 +24,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::Sender;
+use tracing::debug;
 
 pub struct WriteCommand {
     write_batch: WriteBatch,

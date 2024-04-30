@@ -24,6 +24,9 @@ pub enum RocksError {
     #[error("unknown column family: {0}")]
     #[code(unknown)]
     UnknownColumnFamily(CfName),
+    #[error("already open")]
+    #[code(unknown)]
+    AlreadyOpen,
     #[error(transparent)]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),

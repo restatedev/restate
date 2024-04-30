@@ -20,7 +20,7 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
     StatusTimestamps,
 };
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
@@ -125,7 +125,7 @@ async fn verify_all_svc_with_status_invoked<T: InvocationStatusTable>(txn: &mut 
     assert_stream_eq(stream, expected).await;
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
     populate_data(&mut txn).await;
 

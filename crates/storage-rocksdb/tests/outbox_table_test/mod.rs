@@ -11,7 +11,7 @@
 use crate::mock_random_service_invocation;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
-use restate_storage_rocksdb::RocksDBStorage;
+use restate_storage_rocksdb::PartitionStore;
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())
@@ -47,7 +47,7 @@ pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn:
     assert_eq!(result, None);
 }
 
-pub(crate) async fn run_tests(mut rocksdb: RocksDBStorage) {
+pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;
