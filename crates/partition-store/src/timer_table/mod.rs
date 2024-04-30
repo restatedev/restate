@@ -187,7 +187,7 @@ mod tests {
             timestamp: 87654321,
         };
 
-        let key_bytes = write_timer_key(1337, &key).serialize();
+        let key_bytes = write_timer_key(PartitionId::from(1337), &key).serialize();
         let got = timer_key_from_key_slice(&key_bytes).expect("should not fail");
 
         assert_eq!(got, key);
@@ -249,13 +249,13 @@ mod tests {
 
     #[track_caller]
     fn assert_in_range(key_a: TimerKey, key_b: TimerKey) {
-        let key_a_bytes = write_timer_key(1, &key_a).serialize();
-        let key_b_bytes = write_timer_key(1, &key_b).serialize();
+        let key_a_bytes = write_timer_key(PartitionId::from(1), &key_a).serialize();
+        let key_b_bytes = write_timer_key(PartitionId::from(1), &key_b).serialize();
 
         assert!(less_than(&key_a_bytes, &key_b_bytes));
 
-        let (low, high) = match exclusive_start_key_range(1, Some(&key_a)) {
-            TableScan::KeyRangeInclusiveInSinglePartition(1, low, high) => (low, high),
+        let (low, high) = match exclusive_start_key_range(PartitionId::from(1), Some(&key_a)) {
+            TableScan::KeyRangeInclusiveInSinglePartition(p, low, high) if *p == 1 => (low, high),
             _ => panic!(""),
         };
         let low = low.serialize();
@@ -279,7 +279,7 @@ mod tests {
         let mut timer_keys: Vec<_> = (0..100).map(|idx| (idx, random_timer_key())).collect();
         let mut binary_timer_keys: Vec<_> = timer_keys
             .iter()
-            .map(|(idx, key)| (*idx, write_timer_key(1, key).serialize()))
+            .map(|(idx, key)| (*idx, write_timer_key(PartitionId::from(1), key).serialize()))
             .collect();
 
         timer_keys.sort_by(|(_, key), (_, other_key)| key.cmp(other_key));

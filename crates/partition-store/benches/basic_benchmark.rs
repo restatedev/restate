@@ -20,7 +20,7 @@ use restate_storage_api::deduplication_table::{
 use restate_storage_api::Transaction;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
-use restate_types::identifiers::PartitionKey;
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use tokio::runtime::Builder;
 
 async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
@@ -30,8 +30,12 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
     for i in 0..100000 {
         let mut txn = rocksdb.transaction();
         for j in 0..10 {
-            txn.put_dedup_seq_number(i, ProducerId::Partition(j), DedupSequenceNumber::Sn(0))
-                .await;
+            txn.put_dedup_seq_number(
+                PartitionId::from(i),
+                ProducerId::Partition(PartitionId::from(j)),
+                DedupSequenceNumber::Sn(0),
+            )
+            .await;
         }
         txn.commit().await.unwrap();
     }
@@ -56,13 +60,13 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         let manager = PartitionStoreManager::create(
             Constant::new(worker_options.storage.clone()),
             Constant::new(worker_options.storage.rocksdb.clone()),
-            &[(0, RangeInclusive::new(0, PartitionKey::MAX))],
+            &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
         )
         .await
         .expect("DB creation succeeds");
         manager
             .open_partition_store(
-                0,
+                PartitionId::MIN,
                 RangeInclusive::new(0, PartitionKey::MAX),
                 OpenMode::CreateIfMissing,
                 &worker_options.storage.rocksdb,
