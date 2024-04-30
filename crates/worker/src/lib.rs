@@ -29,7 +29,7 @@ pub use subscription_integration::SubscriptionControllerHandle;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::{metadata, task_center, TaskKind};
+use restate_core::{task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -46,10 +46,7 @@ use restate_storage_query_postgres::service::PostgresQueryService;
 
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
-use crate::partition_processor_manager::{
-    Action, PartitionProcessorManager, PartitionProcessorPlan, Role,
-};
-use restate_types::Version;
+use crate::partition_processor_manager::PartitionProcessorManager;
 
 type PartitionProcessor = partition::PartitionProcessor<
     ProtobufRawEntryCodec,
@@ -94,8 +91,6 @@ pub enum Error {
 
 pub struct Worker {
     updateable_config: UpdateableConfiguration,
-    networking: Networking,
-    metadata_store_client: MetadataStoreClient,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
@@ -107,38 +102,22 @@ pub struct Worker {
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_store_manager: PartitionStoreManager,
+    partition_processor_manager: PartitionProcessorManager,
 }
 
 impl Worker {
-    pub fn from_options(
+    pub async fn create(
         updateable_config: UpdateableConfiguration,
-        networking: Networking,
-        bifrost: Bifrost,
-        router_builder: &mut MessageRouterBuilder,
-        schema_view: UpdateableSchema,
-        metadata_store_client: MetadataStoreClient,
-    ) -> Result<Worker, BuildError> {
-        metric_definitions::describe_metrics();
-        Worker::new(
-            updateable_config,
-            networking,
-            bifrost,
-            router_builder,
-            schema_view,
-            metadata_store_client,
-        )
-    }
-
-    pub fn new(
-        updateable_config: UpdateableConfiguration,
+        metadata: Metadata,
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
         schema_view: UpdateableSchema,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
-        let ingress_dispatcher = IngressDispatcher::new(bifrost);
+        metric_definitions::describe_metrics();
+
+        let ingress_dispatcher = IngressDispatcher::new(bifrost.clone());
         router_builder.add_message_handler(ingress_dispatcher.clone());
 
         let config = updateable_config.pinned();
@@ -157,11 +136,7 @@ impl Worker {
                 ingress_kafka.create_command_sender(),
             );
 
-        // todo: Fix me
-        // a really ugly hack (I'm ashamed) until we can decouple opening database(s)
-        // from worker creation, or we make worker creation async. This is a stop gap
-        // to avoid unraveling the entire worker creation process to be async in this change.
-        let partition_store_manager = futures::executor::block_on(PartitionStoreManager::create(
+        let partition_store_manager = PartitionStoreManager::create(
             updateable_config
                 .clone()
                 .map_as_updateable_owned(|c| &c.worker.storage),
@@ -169,7 +144,8 @@ impl Worker {
                 .clone()
                 .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
             &[],
-        ))?;
+        )
+        .await?;
 
         let legacy_storage = partition_store_manager.get_legacy_storage_REMOVE_ME();
 
@@ -180,12 +156,25 @@ impl Worker {
             schema_view.clone(),
         )?;
 
-        let storage_query_context = QueryContext::from_options(
+        let partition_processor_manager = PartitionProcessorManager::new(
+            updateable_config.clone(),
+            metadata.clone(),
+            metadata_store_client,
+            partition_store_manager.clone(),
+            networking,
+            bifrost,
+            invoker.handle(),
+        );
+
+        let storage_query_context = QueryContext::create(
             &config.admin.query_engine,
+            partition_store_manager,
             legacy_storage.clone(),
             invoker.status_reader(),
             schema_view.clone(),
-        )?;
+        )
+        .await?;
+
         let storage_query_postgres = PostgresQueryService::from_options(
             &config.admin.query_engine,
             storage_query_context.clone(),
@@ -193,15 +182,13 @@ impl Worker {
 
         Ok(Self {
             updateable_config,
-            networking,
             storage_query_context,
             storage_query_postgres,
             invoker,
             external_client_ingress: ingress_http,
             ingress_kafka,
             subscription_controller_handle,
-            partition_store_manager,
-            metadata_store_client,
+            partition_processor_manager,
         })
     }
 
@@ -213,7 +200,7 @@ impl Worker {
         &self.storage_query_context
     }
 
-    pub async fn run(self, bifrost: Bifrost) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         let tc = task_center();
 
         // Ingress RPC server
@@ -244,8 +231,6 @@ impl Worker {
             ),
         )?;
 
-        let invoker_handle = self.invoker.handle();
-
         // Invoker service
         tc.spawn_child(
             TaskKind::SystemService,
@@ -258,25 +243,12 @@ impl Worker {
             ),
         )?;
 
-        let mut partition_processor_manager = PartitionProcessorManager::new(
-            self.updateable_config.clone(),
-            metadata().my_node_id(),
-            self.metadata_store_client,
-            self.partition_store_manager,
-            self.networking,
-            bifrost,
-            invoker_handle,
-        );
-
-        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
-        let plan = PartitionProcessorPlan::new(
-            partition_table.version(),
-            partition_table
-                .partitioner()
-                .map(|(partition_id, _)| (partition_id, Action::Start(Role::Leader)))
-                .collect(),
-        );
-        partition_processor_manager.apply_plan(plan).await?;
+        tc.spawn_child(
+            TaskKind::SystemService,
+            "partition-processor-manager",
+            None,
+            self.partition_processor_manager.run(),
+        )?;
 
         Ok(())
     }
