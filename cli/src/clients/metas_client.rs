@@ -164,8 +164,9 @@ impl MetasClient {
         T: DeserializeOwned + Send,
     {
         debug!("Sending request {} ({})", method, path);
-        let request = self.prepare(method, path);
+        let request = self.prepare(method, path.clone());
         let resp = request.send().await?;
+        debug!("Response from {} ({})", path, resp.status());
         Ok(resp.into())
     }
 
@@ -180,8 +181,9 @@ impl MetasClient {
         B: Serialize + std::fmt::Debug + Send,
     {
         debug!("Sending request {} ({}): {:?}", method, path, body);
-        let request = self.prepare_with_body(method, path, body);
+        let request = self.prepare_with_body(method, path.clone(), body);
         let resp = request.send().await?;
+        debug!("Response from {} ({})", path, resp.status());
         Ok(resp.into())
     }
 }
