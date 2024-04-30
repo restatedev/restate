@@ -476,7 +476,7 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
         self.db
-            .write_opt(&write_batch, &rocksdb::WriteOptions::default())
+            .write_opt(&write_batch, &opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
