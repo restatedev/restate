@@ -11,7 +11,7 @@
 use crate::partition::shuffle;
 use futures::{Stream, StreamExt};
 use restate_types::identifiers::InvocationId;
-use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::timer::TimerKeyValue;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -46,7 +46,7 @@ impl ActionEffectStream {
 pub(crate) enum ActionEffect {
     Invoker(restate_invoker_api::Effect),
     Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerValue),
+    Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
 }
 

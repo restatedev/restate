@@ -37,12 +37,12 @@ use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::timer::TimerKeyValue;
 
 use super::storage::invoker::InvokerStorageReader;
 
 type PartitionStorage = storage::PartitionStorage<PartitionStore>;
-type TimerService = restate_timer::TimerService<TimerValue, TokioClock, PartitionStorage>;
+type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, PartitionStorage>;
 
 pub(crate) struct LeaderState {
     leader_epoch: LeaderEpoch,
@@ -294,7 +294,7 @@ where
         }
     }
 
-    pub(crate) async fn run_timer(&mut self) -> TimerValue {
+    pub(crate) async fn run_timer(&mut self) -> TimerKeyValue {
         match self {
             LeadershipState::Follower { .. } => future::pending().await,
             LeadershipState::Leader {

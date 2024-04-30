@@ -26,35 +26,35 @@ use std::future::Future;
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TimerKey {
     pub timestamp: u64,
-    pub kind: TimerKind,
+    pub kind: TimerKeyKind,
 }
 
 impl TimerKey {
-    pub fn complete_journal_entry(
+    fn complete_journal_entry(
         timestamp: u64,
         invocation_uuid: InvocationUuid,
         journal_index: u32,
     ) -> Self {
         TimerKey {
             timestamp,
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             },
         }
     }
 
-    pub fn invoke(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
+    fn invoke(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
         TimerKey {
             timestamp,
-            kind: TimerKind::Invoke { invocation_uuid },
+            kind: TimerKeyKind::Invoke { invocation_uuid },
         }
     }
 
-    pub fn clean_invocation_status(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
+    fn clean_invocation_status(timestamp: u64, invocation_uuid: InvocationUuid) -> Self {
         TimerKey {
             timestamp,
-            kind: TimerKind::CleanInvocationStatus { invocation_uuid },
+            kind: TimerKeyKind::CleanInvocationStatus { invocation_uuid },
         }
     }
 }
@@ -84,7 +84,7 @@ impl Ord for TimerKey {
     strum_macros::EnumDiscriminants,
 )]
 #[strum_discriminants(derive(strum_macros::VariantArray))]
-pub enum TimerKind {
+pub enum TimerKeyKind {
     /// Delayed invocation
     Invoke { invocation_uuid: InvocationUuid },
     /// Completion of a journal entry
@@ -96,52 +96,52 @@ pub enum TimerKind {
     CleanInvocationStatus { invocation_uuid: InvocationUuid },
 }
 
-impl TimerKind {
+impl TimerKeyKind {
     pub fn invocation_uuid(&self) -> InvocationUuid {
         *match self {
-            TimerKind::Invoke { invocation_uuid } => invocation_uuid,
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::Invoke { invocation_uuid } => invocation_uuid,
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid, ..
             } => invocation_uuid,
-            TimerKind::CleanInvocationStatus { invocation_uuid } => invocation_uuid,
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => invocation_uuid,
         }
     }
 }
 
-impl PartialOrd for TimerKind {
+impl PartialOrd for TimerKeyKind {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for TimerKind {
+impl Ord for TimerKeyKind {
     fn cmp(&self, other: &Self) -> Ordering {
         match self {
-            TimerKind::Invoke { invocation_uuid } => match other {
-                TimerKind::Invoke {
+            TimerKeyKind::Invoke { invocation_uuid } => match other {
+                TimerKeyKind::Invoke {
                     invocation_uuid: other_invocation_uuid,
                 } => invocation_uuid.cmp(other_invocation_uuid),
-                TimerKind::CompleteJournalEntry { .. }
-                | TimerKind::CleanInvocationStatus { .. } => Ordering::Less,
+                TimerKeyKind::CompleteJournalEntry { .. }
+                | TimerKeyKind::CleanInvocationStatus { .. } => Ordering::Less,
             },
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => match other {
-                TimerKind::Invoke { .. } => Ordering::Greater,
-                TimerKind::CompleteJournalEntry {
+                TimerKeyKind::Invoke { .. } => Ordering::Greater,
+                TimerKeyKind::CompleteJournalEntry {
                     invocation_uuid: other_invocation_uuid,
                     journal_index: other_journal_index,
                 } => invocation_uuid
                     .cmp(other_invocation_uuid)
                     .then_with(|| journal_index.cmp(other_journal_index)),
-                TimerKind::CleanInvocationStatus { .. } => Ordering::Less,
+                TimerKeyKind::CleanInvocationStatus { .. } => Ordering::Less,
             },
-            TimerKind::CleanInvocationStatus { invocation_uuid } => match other {
-                TimerKind::Invoke { .. } | TimerKind::CompleteJournalEntry { .. } => {
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => match other {
+                TimerKeyKind::Invoke { .. } | TimerKeyKind::CompleteJournalEntry { .. } => {
                     Ordering::Greater
                 }
-                TimerKind::CleanInvocationStatus {
+                TimerKeyKind::CleanInvocationStatus {
                     invocation_uuid: other_invocation_uuid,
                 } => invocation_uuid.cmp(other_invocation_uuid),
             },
@@ -161,6 +161,51 @@ pub enum Timer {
     Invoke(ServiceInvocation),
     CompleteJournalEntry(InvocationId, u32),
     CleanInvocationStatus(InvocationId),
+}
+
+impl Timer {
+    pub fn complete_journal_entry(
+        timestamp: u64,
+        invocation_id: InvocationId,
+        journal_index: u32,
+    ) -> (TimerKey, Self) {
+        (
+            TimerKey::complete_journal_entry(
+                timestamp,
+                invocation_id.invocation_uuid(),
+                journal_index,
+            ),
+            Timer::CompleteJournalEntry(invocation_id, journal_index),
+        )
+    }
+
+    pub fn invoke(timestamp: u64, service_invocation: ServiceInvocation) -> (TimerKey, Self) {
+        (
+            TimerKey::invoke(
+                timestamp,
+                service_invocation.invocation_id.invocation_uuid(),
+            ),
+            Timer::Invoke(service_invocation),
+        )
+    }
+
+    pub fn clean_invocation_status(
+        timestamp: u64,
+        invocation_id: InvocationId,
+    ) -> (TimerKey, Self) {
+        (
+            TimerKey::clean_invocation_status(timestamp, invocation_id.invocation_uuid()),
+            Timer::CleanInvocationStatus(invocation_id),
+        )
+    }
+
+    pub fn invocation_id(&self) -> InvocationId {
+        match self {
+            Timer::Invoke(service_invocation) => service_invocation.invocation_id,
+            Timer::CompleteJournalEntry(invocation_id, _) => *invocation_id,
+            Timer::CleanInvocationStatus(invocation_id) => *invocation_id,
+        }
+    }
 }
 
 impl WithPartitionKey for Timer {

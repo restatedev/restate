@@ -306,7 +306,7 @@ macro_rules! define_table_key {
 use crate::TableKind;
 pub(crate) use define_table_key;
 use restate_storage_api::deduplication_table::ProducerId;
-use restate_storage_api::timer_table::TimerKind;
+use restate_storage_api::timer_table::TimerKeyKind;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
@@ -487,7 +487,7 @@ impl KeyCodec for ProducerId {
     }
 }
 
-impl KeyCodec for TimerKind {
+impl KeyCodec for TimerKeyKind {
     fn encode<B: BufMut>(&self, target: &mut B) {
         assert!(
             self.serialized_length() <= target.remaining_mut(),
@@ -495,11 +495,11 @@ impl KeyCodec for TimerKind {
             self.serialized_length()
         );
         match self {
-            TimerKind::Invoke { invocation_uuid } => {
+            TimerKeyKind::Invoke { invocation_uuid } => {
                 target.put_u8(0);
                 invocation_uuid.encode(target);
             }
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => {
@@ -507,7 +507,7 @@ impl KeyCodec for TimerKind {
                 invocation_uuid.encode(target);
                 journal_index.encode(target);
             }
-            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
                 target.put_u8(2);
                 invocation_uuid.encode(target);
             }
@@ -524,19 +524,19 @@ impl KeyCodec for TimerKind {
         Ok(match source.get_u8() {
             0 => {
                 let invocation_uuid = InvocationUuid::decode(source)?;
-                TimerKind::Invoke { invocation_uuid }
+                TimerKeyKind::Invoke { invocation_uuid }
             }
             1 => {
                 let invocation_uuid = InvocationUuid::decode(source)?;
                 let journal_index = u32::decode(source)?;
-                TimerKind::CompleteJournalEntry {
+                TimerKeyKind::CompleteJournalEntry {
                     invocation_uuid,
                     journal_index,
                 }
             }
             2 => {
                 let invocation_uuid = InvocationUuid::decode(source)?;
-                TimerKind::CleanInvocationStatus { invocation_uuid }
+                TimerKeyKind::CleanInvocationStatus { invocation_uuid }
             }
             i => {
                 return Err(StorageError::Generic(anyhow!(
@@ -549,15 +549,17 @@ impl KeyCodec for TimerKind {
 
     fn serialized_length(&self) -> usize {
         1 + match self {
-            TimerKind::Invoke { invocation_uuid } => KeyCodec::serialized_length(invocation_uuid),
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::Invoke { invocation_uuid } => {
+                KeyCodec::serialized_length(invocation_uuid)
+            }
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => {
                 KeyCodec::serialized_length(invocation_uuid)
                     + KeyCodec::serialized_length(journal_index)
             }
-            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
                 KeyCodec::serialized_length(invocation_uuid)
             }
         }

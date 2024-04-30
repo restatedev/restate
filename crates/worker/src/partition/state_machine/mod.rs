@@ -729,11 +729,11 @@ mod tests {
             IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
         };
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
-        use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind};
+        use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
         use restate_types::invocation::{Idempotency, InvocationTarget};
-        use restate_wal_protocol::timer::TimerValue;
+        use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
 
         #[test(tokio::test)]
@@ -1120,9 +1120,9 @@ mod tests {
 
             // Send timer fired command
             let _ = state_machine
-                .apply(Command::Timer(TimerValue::new(
+                .apply(Command::Timer(TimerKeyValue::new(
                     TimerKey {
-                        kind: TimerKind::Invoke {
+                        kind: TimerKeyKind::Invoke {
                             invocation_uuid: invocation_id.invocation_uuid(),
                         },
                         timestamp: 0,

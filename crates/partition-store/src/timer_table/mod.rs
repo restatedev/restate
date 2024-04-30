@@ -15,7 +15,7 @@ use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind, TimerTable};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 use restate_types::storage::StorageCodec;
@@ -26,7 +26,7 @@ define_table_key!(
     TimersKey(
         partition_id: PartitionId,
         timestamp: u64,
-        kind: TimerKind,
+        kind: TimerKeyKind,
     )
 );
 
@@ -69,32 +69,32 @@ fn exclusive_start_key_range(
 ) -> TableScan<TimersKey> {
     if let Some(timer_key) = timer_key {
         let next_timer_key = match timer_key.kind {
-            TimerKind::Invoke { invocation_uuid } => {
+            TimerKeyKind::Invoke { invocation_uuid } => {
                 let incremented_invocation_uuid = increment_invocation_uuid(invocation_uuid);
                 TimerKey {
                     timestamp: timer_key.timestamp,
-                    kind: TimerKind::Invoke {
+                    kind: TimerKeyKind::Invoke {
                         invocation_uuid: incremented_invocation_uuid,
                     },
                 }
             }
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => TimerKey {
                 timestamp: timer_key.timestamp,
-                kind: TimerKind::CompleteJournalEntry {
+                kind: TimerKeyKind::CompleteJournalEntry {
                     invocation_uuid,
                     journal_index: journal_index
                         .checked_add(1)
                         .expect("journal index should be smaller than u64::MAX"),
                 },
             },
-            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
                 let incremented_invocation_uuid = increment_invocation_uuid(invocation_uuid);
                 TimerKey {
                     timestamp: timer_key.timestamp,
-                    kind: TimerKind::CleanInvocationStatus {
+                    kind: TimerKeyKind::CleanInvocationStatus {
                         invocation_uuid: incremented_invocation_uuid,
                     },
                 }
@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use crate::timer_table::TimerKey;
     use rand::Rng;
-    use restate_storage_api::timer_table::TimerKindDiscriminants;
+    use restate_storage_api::timer_table::TimerKeyKindDiscriminants;
     use restate_types::identifiers::InvocationUuid;
     use strum::VariantArray;
 
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn round_trip_complete_journal_entry_kind() {
         let key = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 1448,
             },
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn round_trip_invoke_kind() {
         let key = TimerKey {
-            kind: TimerKind::Invoke {
+            kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 87654321,
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn round_trip_clean_invocation_status_kind() {
         let key = TimerKey {
-            kind: TimerKind::CleanInvocationStatus {
+            kind: TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 87654321,
@@ -265,14 +265,14 @@ mod tests {
     #[test]
     fn test_lexicographical_sorting_by_timestamp() {
         let kinds = [
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 0,
             },
-            TimerKind::Invoke {
+            TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
-            TimerKind::CleanInvocationStatus {
+            TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
         ];
@@ -296,14 +296,14 @@ mod tests {
     fn test_lexicographical_sorting_by_invocation_uuid_complete_journal_entry_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 0,
             },
             timestamp: 300,
         };
         let b = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION.increment_random(),
                 journal_index: 0,
             },
@@ -313,7 +313,7 @@ mod tests {
 
         // Also ensure that higher timestamp is sorted correctly
         let b = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
                 journal_index: 0,
             },
@@ -326,13 +326,13 @@ mod tests {
     fn test_lexicographical_sorting_by_invocation_uuid_invoke_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
-            kind: TimerKind::Invoke {
+            kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 300,
         };
         let b = TimerKey {
-            kind: TimerKind::Invoke {
+            kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION.increment_random(),
             },
             timestamp: 300,
@@ -341,7 +341,7 @@ mod tests {
 
         // Also ensure that higher timestamp is sorted correctly
         let b = TimerKey {
-            kind: TimerKind::Invoke {
+            kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
             },
             timestamp: 300,
@@ -353,13 +353,13 @@ mod tests {
     fn test_lexicographical_sorting_by_invocation_uuid_clean_invoation_status_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
-            kind: TimerKind::CleanInvocationStatus {
+            kind: TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 300,
         };
         let b = TimerKey {
-            kind: TimerKind::CleanInvocationStatus {
+            kind: TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION.increment_random(),
             },
             timestamp: 300,
@@ -368,7 +368,7 @@ mod tests {
 
         // Also ensure that higher timestamp is sorted correctly
         let b = TimerKey {
-            kind: TimerKind::CleanInvocationStatus {
+            kind: TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
             },
             timestamp: 300,
@@ -379,14 +379,14 @@ mod tests {
     #[test]
     fn test_lexicographical_sorting_by_journal_index() {
         let a = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 0,
             },
             timestamp: 300,
         };
         let b = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 1,
             },
@@ -398,14 +398,14 @@ mod tests {
     #[test]
     fn test_lexicographical_sorting_timer_kind() {
         let a = TimerKey {
-            kind: TimerKind::Invoke {
+            kind: TimerKeyKind::Invoke {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 300,
         };
 
         let b = TimerKey {
-            kind: TimerKind::CompleteJournalEntry {
+            kind: TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid: FIXTURE_INVOCATION,
                 journal_index: 0,
             },
@@ -413,7 +413,7 @@ mod tests {
         };
 
         let c = TimerKey {
-            kind: TimerKind::CleanInvocationStatus {
+            kind: TimerKeyKind::CleanInvocationStatus {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             timestamp: 300,
@@ -475,19 +475,23 @@ mod tests {
 
     pub fn random_timer_key() -> TimerKey {
         let kind = {
-            match TimerKindDiscriminants::VARIANTS
-                [rand::thread_rng().gen_range(0..TimerKindDiscriminants::VARIANTS.len())]
+            match TimerKeyKindDiscriminants::VARIANTS
+                [rand::thread_rng().gen_range(0..TimerKeyKindDiscriminants::VARIANTS.len())]
             {
-                TimerKindDiscriminants::Invoke => TimerKind::Invoke {
+                TimerKeyKindDiscriminants::Invoke => TimerKeyKind::Invoke {
                     invocation_uuid: InvocationUuid::new(),
                 },
-                TimerKindDiscriminants::CompleteJournalEntry => TimerKind::CompleteJournalEntry {
-                    invocation_uuid: InvocationUuid::new(),
-                    journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
-                },
-                TimerKindDiscriminants::CleanInvocationStatus => TimerKind::CleanInvocationStatus {
-                    invocation_uuid: InvocationUuid::new(),
-                },
+                TimerKeyKindDiscriminants::CompleteJournalEntry => {
+                    TimerKeyKind::CompleteJournalEntry {
+                        invocation_uuid: InvocationUuid::new(),
+                        journal_index: rand::thread_rng().gen_range(0..2 ^ 16),
+                    }
+                }
+                TimerKeyKindDiscriminants::CleanInvocationStatus => {
+                    TimerKeyKind::CleanInvocationStatus {
+                        invocation_uuid: InvocationUuid::new(),
+                    }
+                }
             }
         };
 

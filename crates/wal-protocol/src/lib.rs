@@ -20,7 +20,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version};
 
 use crate::control::AnnounceLeader;
 use crate::effects::BuiltinServiceEffects;
-use crate::timer::TimerValue;
+use crate::timer::TimerKeyValue;
 use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
@@ -134,9 +134,9 @@ pub enum Command {
     /// Invoker is reporting effect(s) from an ongoing invocation.
     InvokerEffect(restate_invoker_api::Effect),
     /// Timer has fired
-    Timer(TimerValue),
+    Timer(TimerKeyValue),
     /// Schedule timer
-    ScheduleTimer(TimerValue),
+    ScheduleTimer(TimerKeyValue),
     /// Another partition processor is reporting a response of an invocation we requested.
     InvocationResponse(InvocationResponse),
     /// A built-in invoker reporting effects from an invocation.

@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKind};
-use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
@@ -18,57 +18,40 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TimerValue {
+pub struct TimerKeyValue {
     timer_key: TimerKey,
     value: Timer,
 }
 
-impl TimerValue {
+impl TimerKeyValue {
     pub fn new(timer_key: TimerKey, value: Timer) -> Self {
         Self { timer_key, value }
     }
 
     pub fn complete_journal_entry(
-        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) -> Self {
-        let timer_key = TimerKey::complete_journal_entry(
-            wake_up_time.as_u64(),
-            invocation_id.invocation_uuid(),
-            entry_index,
-        );
+        let (timer_key, value) =
+            Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, entry_index);
 
-        Self {
-            timer_key,
-            value: Timer::CompleteJournalEntry(invocation_id, entry_index),
-        }
+        Self { timer_key, value }
     }
 
-    pub fn invoke(
-        invocation_id: InvocationId,
-        wake_up_time: MillisSinceEpoch,
-        service_invocation: ServiceInvocation,
-    ) -> Self {
-        let timer_key = TimerKey::invoke(wake_up_time.as_u64(), invocation_id.invocation_uuid());
+    pub fn invoke(wake_up_time: MillisSinceEpoch, service_invocation: ServiceInvocation) -> Self {
+        let (timer_key, value) = Timer::invoke(wake_up_time.as_u64(), service_invocation);
 
-        Self {
-            timer_key,
-            value: Timer::Invoke(service_invocation),
-        }
+        Self { timer_key, value }
     }
 
     pub fn clean_invocation_status(
-        invocation_id: InvocationId,
         wake_up_time: MillisSinceEpoch,
+        invocation_id: InvocationId,
     ) -> Self {
-        TimerValue {
-            timer_key: TimerKey::clean_invocation_status(
-                wake_up_time.as_u64(),
-                invocation_id.invocation_uuid(),
-            ),
-            value: Timer::CleanInvocationStatus(invocation_id),
-        }
+        let (timer_key, value) =
+            Timer::clean_invocation_status(wake_up_time.as_u64(), invocation_id);
+        Self { timer_key, value }
     }
 
     pub fn into_inner(self) -> (TimerKey, Timer) {
@@ -84,10 +67,7 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::from_parts(
-            self.value.partition_key(),
-            self.timer_key.kind.invocation_uuid(),
-        )
+        self.value.invocation_id()
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {
@@ -95,28 +75,28 @@ impl TimerValue {
     }
 }
 
-impl Hash for TimerValue {
+impl Hash for TimerKeyValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Hash::hash(&self.timer_key, state);
         // We don't hash the value field.
     }
 }
 
-impl PartialEq for TimerValue {
+impl PartialEq for TimerKeyValue {
     fn eq(&self, other: &Self) -> bool {
         self.timer_key == other.timer_key
     }
 }
 
-impl Eq for TimerValue {}
+impl Eq for TimerKeyValue {}
 
-impl Borrow<TimerKey> for TimerValue {
+impl Borrow<TimerKey> for TimerKeyValue {
     fn borrow(&self) -> &TimerKey {
         &self.timer_key
     }
 }
 
-impl restate_types::timer::Timer for TimerValue {
+impl restate_types::timer::Timer for TimerKeyValue {
     type TimerKey = TimerKey;
 
     fn timer_key(&self) -> &Self::TimerKey {
@@ -131,10 +111,10 @@ pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.kind {
-            TimerKind::Invoke { invocation_uuid } => {
+            TimerKeyKind::Invoke { invocation_uuid } => {
                 write!(f, "Delayed invocation '{}'", invocation_uuid)
             }
-            TimerKind::CompleteJournalEntry {
+            TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => write!(
@@ -142,7 +122,7 @@ impl<'a> fmt::Display for TimerKeyDisplay<'a> {
                 "Complete journal entry [{}] for '{}'",
                 journal_index, invocation_uuid
             ),
-            TimerKind::CleanInvocationStatus { invocation_uuid } => {
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
                 write!(f, "Clean invocation status '{}'", invocation_uuid)
             }
         }

@@ -26,7 +26,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
-use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
@@ -51,7 +51,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
-use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
@@ -250,11 +250,7 @@ where
         if let Some(execution_time) = service_invocation.execution_time {
             let span_context = service_invocation.span_context.clone();
             effects.register_timer(
-                TimerValue::invoke(
-                    service_invocation.invocation_id,
-                    execution_time,
-                    service_invocation,
-                ),
+                TimerKeyValue::invoke(execution_time, service_invocation),
                 span_context,
             );
             // The span will be created later on invocation
@@ -752,9 +748,9 @@ where
                                 ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
                         );
 
-                        let timer_key = TimerKey::complete_journal_entry(
+                        let (timer_key, _) = Timer::complete_journal_entry(
                             wake_up_time,
-                            invocation_id.invocation_uuid(),
+                            invocation_id,
                             journal_index,
                         );
 
@@ -802,7 +798,7 @@ where
 
     async fn on_timer<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
-        timer_value: TimerValue,
+        timer_value: TimerKeyValue,
         state: &mut State,
         effects: &mut Effects,
     ) -> Result<(), Error> {
@@ -1301,9 +1297,9 @@ where
                         journal_entry.deserialize_entry_ref::<Codec>()?
                 );
                 effects.register_timer(
-                    TimerValue::complete_journal_entry(
-                        invocation_id,
+                    TimerKeyValue::complete_journal_entry(
                         MillisSinceEpoch::new(wake_up_time),
+                        invocation_id,
                         entry_index,
                     ),
                     invocation_metadata.journal_metadata.span_context.clone(),

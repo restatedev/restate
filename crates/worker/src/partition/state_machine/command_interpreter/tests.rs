@@ -12,7 +12,7 @@ use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
-use restate_storage_api::timer_table::TimerKind;
+use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
 use restate_test_util::{assert_eq, let_assert};
@@ -763,7 +763,7 @@ fn forward_canceled_completion_matcher(entry_index: EntryIndex) -> impl Matcher<
 
 fn delete_timer(entry_index: EntryIndex) -> impl Matcher<ActualT = Effect> {
     pat!(Effect::DeleteTimer(pat!(TimerKey {
-        kind: pat!(TimerKind::CompleteJournalEntry {
+        kind: pat!(TimerKeyKind::CompleteJournalEntry {
             journal_index: eq(entry_index),
         }),
         timestamp: eq(1337),
