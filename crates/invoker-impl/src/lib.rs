@@ -1034,7 +1034,7 @@ mod tests {
     use restate_invoker_api::{entry_enricher, ServiceHandle};
     use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
-    use restate_types::identifiers::LeaderEpoch;
+    use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
@@ -1044,7 +1044,7 @@ mod tests {
 
     // -- Mocks
 
-    const MOCK_PARTITION: PartitionLeaderEpoch = (0, LeaderEpoch::INITIAL);
+    const MOCK_PARTITION: PartitionLeaderEpoch = (PartitionId::MIN, LeaderEpoch::INITIAL);
 
     impl<ITR, SR> ServiceInner<ITR, SR>
     where
@@ -1177,7 +1177,7 @@ mod tests {
             )
             .unwrap();
 
-        let partition_leader_epoch = (0, LeaderEpoch::INITIAL);
+        let partition_leader_epoch = (PartitionId::from(0), LeaderEpoch::INITIAL);
         let invocation_target = InvocationTarget::mock_service();
         let invocation_id = InvocationId::generate(&invocation_target);
 

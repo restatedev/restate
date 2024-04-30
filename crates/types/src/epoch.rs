@@ -72,7 +72,7 @@ flexbuffers_storage_encode_decode!(EpochMetadata);
 #[cfg(test)]
 mod tests {
     use crate::epoch::EpochMetadata;
-    use crate::identifiers::LeaderEpoch;
+    use crate::identifiers::{LeaderEpoch, PartitionId};
     use crate::GenerationalNodeId;
 
     #[test]
@@ -80,16 +80,16 @@ mod tests {
         let node_id = GenerationalNodeId::new(1, 1);
         let other_node_id = GenerationalNodeId::new(2, 1);
 
-        let epoch = EpochMetadata::new(node_id, 0);
+        let epoch = EpochMetadata::new(node_id, PartitionId::from(0));
 
         assert_eq!(epoch.epoch(), LeaderEpoch::INITIAL);
-        assert_eq!(epoch.partition_id(), 0);
+        assert_eq!(epoch.partition_id(), PartitionId::from(0));
         assert_eq!(epoch.node_id(), node_id);
 
-        let next_epoch = epoch.claim_leadership(other_node_id, 1);
+        let next_epoch = epoch.claim_leadership(other_node_id, PartitionId::from(1));
 
         assert_eq!(next_epoch.epoch(), LeaderEpoch::from(2));
-        assert_eq!(next_epoch.partition_id(), 1);
+        assert_eq!(next_epoch.partition_id(), PartitionId::from(1));
         assert_eq!(next_epoch.node_id(), other_node_id);
     }
 }

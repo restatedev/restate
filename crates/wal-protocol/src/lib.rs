@@ -182,7 +182,7 @@ pub async fn append_envelope_to_bifrost(
 
     let partition_id = partition_table.find_partition_id(envelope.partition_key())?;
 
-    let log_id = LogId::from(partition_id);
+    let log_id = LogId::from(*partition_id);
     let payload = Payload::from(envelope.to_bytes()?);
     let lsn = bifrost.append(log_id, payload).await?;
 
