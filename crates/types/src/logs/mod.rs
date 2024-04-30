@@ -10,6 +10,8 @@
 
 use bytes::Bytes;
 
+use crate::identifiers::PartitionId;
+
 pub mod metadata;
 
 #[derive(
@@ -35,6 +37,12 @@ impl LogId {
     // internal logs as needed. Partitions cannot be larger than 2^62.
     pub const MAX_PARTITION_LOG: LogId = LogId((1 << 62) - 1);
     pub const MIN: LogId = LogId(0);
+}
+
+impl From<PartitionId> for LogId {
+    fn from(value: PartitionId) -> Self {
+        LogId(*value)
+    }
 }
 
 /// The log sequence number.

@@ -85,7 +85,7 @@ struct MockPartitionSelector;
 #[async_trait]
 impl SelectPartitions for MockPartitionSelector {
     async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
-        Ok(vec![0])
+        Ok(vec![PartitionId::MIN])
     }
 }
 
@@ -110,13 +110,13 @@ impl MockQueryEngine {
         let manager = PartitionStoreManager::create(
             Constant::new(worker_options.storage.clone()),
             Constant::new(worker_options.storage.rocksdb.clone()),
-            &[(0, RangeInclusive::new(0, PartitionKey::MAX))],
+            &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
         )
         .await
         .expect("DB creation succeeds");
         let partition_store = manager
             .open_partition_store(
-                0,
+                PartitionId::MIN,
                 PartitionKey::MIN..=PartitionKey::MAX,
                 OpenMode::OpenExisting,
                 &worker_options.storage.rocksdb,

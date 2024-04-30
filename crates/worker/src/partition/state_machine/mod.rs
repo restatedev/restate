@@ -138,7 +138,7 @@ mod tests {
 
     impl MockStateMachine {
         pub fn partition_id(&self) -> PartitionId {
-            0
+            PartitionId::MIN
         }
 
         pub async fn create() -> Self {
@@ -159,7 +159,7 @@ mod tests {
             .unwrap();
             let rocksdb_storage = manager
                 .open_partition_store(
-                    0,
+                    PartitionId::MIN,
                     RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
                     OpenMode::CreateIfMissing,
                     &worker_options.storage.rocksdb,

@@ -306,7 +306,7 @@ use crate::TableKind;
 pub(crate) use define_table_key;
 use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::StorageError;
-use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{InvocationUuid, PartitionId};
 
 pub(crate) trait KeyCodec: Sized {
     fn encode<B: BufMut>(&self, target: &mut B);
@@ -344,6 +344,21 @@ impl KeyCodec for ByteString {
     fn serialized_length(&self) -> usize {
         self.len()
             + encoded_len_varint(u64::try_from(self.len()).expect("usize should fit into u64"))
+    }
+}
+
+impl KeyCodec for PartitionId {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
+        target.put_u64(**self);
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(PartitionId::from(source.get_u64()))
+    }
+
+    fn serialized_length(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }
 
