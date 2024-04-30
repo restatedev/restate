@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::debug;
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{
@@ -111,7 +111,7 @@ impl PartitionStoreManager {
 
         if !already_exists {
             if open_mode == OpenMode::CreateIfMissing {
-                info!("Initializing storage for partition {}", partition_id);
+                debug!("Initializing storage for partition {}", partition_id);
                 self.rocksdb.open_cf(cf_name.clone(), opts).await?;
             } else {
                 return Err(RocksError::AlreadyOpen);
