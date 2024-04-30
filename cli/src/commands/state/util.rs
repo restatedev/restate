@@ -70,7 +70,7 @@ pub(crate) async fn update_state(
     };
 
     let client = MetasClient::new(env)?;
-    client.patch_state(service, req).await.unwrap();
+    let _ = client.patch_state(service, req).await?.success_or_error()?;
 
     Ok(())
 }
