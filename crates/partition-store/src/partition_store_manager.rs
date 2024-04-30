@@ -59,10 +59,6 @@ impl PartitionStoreManager {
     ) -> std::result::Result<Self, RocksError> {
         let options = storage_opts.load();
 
-        // todo: temporary until we completely remove unpartitioned cf.
-        let mut ensure_cfs = partition_ids_to_cfs(initial_partition_set);
-        ensure_cfs.push(CfName::new("data-unpartitioned"));
-
         let db_spec = DbSpecBuilder::new(
             DbName::new(DB_NAME),
             Owner::PartitionProcessor,
@@ -70,7 +66,7 @@ impl PartitionStoreManager {
             db_options(),
         )
         .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), cf_options)
-        .ensure_column_families(ensure_cfs)
+        .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
         .build_as_optimistic_db();
 
         let manager = RocksDbManager::get();
@@ -97,17 +93,6 @@ impl PartitionStoreManager {
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {
         self.lookup.lock().await.live.get(&partition_id).cloned()
-    }
-
-    #[allow(non_snake_case)]
-    pub fn get_legacy_storage_REMOVE_ME(&self) -> PartitionStore {
-        PartitionStore::new(
-            self.raw_db.clone(),
-            self.rocksdb.clone(),
-            CfName::new("data-unpartitioned"),
-            0,
-            RangeInclusive::new(0, PartitionKey::MAX - 1),
-        )
     }
 
     pub async fn open_partition_store(

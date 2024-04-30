@@ -14,26 +14,30 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-
-use crate::context::QueryContext;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
-use crate::inbox::row::append_inbox_row;
-use crate::inbox::schema::InboxBuilder;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
 use futures::{Stream, StreamExt};
-use restate_partition_store::PartitionStore;
+use tokio::sync::mpsc::Sender;
+
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::inbox_table::{InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionKey;
-use tokio::sync::mpsc::Sender;
+
+use crate::context::{QueryContext, SelectPartitions};
+use crate::inbox::row::append_inbox_row;
+use crate::inbox::schema::InboxBuilder;
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::table_providers::PartitionedTableProvider;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: PartitionStore,
+    partition_selector: impl SelectPartitions,
+    partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(InboxBuilder::schema(), Arc::new(InboxScanner(storage)));
+    let table = PartitionedTableProvider::new(
+        partition_selector,
+        InboxBuilder::schema(),
+        LocalPartitionsScanner::new(partition_store_manager, InboxScanner),
+    );
 
     ctx.as_ref()
         .register_table("sys_inbox", Arc::new(table))
@@ -41,26 +45,18 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-struct InboxScanner(PartitionStore);
+struct InboxScanner;
 
-impl RangeScanner for InboxScanner {
-    fn scan(
-        &self,
+impl ScanLocalPartition for InboxScanner {
+    async fn scan_partition_store(
+        mut partition_store: PartitionStore,
+        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-    ) -> SendableRecordBatchStream {
-        let mut db = self.0.clone();
-        let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
-        let tx = stream_builder.tx();
-        let background_task = async move {
-            let mut transaction = db.transaction();
-            let rows = transaction.all_inboxes(range);
-            for_each_state(schema, tx, rows).await;
-            Ok(())
-        };
-        stream_builder.spawn(background_task);
-        stream_builder.build()
+    ) {
+        let mut transaction = partition_store.transaction();
+        let rows = transaction.all_inboxes(range);
+        for_each_state(projection, tx, rows).await;
     }
 }
 

@@ -68,7 +68,7 @@ async fn query_sys_invocation() {
         )
         .await;
 
-    let mut tx = engine.rocksdb_mut().transaction();
+    let mut tx = engine.partition_store().transaction();
     tx.put_invocation_status(
         &invocation_id,
         InvocationStatus::Invoked(InFlightInvocationMetadata {

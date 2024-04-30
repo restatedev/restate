@@ -11,6 +11,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
@@ -18,11 +19,14 @@ use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
+use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_invoker_api::StatusHandle;
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_partition_store::PartitionStoreManager;
 use restate_schema_api::deployment::DeploymentResolver;
 use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::config::QueryEngineOptions;
+use restate_types::errors::GenericError;
+use restate_types::identifiers::PartitionId;
 
 use crate::{analyzer, physical_optimizer};
 
@@ -72,6 +76,11 @@ pub enum BuildError {
     Datafusion(#[from] DataFusionError),
 }
 
+#[async_trait]
+pub trait SelectPartitions: Send + Sync + Debug + 'static {
+    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError>;
+}
+
 #[derive(Clone)]
 pub struct QueryContext {
     datafusion_context: SessionContext,
@@ -80,8 +89,8 @@ pub struct QueryContext {
 impl QueryContext {
     pub async fn create(
         options: &QueryEngineOptions,
-        _partition_store_manager: PartitionStoreManager,
-        rocksdb: PartitionStore,
+        partition_selector: impl SelectPartitions + Clone,
+        partition_store_manager: PartitionStoreManager,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
         schemas: impl DeploymentResolver
             + ServiceMetadataResolver
@@ -96,15 +105,40 @@ impl QueryContext {
             options.tmp_dir.clone(),
             options.query_parallelism(),
         );
-        crate::invocation_status::register_self(&ctx, rocksdb.clone())?;
-        crate::keyed_service_status::register_self(&ctx, rocksdb.clone())?;
-        crate::state::register_self(&ctx, rocksdb.clone())?;
-        crate::journal::register_self(&ctx, rocksdb.clone())?;
-        crate::invocation_state::register_self(&ctx, status)?;
-        crate::inbox::register_self(&ctx, rocksdb.clone())?;
         crate::deployment::register_self(&ctx, schemas.clone())?;
         crate::service::register_self(&ctx, schemas)?;
-        crate::idempotency::register_self(&ctx, rocksdb)?;
+        crate::invocation_state::register_self(&ctx, status)?;
+        // partition-key-based
+        crate::invocation_status::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager.clone(),
+        )?;
+        crate::keyed_service_status::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager.clone(),
+        )?;
+        crate::state::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager.clone(),
+        )?;
+        crate::journal::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager.clone(),
+        )?;
+        crate::inbox::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager.clone(),
+        )?;
+        crate::idempotency::register_self(
+            &ctx,
+            partition_selector.clone(),
+            partition_store_manager,
+        )?;
 
         let ctx = ctx
             .datafusion_context
@@ -171,5 +205,12 @@ impl QueryContext {
 impl AsRef<SessionContext> for QueryContext {
     fn as_ref(&self) -> &SessionContext {
         &self.datafusion_context
+    }
+}
+
+#[async_trait]
+impl SelectPartitions for ProcessorsManagerHandle {
+    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
+        Ok(self.get_live_partitions().await?)
     }
 }

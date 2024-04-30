@@ -8,31 +8,34 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::row::append_idempotency_row;
-use super::schema::IdempotencyBuilder;
-
-use crate::context::QueryContext;
-use crate::generic_table::{GenericTableProvider, RangeScanner};
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::SendableRecordBatchStream;
-pub use datafusion_expr::UserDefinedLogicalNode;
-use futures::{Stream, StreamExt};
-use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
-use restate_types::identifiers::{IdempotencyId, PartitionKey};
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::record_batch::RecordBatch;
+use futures::{Stream, StreamExt};
 use tokio::sync::mpsc::Sender;
 
-pub(crate) fn register_self<I: ReadOnlyIdempotencyTable + Debug + Clone + Sync + Send + 'static>(
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempotencyTable};
+use restate_types::identifiers::{IdempotencyId, PartitionKey};
+
+use super::row::append_idempotency_row;
+use super::schema::IdempotencyBuilder;
+use crate::context::{QueryContext, SelectPartitions};
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::table_providers::PartitionedTableProvider;
+
+pub(crate) fn register_self(
     ctx: &QueryContext,
-    storage: I,
+    partition_selector: impl SelectPartitions,
+    partition_store_manager: PartitionStoreManager,
 ) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
+    let table = PartitionedTableProvider::new(
+        partition_selector,
         IdempotencyBuilder::schema(),
-        Arc::new(IdempotencyScanner(storage)),
+        LocalPartitionsScanner::new(partition_store_manager, IdempotencyScanner),
     );
 
     ctx.as_ref()
@@ -41,26 +44,21 @@ pub(crate) fn register_self<I: ReadOnlyIdempotencyTable + Debug + Clone + Sync +
 }
 
 #[derive(Clone, Debug)]
-struct IdempotencyScanner<I>(I);
+struct IdempotencyScanner;
 
-impl<I: ReadOnlyIdempotencyTable + Debug + Clone + Sync + Send + 'static> RangeScanner
-    for IdempotencyScanner<I>
-{
-    fn scan(
-        &self,
+impl ScanLocalPartition for IdempotencyScanner {
+    async fn scan_partition_store(
+        mut partition_store: PartitionStore,
+        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-    ) -> SendableRecordBatchStream {
-        let mut db = self.0.clone();
-        let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
-        let tx = stream_builder.tx();
-        let background_task = async move {
-            for_each_state(schema, tx, db.all_idempotency_metadata(range)).await;
-            Ok(())
-        };
-        stream_builder.spawn(background_task);
-        stream_builder.build()
+    ) {
+        for_each_state(
+            projection,
+            tx,
+            partition_store.all_idempotency_metadata(range),
+        )
+        .await;
     }
 }
 

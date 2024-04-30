@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::context::SelectPartitions;
+
 use super::context::QueryContext;
 
+use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::SendableRecordBatchStream;
@@ -25,7 +28,8 @@ use restate_schema_api::service::mocks::MockServiceMetadataResolver;
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
-use restate_types::identifiers::{DeploymentId, PartitionKey, ServiceRevision};
+use restate_types::errors::GenericError;
+use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -75,7 +79,17 @@ impl DeploymentResolver for MockSchemas {
     }
 }
 
-pub(crate) struct MockQueryEngine(PartitionStore, QueryContext);
+#[derive(Clone, Debug)]
+struct MockPartitionSelector;
+
+#[async_trait]
+impl SelectPartitions for MockPartitionSelector {
+    async fn get_live_partitions(&self) -> Result<Vec<PartitionId>, GenericError> {
+        Ok(vec![0])
+    }
+}
+
+pub(crate) struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
 
 impl MockQueryEngine {
     pub async fn create_with(
@@ -100,22 +114,23 @@ impl MockQueryEngine {
         )
         .await
         .expect("DB creation succeeds");
-        let rocksdb = manager
+        let partition_store = manager
             .open_partition_store(
                 0,
-                RangeInclusive::new(0, PartitionKey::MAX),
-                OpenMode::CreateIfMissing,
+                PartitionKey::MIN..=PartitionKey::MAX,
+                OpenMode::OpenExisting,
                 &worker_options.storage.rocksdb,
             )
             .await
-            .expect("column family is open");
+            .unwrap();
 
         Self(
-            rocksdb.clone(),
+            manager.clone(),
+            partition_store,
             QueryContext::create(
                 &QueryEngineOptions::default(),
+                MockPartitionSelector,
                 manager,
-                rocksdb,
                 status,
                 schemas,
             )
@@ -128,15 +143,15 @@ impl MockQueryEngine {
         Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
     }
 
-    pub fn rocksdb_mut(&mut self) -> &mut PartitionStore {
-        &mut self.0
+    pub fn partition_store(&mut self) -> &mut PartitionStore {
+        &mut self.1
     }
 
     pub async fn execute(
         &self,
         sql: &str,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        self.1.execute(sql).await
+        self.2.execute(sql).await
     }
 }
 
