@@ -17,7 +17,7 @@ use futures::StreamExt;
 use metrics::counter;
 use restate_core::metadata;
 use restate_network::Networking;
-use restate_storage_rocksdb::{PartitionStore, RocksDBTransaction};
+use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;

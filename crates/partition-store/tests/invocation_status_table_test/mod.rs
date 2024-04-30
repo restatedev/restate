@@ -16,11 +16,11 @@ use super::assert_stream_eq;
 
 use bytestring::ByteString;
 use once_cell::sync::Lazy;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable, JournalMetadata,
     StatusTimestamps,
 };
-use restate_storage_rocksdb::PartitionStore;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
