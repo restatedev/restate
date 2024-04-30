@@ -222,12 +222,12 @@ impl RocksDbManager {
 
         if filter.is_empty() {
             for db in self.dbs.read().values() {
-                db.record_memory_stats(&mut builder);
+                db.inner().record_memory_stats(&mut builder);
             }
         } else {
             for key in filter {
                 if let Some(db) = self.dbs.read().get(key) {
-                    db.record_memory_stats(&mut builder);
+                    db.inner().record_memory_stats(&mut builder);
                 }
             }
         }

@@ -227,7 +227,8 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
                     &cf_labels,
                     *unit,
                     property,
-                    db.get_property_int_cf(cf, property)
+                    db.inner()
+                        .get_property_int_cf(cf, property)
                         .unwrap_or_default()
                         .unwrap_or_default(),
                 );

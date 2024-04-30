@@ -79,18 +79,22 @@ impl RocksDbLogStore {
     }
 
     pub fn data_cf(&self) -> Arc<BoundColumnFamily> {
-        self.rocksdb.cf_handle(DATA_CF).expect("DATA_CF exists")
+        self.rocksdb
+            .inner()
+            .cf_handle(DATA_CF)
+            .expect("DATA_CF exists")
     }
 
     pub fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
         self.rocksdb
+            .inner()
             .cf_handle(METADATA_CF)
             .expect("METADATA_CF exists")
     }
 
     pub fn get_log_state(&self, log_id: u64) -> Result<Option<LogState>, LogStoreError> {
         let metadata_cf = self.metadata_cf();
-        let value = self.rocksdb.as_raw_db().get_pinned_cf(
+        let value = self.rocksdb.inner().as_raw_db().get_pinned_cf(
             &metadata_cf,
             MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
         )?;
@@ -107,7 +111,7 @@ impl RocksDbLogStore {
     }
 
     pub fn db(&self) -> &DB {
-        self.rocksdb.as_raw_db()
+        self.rocksdb.inner().as_raw_db()
     }
 }
 
