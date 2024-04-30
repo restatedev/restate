@@ -8,13 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::ServiceId;
-use base64::Engine;
-use bytes::Bytes;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
+use base64::Engine;
+use bytes::Bytes;
+use serde_with::serde_as;
+use sha2::{Digest, Sha256};
+
+use crate::identifiers::ServiceId;
+
+#[serde_as]
 /// ExternalStateMutation
 ///
 /// represents an external request to mutate a user's state.
@@ -22,6 +26,8 @@ use std::fmt::{Display, Formatter};
 pub struct ExternalStateMutation {
     pub service_id: ServiceId,
     pub version: Option<String>,
+    // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub state: HashMap<Bytes, Bytes>,
 }
 
