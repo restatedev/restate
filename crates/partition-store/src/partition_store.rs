@@ -15,6 +15,8 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use codederror::CodedError;
 use restate_rocksdb::CfName;
+use restate_rocksdb::IoMode;
+use restate_rocksdb::Priority;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
@@ -308,12 +310,12 @@ impl PartitionStore {
 
     #[allow(clippy::needless_lifetimes)]
     pub fn transaction(&mut self) -> RocksDBTransaction {
-        let db = self.raw_db.clone();
         let rocksdb = self.rocksdb.clone();
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
         let data_cf_handle = self
             .rocksdb
+            .inner()
             .cf_handle(&self.data_cf_name)
             .unwrap_or_else(|| {
                 panic!(
@@ -325,8 +327,7 @@ impl PartitionStore {
         RocksDBTransaction {
             txn: self.raw_db.transaction(),
             data_cf_handle,
-            db,
-            _rocksdb: rocksdb,
+            rocksdb,
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
         }
@@ -339,7 +340,8 @@ fn find_cf_handle<'a>(
     _table_kind: TableKind,
 ) -> Arc<BoundColumnFamily<'a>> {
     // At the moment, everything is in one cf
-    db.cf_handle(data_cf_name)
+    db.inner()
+        .cf_handle(data_cf_name)
         .unwrap_or_else(|| panic!("Access a column family that must exist: {}", data_cf_name))
 }
 
@@ -410,8 +412,7 @@ pub enum ScanMode {
 
 pub struct RocksDBTransaction<'a> {
     txn: rocksdb::Transaction<'a, DB>,
-    db: Arc<DB>,
-    _rocksdb: Arc<RocksDb>,
+    rocksdb: Arc<RocksDb>,
     data_cf_handle: Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
@@ -475,8 +476,9 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
-        self.db
-            .write_opt(&write_batch, &opts)
+        self.rocksdb
+            .write_tx_batch(Priority::High, IoMode::default(), opts, write_batch)
+            .await
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }

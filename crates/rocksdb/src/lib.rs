@@ -23,7 +23,6 @@ use tracing::info;
 use tracing::warn;
 
 use std::fmt;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -53,7 +52,7 @@ pub enum Priority {
 }
 
 /// Defines how to perform a potentially blocking rocksdb IO operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
 pub enum IoMode {
     /// [Dangerous] Allow blocking IO operation to happen in the worker thread (tokio)
     AllowBlockingIO,
@@ -61,6 +60,7 @@ pub enum IoMode {
     OnlyIfNonBlocking,
     /// Attempts to perform the operation without blocking IO in worker thread, if it's not
     /// possible, it'll spawn work in the background thread pool.
+    #[default]
     Default,
 }
 
@@ -78,14 +78,6 @@ pub struct RocksDb {
 }
 
 static_assertions::assert_impl_all!(RocksDb: Send, Sync);
-
-impl Deref for RocksDb {
-    type Target = Arc<dyn RocksAccess + Send + Sync + 'static>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.db
-    }
-}
 
 impl fmt::Debug for RocksDb {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -198,6 +190,79 @@ impl RocksDb {
         }
     }
 
+    // unfortunate side effect of trait objects not supporting generics
+    pub async fn write_tx_batch(
+        &self,
+        priority: Priority,
+        io_mode: IoMode,
+        mut write_options: rocksdb::WriteOptions,
+        write_batch: rocksdb::WriteBatchWithTransaction<true>,
+    ) -> Result<(), RocksError> {
+        //  depending on the IoMode, we decide how to do the write.
+        match io_mode {
+            IoMode::AllowBlockingIO => {
+                write_options.set_no_slowdown(false);
+                self.db.write_tx_batch(&write_batch, &write_options)?;
+                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MAYBE_BLOCKING, OP_TYPE =>
+                    OP_WRITE)
+                .increment(1);
+                return Ok(());
+            }
+            IoMode::OnlyIfNonBlocking => {
+                write_options.set_no_slowdown(true);
+                self.db.write_tx_batch(&write_batch, &write_options)?;
+                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE =>
+                    OP_WRITE)
+                .increment(1);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Auto...
+        // First, attempt to write without blocking
+        write_options.set_no_slowdown(true);
+        let result = self.db.write_tx_batch(&write_batch, &write_options);
+        match result {
+            Ok(_) => {
+                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE => OP_WRITE).increment(1);
+                Ok(())
+            }
+            Err(e) if is_retryable_error(e.kind()) => {
+                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MOVED_TO_BG, OP_TYPE =>
+                    OP_WRITE)
+                .increment(1);
+                let start = std::time::Instant::now();
+                // Operation will block, dispatch to background.
+                let db = self.db.clone();
+                // In the background thread pool we can block on IO
+                write_options.set_no_slowdown(false);
+                let task = StorageTask::default()
+                    .db_name(self.name.clone())
+                    .owner(self.owner)
+                    .priority(priority)
+                    .kind(StorageTaskKind::WriteBatch)
+                    .op(move || {
+                        db.write_tx_batch(&write_batch, &write_options)?;
+                        info!(
+                            "background write completed, completed in {:?}",
+                            start.elapsed()
+                        );
+                        Ok(())
+                    })
+                    .build()
+                    .unwrap();
+
+                self.manager.async_spawn(task).await?
+            }
+            Err(e) => {
+                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_FAILED, OP_TYPE => OP_WRITE)
+                    .increment(1);
+                Err(e.into())
+            }
+        }
+    }
+
     pub fn run_bg_wal_sync(&self) {
         let db = self.db.clone();
         let task = StorageTask::default()
@@ -247,7 +312,7 @@ impl RocksDb {
         let owner = self.owner;
         let manager = self.manager;
         let op = move || {
-            if let Err(e) = self.flush_wal(true) {
+            if let Err(e) = self.db.flush_wal(true) {
                 warn!(
                     db = %self.name,
                     owner = %self.owner,

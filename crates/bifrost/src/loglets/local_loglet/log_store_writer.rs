@@ -113,9 +113,14 @@ impl LogStoreWriter {
         buffer.clear();
 
         {
-            let data_cf = self.rocksdb.cf_handle(DATA_CF).expect("data cf exists");
+            let data_cf = self
+                .rocksdb
+                .inner()
+                .cf_handle(DATA_CF)
+                .expect("data cf exists");
             let metadata_cf = self
                 .rocksdb
+                .inner()
                 .cf_handle(METADATA_CF)
                 .expect("metadata cf exists");
 
@@ -205,7 +210,7 @@ impl LogStoreWriter {
         if self.manual_wal_flush {
             // WAL flush is done in the foreground, but sync will happen in the background to avoid
             // blocking IO.
-            if let Err(e) = self.rocksdb.flush_wal(opts.sync_wal_before_ack) {
+            if let Err(e) = self.rocksdb.inner().flush_wal(opts.sync_wal_before_ack) {
                 warn!("Failed to flush rocksdb WAL in local loglet : {}", e);
                 self.send_acks(Err(Error::LogStoreError(e.into())));
                 return;

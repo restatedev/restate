@@ -107,7 +107,7 @@ impl PartitionStoreManager {
             return Ok(store.clone());
         }
         let cf_name = cf_for_partition(partition_id);
-        let already_exists = self.rocksdb.cf_handle(&cf_name).is_some();
+        let already_exists = self.rocksdb.inner().cf_handle(&cf_name).is_some();
 
         if !already_exists {
             if open_mode == OpenMode::CreateIfMissing {
