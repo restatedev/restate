@@ -48,7 +48,7 @@ impl FixedPartitionTable {
         &self,
         partition_id: PartitionId,
     ) -> Option<RangeInclusive<PartitionKey>> {
-        if partition_id >= self.num_partitions {
+        if *partition_id >= self.num_partitions {
             None
         } else {
             Some(Self::partition_id_to_partition_range(
@@ -82,8 +82,10 @@ impl FixedPartitionTable {
         let num_partitions = u128::from(num_partitions);
         let partition_key = u128::from(partition_key);
 
-        u64::try_from(partition_key * num_partitions / Self::PARTITION_KEY_RANGE_END)
-            .expect("u64::MAX * u64::MAX / 1^64 should be <= u64::MAX.")
+        PartitionId::from(
+            u64::try_from(partition_key * num_partitions / Self::PARTITION_KEY_RANGE_END)
+                .expect("u64::MAX * u64::MAX / 1^64 should be <= u64::MAX."),
+        )
     }
 
     fn partition_id_to_partition_range(
@@ -91,7 +93,7 @@ impl FixedPartitionTable {
         partition_id: PartitionId,
     ) -> RangeInclusive<PartitionKey> {
         let num_partitions = u128::from(num_partitions);
-        let partition_id = u128::from(partition_id);
+        let partition_id = u128::from(*partition_id);
 
         assert!(
             partition_id < num_partitions,
@@ -143,14 +145,14 @@ where
 #[derive(Debug)]
 pub struct Partitioner {
     num_partitions: u64,
-    next_partition_id: u64,
+    next_partition_id: PartitionId,
 }
 
 impl Partitioner {
     fn new(num_partitions: u64) -> Self {
         Self {
             num_partitions,
-            next_partition_id: 0,
+            next_partition_id: PartitionId::MIN,
         }
     }
 }
@@ -159,9 +161,9 @@ impl Iterator for Partitioner {
     type Item = (PartitionId, RangeInclusive<PartitionKey>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.next_partition_id < self.num_partitions {
+        if *self.next_partition_id < self.num_partitions {
             let partition_id = self.next_partition_id;
-            self.next_partition_id += 1;
+            self.next_partition_id = self.next_partition_id.next();
 
             let partition_range = FixedPartitionTable::partition_id_to_partition_range(
                 self.num_partitions,

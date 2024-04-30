@@ -24,7 +24,9 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::Transaction;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::LeaderEpoch;
+use restate_types::identifiers::PartitionId;
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use std::time::{Duration, SystemTime};
@@ -46,7 +48,7 @@ async fn query_sys_invocation() {
             MockQueryEngine::create_with(
                 MockStatusHandle::default().with(InvocationStatusReport::new(
                     invocation_id,
-                    PartitionLeaderEpoch::default(),
+                    (PartitionId::MIN, LeaderEpoch::INITIAL),
                     InvocationStatusReportInner {
                         in_flight: false,
                         start_count: 1,
