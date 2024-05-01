@@ -33,7 +33,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyDisplay;
-use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::timer::TimerKeyValue;
 use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
@@ -99,7 +99,7 @@ pub(crate) enum Effect {
 
     // Timers
     RegisterTimer {
-        timer_value: TimerValue,
+        timer_value: TimerKeyValue,
         span_context: ServiceInvocationSpanContext,
     },
     DeleteTimer(TimerKey),
@@ -416,15 +416,15 @@ impl Effect {
                 span_context,
                 ..
             } => match timer_value.value() {
-                Timer::CompleteSleepEntry(_) => {
+                Timer::CompleteJournalEntry(_, entry_index) => {
                     info_span_if_leader!(
                         is_leader,
                         span_context.is_sampled(),
                         span_context.as_parent(),
                         "sleep",
-                        restate.invocation.id = %timer_value.invocation_id(),
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.journal.index = entry_index,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         // without converting to i64 this field will encode as a string
                         // however, overflowing i64 seems unlikely
                         restate.internal.end_time = i64::try_from(timer_value.wake_up_time().as_u64()).expect("wake up time should fit into i64"),
@@ -432,8 +432,9 @@ impl Effect {
 
                     debug_if_leader!(
                         is_leader,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        restate.journal.index = entry_index,
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register Sleep timer"
                     )
                 }
@@ -443,19 +444,17 @@ impl Effect {
                         is_leader,
                         rpc.service = %service_invocation.invocation_target.service_name(),
                         rpc.method = %service_invocation.invocation_target.handler_name(),
-                        restate.invocation.id = %service_invocation.invocation_id,
                         restate.invocation.target = %service_invocation.invocation_target,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register background invoke timer"
                     )
                 }
-                Timer::CleanInvocationStatus(invocation_id) => {
+                Timer::CleanInvocationStatus(_) => {
                     debug_if_leader!(
                         is_leader,
-                        restate.invocation.id = %invocation_id,
-                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                         "Effect: Register cleanup invocation status timer"
                     )
                 }
@@ -828,7 +827,7 @@ impl Effects {
 
     pub(crate) fn register_timer(
         &mut self,
-        timer_value: TimerValue,
+        timer_value: TimerKeyValue,
         span_context: ServiceInvocationSpanContext,
     ) {
         self.effects.push(Effect::RegisterTimer {

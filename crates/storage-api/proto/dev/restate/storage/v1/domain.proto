@@ -68,7 +68,7 @@ message JournalMeta {
 
 message Source {
     message Service {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
         InvocationTarget invocation_target = 2;
     }
 
@@ -221,7 +221,7 @@ message Header {
 }
 
 message ServiceInvocation {
-    bytes invocation_id = 1;
+    InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     bytes argument = 3;
     ServiceInvocationResponseSink response_sink = 4;
@@ -240,7 +240,7 @@ message StateMutation {
 
 message InboxEntry {
     message Invocation {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
         ServiceId service_id = 2;
     }
 
@@ -252,7 +252,7 @@ message InboxEntry {
 
 message InvocationResolutionResult {
     message Success {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
         InvocationTarget invocation_target = 2;
         SpanContext span_context = 3;
     }
@@ -264,7 +264,7 @@ message InvocationResolutionResult {
 }
 
 message BackgroundCallResolutionResult {
-    bytes invocation_id = 1;
+    InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
 }
@@ -311,7 +311,7 @@ message EnrichedEntryHeader {
     }
 
     message CompleteAwakeable {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
         uint32 entry_index = 2;
     }
 
@@ -404,17 +404,17 @@ message OutboxMessage {
     }
 
     message OutboxServiceInvocationResponse {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
         uint32 entry_index = 2;
         ResponseResult response_result = 3;
     }
 
     message OutboxKill {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
     }
 
     message OutboxCancel {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
     }
 
     oneof outbox_message {
@@ -433,11 +433,12 @@ message OutboxMessage {
 message Timer {
 
     message CompleteSleepEntry {
-        uint64 partition_key = 1;
+        InvocationId invocation_id = 1;
+        uint32 entry_index = 2;
     }
 
     message CleanInvocationStatus {
-        bytes invocation_id = 1;
+        InvocationId invocation_id = 1;
     }
 
     oneof value {
@@ -478,7 +479,7 @@ message DedupSequenceNumber {
 // ---------------------------------------------------------------------
 
 message IdempotencyMetadata {
-    bytes invocation_id = 1;
+    InvocationId invocation_id = 1;
 }
 
 message IdempotentRequestMetadata {

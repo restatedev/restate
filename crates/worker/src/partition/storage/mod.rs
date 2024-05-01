@@ -40,7 +40,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::timer::{TimerKeyWrapper, TimerValue};
+use restate_wal_protocol::timer::TimerKeyValue;
 use std::future::Future;
 use std::ops::RangeInclusive;
 
@@ -666,22 +666,18 @@ where
     }
 }
 
-impl<Storage> TimerReader<TimerValue> for PartitionStorage<Storage>
+impl<Storage> TimerReader<TimerKeyValue> for PartitionStorage<Storage>
 where
     for<'a> Storage: TimerTable + Send + Sync + 'a,
 {
     async fn get_timers(
         &mut self,
         num_timers: usize,
-        previous_timer_key: Option<TimerKeyWrapper>,
-    ) -> Vec<TimerValue> {
+        previous_timer_key: Option<TimerKey>,
+    ) -> Vec<TimerKeyValue> {
         self.storage
-            .next_timers_greater_than(
-                self.partition_id,
-                previous_timer_key.map(|t| t.into_inner()).as_ref(),
-                num_timers,
-            )
-            .map(|result| result.map(|(timer_key, timer)| TimerValue::new(timer_key, timer)))
+            .next_timers_greater_than(self.partition_id, previous_timer_key.as_ref(), num_timers)
+            .map(|result| result.map(|(timer_key, timer)| TimerKeyValue::new(timer_key, timer)))
             // TODO: Update timer service to maintain transaction while reading the timer stream: See https://github.com/restatedev/restate/issues/273
             // have to collect the stream because it depends on the local transaction
             .try_collect::<Vec<_>>()

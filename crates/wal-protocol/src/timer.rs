@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::timer_table::{Timer, TimerKey};
-use restate_types::identifiers::{EntryIndex, InvocationId, WithPartitionKey};
+use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 use std::borrow::Borrow;
@@ -18,60 +18,48 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TimerValue {
-    timer_key: TimerKeyWrapper,
+pub struct TimerKeyValue {
+    timer_key: TimerKey,
     value: Timer,
 }
 
-impl TimerValue {
+impl TimerKeyValue {
     pub fn new(timer_key: TimerKey, value: Timer) -> Self {
-        Self {
-            timer_key: TimerKeyWrapper(timer_key),
-            value,
-        }
+        Self { timer_key, value }
     }
 
-    pub fn new_sleep(
-        invocation_id: InvocationId,
+    pub fn complete_journal_entry(
         wake_up_time: MillisSinceEpoch,
+        invocation_id: InvocationId,
         entry_index: EntryIndex,
     ) -> Self {
-        let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: invocation_id.invocation_uuid(),
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        });
+        let (timer_key, value) =
+            Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, entry_index);
 
-        Self {
-            timer_key,
-            value: Timer::CompleteSleepEntry(invocation_id.partition_key()),
-        }
+        Self { timer_key, value }
     }
 
-    pub fn new_invoke(
-        invocation_id: InvocationId,
-        wake_up_time: MillisSinceEpoch,
-        entry_index: EntryIndex,
-        service_invocation: ServiceInvocation,
-    ) -> Self {
-        let timer_key = TimerKeyWrapper(TimerKey {
-            invocation_uuid: invocation_id.invocation_uuid(),
-            timestamp: wake_up_time.as_u64(),
-            journal_index: entry_index,
-        });
+    pub fn invoke(wake_up_time: MillisSinceEpoch, service_invocation: ServiceInvocation) -> Self {
+        let (timer_key, value) = Timer::invoke(wake_up_time.as_u64(), service_invocation);
 
-        Self {
-            timer_key,
-            value: Timer::Invoke(service_invocation),
-        }
+        Self { timer_key, value }
+    }
+
+    pub fn clean_invocation_status(
+        wake_up_time: MillisSinceEpoch,
+        invocation_id: InvocationId,
+    ) -> Self {
+        let (timer_key, value) =
+            Timer::clean_invocation_status(wake_up_time.as_u64(), invocation_id);
+        Self { timer_key, value }
     }
 
     pub fn into_inner(self) -> (TimerKey, Timer) {
-        (self.timer_key.0, self.value)
+        (self.timer_key, self.value)
     }
 
     pub fn key(&self) -> &TimerKey {
-        &self.timer_key.0
+        &self.timer_key
     }
 
     pub fn value(&self) -> &Timer {
@@ -79,75 +67,40 @@ impl TimerValue {
     }
 
     pub fn invocation_id(&self) -> InvocationId {
-        InvocationId::from_parts(self.value.partition_key(), self.timer_key.0.invocation_uuid)
+        self.value.invocation_id()
     }
 
     pub fn wake_up_time(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.timer_key.0.timestamp)
+        MillisSinceEpoch::from(self.timer_key.timestamp)
     }
 }
 
-impl Hash for TimerValue {
+impl Hash for TimerKeyValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Hash::hash(&self.timer_key, state);
         // We don't hash the value field.
     }
 }
 
-impl PartialEq for TimerValue {
+impl PartialEq for TimerKeyValue {
     fn eq(&self, other: &Self) -> bool {
         self.timer_key == other.timer_key
     }
 }
 
-impl Eq for TimerValue {}
+impl Eq for TimerKeyValue {}
 
-/// New type wrapper to implement [`restate_types::timer::TimerKey`] for [`TimerKey`].
-///
-/// # Important
-/// We use the [`TimerKey`] to read the timers in an absolute order. The timer service
-/// relies on this order in order to process each timer exactly once. That is the
-/// reason why the in-memory and in-rocksdb ordering of the TimerKey needs to be exactly
-/// the same.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TimerKeyWrapper(TimerKey);
-
-impl TimerKeyWrapper {
-    pub fn into_inner(self) -> TimerKey {
-        self.0
-    }
-}
-
-impl Borrow<TimerKeyWrapper> for TimerValue {
-    fn borrow(&self) -> &TimerKeyWrapper {
+impl Borrow<TimerKey> for TimerKeyValue {
+    fn borrow(&self) -> &TimerKey {
         &self.timer_key
     }
 }
 
-impl restate_types::timer::Timer for TimerValue {
-    type TimerKey = TimerKeyWrapper;
+impl restate_types::timer::Timer for TimerKeyValue {
+    type TimerKey = TimerKey;
 
     fn timer_key(&self) -> &Self::TimerKey {
         &self.timer_key
-    }
-}
-
-impl restate_types::timer::TimerKey for TimerKeyWrapper {
-    fn wake_up_time(&self) -> MillisSinceEpoch {
-        MillisSinceEpoch::from(self.0.timestamp)
-    }
-}
-
-impl From<TimerKey> for TimerKeyWrapper {
-    fn from(timer_key: TimerKey) -> Self {
-        TimerKeyWrapper(timer_key)
-    }
-}
-
-impl fmt::Display for TimerKeyWrapper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", TimerKeyDisplay(&self.0))
     }
 }
 
@@ -157,6 +110,21 @@ pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}]({})", self.0.invocation_uuid, self.0.journal_index)
+        match self.0.kind {
+            TimerKeyKind::Invoke { invocation_uuid } => {
+                write!(f, "Delayed invocation '{}'", invocation_uuid)
+            }
+            TimerKeyKind::CompleteJournalEntry {
+                invocation_uuid,
+                journal_index,
+            } => write!(
+                f,
+                "Complete journal entry [{}] for '{}'",
+                journal_index, invocation_uuid
+            ),
+            TimerKeyKind::CleanInvocationStatus { invocation_uuid } => {
+                write!(f, "Clean invocation status '{}'", invocation_uuid)
+            }
+        }
     }
 }

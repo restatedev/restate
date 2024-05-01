@@ -16,7 +16,7 @@ use restate_types::ingress::IngressResponse;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::timer::TimerValue;
+use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ pub enum Action {
         message: OutboxMessage,
     },
     RegisterTimer {
-        timer_value: TimerValue,
+        timer_value: TimerKeyValue,
     },
     DeleteTimer {
         timer_key: TimerKey,

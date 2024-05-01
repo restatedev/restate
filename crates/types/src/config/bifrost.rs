@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -95,6 +96,7 @@ impl LocalLogletOptions {
 impl Default for LocalLogletOptions {
     fn default() -> Self {
         let rocksdb = RocksDbOptionsBuilder::default()
+            .rocksdb_write_buffer_size(Some(NonZeroUsize::new(128_000_000).unwrap()))
             .rocksdb_disable_wal(Some(false))
             .build()
             .unwrap();

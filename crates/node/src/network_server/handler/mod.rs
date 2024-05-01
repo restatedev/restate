@@ -17,7 +17,7 @@ use axum::extract::State;
 use metrics_exporter_prometheus::formatting;
 use rocksdb::statistics::{Histogram, Ticker};
 
-use restate_rocksdb::RocksDbManager;
+use restate_rocksdb::{CfName, RocksDbManager};
 
 use crate::network_server::prometheus_helpers::{
     format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
@@ -25,30 +25,36 @@ use crate::network_server::prometheus_helpers::{
 };
 use crate::network_server::state::NodeCtrlHandlerState;
 
-static ROCKSDB_TICKERS: &[Ticker] = &[
-    Ticker::BlockCacheDataBytesInsert,
-    Ticker::BlockCacheDataHit,
-    Ticker::BlockCacheDataMiss,
+const ROCKSDB_TICKERS: &[Ticker] = &[
+    Ticker::BlockCacheBytesRead,
+    Ticker::BlockCacheBytesWrite,
+    Ticker::BlockCacheHit,
+    Ticker::BlockCacheMiss,
     Ticker::BloomFilterUseful,
     Ticker::BytesRead,
     Ticker::BytesWritten,
     Ticker::CompactReadBytes,
     Ticker::CompactWriteBytes,
     Ticker::FlushWriteBytes,
+    Ticker::IterBytesRead,
     Ticker::MemtableHit,
     Ticker::MemtableMiss,
     Ticker::NoIteratorCreated,
     Ticker::NoIteratorDeleted,
+    Ticker::NumberDbNext,
+    Ticker::NumberDbSeek,
+    Ticker::NumberIterSkip,
     Ticker::NumberKeysRead,
     Ticker::NumberKeysUpdated,
     Ticker::NumberKeysWritten,
+    Ticker::NumberOfReseeksInIteration,
     Ticker::StallMicros,
     Ticker::WalFileBytes,
     Ticker::WalFileSynced,
     Ticker::WriteWithWal,
 ];
 
-static ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
+const ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
     (Histogram::DbGet, "rocksdb.db.get", MetricUnit::Micros),
     (
         Histogram::DbMultiget,
@@ -59,8 +65,43 @@ static ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
     (Histogram::DbSeek, "rocksdb.db.seek", MetricUnit::Micros),
     (Histogram::FlushTime, "rocksdb.db.flush", MetricUnit::Micros),
     (
+        Histogram::ReadBlockGetMicros,
+        "rocksdb.read.block.get",
+        MetricUnit::Micros,
+    ),
+    (
+        Histogram::SstReadMicros,
+        "rocksdb.sst.read",
+        MetricUnit::Micros,
+    ),
+    (
+        Histogram::SstWriteMicros,
+        "rocksdb.sst.write",
+        MetricUnit::Micros,
+    ),
+    (
+        Histogram::ReadNumMergeOperands,
+        Histogram::ReadNumMergeOperands.name(),
+        MetricUnit::Count,
+    ),
+    (
+        Histogram::NumSstReadPerLevel,
+        Histogram::NumSstReadPerLevel.name(),
+        MetricUnit::Count,
+    ),
+    (
         Histogram::WalFileSyncMicros,
         "rocksdb.wal.file.sync",
+        MetricUnit::Micros,
+    ),
+    (
+        Histogram::AsyncReadBytes,
+        "rocksdb.async.read",
+        MetricUnit::Bytes,
+    ),
+    (
+        Histogram::PollWaitMicros,
+        "rocksdb.poll.wait",
         MetricUnit::Micros,
     ),
     (
@@ -90,8 +131,15 @@ static ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
     ),
 ];
 
+// Per database properties
+const ROCKSDB_DB_PROPERTIES: &[(&str, MetricUnit)] = &[
+    ("rocksdb.block-cache-capacity", MetricUnit::Bytes),
+    ("rocksdb.block-cache-usage", MetricUnit::Bytes),
+    ("rocksdb.block-cache-pinned-usage", MetricUnit::Bytes),
+];
+
 // Per column-family properties
-static ROCKSDB_PROPERTIES: &[(&str, MetricUnit)] = &[
+const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.num-immutable-mem-table", MetricUnit::Count),
     ("rocksdb.mem-table-flush-pending", MetricUnit::Count),
     ("rocksdb.compaction-pending", MetricUnit::Count),
@@ -113,19 +161,19 @@ static ROCKSDB_PROPERTIES: &[(&str, MetricUnit)] = &[
         "rocksdb.estimate-pending-compaction-bytes",
         MetricUnit::Bytes,
     ),
+    ("rocksdb.num-running-flushes", MetricUnit::Count),
     ("rocksdb.num-running-compactions", MetricUnit::Count),
     ("rocksdb.actual-delayed-write-rate", MetricUnit::Count),
-    ("rocksdb.block-cache-capacity", MetricUnit::Bytes),
-    ("rocksdb.block-cache-usage", MetricUnit::Bytes),
-    ("rocksdb.block-cache-pinned-usage", MetricUnit::Bytes),
     ("rocksdb.num-files-at-level0", MetricUnit::Count),
     ("rocksdb.num-files-at-level1", MetricUnit::Count),
     // Add more as needed.
     ("rocksdb.num-files-at-level2", MetricUnit::Count),
+    ("rocksdb.num-files-at-level3", MetricUnit::Count),
 ];
 
 // -- Direct HTTP Handlers --
 pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String {
+    let default_cf = CfName::new("default");
     let mut out = String::new();
 
     // Response content type is plain/text and that's expected.
@@ -186,14 +234,6 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             &mut out,
             &labels,
             MetricUnit::Bytes,
-            "rocksdb.memory.approximate-cache",
-            memory_usage.approximate_cache_total(),
-        );
-
-        format_rocksdb_property_for_prometheus(
-            &mut out,
-            &labels,
-            MetricUnit::Bytes,
             "rocksdb.memory.approx-memtable",
             memory_usage.approximate_mem_table_total(),
         );
@@ -214,6 +254,20 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             memory_usage.approximate_mem_table_readers_total(),
         );
 
+        // Other per-database properties
+        for (property, unit) in ROCKSDB_DB_PROPERTIES {
+            format_rocksdb_property_for_prometheus(
+                &mut out,
+                &labels,
+                *unit,
+                property,
+                db.inner()
+                    .get_property_int_cf(&default_cf, property)
+                    .unwrap_or_default()
+                    .unwrap_or_default(),
+            );
+        }
+
         // Properties (Gauges)
         // For properties, we need to get them for each column family.
         for cf in &db.cfs() {
@@ -221,7 +275,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             let mut cf_labels = Vec::with_capacity(labels.len() + 1);
             labels.clone_into(&mut cf_labels);
             cf_labels.push(format!("cf=\"{}\"", sanitized_cf_name));
-            for (property, unit) in ROCKSDB_PROPERTIES {
+            for (property, unit) in ROCKSDB_CF_PROPERTIES {
                 format_rocksdb_property_for_prometheus(
                     &mut out,
                     &cf_labels,
