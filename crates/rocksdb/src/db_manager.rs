@@ -358,14 +358,9 @@ impl RocksDbManager {
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let priority = task.priority;
-        let action = move || {
-            let result = task.run();
-            // ignoring the error since receiver might not be interested in the response
-            let _ = tx.send(result);
-        };
         match priority {
-            Priority::High => self.high_pri_pool.spawn(action),
-            Priority::Low => self.low_pri_pool.spawn(action),
+            Priority::High => self.high_pri_pool.spawn(task.into_async_runner(tx)),
+            Priority::Low => self.low_pri_pool.spawn(task.into_async_runner(tx)),
         }
         rx.await.map_err(|_| ShutdownError)
     }
@@ -390,8 +385,8 @@ impl RocksDbManager {
         OP: FnOnce() + Send + 'static,
     {
         match task.priority {
-            Priority::High => self.high_pri_pool.spawn(|| task.run()),
-            Priority::Low => self.low_pri_pool.spawn(|| task.run()),
+            Priority::High => self.high_pri_pool.spawn(task.into_runner()),
+            Priority::Low => self.low_pri_pool.spawn(task.into_runner()),
         }
     }
 }

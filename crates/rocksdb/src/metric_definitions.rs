@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
-pub const STORAGE_BG_TASK_SPAWNED: &str = "restate.rocksdb_manager.bg_task_spawned.total";
+pub const STORAGE_BG_TASK_IN_FLIGHT: &str = "restate.rocksdb_manager.bg_task_in_flight.total";
 pub const STORAGE_IO_OP: &str = "restate.rocksdb_manager.io_operation.total";
 pub const STORAGE_BG_TASK_WAIT_DURATION: &str =
     "restate.rocksdb_manager.bg_task_wait_duration.seconds";
@@ -32,10 +32,10 @@ pub const DISPOSITION_MOVED_TO_BG: &str = "moved-to-bg";
 pub const DISPOSITION_FAILED: &str = "failed";
 
 pub fn describe_metrics() {
-    describe_counter!(
-        STORAGE_BG_TASK_SPAWNED,
+    describe_gauge!(
+        STORAGE_BG_TASK_IN_FLIGHT,
         Unit::Count,
-        "Number of background storage tasks spawned"
+        "Number of background storage tasks in-flight"
     );
 
     describe_counter!(

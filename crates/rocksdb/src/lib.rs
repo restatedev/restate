@@ -125,21 +125,30 @@ impl RocksDb {
         mut write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatch,
     ) -> Result<(), RocksError> {
+        let priority_str: &'static str = priority.into();
         //  depending on the IoMode, we decide how to do the write.
         match io_mode {
             IoMode::AllowBlockingIO => {
                 write_options.set_no_slowdown(false);
                 self.db.write_batch(&write_batch, &write_options)?;
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MAYBE_BLOCKING, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_MAYBE_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 return Ok(());
             }
             IoMode::OnlyIfNonBlocking => {
                 write_options.set_no_slowdown(true);
                 self.db.write_batch(&write_batch, &write_options)?;
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_NON_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 return Ok(());
             }
@@ -152,12 +161,22 @@ impl RocksDb {
         let result = self.db.write_batch(&write_batch, &write_options);
         match result {
             Ok(_) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE => OP_WRITE).increment(1);
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_NON_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
+                .increment(1);
                 Ok(())
             }
             Err(e) if is_retryable_error(e.kind()) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MOVED_TO_BG, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_MOVED_TO_BG,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 let start = std::time::Instant::now();
                 // Operation will block, dispatch to background.
@@ -183,8 +202,13 @@ impl RocksDb {
                 self.manager.async_spawn(task).await?
             }
             Err(e) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_FAILED, OP_TYPE => OP_WRITE)
-                    .increment(1);
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_FAILED,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
+                .increment(1);
                 Err(e.into())
             }
         }
@@ -198,21 +222,30 @@ impl RocksDb {
         mut write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatchWithTransaction<true>,
     ) -> Result<(), RocksError> {
+        let priority_str: &'static str = priority.into();
         //  depending on the IoMode, we decide how to do the write.
         match io_mode {
             IoMode::AllowBlockingIO => {
                 write_options.set_no_slowdown(false);
                 self.db.write_tx_batch(&write_batch, &write_options)?;
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MAYBE_BLOCKING, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_MAYBE_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 return Ok(());
             }
             IoMode::OnlyIfNonBlocking => {
                 write_options.set_no_slowdown(true);
                 self.db.write_tx_batch(&write_batch, &write_options)?;
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_NON_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 return Ok(());
             }
@@ -225,12 +258,22 @@ impl RocksDb {
         let result = self.db.write_tx_batch(&write_batch, &write_options);
         match result {
             Ok(_) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_NON_BLOCKING, OP_TYPE => OP_WRITE).increment(1);
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_NON_BLOCKING,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
+                .increment(1);
                 Ok(())
             }
             Err(e) if is_retryable_error(e.kind()) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_MOVED_TO_BG, OP_TYPE =>
-                    OP_WRITE)
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_MOVED_TO_BG,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
                 .increment(1);
                 let start = std::time::Instant::now();
                 // Operation will block, dispatch to background.
@@ -256,8 +299,13 @@ impl RocksDb {
                 self.manager.async_spawn(task).await?
             }
             Err(e) => {
-                counter!(STORAGE_IO_OP, DISPOSITION => DISPOSITION_FAILED, OP_TYPE => OP_WRITE)
-                    .increment(1);
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_FAILED,
+                    OP_TYPE => OP_WRITE,
+                    "db" => self.name.to_string(),
+                    "priority" => priority_str,
+                )
+                .increment(1);
                 Err(e.into())
             }
         }
