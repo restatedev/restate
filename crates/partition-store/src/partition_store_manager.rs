@@ -149,9 +149,6 @@ fn db_options() -> rocksdb::Options {
     //
     db_options.set_keep_log_file_num(1);
 
-    // we always need to enable atomic flush in case that the user disables wal at runtime
-    db_options.set_atomic_flush(true);
-
     // we always enable manual wal flushing in case that the user enables wal at runtime
     db_options.set_manual_wal_flush(true);
 

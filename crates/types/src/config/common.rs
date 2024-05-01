@@ -281,7 +281,7 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_size: 0,
+            rocksdb_total_memtables_size: 2_000_000_000, // 2GB (50% of total memory)
             rocksdb_total_memory_size: NonZeroUsize::new(4_000_000_000).unwrap(), // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
