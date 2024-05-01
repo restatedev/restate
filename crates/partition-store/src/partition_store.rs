@@ -180,7 +180,7 @@ pub(crate) fn cf_options(mut cf_options: rocksdb::Options) -> rocksdb::Options {
     // As much as we can to increase the chances to observe a deletion.
     //
     cf_options.set_max_write_buffer_number(3);
-    cf_options.set_min_write_buffer_number_to_merge(2);
+    cf_options.set_min_write_buffer_number_to_merge(1);
     //
     // Set compactions per level
     //
