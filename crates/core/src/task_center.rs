@@ -225,7 +225,8 @@ impl TaskCenter {
         let mut handle_mut = task.join_handle.lock().unwrap();
 
         let task_cloned = Arc::clone(&task);
-        let join_handle = inner.default_runtime_handle.spawn(wrapper(
+        let tokio_task = tokio::task::Builder::new().name(name);
+        let fut = wrapper(
             self.clone(),
             id,
             kind,
@@ -233,7 +234,10 @@ impl TaskCenter {
             cancel,
             metadata,
             future,
-        ));
+        );
+        let join_handle = tokio_task
+            .spawn_on(fut, &inner.default_runtime_handle)
+            .expect("default runtime can spawn tasks");
         *handle_mut = Some(join_handle);
         drop(handle_mut);
         let kind_str: &'static str = kind.into();
