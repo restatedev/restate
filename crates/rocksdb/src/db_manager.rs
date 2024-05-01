@@ -313,7 +313,6 @@ impl RocksDbManager {
         // write buffer
         //
         cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size().get());
-        //
         // bloom filters and block cache.
         //
         let mut block_opts = BlockBasedOptions::default();

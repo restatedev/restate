@@ -26,7 +26,7 @@ pub struct RocksDbOptions {
     /// # Write Buffer size
     ///
     /// The size of a single memtable. Once memtable exceeds this size, it is marked
-    /// immutable and a new one is created. Default is 256MB per memtable.
+    /// immutable and a new one is created. Default is 50MB per memtable.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<NonZeroByteCount>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
@@ -109,7 +109,7 @@ impl RocksDbOptions {
 
     pub fn rocksdb_write_buffer_size(&self) -> NonZeroUsize {
         self.rocksdb_write_buffer_size
-            .unwrap_or(NonZeroUsize::new(256_000_000).unwrap()) // 256MB
+            .unwrap_or(NonZeroUsize::new(50_000_000).unwrap()) // 50MB
     }
 
     pub fn rocksdb_max_total_wal_size(&self) -> NonZeroUsize {
