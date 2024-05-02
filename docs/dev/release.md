@@ -42,7 +42,7 @@ When performing a full release of all the artifacts, this order should be follow
 
 ## Releasing the Restate runtime
 
-In order to release the Restate runtime, you first have to make sure that the version field in the [Cargo.toml](/Cargo.toml) is set to the new release version `X.Y.Z`. 
+In order to release the Restate runtime, you first have to make sure that the version field in the [Cargo.toml](/Cargo.toml) and [Chart.yaml](/charts/restate-helm/Chart.yaml) is set to the new release version `X.Y.Z`. 
 Then you have to create a tag of the form `vX.Y.Z` and push it to the repository.
 The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which does the following:
 
