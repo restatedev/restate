@@ -469,7 +469,6 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         // writes to RocksDB. However, it is safe to write the WriteBatch for a given partition,
         // because there can only be a single writer (the leading PartitionProcessor).
         let write_batch = self.txn.get_writebatch();
-        // todo: make async and use configuration to control use of WAL
         if write_batch.is_empty() {
             return Ok(());
         }

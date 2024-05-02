@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use restate_rocksdb::{
-    CfExactPattern, CfName, DbName, DbSpecBuilder, Owner, RocksDb, RocksDbManager, RocksError,
+    CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
@@ -58,23 +58,18 @@ impl RocksDbLogStore {
 
         let data_dir = options.data_dir();
 
-        let db_spec = DbSpecBuilder::new(
-            DbName::new(DB_NAME),
-            Owner::Bifrost,
-            data_dir,
-            db_options(options),
-        )
-        .add_cf_pattern(CfExactPattern::new(DATA_CF), cf_data_options)
-        .add_cf_pattern(CfExactPattern::new(METADATA_CF), cf_metadata_options)
-        // not very important but it's to reduce the number of merges by flushing.
-        // it's also a small cf so it should be quick.
-        .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-        .ensure_column_families(cfs)
-        .build_as_db();
+        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), data_dir, db_options(options))
+            .add_cf_pattern(CfExactPattern::new(DATA_CF), cf_data_options)
+            .add_cf_pattern(CfExactPattern::new(METADATA_CF), cf_metadata_options)
+            // not very important but it's to reduce the number of merges by flushing.
+            // it's also a small cf so it should be quick.
+            .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+            .ensure_column_families(cfs)
+            .build_as_db();
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
         let _ = db_manager.open_db(updateable_options, db_spec)?;
-        let rocksdb = db_manager.get_db(Owner::Bifrost, db_name).unwrap();
+        let rocksdb = db_manager.get_db(db_name).unwrap();
         Ok(Self { rocksdb })
     }
 

@@ -11,12 +11,13 @@
 use std::time::Instant;
 
 use derive_builder::Builder;
-use metrics::histogram;
+use metrics::{gauge, histogram};
+use tokio::sync::oneshot;
 
 use crate::metric_definitions::{
     STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_TOTAL_DURATION, STORAGE_BG_TASK_WAIT_DURATION,
 };
-use crate::{DbName, Owner, Priority};
+use crate::{Priority, OP_TYPE, PRIORITY, STORAGE_BG_TASK_IN_FLIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
@@ -24,8 +25,15 @@ pub enum StorageTaskKind {
     WriteBatch,
     OpenColumnFamily,
     FlushWal,
+    FlushMemtables,
     Shutdown,
     OpenDb,
+}
+
+impl StorageTaskKind {
+    pub fn as_static_str(&self) -> &'static str {
+        self.into()
+    }
 }
 
 #[derive(Builder)]
@@ -33,17 +41,13 @@ pub enum StorageTaskKind {
 #[builder(name = "StorageTask")]
 pub struct ReadyStorageTask<OP> {
     op: OP,
-    #[builder(setter(into))]
-    db_name: DbName,
-    #[builder(default)]
-    owner: Owner,
     #[builder(default)]
     pub(crate) priority: Priority,
     /// required
     kind: StorageTaskKind,
     #[builder(setter(skip))]
     #[builder(default = "Instant::now()")]
-    enqueue_at: Instant,
+    created_at: Instant,
 }
 
 impl<OP, R> ReadyStorageTask<OP>
@@ -51,34 +55,58 @@ where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    pub fn run(self) -> R {
+    pub fn into_runner(self) -> impl FnOnce() -> R + Send + 'static {
+        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
+         PRIORITY => self.priority.as_static_str(),
+         OP_TYPE => self.kind.as_static_str(),
+        )
+        .increment(1);
+
+        let span = tracing::Span::current().clone();
+
+        move || span.in_scope(|| self.run())
+    }
+
+    pub fn into_async_runner(self, tx: oneshot::Sender<R>) -> impl FnOnce() + Send + 'static {
+        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
+         PRIORITY => self.priority.as_static_str(),
+         OP_TYPE => self.kind.as_static_str(),
+        )
+        .increment(1);
+        let span = tracing::Span::current().clone();
+
+        move || {
+            span.in_scope(|| {
+                let result = self.run();
+                let _ = tx.send(result);
+            })
+        }
+    }
+
+    fn run(self) -> R {
         let start = Instant::now();
-        let kind: &'static str = self.kind.into();
-        let owner: &'static str = self.owner.into();
-        let priority: &'static str = self.priority.into();
         histogram!(
             STORAGE_BG_TASK_WAIT_DURATION,
-            "kind" => kind,
-            "db" => self.db_name.to_string(),
-            "owner" => owner,
-            "priority" => priority,
+             PRIORITY => self.priority.as_static_str(),
+             OP_TYPE => self.kind.as_static_str(),
         )
-        .record(self.enqueue_at.elapsed());
+        .record(self.created_at.elapsed());
         let res = (self.op)();
         histogram!(STORAGE_BG_TASK_RUN_DURATION,
-            "kind" => kind,
-            "db" => self.db_name.to_string(),
-            "owner" => owner,
-            "priority" => priority,
+             PRIORITY => self.priority.as_static_str(),
+             OP_TYPE => self.kind.as_static_str(),
         )
         .record(start.elapsed());
         histogram!(STORAGE_BG_TASK_TOTAL_DURATION,
-            "kind" => kind,
-            "db" => self.db_name.to_string(),
-            "owner" => owner,
-            "priority" => priority,
+             PRIORITY => self.priority.as_static_str(),
+             OP_TYPE => self.kind.as_static_str(),
         )
-        .record(self.enqueue_at.elapsed());
+        .record(self.created_at.elapsed());
+        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
+             PRIORITY => self.priority.as_static_str(),
+             OP_TYPE => self.kind.as_static_str(),
+        )
+        .decrement(1);
         res
     }
 }

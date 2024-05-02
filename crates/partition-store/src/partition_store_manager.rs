@@ -17,7 +17,7 @@ use tracing::debug;
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{
-    CfName, CfPrefixPattern, DbName, DbSpecBuilder, Owner, RocksDb, RocksDbManager, RocksError,
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
@@ -59,15 +59,10 @@ impl PartitionStoreManager {
     ) -> std::result::Result<Self, RocksError> {
         let options = storage_opts.load();
 
-        let db_spec = DbSpecBuilder::new(
-            DbName::new(DB_NAME),
-            Owner::PartitionProcessor,
-            options.data_dir(),
-            db_options(),
-        )
-        .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), cf_options)
-        .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
-        .build_as_optimistic_db();
+        let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
+            .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), cf_options)
+            .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
+            .build_as_optimistic_db();
 
         let manager = RocksDbManager::get();
         // todo remove this when open_db is async
@@ -75,9 +70,7 @@ impl PartitionStoreManager {
             .await
             .map_err(|_| ShutdownError)??;
 
-        let rocksdb = manager
-            .get_db(Owner::PartitionProcessor, DbName::new(DB_NAME))
-            .unwrap();
+        let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 
         Ok(Self {
             raw_db,

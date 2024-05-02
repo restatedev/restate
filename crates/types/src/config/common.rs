@@ -18,7 +18,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::{ByteCount, NonZeroByteCount};
+use restate_serde_util::NonZeroByteCount;
 
 use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
@@ -170,15 +170,13 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
     pub rocksdb_total_memory_size: NonZeroUsize,
 
-    /// # Rocksdb total memtable size limit
+    /// # Rocksdb total memtable size ratio
     ///
-    /// The memory size used across all memtables. This limits how much memory
-    /// memtables can eat up from the value in rocksdb_total_memory_limit. When
-    /// set to 0, memtables can take all available memory up to the value specified
-    /// in rocksdb_total_memory_limit.
-    #[serde_as(as = "ByteCount")]
-    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
-    pub rocksdb_total_memtables_size: usize,
+    /// The memory size used across all memtables (ratio between 0 to 1.0). This
+    /// limits how much memory memtables can eat up from the value in rocksdb-total-memory-limit.
+    /// When set to 0, memtables can take all available memory up to the value specified
+    /// in rocksdb-total-memory-limit. This value will be sanitized to 1.0 if outside the valid bounds.
+    rocksdb_total_memtables_ratio: f32,
 
     /// # Rocksdb Background Threads
     ///
@@ -191,6 +189,16 @@ pub struct CommonOptions {
     ///
     /// The number of threads to reserve to high priority Rocksdb background tasks.
     pub rocksdb_high_priority_bg_threads: NonZeroU32,
+
+    /// # Rocksdb stall detection threshold
+    ///
+    /// This defines the duration afterwhich a write is to be considered in "stall" state. For
+    /// every write that meets this threshold, the system will increment the
+    /// `restate.rocksdb_stall_flare` gauge, if the write is unstalled, the guage will be updated
+    /// accordingly.
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub rocksdb_write_stall_threshold: humantime::Duration,
 
     /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
@@ -223,6 +231,12 @@ impl CommonOptions {
                 .unwrap()
                 .join(DEFAULT_STORAGE_DIRECTORY)
         })
+    }
+
+    pub fn rocksdb_total_memtables_size(&self) -> usize {
+        let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
+        let total_mem = self.rocksdb_total_memory_size.get() as f64;
+        (total_mem * sanitized) as usize
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
@@ -281,10 +295,11 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_size: 2_000_000_000, // 2GB (50% of total memory)
+            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
             rocksdb_total_memory_size: NonZeroUsize::new(4_000_000_000).unwrap(), // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
+            rocksdb_write_stall_threshold: std::time::Duration::from_secs(3).into(),
             rocksdb: Default::default(),
         }
     }

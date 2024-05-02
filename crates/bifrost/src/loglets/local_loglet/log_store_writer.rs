@@ -210,7 +210,7 @@ impl LogStoreWriter {
         if self.manual_wal_flush {
             // WAL flush is done in the foreground, but sync will happen in the background to avoid
             // blocking IO.
-            if let Err(e) = self.rocksdb.inner().flush_wal(opts.sync_wal_before_ack) {
+            if let Err(e) = self.rocksdb.flush_wal(opts.sync_wal_before_ack).await {
                 warn!("Failed to flush rocksdb WAL in local loglet : {}", e);
                 self.send_acks(Err(Error::LogStoreError(e.into())));
                 return;
