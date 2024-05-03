@@ -16,6 +16,7 @@ use serde_with::serde_as;
 #[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "AwsClientOptions", default))]
+#[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct AwsOptions {
     /// # AWS Profile
