@@ -133,9 +133,9 @@ where
 
     Ok(Some(
         tracing_opentelemetry::layer()
-            .with_location(false)
+            .with_location(true)
             .with_threads(false)
-            .with_tracked_inactivity(false)
+            .with_tracked_inactivity(true)
             .with_tracer(tracer)
             .with_filter(EnvFilter::try_new(&common_opts.tracing_filter)?),
     ))
