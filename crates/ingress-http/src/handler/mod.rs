@@ -26,33 +26,43 @@ use std::task::{Context, Poll};
 mod awakeables;
 mod error;
 mod health;
+mod invocation;
 mod path_parsing;
 mod service_handler;
 #[cfg(test)]
 mod tests;
 mod tracing;
+mod workflow;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 #[derive(Clone)]
-pub(crate) struct Handler<Schemas, Dispatcher> {
+pub(crate) struct Handler<Schemas, Dispatcher, StorageReader> {
     schemas: Schemas,
     dispatcher: Dispatcher,
+    storage_reader: StorageReader,
 }
 
-impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
-    pub(crate) fn new(schemas: Schemas, dispatcher: Dispatcher) -> Self {
+impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
+    pub(crate) fn new(
+        schemas: Schemas,
+        dispatcher: Dispatcher,
+        storage_reader: StorageReader,
+    ) -> Self {
         Self {
             schemas,
             dispatcher,
+            storage_reader,
         }
     }
 }
 
-impl<Schemas, Dispatcher, Body> tower::Service<Request<Body>> for Handler<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader, Body> tower::Service<Request<Body>>
+    for Handler<Schemas, Dispatcher, StorageReader>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
+    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,
     <Body as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -81,6 +91,12 @@ where
                 }
                 RequestType::Service(service_request) => {
                     this.handle_service_request(req, service_request).await
+                }
+                RequestType::Invocation(invocation_request) => {
+                    this.handle_invocation(req, invocation_request).await
+                }
+                RequestType::Workflow(workflow_request) => {
+                    this.handle_workflow(req, workflow_request).await
                 }
             }
         }

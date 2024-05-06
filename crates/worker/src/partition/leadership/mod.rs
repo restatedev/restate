@@ -37,6 +37,7 @@ use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
+use restate_types::GenerationalNodeId;
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use super::storage::invoker::InvokerStorageReader;
@@ -386,62 +387,24 @@ where
                 .await
                 .map_err(Error::Invoker)?,
             Action::IngressResponse(ingress_response) => {
-                let invocation_id: InvocationId = ingress_response.invocation_id;
-                // NOTE: We dispatch the response in a non-blocking task-center task to avoid
-                // blocking partition processor. This comes with the risk of overwhelming the
-                // runtime. This should be a temporary solution until we have a better way to
-                // handle this case. Options are split into two categories:
-                //
-                // Category A) Do not block PP's loop if ingress is slow/unavailable
-                //   - Add timeout to the disposable task to drop old/stale responses in congestion
-                //   scenarios.
-                //   - Limit the number of inflight ingress responses (per ingress node) by
-                //   mapping node_id -> Vec<TaskId>
-                // Category B) Enforce Back-pressure on PP if ingress is slow
-                //   - Either directly or through a channel/buffer, block this loop if ingress node
-                //   cannot keep up with the responses.
-                //
-                //  todo: Decide.
-                let maybe_task = task_center().spawn_child(
-                    TaskKind::Disposable,
-                    "respond-to-ingress",
-                    current_task_partition_id(),
-                    {
-                        let networking = networking.clone();
-                        async move {
-                            if let Err(e) = networking
-                                .send(
-                                    ingress_response.target_node.into(),
-                                    &ingress::IngressMessage::InvocationResponse(
-                                        ingress::InvocationResponse {
-                                            invocation_id,
-                                            idempotency_id: ingress_response.idempotency_id,
-                                            response: ingress_response.response,
-                                        },
-                                    ),
-                                )
-                                .await
-                            {
-                                warn!(
-                                    ?e,
-                                    ingress_node_id = ?ingress_response.target_node,
-                                    invocation.id = %invocation_id,
-                                    "Failed to send ingress response for invocation, will drop \
-                                        the response on the floor"
-                                );
-                            }
-                            Ok(())
-                        }
-                    },
-                );
-
-                if maybe_task.is_err() {
-                    trace!(
-                        restate.invocation.id = %invocation_id,
-                        "Partition processor is shutting down, we are not sending response of {} to ingress",
-                        invocation_id
-                    );
-                }
+                Self::send_ingress_message(
+                    networking,
+                    ingress_response.inner.correlation_ids.invocation_id,
+                    ingress_response.target_node,
+                    ingress::IngressMessage::InvocationResponse(ingress_response.inner),
+                )
+                .await?;
+            }
+            Action::IngressAttachNotification(attach_notification) => {
+                Self::send_ingress_message(
+                    networking,
+                    Some(attach_notification.inner.submitted_invocation_id),
+                    attach_notification.target_node,
+                    ingress::IngressMessage::AttachedInvocationNotification(
+                        attach_notification.inner,
+                    ),
+                )
+                .await?;
             }
             Action::ScheduleInvocationStatusCleanup {
                 invocation_id,
@@ -472,6 +435,57 @@ where
                     .await?
             }
         };
+
+        Ok(())
+    }
+
+    async fn send_ingress_message(
+        networking: &Networking,
+        invocation_id: Option<InvocationId>,
+        target_node: GenerationalNodeId,
+        ingress_message: ingress::IngressMessage,
+    ) -> Result<(), Error> {
+        // NOTE: We dispatch the response in a non-blocking task-center task to avoid
+        // blocking partition processor. This comes with the risk of overwhelming the
+        // runtime. This should be a temporary solution until we have a better way to
+        // handle this case. Options are split into two categories:
+        //
+        // Category A) Do not block PP's loop if ingress is slow/unavailable
+        //   - Add timeout to the disposable task to drop old/stale responses in congestion
+        //   scenarios.
+        //   - Limit the number of inflight ingress responses (per ingress node) by
+        //   mapping node_id -> Vec<TaskId>
+        // Category B) Enforce Back-pressure on PP if ingress is slow
+        //   - Either directly or through a channel/buffer, block this loop if ingress node
+        //   cannot keep up with the responses.
+        //
+        //  todo: Decide.
+        let maybe_task = task_center().spawn_child(
+            TaskKind::Disposable,
+            "respond-to-ingress",
+            current_task_partition_id(),
+            {
+                let networking = networking.clone();
+                async move {
+                    if let Err(e) = networking.send(target_node.into(), &ingress_message).await {
+                        warn!(
+                            ?e,
+                            ingress_node_id = ?target_node,
+                            restate.invocation.id = ?invocation_id,
+                            "Failed to send ingress message, will drop the message on the floor"
+                        );
+                    }
+                    Ok(())
+                }
+            },
+        );
+
+        if maybe_task.is_err() {
+            trace!(
+                restate.invocation.id = ?invocation_id,
+                "Partition processor is shutting down, we are not sending the message to ingress",
+            );
+        }
 
         Ok(())
     }

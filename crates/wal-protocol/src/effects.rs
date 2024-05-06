@@ -14,7 +14,8 @@ use bytes::Bytes;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
-use restate_types::ingress::IngressResponse;
+use restate_types::ingress;
+use restate_types::ingress::IngressResponseEnvelope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -51,5 +52,5 @@ pub enum BuiltinServiceEffect {
         Option<InvocationError>,
     ),
 
-    IngressResponse(IngressResponse),
+    IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
 }

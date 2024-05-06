@@ -76,3 +76,5 @@ hyper-util = { version = "0.1", features = ["full"] }
 
 tracing-test = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+googletest = { workspace = true }

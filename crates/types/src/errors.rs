@@ -205,6 +205,9 @@ pub const CANCELED_INVOCATION_ERROR: InvocationError =
 
 pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
 
+pub const NOT_FOUND_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::NOT_FOUND, "not found");
+
 pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::CONFLICT, "promise was already completed");
 

@@ -13,22 +13,30 @@ use super::mocks::*;
 use super::service_handler::*;
 use super::ConnectInfo;
 use super::Handler;
+use restate_ingress_dispatcher::{IngressInvocationResponse, SubmittedInvocationNotification};
+use std::collections::HashMap;
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use googletest::prelude::*;
 use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_core::TestCoreEnv;
 use restate_ingress_dispatcher::mocks::MockDispatcher;
-use restate_ingress_dispatcher::{IngressCorrelationId, IngressDispatcherRequest};
+use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
 use restate_test_util::{assert, assert_eq};
-use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::{Header, InvocationTargetType, ResponseResult};
+use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
+use restate_types::ingress::{
+    IngressResponseResult, InvocationResponse, InvocationResponseCorrelationIds,
+};
+use restate_types::invocation::{
+    Header, InvocationQuery, InvocationTarget, InvocationTargetType, WorkflowHandlerType,
+};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -73,16 +81,17 @@ async fn call_service() {
         assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
-            .send(
-                ResponseResult::Success(
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                result: IngressResponseResult::Success(
+                    service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
                     .unwrap()
                     .into(),
-                )
-                .into(),
-            )
+                ),
+            })
             .unwrap();
     })
     .await;
@@ -127,16 +136,17 @@ async fn call_service_with_get() {
             assert!(service_invocation.argument.is_empty());
 
             response_tx
-                .send(
-                    ResponseResult::Success(
+                .send(IngressInvocationResponse {
+                    idempotency_expiry_time: None,
+                    result: IngressResponseResult::Success(
+                        service_invocation.invocation_target,
                         serde_json::to_vec(&GreetingResponse {
                             greeting: "Igal".to_string(),
                         })
                         .unwrap()
                         .into(),
-                    )
-                    .into(),
-                )
+                    ),
+                })
                 .unwrap();
         },
     )
@@ -183,16 +193,17 @@ async fn call_virtual_object() {
         assert_eq!(&greeting_req.person, "Francesco");
 
         response_tx
-            .send(
-                ResponseResult::Success(
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                result: IngressResponseResult::Success(
+                    service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
                     .unwrap()
                     .into(),
-                )
-                .into(),
-            )
+                ),
+            })
             .unwrap();
     })
     .await;
@@ -339,7 +350,8 @@ async fn idempotency_key_parsing() {
 
     let response = handle(req, |ingress_req| {
         // Get the function invocation and assert on it
-        let (service_invocation, correlation_id, response_tx) = ingress_req.expect_invocation();
+        let (service_invocation, ingress_response_key, response_tx) =
+            ingress_req.expect_invocation();
         assert_eq!(
             service_invocation.invocation_target.service_name(),
             "greeter.Greeter"
@@ -351,12 +363,12 @@ async fn idempotency_key_parsing() {
         assert_eq!(&greeting_req.person, "Francesco");
 
         assert_eq!(
-            correlation_id,
-            IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
+            ingress_response_key.idempotency_id().unwrap(),
+            &IdempotencyId::combine(
                 service_invocation.invocation_id,
                 &service_invocation.invocation_target,
                 ByteString::from_static("123456")
-            ))
+            )
         );
         assert_eq!(
             service_invocation.idempotency_key,
@@ -368,18 +380,239 @@ async fn idempotency_key_parsing() {
         );
 
         response_tx
-            .send(
-                ResponseResult::Success(
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                result: IngressResponseResult::Success(
+                    service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
                         greeting: "Igal".to_string(),
                     })
                     .unwrap()
                     .into(),
-                )
-                .into(),
-            )
+                ),
+            })
             .unwrap();
     })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn idempotency_key_and_send() {
+    let greeting_req = GreetingRequest {
+        person: "Francesco".to_string(),
+    };
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet/send")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .header(IDEMPOTENCY_KEY, "123456")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&greeting_req).unwrap(),
+        )))
+        .unwrap();
+
+    let expected_invocation_id = InvocationId::mock_random();
+
+    let response = handle(req, move |ingress_req| {
+        // Get the function invocation and assert on it
+        let (service_invocation, notification_tx) =
+            ingress_req.expect_one_way_invocation_with_attach_notification();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
+        assert_eq!(&greeting_req.person, "Francesco");
+
+        assert_eq!(
+            service_invocation.idempotency_key,
+            Some(ByteString::from_static("123456"))
+        );
+        assert_eq!(
+            service_invocation.completion_retention_time,
+            Some(Duration::from_secs(60 * 60 * 24))
+        );
+        assert_that!(
+            service_invocation.attach_notification_sink,
+            some(anything())
+        );
+
+        notification_tx
+            .send(SubmittedInvocationNotification {
+                invocation_id: expected_invocation_id,
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let send_response: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(send_response.invocation_id, expected_invocation_id);
+}
+
+#[tokio::test]
+#[traced_test]
+async fn attach() {
+    let invocation_id = InvocationId::mock_random();
+
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata::mock(InvocationTargetType::Service),
+    );
+
+    let req = hyper::Request::builder()
+        .uri(format!(
+            "http://localhost/restate/invocation/{}/attach",
+            invocation_id
+        ))
+        .method(Method::GET)
+        .header("content-type", "application/json")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = handle_with_schemas(req, mock_schemas, move |ingress_req| {
+        let (actual_invocation_query, _, response_tx) = ingress_req.expect_attach();
+        assert_eq!(
+            InvocationQuery::Invocation(invocation_id),
+            actual_invocation_query
+        );
+        response_tx
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                result: IngressResponseResult::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn get_output_with_invocation_id() {
+    let invocation_id = InvocationId::mock_random();
+
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata::mock(InvocationTargetType::Service),
+    );
+
+    let req = hyper::Request::builder()
+        .uri(format!(
+            "http://localhost/restate/invocation/{}/output",
+            invocation_id
+        ))
+        .method(Method::GET)
+        .header("content-type", "application/json")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = handle_with_schemas_and_storage_reader(
+        req,
+        mock_schemas,
+        MockStorageReader(HashMap::from([(
+            InvocationQuery::Invocation(invocation_id),
+            InvocationResponse {
+                correlation_ids: InvocationResponseCorrelationIds::from_invocation_id(
+                    invocation_id,
+                ),
+                response: IngressResponseResult::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            },
+        )])),
+        move |_| panic!("This should not be called"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn get_output_with_workflow_key() {
+    let service_id = ServiceId::new("MyWorkflow", "my-key");
+
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        &service_id.service_name,
+        "run",
+        InvocationTargetMetadata::mock(InvocationTargetType::Workflow(
+            WorkflowHandlerType::Workflow,
+        )),
+    );
+
+    let req = hyper::Request::builder()
+        .uri(format!(
+            "http://localhost/restate/workflow/{}/{}/output",
+            service_id.service_name, service_id.key
+        ))
+        .method(Method::GET)
+        .header("content-type", "application/json")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = handle_with_schemas_and_storage_reader(
+        req,
+        mock_schemas,
+        MockStorageReader(HashMap::from([(
+            InvocationQuery::Workflow(service_id.clone()),
+            InvocationResponse {
+                correlation_ids: InvocationResponseCorrelationIds::from_service_id(
+                    service_id.clone(),
+                ),
+                response: IngressResponseResult::Success(
+                    InvocationTarget::workflow(
+                        service_id.service_name,
+                        service_id.key,
+                        "run",
+                        WorkflowHandlerType::Workflow,
+                    ),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            },
+        )])),
+        move |_| panic!("This should not be called"),
+    )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -651,22 +884,35 @@ fn request_handler_not_reached(_req: IngressDispatcherRequest) {
 }
 
 fn expect_invocation_and_reply_with_empty(req: IngressDispatcherRequest) {
-    let (_, _, response_tx) = req.expect_invocation();
+    let (service_invocation, _, response_tx) = req.expect_invocation();
     response_tx
-        .send(ResponseResult::Success(Bytes::new()).into())
+        .send(IngressInvocationResponse {
+            idempotency_expiry_time: None,
+            result: IngressResponseResult::Success(
+                service_invocation.invocation_target,
+                Bytes::new(),
+            ),
+        })
         .unwrap();
 }
 
 fn expect_invocation_and_reply_with_non_empty(req: IngressDispatcherRequest) {
-    let (_, _, response_tx) = req.expect_invocation();
+    let (service_invocation, _, response_tx) = req.expect_invocation();
     response_tx
-        .send(ResponseResult::Success(Bytes::from_static(b"123")).into())
+        .send(IngressInvocationResponse {
+            idempotency_expiry_time: None,
+            result: IngressResponseResult::Success(
+                service_invocation.invocation_target,
+                Bytes::from_static(b"123"),
+            ),
+        })
         .unwrap();
 }
 
-pub async fn handle_with_schemas<B: http_body::Body + Send + 'static>(
+pub async fn handle_with_schemas_and_storage_reader<B: http_body::Body + Send + 'static>(
     mut req: Request<B>,
     schemas: MockSchemas,
+    invocation_storage_reader: MockStorageReader,
     f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
 ) -> Response<Full<Bytes>>
 where
@@ -684,7 +930,7 @@ where
     let handler_fut = node_env.tc.run_in_scope(
         "ingress",
         None,
-        Handler::new(schemas, dispatcher).oneshot(req),
+        Handler::new(schemas, dispatcher, invocation_storage_reader).oneshot(req),
     );
 
     // Mock the service invocation receiver
@@ -693,6 +939,18 @@ where
     });
 
     handler_fut.await.unwrap()
+}
+
+pub async fn handle_with_schemas<B: http_body::Body + Send + 'static>(
+    req: Request<B>,
+    schemas: MockSchemas,
+    f: impl FnOnce(IngressDispatcherRequest) + Send + 'static,
+) -> Response<Full<Bytes>>
+where
+    <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
+    <B as http_body::Body>::Data: Send + Sync + 'static,
+{
+    handle_with_schemas_and_storage_reader(req, schemas, MockStorageReader::default(), f).await
 }
 
 pub async fn handle<B: http_body::Body + Send + 'static>(

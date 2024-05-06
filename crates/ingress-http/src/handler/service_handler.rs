@@ -22,9 +22,10 @@ use metrics::{counter, histogram};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::InvocationId;
+use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
-    Header, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocation, Source,
-    SpanRelation, WorkflowHandlerType,
+    Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
+    WorkflowHandlerType,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
@@ -39,7 +40,7 @@ const DELAYSEC_QUERY_PARAM: &str = "delaysec";
 #[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SendResponse {
-    invocation_id: InvocationId,
+    pub(crate) invocation_id: InvocationId,
     #[serde(
         with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
         skip_serializing_if = "Option::is_none",
@@ -48,7 +49,7 @@ pub(crate) struct SendResponse {
     execution_time: Option<humantime::Timestamp>,
 }
 
-impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
@@ -238,7 +239,7 @@ where
         let response = if let Ok(response) = response_rx.await {
             response
         } else {
-            dispatcher.evict_pending_response(&ingress_correlation_id);
+            dispatcher.evict_pending_response(ingress_correlation_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
@@ -253,10 +254,11 @@ where
         // }
 
         match response.result {
-            ResponseResult::Success(response_payload) => {
+            IngressResponseResult::Success(_, response_payload) => {
                 trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
 
                 // Write out the content-type, if any
+                // TODO fix https://github.com/restatedev/restate/issues/1496
                 if let Some(ct) = invocation_target_metadata
                     .output_rules
                     .infer_content_type(response_payload.is_empty())
@@ -271,7 +273,7 @@ where
 
                 Ok(response_builder.body(Full::new(response_payload)).unwrap())
             }
-            ResponseResult::Failure(error) => {
+            IngressResponseResult::Failure(error) => {
                 info!(rpc.response = ?error, "Complete external HTTP request with a failure");
                 Ok(HandlerError::Invocation(error).fill_builder(response_builder))
             }
@@ -286,9 +288,10 @@ where
         let execution_time = service_invocation.execution_time;
 
         // Send the service invocation
-        let invocation = IngressDispatcherRequest::one_way_invocation(service_invocation);
+        let (req, submit_notification_rx) =
+            IngressDispatcherRequest::one_way_invocation(service_invocation);
 
-        if let Err(e) = dispatcher.dispatch_ingress_request(invocation).await {
+        if let Err(e) = dispatcher.dispatch_ingress_request(req).await {
             warn!(
                 restate.invocation.id = %invocation_id,
                 "Failed to dispatch ingress request: {}",
@@ -297,13 +300,22 @@ where
             return Err(HandlerError::Unavailable);
         }
 
+        // Wait submit notification
+        let submit_notification = if let Ok(response) = submit_notification_rx.await {
+            response
+        } else {
+            dispatcher.evict_pending_submit_notification(invocation_id);
+            warn!("Response channel was closed");
+            return Err(HandlerError::Unavailable);
+        };
+
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()
             .status(StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, APPLICATION_JSON)
             .body(Full::new(
                 serde_json::to_vec(&SendResponse {
-                    invocation_id,
+                    invocation_id: submit_notification.invocation_id,
                     execution_time: execution_time.map(SystemTime::from).map(Into::into),
                 })
                 .unwrap()

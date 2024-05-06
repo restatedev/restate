@@ -18,16 +18,14 @@ use http_body_util::BodyExt;
 use http_body_util::Full;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
-use restate_schema_api::service::ServiceMetadataResolver;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use std::str::FromStr;
 use tracing::{info, trace, warn};
 
-impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
-    Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_awakeable<B: http_body::Body>(

@@ -13,7 +13,9 @@ use restate_bifrost::Bifrost;
 use restate_core::{metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
+use restate_types::invocation::{
+    AttachInvocationRequest, InvocationResponse, InvocationTermination, ServiceInvocation,
+};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{flexbuffers_storage_encode_decode, Version};
@@ -129,6 +131,8 @@ pub enum Command {
     TruncateOutbox(MessageIndex),
     /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
     ProxyThrough(ServiceInvocation),
+    /// Attach to an existing invocation
+    AttachInvocation(AttachInvocationRequest),
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.

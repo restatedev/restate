@@ -234,6 +234,7 @@ message ServiceInvocation {
     uint64 execution_time = 8;
     Duration completion_retention_time = 9;
     optional string idempotency_key = 10;
+    AttachNotificationSink attach_notification_sink = 11;
 }
 
 message StateMutation {
@@ -502,6 +503,13 @@ message DedupSequenceNumber {
 message IdempotencyMetadata {
     InvocationId invocation_id = 1;
 }
+
+message AttachNotificationSink {
+    oneof notification_sink {
+        GenerationalNodeId ingress_node_id = 2;
+    }
+}
+
 
 // ---------------------------------------------------------------------
 // Promises

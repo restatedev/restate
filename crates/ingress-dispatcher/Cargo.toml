@@ -27,12 +27,14 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 dashmap = { workspace = true }
 drain = { workspace = true }
+futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-restate-bifrost = { workspace = true }
+restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }

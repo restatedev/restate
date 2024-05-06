@@ -24,7 +24,8 @@ use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId, ServiceId};
-use restate_types::ingress::IngressResponse;
+use restate_types::ingress;
+use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
     InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, SpanRelation,
@@ -180,7 +181,8 @@ pub(crate) enum Effect {
     DeleteIdempotencyId(IdempotencyId),
 
     // Send ingress response
-    IngressResponse(IngressResponse),
+    IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
+    IngressAttachNotification(IngressResponseEnvelope<ingress::AttachedInvocationNotification>),
 }
 
 macro_rules! debug_if_leader {
@@ -324,23 +326,38 @@ impl Effect {
                 e,
                 entry_index
             ),
-            Effect::IngressResponse(IngressResponse {
-                response: ResponseResult::Success(_),
-                invocation_id,
+            Effect::IngressResponse(IngressResponseEnvelope {
+                inner:
+                    ingress::InvocationResponse {
+                        response: IngressResponseResult::Success(_, _),
+                        correlation_ids,
+                        ..
+                    },
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %invocation_id,
-                "Effect: Send response to ingress: Success"),
-            Effect::IngressResponse(IngressResponse {
-                response: ResponseResult::Failure(e),
-                invocation_id,
+                "Effect: Send response with correlation ids {:?} to ingress: Success",
+                correlation_ids
+            ),
+            Effect::IngressResponse(IngressResponseEnvelope {
+                inner:
+                    ingress::InvocationResponse {
+                        response: IngressResponseResult::Failure(e),
+                        correlation_ids,
+                        ..
+                    },
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                restate.invocation.id = %invocation_id,
-                "Effect: Send response to ingress: Failure({})",
+                "Effect: Send response with correlation ids {:?} to ingress: Failure({})",
+                correlation_ids,
                 e
+            ),
+            Effect::IngressAttachNotification(attach_notification) => debug_if_leader!(
+                is_leader,
+                "Effect: Ingress attach invocation {} to {}",
+                attach_notification.inner.submitted_invocation_id,
+                attach_notification.inner.attached_invocation_id,
             ),
             Effect::DeleteInboxEntry {
                 service_id,
@@ -831,8 +848,19 @@ impl Effects {
         })
     }
 
-    pub(crate) fn send_ingress_response(&mut self, ingress_response: IngressResponse) {
+    pub(crate) fn send_ingress_response(
+        &mut self,
+        ingress_response: IngressResponseEnvelope<ingress::InvocationResponse>,
+    ) {
         self.effects.push(Effect::IngressResponse(ingress_response));
+    }
+
+    pub(crate) fn send_ingress_attach_notification(
+        &mut self,
+        attach_notification: IngressResponseEnvelope<ingress::AttachedInvocationNotification>,
+    ) {
+        self.effects
+            .push(Effect::IngressAttachNotification(attach_notification));
     }
 
     pub(crate) fn set_state(
