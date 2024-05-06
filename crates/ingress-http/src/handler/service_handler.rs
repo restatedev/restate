@@ -328,7 +328,7 @@ fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
         }
         if k.eq_ignore_ascii_case(DELAYSEC_QUERY_PARAM) {
             return Ok(Some(Duration::from_secs(
-                k.parse().map_err(HandlerError::BadDelaySecDuration)?,
+                v.parse().map_err(HandlerError::BadDelaySecDuration)?,
             )));
         }
     }
