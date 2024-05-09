@@ -136,6 +136,7 @@ const ROCKSDB_DB_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.block-cache-capacity", MetricUnit::Bytes),
     ("rocksdb.block-cache-usage", MetricUnit::Bytes),
     ("rocksdb.block-cache-pinned-usage", MetricUnit::Bytes),
+    ("rocksdb.num-running-flushes", MetricUnit::Count),
 ];
 
 // Per column-family properties
@@ -161,7 +162,6 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
         "rocksdb.estimate-pending-compaction-bytes",
         MetricUnit::Bytes,
     ),
-    ("rocksdb.num-running-flushes", MetricUnit::Count),
     ("rocksdb.num-running-compactions", MetricUnit::Count),
     ("rocksdb.actual-delayed-write-rate", MetricUnit::Count),
     ("rocksdb.num-files-at-level0", MetricUnit::Count),
@@ -203,13 +203,10 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     );
 
     for db in &all_dbs {
-        let labels = vec![
-            format!("db=\"{}\"", formatting::sanitize_label_value(&db.name)),
-            format!(
-                "owner=\"{}\"",
-                formatting::sanitize_label_value(db.owner.into())
-            ),
-        ];
+        let labels = vec![format!(
+            "db=\"{}\"",
+            formatting::sanitize_label_value(&db.name)
+        )];
         // Tickers (Counters)
         for ticker in ROCKSDB_TICKERS {
             format_rocksdb_stat_ticker_for_prometheus(&mut out, db, &labels, *ticker);

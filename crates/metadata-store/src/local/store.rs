@@ -14,7 +14,8 @@ use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_rocksdb::{
-    CfName, CfPrefixPattern, DbName, DbSpecBuilder, Owner, RocksDbManager, RocksError,
+    CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
+    RocksError,
 };
 use restate_types::arc_util::Updateable;
 use restate_types::config::RocksDbOptions;
@@ -22,7 +23,7 @@ use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
 use restate_types::Version;
-use rocksdb::{BoundColumnFamily, Options, WriteOptions, DB};
+use rocksdb::{BoundColumnFamily, Options, WriteBatch, WriteOptions, DB};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -63,6 +64,8 @@ pub enum MetadataStoreRequest {
 pub enum Error {
     #[error("storage error: {0}")]
     Storage(#[from] rocksdb::Error),
+    #[error("rocksdb error: {0}")]
+    RocksDb(#[from] RocksError),
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
     #[error("invalid argument: {0}")]
@@ -99,6 +102,7 @@ pub enum BuildError {
 /// store in a single thread.
 pub struct LocalMetadataStore {
     db: Arc<DB>,
+    rocksdb: Arc<RocksDb>,
     opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
@@ -119,11 +123,11 @@ impl LocalMetadataStore {
     {
         let (request_tx, request_rx) = mpsc::channel(request_queue_length);
 
+        let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
         let db_spec = DbSpecBuilder::new(
-            DbName::new(DB_NAME),
-            Owner::MetadataStore,
+            db_name.clone(),
             data_dir.as_ref().to_path_buf(),
             Options::default(),
         )
@@ -132,9 +136,13 @@ impl LocalMetadataStore {
         .build_as_db();
 
         let db = db_manager.open_db(rocksdb_options(), db_spec)?;
+        let rocksdb = db_manager
+            .get_db(db_name)
+            .expect("metadata store db is open");
 
         Ok(Self {
             db,
+            rocksdb,
             opts: Box::new(rocksdb_options()),
             buffer: BytesMut::default(),
             request_rx,
@@ -204,7 +212,7 @@ impl LocalMetadataStore {
                 precondition,
                 result_tx,
             } => {
-                let result = self.put(&key, &value, precondition);
+                let result = self.put(&key, &value, precondition).await;
                 Self::log_error(&result, "Put");
                 let _ = result_tx.send(result);
             }
@@ -244,18 +252,18 @@ impl LocalMetadataStore {
         }
     }
 
-    fn put(
+    async fn put(
         &mut self,
         key: &ByteString,
         value: &VersionedValue,
         precondition: Precondition,
     ) -> Result<()> {
         match precondition {
-            Precondition::None => Ok(self.write_versioned_kv_pair(key, value)?),
+            Precondition::None => Ok(self.write_versioned_kv_pair(key, value).await?),
             Precondition::DoesNotExist => {
                 let current_version = self.get_version(key)?;
                 if current_version.is_none() {
-                    Ok(self.write_versioned_kv_pair(key, value)?)
+                    Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
                     Err(Error::kv_pair_exists())
                 }
@@ -263,7 +271,7 @@ impl LocalMetadataStore {
             Precondition::MatchesVersion(version) => {
                 let current_version = self.get_version(key)?;
                 if current_version == Some(version) {
-                    Ok(self.write_versioned_kv_pair(key, value)?)
+                    Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
                     Err(Error::version_mismatch(version, current_version))
                 }
@@ -271,16 +279,22 @@ impl LocalMetadataStore {
         }
     }
 
-    fn write_versioned_kv_pair(&mut self, key: &ByteString, value: &VersionedValue) -> Result<()> {
+    async fn write_versioned_kv_pair(
+        &mut self,
+        key: &ByteString,
+        value: &VersionedValue,
+    ) -> Result<()> {
         self.buffer.clear();
         Self::encode(value, &mut self.buffer)?;
 
         let write_options = self.write_options();
         let cf_handle = self.kv_cf_handle();
-        self.db
-            .put_cf_opt(&cf_handle, key, self.buffer.as_ref(), &write_options)?;
-
-        Ok(())
+        let mut wb = WriteBatch::default();
+        wb.put_cf(&cf_handle, key, self.buffer.as_ref());
+        Ok(self
+            .rocksdb
+            .write_batch(Priority::High, IoMode::default(), write_options, wb)
+            .await?)
     }
 
     fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<()> {

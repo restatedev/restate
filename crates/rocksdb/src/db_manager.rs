@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -25,9 +25,7 @@ use restate_types::arc_util::Updateable;
 use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
 
 use crate::background::ReadyStorageTask;
-use crate::{
-    metric_definitions, DbName, DbSpec, Owner, Priority, RocksAccess, RocksDb, RocksError,
-};
+use crate::{metric_definitions, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -47,7 +45,8 @@ pub struct RocksDbManager {
     cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
     write_buffer_manager: WriteBufferManager,
-    dbs: RwLock<HashMap<(Owner, DbName), Arc<RocksDb>>>,
+    stall_detection_millis: AtomicUsize,
+    dbs: RwLock<HashMap<DbName, Arc<RocksDb>>>,
     watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     shutting_down: AtomicBool,
     high_pri_pool: rayon::ThreadPool,
@@ -79,11 +78,14 @@ impl RocksDbManager {
         let opts = base_opts.load();
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
-            opts.rocksdb_total_memtables_size,
+            opts.rocksdb_total_memtables_size(),
             true,
             cache.clone(),
         );
-
+        // There is no atomic u128 (and it's a ridiculous amount of time anyway), we trim the value
+        // ot u64 and hope for the best.
+        let stall_detection_millis =
+            AtomicUsize::new(opts.rocksdb_write_stall_threshold.as_millis() as usize);
         // Setup the shared rocksdb environment
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
         env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
@@ -116,6 +118,7 @@ impl RocksDbManager {
             shutting_down: AtomicBool::new(false),
             high_pri_pool,
             low_pri_pool,
+            stall_detection_millis,
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
@@ -132,8 +135,8 @@ impl RocksDbManager {
         Self::get()
     }
 
-    pub fn get_db(&self, owner: Owner, name: DbName) -> Option<Arc<RocksDb>> {
-        self.dbs.read().get(&(owner, name)).cloned()
+    pub fn get_db(&self, name: DbName) -> Option<Arc<RocksDb>> {
+        self.dbs.read().get(&name).cloned()
     }
 
     // todo: move this to async after allowing bifrost to async-create providers.
@@ -152,7 +155,6 @@ impl RocksDbManager {
         // get latest options
         let options = updateable_opts.load().clone();
         let name = db_spec.name.clone();
-        let owner = db_spec.owner;
         // use the spec default options as base then apply the config from the updateable.
         self.amend_db_options(&mut db_spec.db_options, &options);
 
@@ -164,12 +166,11 @@ impl RocksDbManager {
         let path = db_spec.path.clone();
         let wrapper = Arc::new(RocksDb::new(self, db_spec, db.clone()));
 
-        self.dbs.write().insert((owner, name.clone()), wrapper);
+        self.dbs.write().insert(name.clone(), wrapper);
 
         if let Err(e) = self
             .watchdog_tx
             .send(WatchdogCommand::Register(ConfigSubscription {
-                owner,
                 name: name.clone(),
                 updateable_rocksdb_opts: Box::new(updateable_opts),
                 last_applied_opts: options,
@@ -177,7 +178,6 @@ impl RocksDbManager {
         {
             warn!(
                 db = %name,
-                owner = %owner,
                 path = %path.display(),
                 "Failed to register database with watchdog: {}, this database will \
                     not receive config updates but the system will continue to run as normal",
@@ -186,7 +186,6 @@ impl RocksDbManager {
         }
         debug!(
             db = %name,
-            owner = %owner,
             path = %path.display(),
             "Opened rocksdb database"
         );
@@ -215,7 +214,7 @@ impl RocksDbManager {
     /// Returns aggregated memory usage for all databases if filter is empty
     pub fn get_memory_usage_stats(
         &self,
-        filter: &[(Owner, DbName)],
+        filter: &[DbName],
     ) -> Result<rocksdb::perf::MemoryUsage, RocksError> {
         let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
         builder.add_cache(&self.cache);
@@ -243,19 +242,18 @@ impl RocksDbManager {
         // Ask all databases to shutdown cleanly.
         let start = Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
-        for ((owner, name), db) in self.dbs.write().drain() {
+        for (name, db) in self.dbs.write().drain() {
             tasks.spawn(async move {
                 db.shutdown().await;
-                (name.clone(), owner)
+                name.clone()
             });
         }
         // wait for all tasks to complete
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok((name, owner)) => {
+                Ok(name) => {
                     info!(
                         db = %name,
-                        owner = %owner,
                         "Rocksdb database shutdown completed, {} remaining", tasks.len());
                 }
                 Err(e) => {
@@ -308,6 +306,13 @@ impl RocksDbManager {
         db_options.set_use_direct_io_for_flush_and_compaction(true);
     }
 
+    pub(crate) fn stall_detection_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.stall_detection_millis
+                .load(std::sync::atomic::Ordering::Relaxed) as u64,
+        )
+    }
+
     pub(crate) fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
         let mut cf_options = rocksdb::Options::default();
         // write buffer
@@ -358,14 +363,9 @@ impl RocksDbManager {
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let priority = task.priority;
-        let action = move || {
-            let result = task.run();
-            // ignoring the error since receiver might not be interested in the response
-            let _ = tx.send(result);
-        };
         match priority {
-            Priority::High => self.high_pri_pool.spawn(action),
-            Priority::Low => self.low_pri_pool.spawn(action),
+            Priority::High => self.high_pri_pool.spawn(task.into_async_runner(tx)),
+            Priority::Low => self.low_pri_pool.spawn(task.into_async_runner(tx)),
         }
         rx.await.map_err(|_| ShutdownError)
     }
@@ -390,15 +390,14 @@ impl RocksDbManager {
         OP: FnOnce() + Send + 'static,
     {
         match task.priority {
-            Priority::High => self.high_pri_pool.spawn(|| task.run()),
-            Priority::Low => self.low_pri_pool.spawn(|| task.run()),
+            Priority::High => self.high_pri_pool.spawn(task.into_runner()),
+            Priority::Low => self.low_pri_pool.spawn(task.into_runner()),
         }
     }
 }
 
 #[allow(dead_code)]
 struct ConfigSubscription {
-    owner: Owner,
     name: DbName,
     updateable_rocksdb_opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
     last_applied_opts: RocksDbOptions,
@@ -487,8 +486,28 @@ impl DbWatchdog {
             info!("Ignoring config update as we are shutting down");
             return;
         }
-        // Memory budget changed?
         let new_common_opts = self.updateable_common_opts.load();
+
+        // Stall detection threshold changed?
+        let current_stall_detection_millis =
+            self.manager
+                .stall_detection_millis
+                .load(std::sync::atomic::Ordering::Relaxed) as u64;
+        let new_stall_detection_millis =
+            new_common_opts.rocksdb_write_stall_threshold.as_millis() as u64;
+        if current_stall_detection_millis != new_stall_detection_millis {
+            info!(
+                old = current_stall_detection_millis,
+                new = new_stall_detection_millis,
+                "[config update] Stall detection threshold is updated",
+            );
+            self.manager.stall_detection_millis.store(
+                new_stall_detection_millis as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+
+        // Memory budget changed?
         if new_common_opts.rocksdb_total_memory_size
             != self.current_common_opts.rocksdb_total_memory_size
         {
@@ -500,21 +519,24 @@ impl DbWatchdog {
             );
             self.cache
                 .set_capacity(new_common_opts.rocksdb_total_memory_size.get());
+            self.manager
+                .write_buffer_manager
+                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size());
         }
 
         // update memtable total memory
-        if new_common_opts.rocksdb_total_memtables_size
-            != self.current_common_opts.rocksdb_total_memtables_size
+        if new_common_opts.rocksdb_total_memtables_size()
+            != self.current_common_opts.rocksdb_total_memtables_size()
         {
             info!(
-                old = self.current_common_opts.rocksdb_total_memtables_size,
-                new = new_common_opts.rocksdb_total_memtables_size,
+                old = self.current_common_opts.rocksdb_total_memtables_size(),
+                new = new_common_opts.rocksdb_total_memtables_size(),
                 "[config update] Setting rocksdb total memtables size limit to {}",
-                ByteCount::from(new_common_opts.rocksdb_total_memtables_size)
+                ByteCount::from(new_common_opts.rocksdb_total_memtables_size())
             );
             self.manager
                 .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size);
+                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size());
         }
 
         // todo: Apply other changes to the databases.

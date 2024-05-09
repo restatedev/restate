@@ -16,6 +16,8 @@ use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::MultiThreaded;
 use tracing::trace;
 
+use crate::background::StorageTaskKind;
+use crate::perf::RocksDbPerfGuard;
 use crate::BoxedCfMatcher;
 use crate::BoxedCfOptionUpdater;
 use crate::CfName;
@@ -161,6 +163,7 @@ impl RocksAccess for rocksdb::DB {
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::FlushMemtables);
         let mut flushopts = rocksdb::FlushOptions::default();
         flushopts.set_wait(wait);
         let cfs = cfs
@@ -173,6 +176,7 @@ impl RocksAccess for rocksdb::DB {
     }
 
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::FlushWal);
         Ok(self.flush_wal(sync)?)
     }
 
@@ -207,6 +211,7 @@ impl RocksAccess for rocksdb::DB {
         batch: &rocksdb::WriteBatch,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::WriteBatch);
         self.write_opt(batch, write_options)
     }
 
@@ -277,6 +282,7 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
     }
 
     fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::FlushMemtables);
         let mut flushopts = rocksdb::FlushOptions::default();
         flushopts.set_wait(wait);
         let cfs = cfs
@@ -289,6 +295,7 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
     }
 
     fn flush_wal(&self, sync: bool) -> Result<(), RocksError> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::FlushWal);
         Ok(self.flush_wal(sync)?)
     }
 
@@ -331,6 +338,7 @@ impl RocksAccess for rocksdb::OptimisticTransactionDB<MultiThreaded> {
         batch: &rocksdb::WriteBatchWithTransaction<true>,
         write_options: &rocksdb::WriteOptions,
     ) -> Result<(), rocksdb::Error> {
+        let _x = RocksDbPerfGuard::new(StorageTaskKind::WriteBatch);
         self.write_opt(batch, write_options)
     }
 }
