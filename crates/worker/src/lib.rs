@@ -159,6 +159,7 @@ impl Worker {
             metadata.clone(),
             metadata_store_client,
             partition_store_manager.clone(),
+            router_builder.subscribe_to_stream(10),
             networking,
             bifrost,
             invoker.handle(),
