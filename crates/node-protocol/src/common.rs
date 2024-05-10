@@ -13,6 +13,32 @@ include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 
+#[derive(
+    Debug,
+    derive_more::Display,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct RequestId(ulid::Ulid);
+impl RequestId {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
+impl Default for RequestId {
+    fn default() -> Self {
+        RequestId(ulid::Ulid::new())
+    }
+}
+
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/common_descriptor.bin"));
 
