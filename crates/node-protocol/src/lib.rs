@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod cluster_controller;
 pub mod codec;
 pub mod common;
 mod error;
 pub mod ingress;
 pub mod metadata;
 pub mod node;
+pub mod worker;
 
 // re-exports for convenience
 pub use common::CURRENT_PROTOCOL_VERSION;
