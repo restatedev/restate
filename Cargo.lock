@@ -5339,6 +5339,8 @@ dependencies = [
  "futures",
  "restate-core",
  "restate-errors",
+ "restate-network",
+ "restate-node-protocol",
  "restate-types",
  "schemars",
  "serde",
@@ -5781,9 +5783,11 @@ dependencies = [
  "restate-schema",
  "restate-types",
  "serde",
+ "serde_with",
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "thiserror",
+ "ulid",
 ]
 
 [[package]]
@@ -7810,6 +7814,7 @@ checksum = "34778c17965aa2a08913b57e1f34db9b4a63f5de31768b55bf20d2795f921259"
 dependencies = [
  "getrandom",
  "rand",
+ "serde",
  "web-time",
 ]
 
