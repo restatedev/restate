@@ -21,6 +21,7 @@ pub struct CloudConfig {
     pub environment_info: Option<EnvironmentInfo>, // Set on a profile on login
     pub api_base_url: Url,
     pub login_base_url: Url,
+    pub client_id: String,
     #[serde(flatten)]
     pub credentials: Option<Credentials>, // Set globally on login
 }
@@ -47,6 +48,7 @@ impl Default for CloudConfig {
                 "https://restate-cloud-signup-test.auth.eu-central-1.amazoncognito.com",
             )
             .unwrap(),
+            client_id: "1qlr34bcko4s77sub02g6t4baj".into(),
             credentials: None,
         }
     }
