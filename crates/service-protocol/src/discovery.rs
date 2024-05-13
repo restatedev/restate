@@ -17,7 +17,7 @@ use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
-use restate_errors::{META0003, META0012};
+use restate_errors::{META0003, META0012, META0013};
 use restate_schema_api::deployment::ProtocolType;
 use restate_schema_api::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
@@ -87,7 +87,7 @@ pub struct DiscoveredMetadata {
 pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
-    #[code(unknown)]
+    #[code(META0013)]
     BadResponse(Cow<'static, str>),
     #[error(
         "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
