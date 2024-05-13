@@ -9,13 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use restate_core::metadata;
 use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{
     partitioner, IdempotencyId, InvocationId, PartitionKey, WithPartitionKey,
 };
 use restate_types::invocation::{
-    Idempotency, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
@@ -102,7 +103,7 @@ impl IngressDispatcherRequest {
         let correlation_id = ingress_correlation_id(
             &service_invocation.invocation_id,
             &service_invocation.invocation_target,
-            service_invocation.idempotency.as_ref(),
+            service_invocation.idempotency_key.as_ref(),
         );
 
         let my_node_id = metadata().my_node_id();
@@ -219,13 +220,13 @@ impl IngressDispatcherRequest {
 pub fn ingress_correlation_id(
     id: &InvocationId,
     invocation_target: &InvocationTarget,
-    idempotency: Option<&Idempotency>,
+    idempotency: Option<&ByteString>,
 ) -> IngressCorrelationId {
     if let Some(idempotency) = idempotency {
         IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
             *id,
             invocation_target,
-            idempotency.key.clone(),
+            idempotency.clone(),
         ))
     } else {
         IngressCorrelationId::InvocationId(*id)

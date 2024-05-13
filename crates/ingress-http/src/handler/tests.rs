@@ -28,7 +28,7 @@ use restate_schema_api::invocation_target::{
 };
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::{Header, Idempotency, InvocationTargetType, ResponseResult};
+use restate_types::invocation::{Header, InvocationTargetType, ResponseResult};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -359,11 +359,12 @@ async fn idempotency_key_parsing() {
             ))
         );
         assert_eq!(
-            service_invocation.idempotency,
-            Some(Idempotency {
-                key: ByteString::from_static("123456"),
-                retention: Duration::from_secs(60 * 60 * 24)
-            })
+            service_invocation.idempotency_key,
+            Some(ByteString::from_static("123456"))
+        );
+        assert_eq!(
+            service_invocation.completion_retention_time,
+            Some(Duration::from_secs(60 * 60 * 24))
         );
 
         response_tx

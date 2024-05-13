@@ -224,7 +224,7 @@ where
         effects.set_parent_span_context(&service_invocation.span_context);
 
         // If an idempotency key is set, handle idempotency
-        if let Some(idempotency) = &service_invocation.idempotency {
+        if let Some(idempotency_key) = &service_invocation.idempotency_key {
             if service_invocation.invocation_target.invocation_target_ty()
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             {
@@ -233,7 +233,7 @@ where
                 let idempotency_id = IdempotencyId::combine(
                     service_invocation.invocation_id,
                     &service_invocation.invocation_target,
-                    idempotency.key.clone(),
+                    idempotency_key.clone(),
                 );
                 if self
                     .try_resolve_idempotent_request(
@@ -650,8 +650,8 @@ where
         } = inboxed_invocation;
 
         // Reply back to callers with error, and publish end trace
-        let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key)
+        let idempotency_id = inboxed_invocation.idempotency_key.map(|idempotency| {
+            IdempotencyId::combine(invocation_id, &invocation_target, idempotency)
         });
 
         self.send_response_to_sinks(
@@ -880,18 +880,21 @@ where
                 match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
                     InvocationStatus::Completed(CompletedInvocation {
                         invocation_target,
-                        idempotency_key: Some(idempotency_key),
+                        idempotency_key,
                         ..
                     }) => {
                         effects.free_invocation(invocation_id);
-                        // Also cleanup the associated idempotency key
-                        effects.delete_idempotency_id(IdempotencyId::combine(
-                            invocation_id,
-                            &invocation_target,
-                            idempotency_key,
-                        ));
 
-                        // For workflow, we can now cleanup the service lock.
+                        // Also cleanup the associated idempotency key if any
+                        if let Some(idempotency_key) = idempotency_key {
+                            effects.delete_idempotency_id(IdempotencyId::combine(
+                                invocation_id,
+                                &invocation_target,
+                                idempotency_key,
+                            ));
+                        }
+
+                        // For workflow, we can now clean up the service lock.
                         if invocation_target.invocation_target_ty()
                             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                         {
@@ -901,10 +904,6 @@ where
                                     .expect("Workflow methods must have keyed service id"),
                             );
                         }
-                    }
-                    InvocationStatus::Completed(_) => {
-                        // Just free the invocation
-                        effects.free_invocation(invocation_id);
                     }
                     InvocationStatus::Free => {
                         // Nothing to do
@@ -1682,7 +1681,8 @@ where
             span_context,
             headers: vec![],
             execution_time,
-            idempotency: None,
+            completion_retention_time: None,
+            idempotency_key: None,
         }
     }
 }

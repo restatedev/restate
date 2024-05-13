@@ -266,13 +266,8 @@ pub struct ServiceInvocation {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
-    pub idempotency: Option<Idempotency>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Idempotency {
-    pub key: ByteString,
-    pub retention: Duration,
+    pub completion_retention_time: Option<Duration>,
+    pub idempotency_key: Option<ByteString>,
 }
 
 impl ServiceInvocation {
@@ -290,44 +285,13 @@ impl ServiceInvocation {
             span_context: ServiceInvocationSpanContext::empty(),
             headers: vec![],
             execution_time: None,
-            idempotency: None,
+            completion_retention_time: None,
+            idempotency_key: None,
         }
     }
 
     pub fn with_related_span(&mut self, span_relation: SpanRelation) {
         self.span_context = ServiceInvocationSpanContext::start(&self.invocation_id, span_relation);
-    }
-
-    /// Create a new [`ServiceInvocation`].
-    ///
-    /// This method returns the [`Span`] associated to the created [`ServiceInvocation`].
-    /// It is not required to keep this [`Span`] around for the whole lifecycle of the invocation.
-    /// On the contrary, it is encouraged to drop it as soon as possible,
-    /// to let the exporter commit this span to jaeger/zipkin to visualize intermediate results of the invocation.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        argument: impl Into<Bytes>,
-        source: Source,
-        response_sink: Option<ServiceInvocationResponseSink>,
-        related_span: SpanRelation,
-        headers: Vec<Header>,
-        execution_time: Option<MillisSinceEpoch>,
-        idempotency: Option<Idempotency>,
-    ) -> Self {
-        let span_context = ServiceInvocationSpanContext::start(&invocation_id, related_span);
-        Self {
-            invocation_id,
-            invocation_target,
-            argument: argument.into(),
-            source,
-            response_sink,
-            span_context,
-            headers,
-            execution_time,
-            idempotency,
-        }
     }
 }
 
@@ -785,6 +749,15 @@ mod mocks {
             )
         }
 
+        pub fn mock_workflow() -> Self {
+            InvocationTarget::workflow(
+                generate_string(),
+                generate_string(),
+                generate_string(),
+                WorkflowHandlerType::Workflow,
+            )
+        }
+
         pub fn mock_from_service_id(service_id: ServiceId) -> Self {
             InvocationTarget::virtual_object(
                 service_id.service_name,
@@ -809,7 +782,8 @@ mod mocks {
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
-                idempotency: None,
+                completion_retention_time: None,
+                idempotency_key: None,
             }
         }
     }

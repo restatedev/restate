@@ -14,7 +14,7 @@ use bytestring::ByteString;
 use futures_util::Stream;
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionKey};
 use restate_types::invocation::{
-    Header, Idempotency, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
+    Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::time::MillisSinceEpoch;
@@ -218,7 +218,9 @@ pub struct InboxedInvocation {
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
-    pub idempotency: Option<Idempotency>,
+    /// If zero, the invocation completion will not be retained.
+    pub completion_retention_time: Duration,
+    pub idempotency_key: Option<ByteString>,
 }
 
 impl InboxedInvocation {
@@ -236,7 +238,10 @@ impl InboxedInvocation {
             span_context: service_invocation.span_context,
             headers: service_invocation.headers,
             execution_time: service_invocation.execution_time,
-            idempotency: service_invocation.idempotency,
+            completion_retention_time: service_invocation
+                .completion_retention_time
+                .unwrap_or_default(),
+            idempotency_key: service_invocation.idempotency_key,
         }
     }
 }
@@ -258,10 +263,6 @@ impl InFlightInvocationMetadata {
     pub fn from_service_invocation(
         service_invocation: ServiceInvocation,
     ) -> (Self, InvocationInput) {
-        let (completion_retention_time, idempotency_key) = service_invocation
-            .idempotency
-            .map(|idempotency| (idempotency.retention, Some(idempotency.key)))
-            .unwrap_or((Duration::ZERO, None));
         (
             Self {
                 invocation_target: service_invocation.invocation_target,
@@ -270,8 +271,10 @@ impl InFlightInvocationMetadata {
                 response_sinks: service_invocation.response_sink.into_iter().collect(),
                 timestamps: StatusTimestamps::now(),
                 source: service_invocation.source,
-                completion_retention_time,
-                idempotency_key,
+                completion_retention_time: service_invocation
+                    .completion_retention_time
+                    .unwrap_or_default(),
+                idempotency_key: service_invocation.idempotency_key,
             },
             InvocationInput {
                 argument: service_invocation.argument,
@@ -283,11 +286,6 @@ impl InFlightInvocationMetadata {
     pub fn from_inboxed_invocation(
         mut inboxed_invocation: InboxedInvocation,
     ) -> (Self, InvocationInput) {
-        let (completion_retention_time, idempotency_key) = inboxed_invocation
-            .idempotency
-            .map(|idempotency| (idempotency.retention, Some(idempotency.key)))
-            .unwrap_or((Duration::ZERO, None));
-
         inboxed_invocation.timestamps.update();
 
         (
@@ -298,8 +296,8 @@ impl InFlightInvocationMetadata {
                 response_sinks: inboxed_invocation.response_sinks,
                 timestamps: inboxed_invocation.timestamps,
                 source: inboxed_invocation.source,
-                completion_retention_time,
-                idempotency_key,
+                completion_retention_time: inboxed_invocation.completion_retention_time,
+                idempotency_key: inboxed_invocation.idempotency_key,
             },
             InvocationInput {
                 argument: inboxed_invocation.argument,

@@ -445,7 +445,8 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
             span_context: Default::default(),
             headers: vec![],
             execution_time: None,
-            idempotency: None,
+            completion_retention_time: Default::default(),
+            idempotency_key: None,
         }),
     );
 

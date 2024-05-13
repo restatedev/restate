@@ -107,12 +107,11 @@ pub mod v1 {
             enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
             invocation_target, outbox_message, response_result, source, span_relation, timer,
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata,
-            IdempotentRequestMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalMeta, KvPair, OutboxMessage,
-            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
-            VirtualObjectStatus,
+            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
+            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
+            JournalEntry, JournalMeta, KvPair, OutboxMessage, ResponseResult, SequenceNumber,
+            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+            SpanRelation, StateMutation, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -340,15 +339,7 @@ pub mod v1 {
                     value.completion_retention_time.unwrap_or_default(),
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::InFlightInvocationMetadata {
                     invocation_target,
@@ -396,14 +387,7 @@ pub mod v1 {
                     modification_time: timestamps.modification_time().as_u64(),
                     source: Some(Source::from(source)),
                     completion_retention_time: Some(Duration::from(completion_retention_time)),
-                    idempotency_key: Some(match idempotency_key {
-                        Some(key) => {
-                            invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -461,15 +445,7 @@ pub mod v1 {
                     value.completion_retention_time.unwrap_or_default(),
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok((
                     crate::invocation_status_table::InFlightInvocationMetadata {
@@ -528,14 +504,7 @@ pub mod v1 {
                     completion_retention_time: Some(Duration::from(
                         metadata.completion_retention_time,
                     )),
-                    idempotency_key: Some(match metadata.idempotency_key {
-                        Some(key) => {
-                            invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: metadata.idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -586,10 +555,11 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(value.execution_time))
                 };
 
-                let idempotency = value
-                    .idempotency
-                    .map(restate_types::invocation::Idempotency::try_from)
-                    .transpose()?;
+                let completion_retention_time = std::time::Duration::try_from(
+                    value.completion_retention_time.unwrap_or_default(),
+                )?;
+
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
@@ -603,7 +573,8 @@ pub mod v1 {
                     headers,
                     argument: value.argument,
                     execution_time,
-                    idempotency,
+                    idempotency_key,
+                    completion_retention_time,
                     invocation_target,
                 })
             }
@@ -621,7 +592,8 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    idempotency,
+                    completion_retention_time,
+                    idempotency_key,
                 } = value;
 
                 let headers = headers.into_iter().map(Into::into).collect();
@@ -640,7 +612,8 @@ pub mod v1 {
                     headers,
                     argument,
                     execution_time: execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    idempotency: idempotency.map(Into::into),
+                    completion_retention_time: Some(Duration::from(completion_retention_time)),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -661,15 +634,7 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("source"))?,
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::completed::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
@@ -703,14 +668,7 @@ pub mod v1 {
                     result: Some(ResponseResult::from(response_result)),
                     creation_time: timestamps.creation_time().as_u64(),
                     modification_time: timestamps.modification_time().as_u64(),
-                    idempotency_key: Some(match idempotency_key {
-                        Some(key) => {
-                            invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::completed::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -860,7 +818,8 @@ pub mod v1 {
                     source,
                     headers,
                     execution_time,
-                    idempotency,
+                    idempotency_key,
+                    completion_retention_time,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -896,9 +855,11 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(execution_time))
                 };
 
-                let idempotency = idempotency
-                    .map(restate_types::invocation::Idempotency::try_from)
-                    .transpose()?;
+                let completion_retention_time = Some(std::time::Duration::try_from(
+                    completion_retention_time.unwrap_or_default(),
+                )?);
+
+                let idempotency_key = idempotency_key.map(ByteString::from);
 
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
@@ -909,7 +870,8 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    idempotency,
+                    completion_retention_time,
+                    idempotency_key,
                 })
             }
         }
@@ -931,32 +893,10 @@ pub mod v1 {
                     source: Some(source),
                     headers,
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    idempotency: value.idempotency.map(Into::into),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotentRequestMetadata> for restate_types::invocation::Idempotency {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotentRequestMetadata) -> Result<Self, Self::Error> {
-                let retention: std::time::Duration = value
-                    .retention
-                    .ok_or(ConversionError::missing_field("retention"))?
-                    .try_into()?;
-
-                Ok(Self {
-                    key: ByteString::from(value.key),
-                    retention,
-                })
-            }
-        }
-
-        impl From<restate_types::invocation::Idempotency> for IdempotentRequestMetadata {
-            fn from(value: restate_types::invocation::Idempotency) -> Self {
-                Self {
-                    key: value.key.to_string(),
-                    retention: Some(value.retention.into()),
+                    completion_retention_time: Some(Duration::from(
+                        value.completion_retention_time.unwrap_or_default(),
+                    )),
+                    idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                 }
             }
         }

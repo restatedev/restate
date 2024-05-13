@@ -89,10 +89,7 @@ message InvocationStatus {
         }
         Source source = 9;
         Duration completion_retention_time = 10;
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 11;
-            string idempotency_key_value = 12;
-        }
+        optional string idempotency_key = 11;
     }
 
     message Suspended {
@@ -108,10 +105,7 @@ message InvocationStatus {
         }
         Source source = 10;
         Duration completion_retention_time = 11;
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 12;
-            string idempotency_key_value = 13;
-        }
+        optional string idempotency_key = 12;
     }
 
     message Completed {
@@ -121,10 +115,7 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
 
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 12;
-            string idempotency_key_value = 13;
-        }
+        optional string idempotency_key = 12;
     }
 
     message Free {
@@ -143,7 +134,8 @@ message InvocationStatus {
         SpanContext span_context = 9;
         repeated Header headers = 10;
         uint64 execution_time = 11;
-        IdempotentRequestMetadata idempotency = 12;
+        Duration completion_retention_time = 12;
+        optional string idempotency_key = 13;
     }
 
     oneof status {
@@ -225,7 +217,8 @@ message ServiceInvocation {
     Source source = 6;
     repeated Header headers = 7;
     uint64 execution_time = 8;
-    IdempotentRequestMetadata idempotency = 9;
+    Duration completion_retention_time = 9;
+    optional string idempotency_key = 10;
 }
 
 message StateMutation {
@@ -476,9 +469,4 @@ message DedupSequenceNumber {
 
 message IdempotencyMetadata {
     InvocationId invocation_id = 1;
-}
-
-message IdempotentRequestMetadata {
-    string key = 1;
-    Duration retention = 2;
 }
