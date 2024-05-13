@@ -77,6 +77,9 @@ pub(crate) enum Effect {
         sequence_number: MessageIndex,
     },
 
+    // Lock status
+    UnlockService(ServiceId),
+
     // State
     SetState {
         service_id: ServiceId,
@@ -336,6 +339,13 @@ impl Effect {
                     rpc.service = %service_id.service_name,
                     restate.inbox.seq = sequence_number,
                     "Effect: Delete inbox entry",
+                );
+            }
+            Effect::UnlockService(service_id) => {
+                debug_if_leader!(
+                    is_leader,
+                    rpc.service = %service_id.service_name,
+                    "Effect: Unlock service id",
                 );
             }
             Effect::TruncateOutbox(seq_number) => {
@@ -745,6 +755,10 @@ impl Effects {
 
     pub(crate) fn free_invocation(&mut self, invocation_id: InvocationId) {
         self.effects.push(Effect::FreeInvocation(invocation_id))
+    }
+
+    pub(crate) fn unlock_service_id(&mut self, service_id: ServiceId) {
+        self.effects.push(Effect::UnlockService(service_id))
     }
 
     pub(crate) fn enqueue_into_inbox(&mut self, seq_number: MessageIndex, inbox_entry: InboxEntry) {

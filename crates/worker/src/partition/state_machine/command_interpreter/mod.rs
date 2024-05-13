@@ -39,7 +39,7 @@ use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-    Source, SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType,
+    Source, SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -56,6 +56,7 @@ use restate_wal_protocol::Command;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::pin::pin;
@@ -224,26 +225,32 @@ where
 
         // If an idempotency key is set, handle idempotency
         if let Some(idempotency) = &service_invocation.idempotency {
-            let idempotency_id = IdempotencyId::combine(
-                service_invocation.invocation_id,
-                &service_invocation.invocation_target,
-                idempotency.key.clone(),
-            );
-            if self
-                .try_resolve_idempotent_request(
-                    effects,
-                    state,
-                    &idempotency_id,
-                    &service_invocation.invocation_id,
-                    service_invocation.response_sink.as_ref(),
-                )
-                .await?
+            if service_invocation.invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             {
-                // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
-                return Ok(());
+                warn!("The idempotency key for workflow methods is ignored!");
+            } else {
+                let idempotency_id = IdempotencyId::combine(
+                    service_invocation.invocation_id,
+                    &service_invocation.invocation_target,
+                    idempotency.key.clone(),
+                );
+                if self
+                    .try_resolve_idempotent_request(
+                        effects,
+                        state,
+                        &idempotency_id,
+                        &service_invocation.invocation_id,
+                        service_invocation.response_sink.as_ref(),
+                    )
+                    .await?
+                {
+                    // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
+                    return Ok(());
+                }
+                // Idempotent invocation needs to be processed for the first time, let's roll!
+                effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
             }
-            // Idempotent invocation needs to be processed for the first time, let's roll!
-            effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
         }
 
         // If an execution_time is set, we schedule the invocation to be processed later
@@ -283,6 +290,47 @@ where
                         inbox_seq_number,
                     ),
                 );
+                return Ok(());
+            }
+        }
+
+        if service_invocation.invocation_target.invocation_target_ty()
+            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            let keyed_service_id = service_invocation
+                .invocation_target
+                .as_keyed_service_id()
+                .expect("When the handler type is Workflow, the invocation target must have a key");
+
+            let service_status = state.get_virtual_object_status(&keyed_service_id).await?;
+
+            // If locked, then we check the original invocation
+            if let VirtualObjectStatus::Locked(original_invocation_id) = service_status {
+                if let Some(response_sink) = service_invocation.response_sink {
+                    let invocation_status =
+                        state.get_invocation_status(&original_invocation_id).await?;
+
+                    match invocation_status {
+                        InvocationStatus::Completed(
+                            CompletedInvocation { response_result, .. }) => {
+                            self.send_response_to_sinks(
+                                effects,
+                                &service_invocation.invocation_id,
+                                None,
+                                iter::once(response_sink),
+                                response_result,
+                            );
+                        }
+                        InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
+                        is => effects.append_response_sink(
+                            original_invocation_id,
+                            is,
+                            response_sink
+                        )
+                    }
+                }
+
+                // TODO ADD ATTACH INVOCATION ID NOTIFICATION TO INGRESS!!!!!!
                 return Ok(());
             }
         }
@@ -842,6 +890,17 @@ where
                             &invocation_target,
                             idempotency_key,
                         ));
+
+                        // For workflow, we can now cleanup the service lock.
+                        if invocation_target.invocation_target_ty()
+                            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        {
+                            effects.unlock_service_id(
+                                invocation_target
+                                    .as_keyed_service_id()
+                                    .expect("Workflow methods must have keyed service id"),
+                            );
+                        }
                     }
                     InvocationStatus::Completed(_) => {
                         // Just free the invocation
@@ -1145,7 +1204,7 @@ where
     }
 
     fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
-        // Inbox exists only for exclusive handler cases
+        // Inbox exists only for virtual object exclusive handler cases
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
         {
