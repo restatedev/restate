@@ -158,7 +158,7 @@ impl ServiceDiscovery {
         }
 
         // Parse the response
-        let response: schema::Deployment =
+        let response: schema::Endpoint =
             serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?;
 
         let protocol_type = match response.protocol_mode {

@@ -24,7 +24,7 @@ fn main() -> std::io::Result<()> {
         )?;
 
     let mut parsed_content: serde_json::Value = serde_json::from_reader(
-        File::open("./service-protocol/deployment_manifest_schema.json").unwrap(),
+        File::open("./service-protocol/endpoint_manifest_schema.json").unwrap(),
     )
     .unwrap();
 
