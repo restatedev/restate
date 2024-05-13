@@ -30,7 +30,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 /// use restate_types::retries::RetryPolicy;
 ///
 /// // Define the retry policy
-/// let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), 10);
+/// let retry_policy = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(10));
 ///
 /// // Transform it in an iterator
 /// let mut retry_iter = retry_policy.into_iter();
