@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A wrapper client for meta HTTP service.
+//! A wrapper client for Restate Cloud HTTP service.
 
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
@@ -20,7 +20,7 @@ use url::Url;
 use crate::build_info;
 use crate::cli_env::CliEnv;
 
-use super::errors::ApiError;
+use super::super::errors::ApiError;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -48,10 +48,6 @@ where
         self.inner.status()
     }
 
-    pub fn url(&self) -> &Url {
-        self.inner.url()
-    }
-
     pub async fn into_body(self) -> Result<T, Error> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
@@ -72,19 +68,6 @@ where
         debug!("  {}", body);
         Ok(serde_json::from_str(&body)?)
     }
-
-    pub async fn into_text(self) -> Result<String, Error> {
-        Ok(self.inner.text().await?)
-    }
-    pub fn success_or_error(self) -> Result<StatusCode, Error> {
-        let http_status_code = self.inner.status();
-        let url = self.inner.url().clone();
-        info!("Response from {} ({})", url, http_status_code);
-        match self.inner.error_for_status() {
-            Ok(_) => Ok(http_status_code),
-            Err(e) => Err(Error::Network(e)),
-        }
-    }
 }
 
 impl<T> From<reqwest::Response> for Envelope<T> {
@@ -96,19 +79,38 @@ impl<T> From<reqwest::Response> for Envelope<T> {
     }
 }
 
-/// A handy client for the meta HTTP service.
+/// A handy client for the Cloud HTTP service.
 #[derive(Clone)]
-pub struct MetasClient {
+pub struct CloudClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Url,
-    pub(crate) bearer_token: Option<String>,
+    pub(crate) access_token: String,
     pub(crate) request_timeout: Duration,
 }
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl MetasClient {
-    pub fn new(env: &CliEnv) -> reqwest::Result<Self> {
+impl CloudClient {
+    pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
+        let access_token = if let Some(credentials) = &env.config.cloud.credentials {
+            if credentials.access_token_expiry
+                < std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            {
+                return Err(anyhow::anyhow!(
+                    "Restate Cloud credentials have expired; first run restate cloud login"
+                ));
+            }
+
+            &credentials.access_token
+        } else {
+            return Err(anyhow::anyhow!(
+                "Missing Restate Cloud credentials; first run restate cloud login"
+            ));
+        };
+
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -120,39 +122,24 @@ impl MetasClient {
             .connect_timeout(env.connect_timeout)
             .build()?;
 
-        let bearer_token = env.config.bearer_token.as_ref();
-
-        #[cfg(feature = "cloud")]
-        let bearer_token = if env.config.cloud.environment_info.is_some() {
-            bearer_token.or(env
-                .config
-                .cloud
-                .credentials
-                .as_ref()
-                .map(|c| &c.access_token))
-        } else {
-            bearer_token
-        };
-
         Ok(Self {
             inner: raw_client,
-            base_url: env.config.admin_base_url.clone(),
-            bearer_token: bearer_token.cloned(),
+            base_url: env.config.cloud.api_base_url.clone(),
+            access_token: access_token.clone(),
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }
 
     /// Prepare a request builder for the given method and path.
     fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
-        let request_builder = self
-            .inner
+        self.inner
             .request(method, path)
-            .timeout(self.request_timeout);
-
-        match self.bearer_token.as_deref() {
-            Some(token) => request_builder.bearer_auth(token),
-            None => request_builder,
-        }
+            .timeout(self.request_timeout)
+            .header(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            )
+            .bearer_auth(&self.access_token)
     }
 
     /// Prepare a request builder that encodes the body as JSON.
@@ -202,8 +189,8 @@ impl MetasClient {
     }
 }
 
-// Ensure that MetaClient is Send + Sync. Compiler will fail if it's not.
+// Ensure that CloudClient is Send + Sync. Compiler will fail if it's not.
 const _: () = {
     const fn assert_send<T: Send + Sync>() {}
-    assert_send::<MetasClient>();
+    assert_send::<CloudClient>();
 };

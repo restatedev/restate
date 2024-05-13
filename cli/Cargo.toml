@@ -67,6 +67,7 @@ url = { version = "2.4.1" }
 uuid = { workspace = true }
 zip = "0.6"
 zip-extensions = "0.6"
+typify = "0.1.0"
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [

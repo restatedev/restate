@@ -1,0 +1,541 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Restate Cloud API",
+    "version": "v1"
+  },
+  "servers": [
+    {
+      "url": "https://api.dev.restate.cloud/cloud",
+      "description": "Dev Endpoint"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "definitions": {
+    "GetUserIdentityRequest": {
+      "type": "object"
+    },
+    "GetUserIdentityResponse": {
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "userId"
+      ]
+    },
+    "ClientError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "UnauthorizedError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ServerInternalError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ListAccountsRequest": {
+      "type": "object"
+    },
+    "ListAccountsResponse": {
+      "type": "object",
+      "properties": {
+        "accounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "accountId": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "accountId"
+            ]
+          }
+        }
+      },
+      "required": [
+        "accounts"
+      ]
+    },
+    "CreateAccountRequest": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "CreateAccountResponse": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "UpdateAccountRequest": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "nullable": true
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "UpdateAccountResponse": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "AccountId": {
+      "type": "string",
+      "description": "Unique account identifier",
+      "example": "acc_1b2DE3f40"
+    },
+    "CreateEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "CreateEnvironmentResponse": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "ListEnvironmentsRequest": {
+      "type": "object"
+    },
+    "ListEnvironmentsResponse": {
+      "type": "object",
+      "properties": {
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "environmentId"
+            ]
+          }
+        }
+      },
+      "required": [
+        "environments"
+      ]
+    },
+    "DescribeEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "DescribeEnvironmentResponse": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "ACTIVE",
+            "FAILED",
+            "DELETED"
+          ]
+        },
+        "signingPublicKey": {
+          "type": "string"
+        },
+        "apiKeys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "keyId": {
+                "type": "string"
+              },
+              "environmentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyId",
+              "environmentId"
+            ]
+          }
+        },
+        "ingressBaseUrl": {
+          "type": "string"
+        },
+        "adminBaseUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "status",
+        "apiKeys",
+        "ingressBaseUrl",
+        "adminBaseUrl"
+      ]
+    },
+    "DestroyEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "DestroyEnvironmentResponse": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "CreateApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "roleId": {
+          "$ref": "#/components/schemas/RoleId"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "roleId"
+      ]
+    },
+    "RoleId": {
+      "type": "string",
+      "enum": [
+        "rst:role::FullAccess",
+        "rst:role::IngressAccess",
+        "rst:role::AdminAccess",
+        "rst:role::ResolveAwakeableAccess"
+      ],
+      "description": "A role identifier specifying a particular level of access for a principal.",
+      "example": "rst:role::FullAccess"
+    },
+    "CreateApiKeyResponse": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "roleId": {
+          "$ref": "#/components/schemas/RoleId"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "DELETED"
+          ]
+        }
+      },
+      "required": [
+        "keyId",
+        "roleId",
+        "environmentId",
+        "accountId",
+        "apiKey",
+        "state"
+      ]
+    },
+    "ListApiKeysRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "ListApiKeysResponse": {
+      "type": "object",
+      "properties": {
+        "apiKeys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "keyId": {
+                "type": "string"
+              },
+              "environmentId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "keyId",
+              "environmentId"
+            ]
+          }
+        }
+      },
+      "required": [
+        "apiKeys"
+      ]
+    },
+    "DescribeApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "environmentId"
+      ]
+    },
+    "DescribeApiKeyResponse": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "roleId": {
+          "$ref": "#/components/schemas/RoleId"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "accountId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ACTIVE",
+            "DELETED"
+          ]
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "roleId",
+        "environmentId",
+        "accountId",
+        "state"
+      ]
+    },
+    "DeleteApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "keyId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "keyId"
+      ]
+    },
+    "DeleteApiKeyResponse": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "GetEnvironmentLogsRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "start": {
+          "type": "number",
+          "minimum": 1700000000,
+          "maximum": 2000000000
+        },
+        "end": {
+          "type": "number",
+          "minimum": 1700000000,
+          "maximum": 2000000000
+        }
+      },
+      "required": [
+        "environmentId",
+        "start",
+        "end"
+      ]
+    },
+    "GetEnvironmentLogsResponse": {
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "unixNanos": {
+                "type": "string"
+              },
+              "line": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "unixNanos",
+              "line"
+            ]
+          }
+        }
+      },
+      "required": [
+        "lines"
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
