@@ -23,7 +23,8 @@ use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherReques
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    Header, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation, Source, SpanRelation,
+    Header, Idempotency, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocation,
+    Source, SpanRelation,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
@@ -86,13 +87,23 @@ where
             parse_idempotency(req.headers(), invocation_target_meta.idempotency_retention)?;
 
         // Craft Invocation Target and Id
-        let invocation_target = if let TargetType::VirtualObject { key } = target {
-            InvocationTarget::virtual_object(
-                &*service_name,
-                key,
-                &*handler_name,
-                invocation_target_meta.handler_ty,
-            )
+        let invocation_target = if let TargetType::Keyed { key } = target {
+            match invocation_target_meta.target_ty {
+                InvocationTargetType::VirtualObject(handler_ty) => {
+                    InvocationTarget::virtual_object(
+                        &*service_name,
+                        key,
+                        &*handler_name,
+                        handler_ty,
+                    )
+                }
+                InvocationTargetType::Workflow(handler_ty) => {
+                    InvocationTarget::workflow(&*service_name, key, &*handler_name, handler_ty)
+                }
+                InvocationTargetType::Service => {
+                    panic!("Unexpected keyed target, this should have been checked before in the path parsing.")
+                }
+            }
         } else {
             InvocationTarget::service(&*service_name, &*handler_name)
         };

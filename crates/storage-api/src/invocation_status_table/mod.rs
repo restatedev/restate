@@ -376,7 +376,7 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
 mod mocks {
     use super::*;
 
-    use restate_types::invocation::HandlerType;
+    use restate_types::invocation::VirtualObjectHandlerType;
 
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {
@@ -385,7 +385,7 @@ mod mocks {
                     "MyService",
                     "MyKey",
                     "mock",
-                    HandlerType::Exclusive,
+                    VirtualObjectHandlerType::Exclusive,
                 ),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 deployment_id: None,

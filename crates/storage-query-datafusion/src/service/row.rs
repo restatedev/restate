@@ -28,5 +28,6 @@ pub(crate) fn append_service_row(
     row.ty(match service_metadata.ty {
         ServiceType::Service => "service",
         ServiceType::VirtualObject => "virtual_object",
+        ServiceType::Workflow => "workflow",
     })
 }

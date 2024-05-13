@@ -211,7 +211,7 @@ mod tests {
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::{IdempotencyId, InvocationId, WithPartitionKey};
     use restate_types::invocation::{
-        HandlerType, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation,
+        Idempotency, InvocationTarget, ResponseResult, ServiceInvocation, VirtualObjectHandlerType,
     };
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::partition_table::{FindPartition, FixedPartitionTable};
@@ -245,7 +245,7 @@ mod tests {
                     "MySvc",
                     "MyKey",
                     "pippo",
-                    HandlerType::Exclusive,
+                    VirtualObjectHandlerType::Exclusive,
                 );
                 let argument = Bytes::from_static(b"nbfjksdfs");
                 let idempotency_key = ByteString::from_static("123");

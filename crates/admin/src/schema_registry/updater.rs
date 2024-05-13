@@ -26,7 +26,9 @@ use restate_schema_api::subscription::{
 };
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::invocation::{HandlerType, ServiceType};
+use restate_types::invocation::{
+    InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -127,7 +129,6 @@ impl SchemaUpdater {
         for (service_name, service) in proposed_services {
             let service_type = ServiceType::from(service.ty);
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                service_type,
                 service
                     .handlers
                     .into_iter()
@@ -329,16 +330,19 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                let ty = match (service_schemas.ty, handler_schemas.target_meta.handler_ty) {
-                    (ServiceType::VirtualObject, HandlerType::Exclusive) => {
+                let ty = match handler_schemas.target_meta.target_ty {
+                    InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) => {
+                        EventReceiverServiceType::Workflow
+                    }
+                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive) => {
                         EventReceiverServiceType::VirtualObject
                     }
-                    (ServiceType::VirtualObject, HandlerType::Shared) => {
+                    InvocationTargetType::Workflow(_) | InvocationTargetType::VirtualObject(_) => {
                         return Err(SchemaError::Subscription(
                             SubscriptionError::InvalidSinkSharedHandler(sink),
                         ))
                     }
-                    (ServiceType::Service, _) => EventReceiverServiceType::Service,
+                    InvocationTargetType::Service => EventReceiverServiceType::Service,
                 };
 
                 Sink::Service {
@@ -409,7 +413,7 @@ impl SchemaUpdater {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct DiscoveredHandlerMetadata {
     name: String,
-    ty: HandlerType,
+    ty: InvocationTargetType,
     input: InputRules,
     output: OutputRules,
 }
@@ -419,15 +423,27 @@ impl DiscoveredHandlerMetadata {
         service_type: ServiceType,
         handler: schema::Handler,
     ) -> Result<Self, ServiceError> {
-        let handler_type = match handler.ty {
-            None => HandlerType::default_for_service_type(service_type),
-            Some(schema::HandlerType::Exclusive) => HandlerType::Exclusive,
-            Some(schema::HandlerType::Shared) => HandlerType::Shared,
+        let ty = match (service_type, handler.ty) {
+            (ServiceType::Service, None | Some(schema::HandlerType::Shared)) => {
+                InvocationTargetType::Service
+            }
+            (ServiceType::VirtualObject, None | Some(schema::HandlerType::Exclusive)) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            }
+            (ServiceType::VirtualObject, Some(schema::HandlerType::Shared)) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+            }
+            _ => {
+                return Err(ServiceError::BadServiceAndHandlerType(
+                    service_type,
+                    handler.ty,
+                ))
+            }
         };
 
         Ok(Self {
             name: handler.name.to_string(),
-            ty: handler_type,
+            ty,
             input: handler
                 .input
                 .map(|s| DiscoveredHandlerMetadata::input_rules_from_schema(&handler.name, s))
@@ -495,7 +511,6 @@ impl DiscoveredHandlerMetadata {
     }
 
     fn compute_handlers(
-        service_ty: ServiceType,
         handlers: Vec<DiscoveredHandlerMetadata>,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
@@ -507,8 +522,7 @@ impl DiscoveredHandlerMetadata {
                         target_meta: InvocationTargetMetadata {
                             public: true,
                             idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                            service_ty,
-                            handler_ty: handler.ty,
+                            target_ty: handler.ty,
                             input_rules: handler.input,
                             output_rules: handler.output,
                         },

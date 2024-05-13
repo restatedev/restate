@@ -23,7 +23,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    HandlerType, InvocationTarget, ServiceInvocationSpanContext, Source,
+    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
 use std::collections::HashSet;
@@ -33,7 +33,7 @@ const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
     key: ByteString::from_static("1"),
     handler: ByteString::from_static("myhandler"),
-    handler_ty: HandlerType::Exclusive,
+    handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_1: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_1));
@@ -42,7 +42,7 @@ const INVOCATION_TARGET_2: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
     key: ByteString::from_static("2"),
     handler: ByteString::from_static("myhandler"),
-    handler_ty: HandlerType::Exclusive,
+    handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_2: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_2));
@@ -51,7 +51,7 @@ const INVOCATION_TARGET_3: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
     key: ByteString::from_static("3"),
     handler: ByteString::from_static("myhandler"),
-    handler_ty: HandlerType::Exclusive,
+    handler_ty: VirtualObjectHandlerType::Exclusive,
 };
 static INVOCATION_ID_3: Lazy<InvocationId> =
     Lazy::new(|| InvocationId::generate(&INVOCATION_TARGET_3));

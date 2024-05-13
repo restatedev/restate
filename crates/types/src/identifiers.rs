@@ -823,7 +823,7 @@ mod mocks {
 mod tests {
     use super::*;
 
-    use crate::invocation::HandlerType;
+    use crate::invocation::VirtualObjectHandlerType;
 
     #[test]
     fn service_id_and_invocation_id_partition_key_should_match() {
@@ -831,7 +831,7 @@ mod tests {
             "MyService",
             "MyKey",
             "MyMethod",
-            HandlerType::Exclusive,
+            VirtualObjectHandlerType::Exclusive,
         );
         let invocation_id = InvocationId::generate(&invocation_target);
 

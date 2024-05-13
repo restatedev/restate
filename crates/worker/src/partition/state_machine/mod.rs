@@ -115,8 +115,8 @@ mod tests {
     use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
     use restate_types::ingress::IngressResponse;
     use restate_types::invocation::{
-        HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
-        ServiceInvocation, ServiceInvocationResponseSink, Source,
+        InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
+        ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
@@ -251,8 +251,12 @@ mod tests {
             .run_in_scope("mock-state-machine", None, MockStateMachine::create())
             .await;
 
-        let invocation_target =
-            InvocationTarget::virtual_object("MySvc", "MyKey", "MyHandler", HandlerType::Shared);
+        let invocation_target = InvocationTarget::virtual_object(
+            "MySvc",
+            "MyKey",
+            "MyHandler",
+            VirtualObjectHandlerType::Shared,
+        );
 
         // Let's lock the virtual object
         let mut tx = state_machine.rocksdb_storage.transaction();

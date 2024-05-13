@@ -16,7 +16,7 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    HandlerType, InvocationTarget, ServiceInvocationSpanContext, ServiceType, SpanRelation,
+    InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, SpanRelation,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -65,11 +65,11 @@ where
             .schemas
             .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
         {
-            Some(meta) => match meta.service_ty {
-                ServiceType::Service => {
+            Some(meta) => match meta.target_ty {
+                InvocationTargetType::Service => {
                     InvocationTarget::service(request.service_name, request.handler_name)
                 }
-                ServiceType::VirtualObject => InvocationTarget::virtual_object(
+                InvocationTargetType::VirtualObject(h_ty) => InvocationTarget::virtual_object(
                     request.service_name.clone(),
                     ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
                         InvocationError::from(anyhow!(
@@ -77,7 +77,17 @@ where
                         ))
                     })?,
                     request.handler_name,
-                    meta.handler_ty,
+                    h_ty,
+                ),
+                InvocationTargetType::Workflow(h_ty) => InvocationTarget::workflow(
+                    request.service_name.clone(),
+                    ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
+                        InvocationError::from(anyhow!(
+                            "The request key is not a valid UTF-8 string: {e}"
+                        ))
+                    })?,
+                    request.handler_name,
+                    h_ty,
                 ),
             },
             None => {
@@ -120,38 +130,35 @@ where
             PlainEntryHeader::GetState { is_completed } => {
                 can_read_state(
                     &header.as_entry_type(),
-                    &current_invocation_target.service_ty(),
+                    &current_invocation_target.invocation_target_ty(),
                 )?;
                 EnrichedEntryHeader::GetState { is_completed }
             }
             PlainEntryHeader::SetState {} => {
                 can_write_state(
                     &header.as_entry_type(),
-                    &current_invocation_target.service_ty(),
-                    current_invocation_target.handler_ty(),
+                    &current_invocation_target.invocation_target_ty(),
                 )?;
                 EnrichedEntryHeader::SetState {}
             }
             PlainEntryHeader::ClearState {} => {
                 can_write_state(
                     &header.as_entry_type(),
-                    &current_invocation_target.service_ty(),
-                    current_invocation_target.handler_ty(),
+                    &current_invocation_target.invocation_target_ty(),
                 )?;
                 EnrichedEntryHeader::ClearState {}
             }
             PlainEntryHeader::GetStateKeys { is_completed } => {
                 can_read_state(
                     &header.as_entry_type(),
-                    &current_invocation_target.service_ty(),
+                    &current_invocation_target.invocation_target_ty(),
                 )?;
                 EnrichedEntryHeader::GetStateKeys { is_completed }
             }
             PlainEntryHeader::ClearAllState => {
                 can_write_state(
                     &header.as_entry_type(),
-                    &current_invocation_target.service_ty(),
-                    current_invocation_target.handler_ty(),
+                    &current_invocation_target.invocation_target_ty(),
                 )?;
                 EnrichedEntryHeader::ClearAllState {}
             }
@@ -229,14 +236,14 @@ where
 #[inline]
 fn can_read_state(
     entry_type: &EntryType,
-    service_type: &ServiceType,
+    invocation_target_type: &InvocationTargetType,
 ) -> Result<(), InvocationError> {
-    if !service_type.has_state() {
+    if !invocation_target_type.can_read_state() {
         return Err(InvocationError::new(
             codes::BAD_REQUEST,
             format!(
-                "The service type {} does not have state and, therefore, does not support the entry type {}",
-                service_type, entry_type
+                "The service/handler type {} does not have state and, therefore, does not support the entry type {}",
+                invocation_target_type, entry_type
             ),
         ));
     }
@@ -246,16 +253,15 @@ fn can_read_state(
 #[inline]
 fn can_write_state(
     entry_type: &EntryType,
-    service_type: &ServiceType,
-    handler_type: Option<HandlerType>,
+    invocation_target_type: &InvocationTargetType,
 ) -> Result<(), InvocationError> {
-    can_read_state(entry_type, service_type)?;
-    if handler_type != Some(HandlerType::Exclusive) {
+    can_read_state(entry_type, invocation_target_type)?;
+    if !invocation_target_type.can_write_state() {
         return Err(InvocationError::new(
             codes::BAD_REQUEST,
             format!(
-                "The service type {} with handler type {:?} has no exclusive state access and, therefore, does not support the entry type {}",
-                service_type, handler_type, entry_type
+                "The service/handler type {} has no exclusive state access and, therefore, does not support the entry type {}",
+                invocation_target_type, entry_type
             ),
         ));
     }

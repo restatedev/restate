@@ -12,20 +12,16 @@ message InvocationTarget {
     enum Ty {
         UNKNOWN_TY = 0;
         SERVICE = 1;
-        VIRTUAL_OBJECT = 2;
+        VIRTUAL_OBJECT_EXCLUSIVE = 2;
+        VIRTUAL_OBJECT_SHARED = 3;
+        WORKFLOW_WORKFLOW = 4;
+        WORKFLOW_SHARED = 5;
     }
 
-    enum HandlerType {
-        UNKNOWN_HANDLER_TYPE = 0;
-        EXCLUSIVE = 1;
-        SHARED = 2;
-    }
-
-    Ty ty = 1;
+    Ty service_and_handler_ty = 1;
     bytes name = 2;
     bytes handler = 3;
     bytes key = 4;
-    HandlerType handler_ty = 5;
 }
 
 message ServiceId {

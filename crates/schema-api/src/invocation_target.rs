@@ -11,7 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
-use restate_types::invocation::{HandlerType, ServiceType};
+use restate_types::invocation::InvocationTargetType;
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
@@ -23,8 +23,7 @@ pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 
 pub struct InvocationTargetMetadata {
     pub public: bool,
     pub idempotency_retention: Duration,
-    pub service_ty: ServiceType,
-    pub handler_ty: HandlerType,
+    pub target_ty: InvocationTargetType,
     pub input_rules: InputRules,
     pub output_rules: OutputRules,
 }
@@ -411,12 +410,11 @@ pub mod mocks {
     }
 
     impl InvocationTargetMetadata {
-        pub fn mock(service_ty: ServiceType, handler_ty: HandlerType) -> Self {
+        pub fn mock(invocation_target_type: InvocationTargetType) -> Self {
             Self {
                 public: true,
                 idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                service_ty,
-                handler_ty,
+                target_ty: invocation_target_type,
                 input_rules: Default::default(),
                 output_rules: Default::default(),
             }

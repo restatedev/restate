@@ -1005,42 +1005,56 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: InvocationTarget) -> Result<Self, Self::Error> {
-                match invocation_target::Ty::try_from(value.ty) {
+                let name =
+                    ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
+                let handler =
+                    ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
+
+                match invocation_target::Ty::try_from(value.service_and_handler_ty) {
                     Ok(invocation_target::Ty::Service) => {
-                        Ok(restate_types::invocation::InvocationTarget::Service {
-                            name: ByteString::try_from(value.name)
-                                .map_err(ConversionError::invalid_data)?,
-                            handler: ByteString::try_from(value.handler)
-                                .map_err(ConversionError::invalid_data)?,
-                        })
+                        Ok(restate_types::invocation::InvocationTarget::Service { name, handler })
                     }
-                    Ok(invocation_target::Ty::VirtualObject) => {
+                    Ok(invocation_target::Ty::VirtualObjectExclusive) => {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
-                            name: ByteString::try_from(value.name)
-                                .map_err(ConversionError::invalid_data)?,
-                            handler: ByteString::try_from(value.handler)
-                                .map_err(ConversionError::invalid_data)?,
+                            name,
+                            handler,
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
-                            handler_ty: match invocation_target::HandlerType::try_from(
-                                value.handler_ty,
-                            ) {
-                                Ok(invocation_target::HandlerType::Exclusive) => {
-                                    restate_types::invocation::HandlerType::Exclusive
-                                }
-                                Ok(invocation_target::HandlerType::Shared) => {
-                                    restate_types::invocation::HandlerType::Shared
-                                }
-                                _ => {
-                                    return Err(ConversionError::unexpected_enum_variant(
-                                        "handler_ty",
-                                        value.handler_ty,
-                                    ))
-                                }
-                            },
+                            handler_ty:
+                                restate_types::invocation::VirtualObjectHandlerType::Exclusive,
                         })
                     }
-                    _ => Err(ConversionError::unexpected_enum_variant("ty", value.ty)),
+                    Ok(invocation_target::Ty::VirtualObjectShared) => {
+                        Ok(restate_types::invocation::InvocationTarget::VirtualObject {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::VirtualObjectHandlerType::Shared,
+                        })
+                    }
+                    Ok(invocation_target::Ty::WorkflowWorkflow) => {
+                        Ok(restate_types::invocation::InvocationTarget::Workflow {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::WorkflowHandlerType::Workflow,
+                        })
+                    }
+                    Ok(invocation_target::Ty::WorkflowShared) => {
+                        Ok(restate_types::invocation::InvocationTarget::Workflow {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::WorkflowHandlerType::Shared,
+                        })
+                    }
+                    _ => Err(ConversionError::unexpected_enum_variant(
+                        "ty",
+                        value.service_and_handler_ty,
+                    )),
                 }
             }
         }
@@ -1050,9 +1064,9 @@ pub mod v1 {
                 match value {
                     restate_types::invocation::InvocationTarget::Service { name, handler } => {
                         InvocationTarget {
-                            ty: invocation_target::Ty::Service.into(),
                             name: name.into_bytes(),
                             handler: handler.into_bytes(),
+                            service_and_handler_ty: invocation_target::Ty::Service.into(),
                             ..InvocationTarget::default()
                         }
                     }
@@ -1062,16 +1076,34 @@ pub mod v1 {
                         handler,
                         handler_ty,
                     } => InvocationTarget {
-                        ty: invocation_target::Ty::VirtualObject.into(),
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
-                        handler_ty: match handler_ty {
-                            restate_types::invocation::HandlerType::Shared => {
-                                invocation_target::HandlerType::Shared
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::VirtualObjectHandlerType::Shared => {
+                                invocation_target::Ty::VirtualObjectShared
                             }
-                            restate_types::invocation::HandlerType::Exclusive => {
-                                invocation_target::HandlerType::Exclusive
+                            restate_types::invocation::VirtualObjectHandlerType::Exclusive => {
+                                invocation_target::Ty::VirtualObjectExclusive
+                            }
+                        }
+                        .into(),
+                    },
+                    restate_types::invocation::InvocationTarget::Workflow {
+                        name,
+                        key,
+                        handler,
+                        handler_ty,
+                    } => InvocationTarget {
+                        name: name.into_bytes(),
+                        handler: handler.into_bytes(),
+                        key: key.into_bytes(),
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::WorkflowHandlerType::Shared => {
+                                invocation_target::Ty::WorkflowShared
+                            }
+                            restate_types::invocation::WorkflowHandlerType::Workflow => {
+                                invocation_target::Ty::WorkflowWorkflow
                             }
                         }
                         .into(),

@@ -38,6 +38,7 @@ pub(crate) fn append_invocation_status_row(
         row.target_service_ty(match invocation_target.service_ty() {
             ServiceType::Service => "service",
             ServiceType::VirtualObject => "virtual_object",
+            ServiceType::Workflow => "workflow",
         });
     }
 

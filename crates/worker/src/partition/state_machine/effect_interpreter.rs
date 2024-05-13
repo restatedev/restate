@@ -24,7 +24,7 @@ use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
-use restate_types::invocation::{HandlerType, InvocationInput};
+use restate_types::invocation::{InvocationInput, InvocationTargetType, VirtualObjectHandlerType};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
@@ -541,8 +541,10 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
-        if in_flight_invocation_metadata.invocation_target.handler_ty()
-            == Some(HandlerType::Exclusive)
+        if in_flight_invocation_metadata
+            .invocation_target
+            .invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
         {
             state_storage
                 .store_service_status(

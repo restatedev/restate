@@ -38,7 +38,7 @@ impl ServiceSchemas {
                 .iter()
                 .map(|(h_name, h_schemas)| HandlerMetadata {
                     name: h_name.clone(),
-                    ty: h_schemas.target_meta.handler_ty,
+                    ty: h_schemas.target_meta.target_ty.into(),
                     input_description: h_schemas.target_meta.input_rules.to_string(),
                     output_description: h_schemas.target_meta.output_rules.to_string(),
                 })

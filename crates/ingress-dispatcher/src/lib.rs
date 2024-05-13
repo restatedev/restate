@@ -15,8 +15,8 @@ use restate_types::identifiers::{
     partitioner, IdempotencyId, InvocationId, PartitionKey, WithPartitionKey,
 };
 use restate_types::invocation::{
-    HandlerType, Idempotency, InvocationResponse, InvocationTarget, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
+    Idempotency, InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use std::fmt::Display;
@@ -168,7 +168,15 @@ impl IngressDispatcherRequest {
                             .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
                             .to_owned(),
                         &**handler,
-                        HandlerType::Exclusive,
+                        VirtualObjectHandlerType::Exclusive,
+                    ),
+                    EventReceiverServiceType::Workflow => InvocationTarget::workflow(
+                        &**name,
+                        std::str::from_utf8(&key)
+                            .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
+                            .to_owned(),
+                        &**handler,
+                        WorkflowHandlerType::Workflow,
                     ),
                     EventReceiverServiceType::Service => {
                         InvocationTarget::service(&**name, &**handler)

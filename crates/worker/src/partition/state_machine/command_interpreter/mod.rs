@@ -37,9 +37,9 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SpanRelationCause, TerminationFlavor,
+    InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    Source, SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -258,7 +258,9 @@ where
         }
 
         // If it's exclusive, we need to acquire the exclusive lock
-        if service_invocation.invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+        if service_invocation.invocation_target.invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
             let keyed_service_id = service_invocation
                 .invocation_target
                 .as_keyed_service_id()
@@ -1144,7 +1146,9 @@ where
 
     fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
         // Inbox exists only for exclusive handler cases
-        if invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+        if invocation_target.invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
             effects.pop_inbox(invocation_target.as_keyed_service_id().expect(
                 "When the handler type is Exclusive, the invocation target must have a key",
             ))
