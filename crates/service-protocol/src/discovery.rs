@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::pb::protocol;
+use crate::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use bytes::Bytes;
 use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
@@ -15,12 +17,15 @@ use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
-use restate_errors::META0003;
+use restate_errors::{META0003, META0012};
 use restate_schema_api::deployment::ProtocolType;
+use restate_schema_api::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::retries::{RetryIter, RetryPolicy};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::ops::RangeInclusive;
 use tracing::warn;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
@@ -39,6 +44,7 @@ pub mod schema {
             match value {
                 ServiceType::VirtualObject => restate_types::invocation::ServiceType::VirtualObject,
                 ServiceType::Service => restate_types::invocation::ServiceType::Service,
+                ServiceType::Workflow => restate_types::invocation::ServiceType::Workflow,
             }
         }
     }
@@ -72,6 +78,9 @@ impl DiscoverEndpoint {
 pub struct DiscoveredMetadata {
     pub protocol_type: ProtocolType,
     pub services: Vec<schema::Service>,
+    // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
+    // and we need to represent unknown later versions
+    pub supported_protocol_versions: RangeInclusive<i32>,
 }
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -79,7 +88,7 @@ pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
     #[code(unknown)]
-    BadResponse(&'static str),
+    BadResponse(Cow<'static, str>),
     #[error(
         "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
         String::from_utf8_lossy(.1)
@@ -94,6 +103,9 @@ pub enum DiscoveryError {
     #[error("client error: {0}")]
     #[code(META0003)]
     Client(#[from] ServiceClientError),
+    #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
+    #[code(META0012)]
+    UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
 }
 
 impl DiscoveryError {
@@ -111,7 +123,9 @@ impl DiscoveryError {
                     | StatusCode::GATEWAY_TIMEOUT
             ),
             DiscoveryError::Client(client_error) => client_error.is_retryable(),
-            DiscoveryError::BadResponse(_) | DiscoveryError::Decode(_, _) => false,
+            DiscoveryError::BadResponse(_)
+            | DiscoveryError::Decode(_, _)
+            | DiscoveryError::UnsupportedServiceProtocol { .. } => false,
         }
     }
 }
@@ -152,8 +166,13 @@ impl ServiceDiscovery {
             // False positive with Bytes field
             #[allow(clippy::borrow_interior_mutable_const)]
             Some(ct) if ct == APPLICATION_JSON => {}
-            _ => {
-                return Err(DiscoveryError::BadResponse("Bad content type header"));
+            Some(ct) => {
+                return Err(DiscoveryError::BadResponse(
+                    format!("Bad content type header: {ct:?}").into(),
+                ));
+            }
+            None => {
+                return Err(DiscoveryError::BadResponse(format!("No content type header was specified. Expected '{APPLICATION_JSON:?}' content type.").into()))
             }
         }
 
@@ -161,17 +180,67 @@ impl ServiceDiscovery {
         let response: schema::Endpoint =
             serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?;
 
-        let protocol_type = match response.protocol_mode {
+        Self::create_discovered_metadata_from_endpoint_response(response)
+    }
+
+    fn create_discovered_metadata_from_endpoint_response(
+        endpoint_response: schema::Endpoint,
+    ) -> Result<DiscoveredMetadata, DiscoveryError> {
+        let protocol_type = match endpoint_response.protocol_mode {
             Some(schema::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
             Some(schema::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
             None => {
-                return Err(DiscoveryError::BadResponse("missing protocol mode"));
+                return Err(DiscoveryError::BadResponse("missing protocol mode".into()));
             }
         };
 
+        // Sanity checks for the service protocol version
+        if endpoint_response.min_protocol_version <= 0
+            || endpoint_response.min_protocol_version > MAX_SERVICE_PROTOCOL_VERSION_VALUE as i64
+        {
+            return Err(DiscoveryError::BadResponse(
+                format!(
+                    "min protocol version must be in [1, {}]",
+                    MAX_SERVICE_PROTOCOL_VERSION_VALUE
+                )
+                .into(),
+            ));
+        }
+
+        if endpoint_response.max_protocol_version <= 0
+            || endpoint_response.max_protocol_version > MAX_SERVICE_PROTOCOL_VERSION_VALUE as i64
+        {
+            return Err(DiscoveryError::BadResponse(
+                format!(
+                    "max protocol version must be in [1, {}]",
+                    MAX_SERVICE_PROTOCOL_VERSION_VALUE
+                )
+                .into(),
+            ));
+        }
+
+        if endpoint_response.min_protocol_version > endpoint_response.max_protocol_version {
+            return Err(DiscoveryError::BadResponse(
+                format!("Expected min protocol version to be <= max protocol version. Received min protocol version '{}', max protocol version '{}'", endpoint_response.min_protocol_version, endpoint_response.max_protocol_version).into(),
+            ));
+        }
+
+        let min_version = endpoint_response.min_protocol_version as i32;
+        let max_version = endpoint_response.max_protocol_version as i32;
+
+        if !protocol::ServiceProtocolVersion::is_supported(min_version, max_version) {
+            return Err(DiscoveryError::UnsupportedServiceProtocol {
+                min_version,
+                max_version,
+            });
+        }
+
         Ok(DiscoveredMetadata {
             protocol_type,
-            services: response.services,
+            services: endpoint_response.services,
+            // we need to store the raw representation since the runtime might not know the latest
+            // version yet.
+            supported_protocol_versions: min_version..=max_version,
         })
     }
 
@@ -225,5 +294,72 @@ impl ServiceDiscovery {
 
             return Err(e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::discovery::schema::ProtocolMode;
+    use crate::discovery::{schema, DiscoveryError, ServiceDiscovery};
+    use crate::MAX_SERVICE_PROTOCOL_VERSION;
+
+    #[test]
+    fn fail_on_invalid_min_protocol_version_with_bad_response() {
+        let response = schema::Endpoint {
+            min_protocol_version: 0,
+            max_protocol_version: 1,
+            services: Vec::new(),
+            protocol_mode: Some(ProtocolMode::BidiStream),
+        };
+
+        assert!(matches!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            Err(DiscoveryError::BadResponse(_))
+        ));
+    }
+
+    #[test]
+    fn fail_on_invalid_max_protocol_version_with_bad_response() {
+        let response = schema::Endpoint {
+            min_protocol_version: 1,
+            max_protocol_version: i64::MAX,
+            services: Vec::new(),
+            protocol_mode: Some(ProtocolMode::BidiStream),
+        };
+
+        assert!(matches!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            Err(DiscoveryError::BadResponse(_))
+        ));
+    }
+
+    #[test]
+    fn fail_on_max_protocol_version_smaller_than_min_protocol_version_with_bad_response() {
+        let response = schema::Endpoint {
+            min_protocol_version: 10,
+            max_protocol_version: 9,
+            services: Vec::new(),
+            protocol_mode: Some(ProtocolMode::BidiStream),
+        };
+
+        assert!(matches!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            Err(DiscoveryError::BadResponse(_))
+        ));
+    }
+
+    #[test]
+    fn fail_with_unsupported_protocol_version() {
+        let unsupported_version = i32::from(MAX_SERVICE_PROTOCOL_VERSION) + 1;
+        let response = schema::Endpoint {
+            min_protocol_version: unsupported_version as i64,
+            max_protocol_version: unsupported_version as i64,
+            services: Vec::new(),
+            protocol_mode: Some(ProtocolMode::BidiStream),
+        };
+
+        assert!(
+            matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
+        );
     }
 }

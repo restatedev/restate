@@ -110,10 +110,14 @@ impl<V> SchemaRegistry<V> {
                 uri.clone(),
                 discovered_metadata.protocol_type,
                 DeliveryOptions::new(headers),
+                discovered_metadata.supported_protocol_versions,
             ),
-            (Endpoint::Lambda(arn, assume_role_arn), headers) => {
-                DeploymentMetadata::new_lambda(arn, assume_role_arn, DeliveryOptions::new(headers))
-            }
+            (Endpoint::Lambda(arn, assume_role_arn), headers) => DeploymentMetadata::new_lambda(
+                arn,
+                assume_role_arn,
+                DeliveryOptions::new(headers),
+                discovered_metadata.supported_protocol_versions,
+            ),
         };
 
         let (id, services) = if !apply_mode.should_apply() {

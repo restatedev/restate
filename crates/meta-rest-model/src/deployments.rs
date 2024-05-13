@@ -37,6 +37,8 @@ pub enum Deployment {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
     },
     Lambda {
         arn: LambdaARN,
@@ -49,6 +51,8 @@ pub enum Deployment {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
     },
 }
 
@@ -63,6 +67,8 @@ impl From<DeploymentMetadata> for Deployment {
                 protocol_type,
                 additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
+                min_protocol_version: *value.supported_protocol_versions.start(),
+                max_protocol_version: *value.supported_protocol_versions.end(),
             },
             DeploymentType::Lambda {
                 arn,
@@ -72,6 +78,8 @@ impl From<DeploymentMetadata> for Deployment {
                 assume_role_arn: assume_role_arn.map(Into::into),
                 additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
+                min_protocol_version: *value.supported_protocol_versions.start(),
+                max_protocol_version: *value.supported_protocol_versions.end(),
             },
         }
     }

@@ -10,6 +10,8 @@
 
 //! This crate contains all the different APIs for accessing schemas.
 
+pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
+
 #[cfg(feature = "invocation_target")]
 pub mod invocation_target;
 
@@ -24,6 +26,7 @@ pub mod deployment {
     use std::collections::HashMap;
     use std::fmt;
     use std::fmt::{Display, Formatter};
+    use std::ops::RangeInclusive;
 
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -68,6 +71,7 @@ pub mod deployment {
     pub struct DeploymentMetadata {
         pub ty: DeploymentType,
         pub delivery_options: DeliveryOptions,
+        pub supported_protocol_versions: RangeInclusive<i32>,
         pub created_at: MillisSinceEpoch,
     }
 
@@ -120,6 +124,7 @@ pub mod deployment {
             address: Uri,
             protocol_type: ProtocolType,
             delivery_options: DeliveryOptions,
+            supported_protocol_versions: RangeInclusive<i32>,
         ) -> Self {
             Self {
                 ty: DeploymentType::Http {
@@ -128,6 +133,7 @@ pub mod deployment {
                 },
                 delivery_options,
                 created_at: MillisSinceEpoch::now(),
+                supported_protocol_versions,
             }
         }
 
@@ -135,6 +141,7 @@ pub mod deployment {
             arn: LambdaARN,
             assume_role_arn: Option<ByteString>,
             delivery_options: DeliveryOptions,
+            supported_protocol_versions: RangeInclusive<i32>,
         ) -> Self {
             Self {
                 ty: DeploymentType::Lambda {
@@ -143,6 +150,7 @@ pub mod deployment {
                 },
                 delivery_options,
                 created_at: MillisSinceEpoch::now(),
+                supported_protocol_versions,
             }
         }
 
@@ -186,6 +194,7 @@ pub mod deployment {
     pub mod mocks {
         use super::*;
 
+        use crate::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
         use std::collections::HashMap;
 
         impl Deployment {
@@ -197,6 +206,7 @@ pub mod deployment {
                     "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
+                    1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 );
 
                 Deployment { id, metadata }
@@ -208,6 +218,7 @@ pub mod deployment {
                     uri.parse().unwrap(),
                     ProtocolType::BidiStream,
                     Default::default(),
+                    1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 );
                 Deployment { id, metadata }
             }

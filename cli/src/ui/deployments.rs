@@ -99,40 +99,55 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
 
 pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
     table.add_kv_row("Deployment Type:", render_deployment_type(deployment));
-    let (additional_headers, created_at) = match &deployment {
-        Deployment::Http {
-            uri,
-            protocol_type,
-            additional_headers,
-            created_at,
-        } => {
-            let protocol_type = match protocol_type {
-                ProtocolType::RequestResponse => "Request/Response",
-                ProtocolType::BidiStream => "Streaming",
+    let (additional_headers, created_at, min_protocol_version, max_protocol_version) =
+        match &deployment {
+            Deployment::Http {
+                uri,
+                protocol_type,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => {
+                let protocol_type = match protocol_type {
+                    ProtocolType::RequestResponse => "Request/Response",
+                    ProtocolType::BidiStream => "Streaming",
+                }
+                .to_string();
+                table.add_kv_row("Protocol Style:", protocol_type);
+
+                table.add_kv_row("Endpoint:", uri);
+                (
+                    additional_headers.clone(),
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                )
             }
-            .to_string();
-            table.add_kv_row("Protocol Style:", protocol_type);
+            Deployment::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => {
+                table.add_kv_row("Protocol Style:", "Request/Response");
+                table.add_kv_row_if(
+                    || assume_role_arn.is_some(),
+                    "Deployment Assume Role ARN:",
+                    assume_role_arn.as_ref().unwrap(),
+                );
 
-            table.add_kv_row("Endpoint:", uri);
-            (additional_headers.clone(), created_at)
-        }
-        Deployment::Lambda {
-            arn,
-            assume_role_arn,
-            additional_headers,
-            created_at,
-        } => {
-            table.add_kv_row("Protocol Style:", "Request/Response");
-            table.add_kv_row_if(
-                || assume_role_arn.is_some(),
-                "Deployment Assume Role ARN:",
-                assume_role_arn.as_ref().unwrap(),
-            );
-
-            table.add_kv_row("Endpoint:", arn);
-            (additional_headers.clone(), created_at)
-        }
-    };
+                table.add_kv_row("Endpoint:", arn);
+                (
+                    additional_headers.clone(),
+                    created_at,
+                    min_protocol_version,
+                    max_protocol_version,
+                )
+            }
+        };
 
     let additional_headers: HashMap<http::HeaderName, http::HeaderValue> =
         additional_headers.into();
@@ -142,6 +157,15 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
         table.add_kv_row(
             "Deployment Additional Header:",
             &format!("{}: {}", header, value.to_str().unwrap_or("<BINARY>")),
+        );
+    }
+
+    if min_protocol_version == max_protocol_version {
+        table.add_kv_row("Protocol:", min_protocol_version);
+    } else {
+        table.add_kv_row(
+            "Protocol:",
+            format!("[{min_protocol_version}, {max_protocol_version}]"),
         );
     }
 }

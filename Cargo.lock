@@ -6042,6 +6042,7 @@ dependencies = [
  "serde",
  "serde_json",
  "size",
+ "strum_macros 0.26.2",
  "syn 2.0.55",
  "test-log",
  "thiserror",

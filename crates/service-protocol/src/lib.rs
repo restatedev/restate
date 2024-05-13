@@ -10,7 +10,15 @@
 
 //! This crate contains the code-generated structs of [service-protocol](https://github.com/restatedev/service-protocol) and the codec to use them.
 
+use crate::pb::protocol;
+
 pub const RESTATE_SERVICE_PROTOCOL_VERSION: u16 = 2;
+
+// Range of supported service protocol versions by this server
+pub const MIN_SERVICE_PROTOCOL_VERSION: protocol::ServiceProtocolVersion =
+    protocol::ServiceProtocolVersion::V1;
+pub const MAX_SERVICE_PROTOCOL_VERSION: protocol::ServiceProtocolVersion =
+    protocol::ServiceProtocolVersion::V1;
 
 #[cfg(feature = "codec")]
 pub mod codec;
@@ -22,13 +30,46 @@ pub mod message;
 #[cfg(feature = "awakeable-id")]
 pub mod awakeable_id;
 
-#[cfg(feature = "protocol")]
+#[cfg(any(feature = "protocol", test))]
 pub mod pb {
     pub mod protocol {
         #![allow(warnings)]
         #![allow(clippy::all)]
         #![allow(unknown_lints)]
+
+        use crate::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
         include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
+
+        impl ServiceProtocolVersion {
+            pub fn is_supported(min_version: i32, max_version: i32) -> bool {
+                min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
+                    && max_version >= i32::from(MIN_SERVICE_PROTOCOL_VERSION)
+            }
+
+            pub fn max_supported_version(
+                min_version: i32,
+                max_version: i32,
+            ) -> Option<ServiceProtocolVersion> {
+                if ServiceProtocolVersion::is_supported(min_version, max_version) {
+                    ServiceProtocolVersion::from_repr(std::cmp::min(
+                        max_version,
+                        i32::from(MAX_SERVICE_PROTOCOL_VERSION),
+                    ))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub mod discovery {
+        #![allow(warnings)]
+        #![allow(clippy::all)]
+        #![allow(unknown_lints)]
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/dev.restate.service.discovery.rs"
+        ));
     }
 }
 
