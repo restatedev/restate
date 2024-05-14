@@ -81,7 +81,7 @@ pub mod v1 {
         use restate_types::deployment::PinnedDeployment;
 
         use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{DeploymentId, WithPartitionKey};
+        use restate_types::identifiers::{DeploymentId, WithInvocationId, WithPartitionKey};
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::service_protocol::ServiceProtocolVersion;
@@ -93,8 +93,9 @@ pub mod v1 {
 
         use crate::storage::v1::dedup_sequence_number::Variant;
         use crate::storage::v1::enriched_entry_header::{
-            Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable, Custom,
-            GetState, GetStateKeys, Input, Invoke, Output, SetState, SideEffect, Sleep,
+            Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable,
+            CompletePromise, Custom, GetPromise, GetState, GetStateKeys, Input, Invoke, Output,
+            PeekPromise, SetState, SideEffect, Sleep,
         };
         use crate::storage::v1::invocation_status::{Completed, Free, Inboxed, Invoked, Suspended};
         use crate::storage::v1::journal_entry::completion_result::{Empty, Failure, Success};
@@ -106,14 +107,15 @@ pub mod v1 {
             Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::storage::v1::{
-            enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
-            invocation_target, outbox_message, response_result, source, span_relation, timer,
-            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
-            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
-            JournalEntry, JournalMeta, KvPair, OutboxMessage, ResponseResult, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, Timer, VirtualObjectStatus,
+            enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
+            invocation_status, invocation_target, outbox_message, promise, response_result, source,
+            span_relation, timer, virtual_object_status, BackgroundCallResolutionResult,
+            DedupSequenceNumber, Duration, EnrichedEntryHeader, EntryResult, EpochSequenceNumber,
+            Header, IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatus, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair,
+            OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
+            VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -216,6 +218,75 @@ pub mod v1 {
                     value.partition_key,
                     try_bytes_into_invocation_uuid(value.invocation_uuid)?,
                 ))
+            }
+        }
+
+        impl From<restate_types::identifiers::JournalEntryId> for JournalEntryId {
+            fn from(value: restate_types::identifiers::JournalEntryId) -> Self {
+                JournalEntryId {
+                    partition_key: value.partition_key(),
+                    invocation_uuid: value
+                        .invocation_id()
+                        .invocation_uuid()
+                        .to_bytes()
+                        .to_vec()
+                        .into(),
+                    entry_index: value.journal_index(),
+                }
+            }
+        }
+
+        impl TryFrom<JournalEntryId> for restate_types::identifiers::JournalEntryId {
+            type Error = ConversionError;
+
+            fn try_from(value: JournalEntryId) -> Result<Self, Self::Error> {
+                Ok(restate_types::identifiers::JournalEntryId::from_parts(
+                    restate_types::identifiers::InvocationId::from_parts(
+                        value.partition_key,
+                        try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+                    ),
+                    value.entry_index,
+                ))
+            }
+        }
+
+        impl From<restate_types::journal::EntryResult> for EntryResult {
+            fn from(value: restate_types::journal::EntryResult) -> Self {
+                match value {
+                    restate_types::journal::EntryResult::Success(s) => EntryResult {
+                        result: Some(entry_result::Result::Value(s)),
+                    },
+                    restate_types::journal::EntryResult::Failure(code, message) => EntryResult {
+                        result: Some(entry_result::Result::Failure(entry_result::Failure {
+                            error_code: code.into(),
+                            message: message.into_bytes(),
+                        })),
+                    },
+                }
+            }
+        }
+
+        impl TryFrom<EntryResult> for restate_types::journal::EntryResult {
+            type Error = ConversionError;
+
+            fn try_from(value: EntryResult) -> Result<Self, Self::Error> {
+                Ok(
+                    match value
+                        .result
+                        .ok_or(ConversionError::missing_field("result"))?
+                    {
+                        entry_result::Result::Value(s) => {
+                            restate_types::journal::EntryResult::Success(s)
+                        }
+                        entry_result::Result::Failure(entry_result::Failure {
+                            error_code,
+                            message,
+                        }) => restate_types::journal::EntryResult::Failure(
+                            error_code.into(),
+                            ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
+                        ),
+                    },
+                )
             }
         }
 
@@ -1492,6 +1563,21 @@ pub mod v1 {
                             is_completed: get_state_keys.is_completed,
                         }
                     }
+                    enriched_entry_header::Kind::GetPromise(get_promise) => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::GetPromise {
+                            is_completed: get_promise.is_completed,
+                        }
+                    }
+                    enriched_entry_header::Kind::PeekPromise(peek_promise) => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::PeekPromise {
+                            is_completed: peek_promise.is_completed,
+                        }
+                    }
+                    enriched_entry_header::Kind::CompletePromise(complete_promise) => {
+                        restate_types::journal::enriched::EnrichedEntryHeader::CompletePromise {
+                            is_completed: complete_promise.is_completed,
+                        }
+                    }
                     enriched_entry_header::Kind::Sleep(sleep) => {
                         restate_types::journal::enriched::EnrichedEntryHeader::Sleep {
                             is_completed: sleep.is_completed,
@@ -1627,6 +1713,20 @@ pub mod v1 {
                         code, ..
                     } => enriched_entry_header::Kind::Custom(Custom {
                         code: u32::from(code),
+                    }),
+                    restate_types::journal::enriched::EnrichedEntryHeader::GetPromise {
+                        is_completed,
+                        ..
+                    } => enriched_entry_header::Kind::GetPromise(GetPromise { is_completed }),
+                    restate_types::journal::enriched::EnrichedEntryHeader::PeekPromise {
+                        is_completed,
+                        ..
+                    } => enriched_entry_header::Kind::PeekPromise(PeekPromise { is_completed }),
+                    restate_types::journal::enriched::EnrichedEntryHeader::CompletePromise {
+                        is_completed,
+                        ..
+                    } => enriched_entry_header::Kind::CompletePromise(CompletePromise {
+                        is_completed,
                     }),
                 };
 
@@ -2079,6 +2179,54 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("invocation_id"))?,
                     )
                     .map_err(|e| ConversionError::invalid_data(e))?,
+                })
+            }
+        }
+
+        impl From<crate::promise_table::Promise> for Promise {
+            fn from(value: crate::promise_table::Promise) -> Self {
+                match value.state {
+                    crate::promise_table::PromiseState::Completed(e) => Promise {
+                        state: Some(promise::State::CompletedState(promise::CompletedState {
+                            result: Some(e.into()),
+                        })),
+                    },
+                    crate::promise_table::PromiseState::NotCompleted(listeners) => Promise {
+                        state: Some(promise::State::NotCompletedState(
+                            promise::NotCompletedState {
+                                listening_journal_entries: listeners
+                                    .into_iter()
+                                    .map(Into::into)
+                                    .collect(),
+                            },
+                        )),
+                    },
+                }
+            }
+        }
+
+        impl TryFrom<Promise> for crate::promise_table::Promise {
+            type Error = ConversionError;
+
+            fn try_from(value: Promise) -> Result<Self, Self::Error> {
+                Ok(crate::promise_table::Promise {
+                    state: match value.state.ok_or(ConversionError::missing_field("state"))? {
+                        promise::State::CompletedState(s) => {
+                            crate::promise_table::PromiseState::Completed(
+                                s.result
+                                    .ok_or(ConversionError::missing_field("result"))?
+                                    .try_into()?,
+                            )
+                        }
+                        promise::State::NotCompletedState(s) => {
+                            crate::promise_table::PromiseState::NotCompleted(
+                                s.listening_journal_entries
+                                    .into_iter()
+                                    .map(TryInto::try_into)
+                                    .collect::<Result<Vec<_>, _>>()?,
+                            )
+                        }
+                    },
                 })
             }
         }

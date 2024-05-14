@@ -54,6 +54,24 @@ message SequenceNumber {
     uint64 sequence_number = 1;
 }
 
+message JournalEntryId {
+    uint64 partition_key = 1;
+    bytes invocation_uuid = 2;
+    uint32 entry_index = 3;
+}
+
+message EntryResult {
+    message Failure {
+        uint32 error_code = 1;
+        bytes message = 2;
+    }
+
+    oneof result {
+        bytes value = 1;
+        Failure failure = 2;
+    }
+}
+
 // ---------------------------------------------------------------------
 // Service Invocation
 // ---------------------------------------------------------------------
@@ -281,6 +299,18 @@ message EnrichedEntryHeader {
     message ClearAllState {
     }
 
+    message GetPromise {
+        bool is_completed = 1;
+    }
+
+    message PeekPromise {
+        bool is_completed = 1;
+    }
+
+    message CompletePromise {
+        bool is_completed = 1;
+    }
+
     message Sleep {
         bool is_completed = 1;
     }
@@ -318,6 +348,9 @@ message EnrichedEntryHeader {
         ClearState clear_state = 5;
         ClearAllState clear_all_state = 12;
         GetStateKeys get_state_keys = 13;
+        GetPromise get_promise = 15;
+        PeekPromise peek_promise = 16;
+        CompletePromise complete_promise = 17;
         Sleep sleep = 6;
         Invoke invoke = 7;
         BackgroundCall background_call = 8;
@@ -468,4 +501,23 @@ message DedupSequenceNumber {
 
 message IdempotencyMetadata {
     InvocationId invocation_id = 1;
+}
+
+// ---------------------------------------------------------------------
+// Promises
+// ---------------------------------------------------------------------
+
+message Promise {
+  message CompletedState {
+    EntryResult result = 1;
+  }
+
+  message NotCompletedState {
+    repeated JournalEntryId listening_journal_entries = 1;
+  }
+
+  oneof state {
+    CompletedState completed_state = 1;
+    NotCompletedState not_completed_state = 2;
+  }
 }

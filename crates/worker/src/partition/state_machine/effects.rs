@@ -10,6 +10,7 @@
 
 use crate::partition::types::InvocationIdAndTarget;
 use bytes::Bytes;
+use bytestring::ByteString;
 use opentelemetry::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::{
@@ -17,6 +18,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::promise_table::Promise;
+use restate_storage_api::promise_table::PromiseState;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationErrorCode;
@@ -97,6 +100,16 @@ pub(crate) enum Effect {
         service_id: ServiceId,
         invocation_id: InvocationId,
         span_context: ServiceInvocationSpanContext,
+    },
+
+    // Promises
+    PutPromise {
+        service_id: ServiceId,
+        key: ByteString,
+        metadata: Promise,
+    },
+    ClearAllPromises {
+        service_id: ServiceId,
     },
 
     // Timers
@@ -419,6 +432,32 @@ impl Effect {
                 );
 
                 debug_if_leader!(is_leader, "Effect: Clear all state")
+            }
+            Effect::PutPromise {
+                service_id,
+                key,
+                metadata:
+                    Promise {
+                        state: PromiseState::Completed(_),
+                    },
+            } => {
+                debug_if_leader!(is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in completed state", key)
+            }
+            Effect::PutPromise {
+                service_id,
+                key,
+                metadata:
+                    Promise {
+                        state: PromiseState::NotCompleted(_),
+                    },
+            } => {
+                debug_if_leader!(is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key)
+            }
+            Effect::ClearAllPromises { service_id } => {
+                debug_if_leader!(
+                    is_leader,
+                    rpc.service = %service_id.service_name,
+                    "Effect: Clear all promises")
             }
             Effect::RegisterTimer {
                 timer_value,
@@ -989,6 +1028,23 @@ impl Effects {
 
     pub(crate) fn apply_state_mutation(&mut self, state_mutation: ExternalStateMutation) {
         self.effects.push(Effect::MutateState(state_mutation));
+    }
+
+    pub(crate) fn put_promise(
+        &mut self,
+        service_id: ServiceId,
+        key: ByteString,
+        promise_metadata: Promise,
+    ) {
+        self.effects.push(Effect::PutPromise {
+            service_id,
+            key,
+            metadata: promise_metadata,
+        });
+    }
+
+    pub(crate) fn clear_all_promises(&mut self, service_id: ServiceId) {
+        self.effects.push(Effect::ClearAllPromises { service_id });
     }
 
     /// We log only if the log level is TRACE, or if the log level is DEBUG and we're the leader,

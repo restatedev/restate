@@ -381,6 +381,11 @@ pub struct InvocationId {
     inner: InvocationUuid,
 }
 
+pub trait WithInvocationId {
+    /// Returns the invocation id
+    fn invocation_id(&self) -> InvocationId;
+}
+
 pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
 
 impl InvocationId {
@@ -492,6 +497,12 @@ impl From<EncodedInvocationId> for InvocationId {
 impl WithPartitionKey for InvocationId {
     fn partition_key(&self) -> PartitionKey {
         self.partition_key
+    }
+}
+
+impl<T: WithInvocationId> WithPartitionKey for T {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id().partition_key
     }
 }
 
@@ -619,6 +630,37 @@ fn encode_invocation_id(
     buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
     buf[size_of::<PartitionKey>()..].copy_from_slice(&invocation_uuid.to_bytes());
     buf
+}
+
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct JournalEntryId {
+    invocation_id: InvocationId,
+    journal_index: EntryIndex,
+}
+
+impl JournalEntryId {
+    pub const fn from_parts(invocation_id: InvocationId, journal_index: EntryIndex) -> Self {
+        Self {
+            invocation_id,
+            journal_index,
+        }
+    }
+
+    pub fn journal_index(&self) -> EntryIndex {
+        self.journal_index
+    }
+}
+
+impl From<(InvocationId, EntryIndex)> for JournalEntryId {
+    fn from(value: (InvocationId, EntryIndex)) -> Self {
+        Self::from_parts(value.0, value.1)
+    }
+}
+
+impl WithInvocationId for JournalEntryId {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
 }
 
 #[derive(Debug, Clone, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
@@ -798,6 +840,18 @@ mod mocks {
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 16),
             )
+        }
+
+        pub const fn from_static(
+            partition_key: PartitionKey,
+            service_name: &'static str,
+            service_key: &'static str,
+        ) -> Self {
+            Self {
+                service_name: ByteString::from_static(service_name),
+                key: ByteString::from_static(service_key),
+                partition_key,
+            }
         }
     }
 

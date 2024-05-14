@@ -173,7 +173,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     pub(crate) async fn interpret_effects<
         S: StateStorage
             + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
-            + restate_storage_api::idempotency_table::IdempotencyTable,
+            + restate_storage_api::idempotency_table::IdempotencyTable
+            + restate_storage_api::promise_table::PromiseTable,
     >(
         effects: &mut Effects,
         state_storage: &mut S,
@@ -189,7 +190,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
     async fn interpret_effect<
         S: StateStorage
             + restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable
-            + restate_storage_api::idempotency_table::IdempotencyTable,
+            + restate_storage_api::idempotency_table::IdempotencyTable
+            + restate_storage_api::promise_table::PromiseTable,
     >(
         effect: Effect,
         state_storage: &mut S,
@@ -443,6 +445,16 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             }
             Effect::IngressResponse(ingress_response) => {
                 collector.push(Action::IngressResponse(ingress_response));
+            }
+            Effect::PutPromise {
+                service_id,
+                key,
+                metadata,
+            } => {
+                state_storage.put_promise(&service_id, &key, metadata).await;
+            }
+            Effect::ClearAllPromises { service_id } => {
+                state_storage.delete_all_promises(&service_id).await
             }
         }
 

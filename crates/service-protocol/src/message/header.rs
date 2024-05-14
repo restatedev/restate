@@ -46,6 +46,9 @@ pub enum MessageType {
     AwakeableEntry,
     CompleteAwakeableEntry,
     SideEffectEntry,
+    GetPromiseEntry,
+    PeekPromiseEntry,
+    CompletePromiseEntry,
     CustomEntry(u16),
 }
 
@@ -71,6 +74,9 @@ impl MessageType {
             MessageType::AwakeableEntry => MessageKind::Syscall,
             MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
             MessageType::SideEffectEntry => MessageKind::Syscall,
+            MessageType::GetPromiseEntry => MessageKind::State,
+            MessageType::PeekPromiseEntry => MessageKind::State,
+            MessageType::CompletePromiseEntry => MessageKind::State,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -83,6 +89,9 @@ impl MessageType {
                 | MessageType::SleepEntry
                 | MessageType::InvokeEntry
                 | MessageType::AwakeableEntry
+                | MessageType::GetPromiseEntry
+                | MessageType::PeekPromiseEntry
+                | MessageType::CompletePromiseEntry
         )
     }
 
@@ -107,6 +116,9 @@ const SET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0801;
 const CLEAR_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0802;
 const CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0803;
 const GET_STATE_KEYS_ENTRY_MESSAGE_TYPE: u16 = 0x0804;
+const GET_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x0808;
+const PEEK_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x0809;
+const COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x080A;
 const SLEEP_ENTRY_MESSAGE_TYPE: u16 = 0x0C00;
 const INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C01;
 const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
@@ -136,6 +148,9 @@ impl From<MessageType> for MessageTypeId {
             MessageType::AwakeableEntry => AWAKEABLE_ENTRY_MESSAGE_TYPE,
             MessageType::CompleteAwakeableEntry => COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE,
             MessageType::SideEffectEntry => SIDE_EFFECT_ENTRY_MESSAGE_TYPE,
+            MessageType::GetPromiseEntry => GET_PROMISE_ENTRY_MESSAGE_TYPE,
+            MessageType::PeekPromiseEntry => PEEK_PROMISE_ENTRY_MESSAGE_TYPE,
+            MessageType::CompletePromiseEntry => COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -168,6 +183,9 @@ impl TryFrom<MessageTypeId> for MessageType {
             BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::BackgroundInvokeEntry),
             AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::AwakeableEntry),
             COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
+            GET_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetPromiseEntry),
+            PEEK_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::PeekPromiseEntry),
+            COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompletePromiseEntry),
             SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::SideEffectEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
@@ -193,6 +211,9 @@ impl TryFrom<MessageType> for EntryType {
             MessageType::AwakeableEntry => Ok(EntryType::Awakeable),
             MessageType::CompleteAwakeableEntry => Ok(EntryType::CompleteAwakeable),
             MessageType::SideEffectEntry => Ok(EntryType::Run),
+            MessageType::GetPromiseEntry => Ok(EntryType::GetPromise),
+            MessageType::PeekPromiseEntry => Ok(EntryType::PeekPromise),
+            MessageType::CompletePromiseEntry => Ok(EntryType::CompletePromise),
             MessageType::CustomEntry(_) => Ok(EntryType::Custom),
             MessageType::Start
             | MessageType::Completion

@@ -25,15 +25,17 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::promise_table::{Promise, PromiseState, ReadOnlyPromiseTable};
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
-    InvocationError, InvocationErrorCode, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
-    KILLED_INVOCATION_ERROR,
+    InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
+    CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    EntryIndex, IdempotencyId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
+    EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
+    WithInvocationId, WithPartitionKey,
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
@@ -148,7 +150,7 @@ where
     /// We use the returned service invocation id and span relation to log the effects (see [`Effects#log`]).
     #[instrument(level = "trace", skip_all, fields(command = ?command), err)]
     pub(crate) async fn on_apply<
-        State: StateReader + ReadOnlyJournalTable + ReadOnlyIdempotencyTable,
+        State: StateReader + ReadOnlyJournalTable + ReadOnlyIdempotencyTable + ReadOnlyPromiseTable,
     >(
         &mut self,
         command: Command,
@@ -908,7 +910,7 @@ where
                                 invocation_id,
                                 ServiceInvocationSpanContext::empty(),
                             );
-                            // TODO CLEANUP PROMISES
+                            effects.clear_all_promises(service_id);
                         }
                     }
                     InvocationStatus::Free => {
@@ -924,7 +926,9 @@ where
         }
     }
 
-    async fn try_invoker_effect<State: StateReader + ReadOnlyJournalTable>(
+    async fn try_invoker_effect<
+        State: StateReader + ReadOnlyJournalTable + ReadOnlyPromiseTable,
+    >(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -948,7 +952,7 @@ where
         Ok(())
     }
 
-    async fn on_invoker_effect<State: StateReader + ReadOnlyJournalTable>(
+    async fn on_invoker_effect<State: StateReader + ReadOnlyJournalTable + ReadOnlyPromiseTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -1223,7 +1227,7 @@ where
         }
     }
 
-    async fn handle_journal_entry<State: StateReader>(
+    async fn handle_journal_entry<State: StateReader + ReadOnlyPromiseTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -1360,6 +1364,189 @@ where
                         invocation_id,
                         Completion::new(entry_index, completion_result),
                     );
+                }
+            }
+            EnrichedEntryHeader::GetPromise { is_completed, .. } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::GetPromise(GetPromiseEntry { key, .. }) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        // Load state and write completion
+                        let promise_metadata = state.get_promise(&service_id, &key).await?;
+
+                        match promise_metadata {
+                            Some(Promise {
+                                state: PromiseState::Completed(result),
+                            }) => {
+                                // Result is already available
+                                let completion_result: CompletionResult = result.into();
+                                Codec::write_completion(
+                                    &mut journal_entry,
+                                    completion_result.clone(),
+                                )?;
+
+                                // Forward completion
+                                effects.forward_completion(
+                                    invocation_id,
+                                    Completion::new(entry_index, completion_result),
+                                );
+                            }
+                            Some(Promise {
+                                state: PromiseState::NotCompleted(mut v),
+                            }) => {
+                                v.push(JournalEntryId::from_parts(invocation_id, entry_index));
+                                effects.put_promise(
+                                    service_id,
+                                    key,
+                                    Promise {
+                                        state: PromiseState::NotCompleted(v),
+                                    },
+                                )
+                            }
+                            None => effects.put_promise(
+                                service_id,
+                                key,
+                                Promise {
+                                    state: PromiseState::NotCompleted(vec![
+                                        JournalEntryId::from_parts(invocation_id, entry_index),
+                                    ]),
+                                },
+                            ),
+                        }
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no promises",
+                            journal_entry.header().as_entry_type()
+                        );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Success(Bytes::new())),
+                        );
+                    }
+                }
+            }
+            EnrichedEntryHeader::PeekPromise { is_completed, .. } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::PeekPromise(PeekPromiseEntry { key, .. }) =
+                            journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        // Load state and write completion
+                        let promise_metadata = state.get_promise(&service_id, &key).await?;
+
+                        let completion_result = match promise_metadata {
+                            Some(Promise {
+                                state: PromiseState::Completed(result),
+                            }) => result.into(),
+                            _ => CompletionResult::Empty,
+                        };
+
+                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+
+                        // Forward completion
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, completion_result),
+                        );
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no promises",
+                            journal_entry.header().as_entry_type()
+                        );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Empty),
+                        );
+                    }
+                }
+            }
+            EnrichedEntryHeader::CompletePromise { is_completed, .. } => {
+                if !is_completed {
+                    let_assert!(
+                        Entry::CompletePromise(CompletePromiseEntry {
+                            key,
+                            completion,
+                            ..
+                        }) = journal_entry.deserialize_entry_ref::<Codec>()?
+                    );
+
+                    if let Some(service_id) =
+                        invocation_metadata.invocation_target.as_keyed_service_id()
+                    {
+                        // Load state and write completion
+                        let promise_metadata = state.get_promise(&service_id, &key).await?;
+
+                        let completion_result = match promise_metadata {
+                            None => {
+                                // Just register the promise completion
+                                effects.put_promise(
+                                    service_id,
+                                    key,
+                                    Promise {
+                                        state: PromiseState::Completed(completion),
+                                    },
+                                );
+                                CompletionResult::Empty
+                            }
+                            Some(Promise {
+                                state: PromiseState::NotCompleted(listeners),
+                            }) => {
+                                // Send response to listeners
+                                for listener in listeners {
+                                    self.handle_outgoing_message(
+                                        OutboxMessage::ServiceResponse(InvocationResponse {
+                                            id: listener.invocation_id(),
+                                            entry_index: listener.journal_index(),
+                                            result: completion.clone().into(),
+                                        }),
+                                        effects,
+                                    );
+                                }
+
+                                // Now register the promise completion
+                                effects.put_promise(
+                                    service_id,
+                                    key,
+                                    Promise {
+                                        state: PromiseState::Completed(completion),
+                                    },
+                                );
+                                CompletionResult::Empty
+                            }
+                            Some(Promise {
+                                state: PromiseState::Completed(_),
+                            }) => {
+                                // Conflict!
+                                (&ALREADY_COMPLETED_INVOCATION_ERROR).into()
+                            }
+                        };
+
+                        Codec::write_completion(&mut journal_entry, completion_result.clone())?;
+
+                        // Forward completion
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, completion_result),
+                        );
+                    } else {
+                        warn!(
+                            "Trying to process entry {} for a target that has no promises",
+                            journal_entry.header().as_entry_type()
+                        );
+                        effects.forward_completion(
+                            invocation_id,
+                            Completion::new(entry_index, CompletionResult::Empty),
+                        );
+                    }
                 }
             }
             EnrichedEntryHeader::Sleep { is_completed, .. } => {

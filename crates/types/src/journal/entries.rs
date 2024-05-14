@@ -29,6 +29,9 @@ pub enum Entry {
     ClearState(ClearStateEntry),
     GetStateKeys(GetStateKeysEntry),
     ClearAllState,
+    GetPromise(GetPromiseEntry),
+    PeekPromise(PeekPromiseEntry),
+    CompletePromise(CompletePromiseEntry),
 
     // Syscalls
     Sleep(SleepEntry),
@@ -51,7 +54,7 @@ impl Entry {
         Entry::Output(OutputEntry { result })
     }
 
-    pub fn get_state(key: impl Into<Bytes>, value: Option<GetStateResult>) -> Self {
+    pub fn get_state(key: impl Into<Bytes>, value: Option<CompletionResult>) -> Self {
         Entry::GetState(GetStateEntry {
             key: key.into(),
             value,
@@ -134,6 +137,15 @@ impl From<ResponseResult> for CompletionResult {
     }
 }
 
+impl From<EntryResult> for CompletionResult {
+    fn from(value: EntryResult) -> Self {
+        match value {
+            EntryResult::Success(s) => CompletionResult::Success(s),
+            EntryResult::Failure(c, m) => CompletionResult::Failure(c, m),
+        }
+    }
+}
+
 impl From<&InvocationError> for CompletionResult {
     fn from(value: &InvocationError) -> Self {
         CompletionResult::Failure(value.code(), value.message().into())
@@ -149,6 +161,9 @@ pub enum EntryType {
     ClearState,
     GetStateKeys,
     ClearAllState,
+    GetPromise,
+    PeekPromise,
+    CompletePromise,
     Sleep,
     Call,
     OneWayCall,
@@ -192,6 +207,9 @@ mod private {
     pub trait Sealed {}
     impl Sealed for GetStateEntry {}
     impl Sealed for GetStateKeysEntry {}
+    impl Sealed for GetPromiseEntry {}
+    impl Sealed for PeekPromiseEntry {}
+    impl Sealed for CompletePromiseEntry {}
     impl Sealed for SleepEntry {}
     impl Sealed for InvokeEntry {}
     impl Sealed for AwakeableEntry {}
@@ -208,16 +226,9 @@ pub struct OutputEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GetStateResult {
-    Empty,
-    Result(Bytes),
-    Failure(InvocationErrorCode, ByteString),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetStateEntry {
     pub key: Bytes,
-    pub value: Option<GetStateResult>,
+    pub value: Option<CompletionResult>,
 }
 
 impl CompletableEntry for GetStateEntry {
@@ -249,6 +260,49 @@ pub struct GetStateKeysEntry {
 }
 
 impl CompletableEntry for GetStateKeysEntry {
+    fn is_completed(&self) -> bool {
+        self.value.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetPromiseEntry {
+    pub key: ByteString,
+    pub value: Option<EntryResult>,
+}
+
+impl CompletableEntry for GetPromiseEntry {
+    fn is_completed(&self) -> bool {
+        self.value.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeekPromiseEntry {
+    pub key: ByteString,
+    pub value: Option<CompletionResult>,
+}
+
+impl CompletableEntry for PeekPromiseEntry {
+    fn is_completed(&self) -> bool {
+        self.value.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletePromiseEntry {
+    pub key: ByteString,
+    pub completion: EntryResult,
+    pub value: Option<CompleteResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompleteResult {
+    Done,
+    Failure(InvocationErrorCode, ByteString),
+}
+
+impl CompletableEntry for CompletePromiseEntry {
     fn is_completed(&self) -> bool {
         self.value.is_some()
     }

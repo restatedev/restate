@@ -35,6 +35,7 @@ pub enum KeyKind {
     ServiceStatus,
     State,
     Timers,
+    Promise,
 }
 
 impl KeyKind {
@@ -73,6 +74,7 @@ impl KeyKind {
             KeyKind::ServiceStatus => b"ss",
             KeyKind::State => b"st",
             KeyKind::Timers => b"ti",
+            KeyKind::Promise => b"pr",
         }
     }
 
@@ -96,6 +98,7 @@ impl KeyKind {
             b"ss" => Some(KeyKind::ServiceStatus),
             b"st" => Some(KeyKind::State),
             b"ti" => Some(KeyKind::Timers),
+            b"pr" => Some(KeyKind::Promise),
             _ => None,
         }
     }
@@ -243,6 +246,10 @@ macro_rules! define_table_key {
 
             pub fn into_inner(self) -> ($(Option<$ty>,)+) {
                  return ( $(self.$element,)+ )
+            }
+
+            pub fn into_inner_ok_or(self) -> crate::Result<($($ty,)+)> {
+                 return crate::Result::Ok(( $(self.$element.ok_or_else(|| restate_storage_api::StorageError::DataIntegrityError)?,)+ ))
             }
         }
 

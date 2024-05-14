@@ -16,14 +16,12 @@ use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, SpanRelation,
+    InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
-use restate_types::journal::raw::{
-    EntryHeader, PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec,
-};
+use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
 use restate_types::journal::{CompleteAwakeableEntry, Entry, InvokeEntry, OneWayCallEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
 use std::marker::PhantomData;
@@ -162,6 +160,27 @@ where
                 )?;
                 EnrichedEntryHeader::ClearAllState {}
             }
+            PlainEntryHeader::GetPromise { is_completed } => {
+                check_workflow_type(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                )?;
+                EnrichedEntryHeader::GetPromise { is_completed }
+            }
+            PlainEntryHeader::PeekPromise { is_completed } => {
+                check_workflow_type(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                )?;
+                EnrichedEntryHeader::PeekPromise { is_completed }
+            }
+            PlainEntryHeader::CompletePromise { is_completed } => {
+                check_workflow_type(
+                    &header.as_entry_type(),
+                    &current_invocation_target.service_ty(),
+                )?;
+                EnrichedEntryHeader::CompletePromise { is_completed }
+            }
             PlainEntryHeader::Sleep { is_completed } => EnrichedEntryHeader::Sleep { is_completed },
             PlainEntryHeader::Call { is_completed, .. } => {
                 if !is_completed {
@@ -225,12 +244,29 @@ where
                     },
                 }
             }
-            EntryHeader::Run { .. } => EnrichedEntryHeader::Run {},
+            PlainEntryHeader::Run { .. } => EnrichedEntryHeader::Run {},
             PlainEntryHeader::Custom { code } => EnrichedEntryHeader::Custom { code },
         };
 
         Ok(RawEntry::new(enriched_header, serialized_entry))
     }
+}
+
+#[inline]
+fn check_workflow_type(
+    entry_type: &EntryType,
+    service_type: &ServiceType,
+) -> Result<(), InvocationError> {
+    if *service_type != ServiceType::Workflow {
+        return Err(InvocationError::new(
+            codes::BAD_REQUEST,
+            format!(
+                "The service type {} does not support the entry type {}, only Workflow supports it",
+                service_type, entry_type
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[inline]

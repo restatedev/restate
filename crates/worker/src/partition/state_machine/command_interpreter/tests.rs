@@ -21,6 +21,7 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
+use restate_storage_api::promise_table::OwnedPromiseRow;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
 use restate_storage_api::{Result as StorageResult, StorageError};
 use restate_test_util::matchers::*;
@@ -262,6 +263,27 @@ impl ReadOnlyIdempotencyTable for StateReaderMock {
         &mut self,
         _range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
+        unimplemented!();
+
+        // I need this for type inference to work
+        #[allow(unreachable_code)]
+        futures::stream::iter(vec![])
+    }
+}
+
+impl ReadOnlyPromiseTable for StateReaderMock {
+    async fn get_promise(
+        &mut self,
+        _service_id: &ServiceId,
+        _key: &ByteString,
+    ) -> StorageResult<Option<Promise>> {
+        unimplemented!();
+    }
+
+    fn all_promises(
+        &mut self,
+        _range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<OwnedPromiseRow>> + Send {
         unimplemented!();
 
         // I need this for type inference to work

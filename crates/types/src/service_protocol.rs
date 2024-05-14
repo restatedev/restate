@@ -63,9 +63,10 @@ mod pb_into {
     use super::*;
 
     use crate::journal::{
-        AwakeableEntry, ClearStateEntry, CompleteAwakeableEntry, Entry, EntryResult, GetStateEntry,
-        GetStateKeysEntry, GetStateKeysResult, GetStateResult, InputEntry, InvokeEntry,
-        InvokeRequest, OneWayCallEntry, OutputEntry, RunEntry, SetStateEntry, SleepEntry,
+        AwakeableEntry, ClearStateEntry, CompleteAwakeableEntry, CompletePromiseEntry,
+        CompleteResult, CompletionResult, Entry, EntryResult, GetPromiseEntry, GetStateEntry,
+        GetStateKeysEntry, GetStateKeysResult, InputEntry, InvokeEntry, InvokeRequest,
+        OneWayCallEntry, OutputEntry, PeekPromiseEntry, RunEntry, SetStateEntry, SleepEntry,
         SleepResult,
     };
 
@@ -99,10 +100,10 @@ mod pb_into {
             Ok(Self::GetState(GetStateEntry {
                 key: msg.key,
                 value: msg.result.map(|v| match v {
-                    get_state_entry_message::Result::Empty(_) => GetStateResult::Empty,
-                    get_state_entry_message::Result::Value(b) => GetStateResult::Result(b),
+                    get_state_entry_message::Result::Empty(_) => CompletionResult::Empty,
+                    get_state_entry_message::Result::Value(b) => CompletionResult::Success(b),
                     get_state_entry_message::Result::Failure(failure) => {
-                        GetStateResult::Failure(failure.code.into(), failure.message.into())
+                        CompletionResult::Failure(failure.code.into(), failure.message.into())
                     }
                 }),
             }))
@@ -150,6 +151,63 @@ mod pb_into {
 
         fn try_from(_: ClearAllStateEntryMessage) -> Result<Self, Self::Error> {
             Ok(Self::ClearAllState)
+        }
+    }
+
+    impl TryFrom<GetPromiseEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: GetPromiseEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::GetPromise(GetPromiseEntry {
+                key: msg.key.into(),
+                value: msg.result.map(|v| match v {
+                    get_promise_entry_message::Result::Value(b) => EntryResult::Success(b),
+                    get_promise_entry_message::Result::Failure(failure) => {
+                        EntryResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                }),
+            }))
+        }
+    }
+
+    impl TryFrom<PeekPromiseEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: PeekPromiseEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::PeekPromise(PeekPromiseEntry {
+                key: msg.key.into(),
+                value: msg.result.map(|v| match v {
+                    peek_promise_entry_message::Result::Empty(_) => CompletionResult::Empty,
+                    peek_promise_entry_message::Result::Value(b) => CompletionResult::Success(b),
+                    peek_promise_entry_message::Result::Failure(failure) => {
+                        CompletionResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                }),
+            }))
+        }
+    }
+
+    impl TryFrom<CompletePromiseEntryMessage> for Entry {
+        type Error = &'static str;
+
+        fn try_from(msg: CompletePromiseEntryMessage) -> Result<Self, Self::Error> {
+            Ok(Self::CompletePromise(CompletePromiseEntry {
+                key: msg.key.into(),
+                completion: match msg.completion.ok_or("completion")? {
+                    complete_promise_entry_message::Completion::CompletionValue(b) => {
+                        EntryResult::Success(b)
+                    }
+                    complete_promise_entry_message::Completion::CompletionFailure(failure) => {
+                        EntryResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                },
+                value: msg.result.map(|v| match v {
+                    complete_promise_entry_message::Result::Empty(_) => CompleteResult::Done,
+                    complete_promise_entry_message::Result::Failure(failure) => {
+                        CompleteResult::Failure(failure.code.into(), failure.message.into())
+                    }
+                }),
+            }))
         }
     }
 

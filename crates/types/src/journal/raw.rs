@@ -117,6 +117,15 @@ pub enum EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult> {
         is_completed: bool,
     },
     ClearAllState,
+    GetPromise {
+        is_completed: bool,
+    },
+    PeekPromise {
+        is_completed: bool,
+    },
+    CompletePromise {
+        is_completed: bool,
+    },
     Sleep {
         is_completed: bool,
     },
@@ -158,6 +167,9 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompleteAwakeable { .. } => None,
             EntryHeader::Run { .. } => None,
             EntryHeader::Custom { .. } => None,
+            EntryHeader::GetPromise { is_completed } => Some(*is_completed),
+            EntryHeader::PeekPromise { is_completed } => Some(*is_completed),
+            EntryHeader::CompletePromise { is_completed } => Some(*is_completed),
         }
     }
 
@@ -177,6 +189,9 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompleteAwakeable { .. } => {}
             EntryHeader::Run { .. } => {}
             EntryHeader::Custom { .. } => {}
+            EntryHeader::GetPromise { is_completed } => *is_completed = true,
+            EntryHeader::PeekPromise { is_completed } => *is_completed = true,
+            EntryHeader::CompletePromise { is_completed } => *is_completed = true,
         }
     }
 
@@ -196,6 +211,9 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             EntryHeader::CompleteAwakeable { .. } => EntryType::CompleteAwakeable,
             EntryHeader::Run { .. } => EntryType::Run,
             EntryHeader::Custom { .. } => EntryType::Custom,
+            EntryHeader::GetPromise { .. } => EntryType::GetPromise,
+            EntryHeader::PeekPromise { .. } => EntryType::PeekPromise,
+            EntryHeader::CompletePromise { .. } => EntryType::CompletePromise,
         }
     }
 
@@ -224,6 +242,11 @@ impl<InvokeEnrichmentResult, AwakeableEnrichmentResult>
             },
             EntryHeader::Run { .. } => EntryHeader::Run {},
             EntryHeader::Custom { code } => EntryHeader::Custom { code },
+            EntryHeader::GetPromise { is_completed } => EntryHeader::GetPromise { is_completed },
+            EntryHeader::PeekPromise { is_completed } => EntryHeader::PeekPromise { is_completed },
+            EntryHeader::CompletePromise { is_completed } => {
+                EntryHeader::CompletePromise { is_completed }
+            }
         }
     }
 }

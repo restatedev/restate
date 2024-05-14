@@ -87,6 +87,9 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
             ClearState,
             ClearAllState,
             GetStateKeys,
+            GetPromise,
+            PeekPromise,
+            CompletePromise,
             Sleep,
             Call,
             OneWayCall,
@@ -172,7 +175,7 @@ mod mocks {
     };
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
-        GetStateKeysResult, GetStateResult, InputEntry, OutputEntry,
+        GetStateKeysResult, InputEntry, OutputEntry,
     };
     use restate_types::service_protocol::{
         awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
@@ -219,11 +222,13 @@ mod mocks {
                     GetStateEntryMessage {
                         key: entry.key,
                         result: entry.value.map(|value| match value {
-                            GetStateResult::Empty => {
+                            CompletionResult::Empty => {
                                 get_state_entry_message::Result::Empty(service_protocol::Empty {})
                             }
-                            GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
-                            GetStateResult::Failure(code, reason) => {
+                            CompletionResult::Success(v) => {
+                                get_state_entry_message::Result::Value(v)
+                            }
+                            CompletionResult::Failure(code, reason) => {
                                 get_state_entry_message::Result::Failure(Failure {
                                     code: code.into(),
                                     message: reason.to_string(),
