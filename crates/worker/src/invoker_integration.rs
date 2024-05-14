@@ -61,41 +61,40 @@ where
             .map_err(InvocationError::internal)?;
         let request = request_extractor(entry);
 
-        let invocation_target = match self
+        let meta = self
             .schemas
             .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
-        {
-            Some(meta) => match meta.target_ty {
-                InvocationTargetType::Service => {
-                    InvocationTarget::service(request.service_name, request.handler_name)
-                }
-                InvocationTargetType::VirtualObject(h_ty) => InvocationTarget::virtual_object(
-                    request.service_name.clone(),
-                    ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
-                        InvocationError::from(anyhow!(
-                            "The request key is not a valid UTF-8 string: {e}"
-                        ))
-                    })?,
-                    request.handler_name,
-                    h_ty,
-                ),
-                InvocationTargetType::Workflow(h_ty) => InvocationTarget::workflow(
-                    request.service_name.clone(),
-                    ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
-                        InvocationError::from(anyhow!(
-                            "The request key is not a valid UTF-8 string: {e}"
-                        ))
-                    })?,
-                    request.handler_name,
-                    h_ty,
-                ),
-            },
-            None => {
-                return Err(InvocationError::service_handler_not_found(
+            .ok_or_else(|| {
+                InvocationError::service_handler_not_found(
                     &request.service_name,
                     &request.handler_name,
-                ))
+                )
+            })?;
+
+        let invocation_target = match meta.target_ty {
+            InvocationTargetType::Service => {
+                InvocationTarget::service(request.service_name, request.handler_name)
             }
+            InvocationTargetType::VirtualObject(h_ty) => InvocationTarget::virtual_object(
+                request.service_name.clone(),
+                ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
+                    InvocationError::from(anyhow!(
+                        "The request key is not a valid UTF-8 string: {e}"
+                    ))
+                })?,
+                request.handler_name,
+                h_ty,
+            ),
+            InvocationTargetType::Workflow(h_ty) => InvocationTarget::workflow(
+                request.service_name.clone(),
+                ByteString::try_from(request.key.clone().into_bytes()).map_err(|e| {
+                    InvocationError::from(anyhow!(
+                        "The request key is not a valid UTF-8 string: {e}"
+                    ))
+                })?,
+                request.handler_name,
+                h_ty,
+            ),
         };
 
         let invocation_id = InvocationId::generate(&invocation_target);
@@ -106,6 +105,7 @@ where
         Ok(CallEnrichmentResult {
             invocation_id,
             invocation_target,
+            completion_retention_time: meta.compute_retention(false),
             span_context,
         })
     }

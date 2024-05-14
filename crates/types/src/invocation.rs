@@ -369,6 +369,15 @@ pub enum ServiceInvocationResponseSink {
     Ingress(GenerationalNodeId),
 }
 
+impl ServiceInvocationResponseSink {
+    pub fn partition_processor(caller: InvocationId, entry_index: EntryIndex) -> Self {
+        Self::PartitionProcessor {
+            caller,
+            entry_index,
+        }
+    }
+}
+
 /// Source of an invocation
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {

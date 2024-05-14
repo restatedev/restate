@@ -1374,7 +1374,7 @@ where
                     span_context,
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
-                    ..
+                    completion_retention_time,
                 }) = enrichment_result
                 {
                     let_assert!(
@@ -1382,18 +1382,25 @@ where
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
-                    let service_invocation = Self::create_service_invocation(
-                        *callee_invocation_id,
-                        callee_invocation_target.clone(),
-                        request,
-                        Source::Service(
+                    let service_invocation = ServiceInvocation {
+                        invocation_id: *callee_invocation_id,
+                        invocation_target: callee_invocation_target.clone(),
+                        argument: request.parameter,
+                        source: Source::Service(
                             invocation_id,
                             invocation_metadata.invocation_target.clone(),
                         ),
-                        Some((invocation_id, entry_index)),
-                        span_context.clone(),
-                        None,
-                    );
+                        response_sink: Some(ServiceInvocationResponseSink::partition_processor(
+                            invocation_id,
+                            entry_index,
+                        )),
+                        span_context: span_context.clone(),
+                        headers: vec![],
+                        execution_time: None,
+                        completion_retention_time: *completion_retention_time,
+                        idempotency_key: None,
+                    };
+
                     self.handle_outgoing_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
                         effects,
@@ -1409,7 +1416,7 @@ where
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
                     span_context,
-                    ..
+                    completion_retention_time,
                 } = enrichment_result;
 
                 let_assert!(
@@ -1426,15 +1433,21 @@ where
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
 
-                let service_invocation = Self::create_service_invocation(
-                    *callee_invocation_id,
-                    callee_invocation_target.clone(),
-                    request,
-                    Source::Service(invocation_id, invocation_metadata.invocation_target.clone()),
-                    None,
-                    span_context.clone(),
-                    delay,
-                );
+                let service_invocation = ServiceInvocation {
+                    invocation_id: *callee_invocation_id,
+                    invocation_target: callee_invocation_target.clone(),
+                    argument: request.parameter,
+                    source: Source::Service(
+                        invocation_id,
+                        invocation_metadata.invocation_target.clone(),
+                    ),
+                    response_sink: None,
+                    span_context: span_context.clone(),
+                    headers: vec![],
+                    execution_time: delay,
+                    completion_retention_time: *completion_retention_time,
+                    idempotency_key: None,
+                };
 
                 let pointer_span_id = match span_context.span_cause() {
                     Some(SpanRelationCause::Linked(_, span_id)) => Some(*span_id),
@@ -1649,41 +1662,6 @@ where
             effects.set_parent_span_context(&journal_metadata.span_context)
         }
         Ok(status)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn create_service_invocation(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        invoke_request: InvokeRequest,
-        source: Source,
-        response_target: Option<(InvocationId, EntryIndex)>,
-        span_context: ServiceInvocationSpanContext,
-        execution_time: Option<MillisSinceEpoch>,
-    ) -> ServiceInvocation {
-        let InvokeRequest { parameter, .. } = invoke_request;
-
-        let response_sink = if let Some((caller, entry_index)) = response_target {
-            Some(ServiceInvocationResponseSink::PartitionProcessor {
-                caller,
-                entry_index,
-            })
-        } else {
-            None
-        };
-
-        ServiceInvocation {
-            invocation_id,
-            invocation_target,
-            argument: parameter,
-            source,
-            response_sink,
-            span_context,
-            headers: vec![],
-            execution_time,
-            completion_retention_time: None,
-            idempotency_key: None,
-        }
     }
 }
 

@@ -558,6 +558,7 @@ fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: Some(CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
+                completion_retention_time: None,
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },
@@ -571,6 +572,7 @@ fn background_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
+                completion_retention_time: None,
                 span_context: ServiceInvocationSpanContext::empty(),
             },
         },
@@ -585,6 +587,7 @@ fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
             enrichment_result: Some(CallEnrichmentResult {
                 invocation_id,
                 invocation_target: InvocationTarget::mock_service(),
+                completion_retention_time: None,
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },

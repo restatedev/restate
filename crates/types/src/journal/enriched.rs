@@ -13,6 +13,7 @@ use super::*;
 
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
+use std::time::Duration;
 
 pub type EnrichedEntryHeader = EntryHeader<CallEnrichmentResult, AwakeableEnrichmentResult>;
 pub type EnrichedRawEntry = RawEntry<CallEnrichmentResult, AwakeableEnrichmentResult>;
@@ -22,6 +23,7 @@ pub type EnrichedRawEntry = RawEntry<CallEnrichmentResult, AwakeableEnrichmentRe
 pub struct CallEnrichmentResult {
     pub invocation_id: InvocationId,
     pub invocation_target: InvocationTarget,
+    pub completion_retention_time: Option<Duration>,
 
     // When resolving the service and generating its id, we also generate the associated span
     pub span_context: ServiceInvocationSpanContext,

@@ -244,6 +244,7 @@ message InvocationResolutionResult {
         InvocationId invocation_id = 1;
         InvocationTarget invocation_target = 2;
         SpanContext span_context = 3;
+        Duration completion_retention_time = 4;
     }
 
     oneof result {
@@ -256,6 +257,7 @@ message BackgroundCallResolutionResult {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
+    Duration completion_retention_time = 4;
 }
 message EnrichedEntryHeader {
 

@@ -1643,10 +1643,15 @@ pub mod v1 {
                                     .ok_or(ConversionError::missing_field("span_context"))?,
                             )?;
 
+                        let completion_retention_time = Some(std::time::Duration::try_from(
+                            success.completion_retention_time.unwrap_or_default(),
+                        )?);
+
                         Some(restate_types::journal::enriched::CallEnrichmentResult {
                             invocation_id,
                             invocation_target,
                             span_context,
+                            completion_retention_time,
                         })
                     }
                 };
@@ -1666,11 +1671,15 @@ pub mod v1 {
                             invocation_id,
                             invocation_target,
                             span_context,
+                            completion_retention_time,
                         } => invocation_resolution_result::Result::Success(
                             invocation_resolution_result::Success {
                                 invocation_id: Some(InvocationId::from(invocation_id)),
                                 invocation_target: Some(invocation_target.into()),
                                 span_context: Some(SpanContext::from(span_context)),
+                                completion_retention_time: Some(Duration::from(
+                                    completion_retention_time.unwrap_or_default(),
+                                )),
                             },
                         ),
                     },
@@ -1706,10 +1715,15 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
 
+                let completion_retention_time = Some(std::time::Duration::try_from(
+                    value.completion_retention_time.unwrap_or_default(),
+                )?);
+
                 Ok(restate_types::journal::enriched::CallEnrichmentResult {
                     invocation_id,
                     span_context,
                     invocation_target,
+                    completion_retention_time,
                 })
             }
         }
@@ -1722,6 +1736,9 @@ pub mod v1 {
                     invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(value.invocation_target.into()),
                     span_context: Some(SpanContext::from(value.span_context)),
+                    completion_retention_time: Some(Duration::from(
+                        value.completion_retention_time.unwrap_or_default(),
+                    )),
                 }
             }
         }
