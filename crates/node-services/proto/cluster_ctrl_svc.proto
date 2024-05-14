@@ -14,13 +14,9 @@ import "common.proto";
 package dev.restate.cluster_ctrl;
 
 service ClusterCtrlSvc {
-  // Attach worker at cluster controller
-  rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
-
+  rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 }
 
-message AttachmentRequest {
-  optional dev.restate.common.NodeId node_id = 1;
-}
+message ClusterStateRequest {}
 
-message AttachmentResponse {}
+message ClusterStateResponse {}
