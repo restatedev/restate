@@ -5333,6 +5333,7 @@ name = "restate-cluster-controller"
 version = "0.9.1"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "codederror",
  "derive_builder",
  "drain",
