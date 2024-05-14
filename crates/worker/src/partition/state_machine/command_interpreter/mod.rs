@@ -894,15 +894,21 @@ where
                             ));
                         }
 
-                        // For workflow, we can now clean up the service lock.
+                        // For workflow, we should also clean up the service lock, associated state and promises.
                         if invocation_target.invocation_target_ty()
                             == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                         {
-                            effects.unlock_service_id(
-                                invocation_target
-                                    .as_keyed_service_id()
-                                    .expect("Workflow methods must have keyed service id"),
+                            let service_id = invocation_target
+                                .as_keyed_service_id()
+                                .expect("Workflow methods must have keyed service id");
+
+                            effects.unlock_service_id(service_id.clone());
+                            effects.clear_all_state(
+                                service_id.clone(),
+                                invocation_id,
+                                ServiceInvocationSpanContext::empty(),
                             );
+                            // TODO CLEANUP PROMISES
                         }
                     }
                     InvocationStatus::Free => {
