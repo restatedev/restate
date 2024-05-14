@@ -144,6 +144,7 @@ impl Node {
 
         let admin_role = if config.has_role(Role::Admin) {
             Some(AdminRole::new(
+                task_center(),
                 updateable_config.clone(),
                 metadata.clone(),
                 networking.clone(),

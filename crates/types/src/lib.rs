@@ -32,6 +32,7 @@ pub mod metadata_store;
 pub mod net;
 pub mod nodes_config;
 pub mod partition_table;
+pub mod processors;
 pub mod retries;
 pub mod state_mut;
 pub mod storage;

@@ -19,11 +19,10 @@ use assert2::let_assert;
 use futures::StreamExt;
 use metrics::{counter, histogram};
 use restate_core::metadata;
-use restate_core::worker_api::{PartitionProcessorStatus, ReplayStatus};
 use restate_network::Networking;
-use restate_node_protocol::cluster_controller::RunMode;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::processors::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::time::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -159,7 +158,9 @@ where
             bifrost,
             networking,
         );
-        let mut status_update_timer = tokio::time::interval(Duration::from_millis(23));
+        // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
+        let mut status_update_timer =
+            tokio::time::interval(Duration::from_millis(500 + rand::random::<u64>() % 524));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut cancellation = std::pin::pin!(cancellation_watcher());
