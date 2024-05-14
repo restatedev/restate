@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
 use std::sync::atomic::AtomicUsize;
+
+use restate_types::identifiers::PartitionKey;
 
 include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
 
@@ -102,6 +105,18 @@ impl From<restate_types::GenerationalNodeId> for NodeId {
             id: node_id.raw_id(),
             generation: Some(node_id.generation()),
         }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KeyRange {
+    pub from: PartitionKey,
+    pub to: PartitionKey,
+}
+
+impl From<KeyRange> for RangeInclusive<PartitionKey> {
+    fn from(val: KeyRange) -> Self {
+        RangeInclusive::new(val.from, val.to)
     }
 }
 

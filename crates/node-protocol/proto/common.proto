@@ -22,16 +22,17 @@ message NodeId {
 }
 
 // A generic type for versioned metadata
-message Version {
-  uint32 value = 1;
-}
+message Version { uint32 value = 1; }
 
-// The target service for a message
+// The handle name or type tag of the message. For every target there must be
+// exactly one message handler implementation.
 enum TargetName {
   TargetName_UNKNOWN = 0;
   METADATA_MANAGER = 1;
   INGRESS = 2;
   LOCAL_METADATA_STORE = 3;
   LOCAL_METADATA_STORE_CLIENT = 4;
+  ATTACH_REQUEST = 5;
+  ATTACH_RESPONSE = 6;
+  PARTITION_PROCESSOR_MANAGER_REQUESTS = 7;
 }
-
