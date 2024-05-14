@@ -9,10 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use tonic::{async_trait, Request, Response, Status};
-use tracing::debug;
 
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
-use restate_node_services::cluster_ctrl::{AttachmentRequest, AttachmentResponse};
+use restate_node_services::cluster_ctrl::{PartitionsStatusRequest, PartitionsStatusResponse};
 
 pub struct ClusterCtrlSvcHandler {}
 
@@ -24,12 +23,10 @@ impl ClusterCtrlSvcHandler {
 
 #[async_trait]
 impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
-    async fn attach_node(
+    async fn get_partitions_status(
         &self,
-        request: Request<AttachmentRequest>,
-    ) -> Result<Response<AttachmentResponse>, Status> {
-        let node_id = request.into_inner().node_id.expect("node id must be set");
-        debug!("Attaching node '{:?}'", node_id);
-        Ok(Response::new(AttachmentResponse {}))
+        _request: Request<PartitionsStatusRequest>,
+    ) -> Result<Response<PartitionsStatusResponse>, Status> {
+        unimplemented!()
     }
 }

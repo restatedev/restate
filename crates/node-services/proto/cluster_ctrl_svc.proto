@@ -14,13 +14,10 @@ import "common.proto";
 package dev.restate.cluster_ctrl;
 
 service ClusterCtrlSvc {
-  // Attach worker at cluster controller
-  rpc AttachNode(AttachmentRequest) returns (AttachmentResponse);
-
+  // Get identity information from this node.
+  rpc GetPartitionsStatus(PartitionsStatusRequest) returns (PartitionsStatusResponse);
 }
 
-message AttachmentRequest {
-  optional dev.restate.common.NodeId node_id = 1;
-}
+message PartitionsStatusRequest { }
 
-message AttachmentResponse {}
+message PartitionsStatusResponse { }
