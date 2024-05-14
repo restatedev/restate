@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::ResponseResult;
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{decode_default, encode_default, Targeted, WireDecode, WireEncode};
-use crate::common::{ProtocolVersion, TargetName};
-use crate::CodecError;
+use crate::common::TargetName;
+use crate::define_message;
+use crate::{CodecError, RpcMessage};
 
 #[derive(
     Debug,
@@ -30,32 +29,9 @@ pub enum IngressMessage {
     InvocationResponse(InvocationResponse),
 }
 
-impl Targeted for IngressMessage {
-    const TARGET: TargetName = TargetName::Ingress;
-
-    fn kind(&self) -> &'static str {
-        self.into()
-    }
-}
-
-impl WireEncode for IngressMessage {
-    fn encode<B: BufMut>(
-        &self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        // serialize message into buf
-        encode_default(self, buf, protocol_version)
-    }
-}
-
-impl WireDecode for IngressMessage {
-    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
-    where
-        Self: Sized,
-    {
-        decode_default(buf, protocol_version)
-    }
+define_message! {
+    @message = IngressMessage,
+    @target = TargetName::Ingress,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,4 +39,22 @@ pub struct InvocationResponse {
     pub invocation_id: InvocationId,
     pub idempotency_id: Option<IdempotencyId>,
     pub response: ResponseResult,
+}
+
+// TODO we could eventually remove this type and replace it with something simpler once
+//  https://github.com/restatedev/restate/issues/1329 is in place
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IngressCorrelationId {
+    InvocationId(InvocationId),
+    IdempotencyId(IdempotencyId),
+}
+
+impl RpcMessage for InvocationResponse {
+    type CorrelationId = IngressCorrelationId;
+    fn correlation_id(&self) -> Self::CorrelationId {
+        self.idempotency_id
+            .as_ref()
+            .map(|idempotency_id| IngressCorrelationId::IdempotencyId(idempotency_id.clone()))
+            .unwrap_or_else(|| IngressCorrelationId::InvocationId(self.invocation_id))
+    }
 }
