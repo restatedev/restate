@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[cfg(feature = "cloud")]
-pub mod cloud;
-pub mod config;
-pub mod deployments;
-pub mod examples;
-pub mod invocations;
-pub mod services;
-pub mod sql;
-pub mod state;
-pub mod whoami;
+mod list_environments;
+mod use_environment;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Config {
+    /// List the configured environments in the CLI config file
+    ListEnvironments(list_environments::ListEnvironments),
+    /// Set the current environment in $RESTATE_CONFIG_HOME/environment
+    UseEnvironment(use_environment::UseEnvironment),
+}

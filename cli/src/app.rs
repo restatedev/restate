@@ -101,6 +101,10 @@ pub enum Command {
     #[clap(subcommand)]
     State(state::ServiceState),
 
+    /// Manage CLI config
+    #[clap(subcommand)]
+    Config(config::Config),
+
     #[cfg(feature = "cloud")]
     #[clap(subcommand)]
     /// Manage Restate Cloud
