@@ -15,6 +15,7 @@ mod error;
 pub mod ingress;
 pub mod metadata;
 pub mod node;
+pub mod partition_processor_manager;
 
 // re-exports for convenience
 pub use common::CURRENT_PROTOCOL_VERSION;
