@@ -10,7 +10,8 @@
 
 use anyhow::Context;
 use codederror::CodedError;
-use restate_types::arc_util::ArcSwapExt;
+use restate_core::network::MessageRouterBuilder;
+use restate_network::Networking;
 use std::time::Duration;
 use tonic::transport::Channel;
 
@@ -18,10 +19,11 @@ use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{task_center, MetadataWriter, TaskKind};
+use restate_core::{task_center, Metadata, MetadataWriter, TaskKind};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{IngressOptions, UpdateableConfiguration};
 use restate_types::retries::RetryPolicy;
 
@@ -47,7 +49,10 @@ pub struct AdminRole {
 impl AdminRole {
     pub fn new(
         updateable_config: UpdateableConfiguration,
+        metadata: Metadata,
+        networking: Networking,
         metadata_writer: MetadataWriter,
+        router_builder: &mut MessageRouterBuilder,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, AdminRoleBuildError> {
         let config = updateable_config.pinned();
@@ -70,9 +75,12 @@ impl AdminRole {
             service_discovery,
         );
 
+        let controller =
+            restate_cluster_controller::Service::new(metadata, networking, router_builder);
+
         Ok(AdminRole {
             updateable_config,
-            controller: restate_cluster_controller::Service::default(),
+            controller,
             admin,
         })
     }

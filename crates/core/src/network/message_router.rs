@@ -23,7 +23,7 @@ use restate_node_protocol::MessageEnvelope;
 use restate_types::GenerationalNodeId;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::is_cancellation_requested;
 
@@ -124,6 +124,7 @@ impl MessageRouterBuilder {
         if self.handlers.insert(target, Box::new(wrapped)).is_some() {
             panic!("Handler for target {} has been registered already!", target);
         }
+        info!("Attached to target {}", target);
         Box::pin(ReceiverStream::new(rx))
     }
 
