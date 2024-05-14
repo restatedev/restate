@@ -42,6 +42,7 @@ regress = { version = "0.9", optional = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 test-log = { workspace = true }
 tokio = { workspace = true }
