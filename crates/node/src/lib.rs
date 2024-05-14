@@ -145,7 +145,10 @@ impl Node {
         let admin_role = if config.has_role(Role::Admin) {
             Some(AdminRole::new(
                 updateable_config.clone(),
+                metadata.clone(),
+                networking.clone(),
                 metadata_manager.writer(),
+                &mut router_builder,
                 metadata_store_client.clone(),
             )?)
         } else {
