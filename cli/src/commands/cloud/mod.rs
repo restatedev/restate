@@ -22,6 +22,7 @@ pub struct CloudConfig {
     pub api_base_url: Url,
     pub login_base_url: Url,
     pub client_id: String,
+    pub redirect_ports: Vec<u16>,
     #[serde(flatten)]
     pub credentials: Option<Credentials>, // Set globally on login
 }
@@ -48,7 +49,8 @@ impl Default for CloudConfig {
                 "https://restate-cloud-signup-test.auth.eu-central-1.amazoncognito.com",
             )
             .unwrap(),
-            client_id: "1qlr34bcko4s77sub02g6t4baj".into(),
+            client_id: "1v1rkegmilgjlphium3ksgurek".into(),
+            redirect_ports: vec![33912, 44643, 47576, 54788, 61844],
             credentials: None,
         }
     }

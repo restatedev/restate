@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use crate::{build_info, c_println, c_success, c_tip, cli_env::CliEnv};
+use crate::{build_info, c_println, c_success, cli_env::CliEnv};
 use anyhow::{anyhow, Context, Result};
 use axum::extract::{self};
 use base64::Engine;
@@ -60,11 +60,21 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .build()
         .context("Failed to build oauth token client")?;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 27375));
-    let server = axum::Server::try_bind(&addr)
-        .context("Failed to bind oauth callback server to localhost")?;
+    let server =
+        match env.config.cloud.redirect_ports.iter().find_map(|port| {
+            axum::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], *port))).ok()
+        }) {
+            Some(server) => server,
+            None => {
+                return Err(anyhow!(
+                    "Failed to bind oauth callback server to localhost. Tried ports: [{:?}]",
+                    env.config.cloud.redirect_ports
+                ))
+            }
+        };
+
     let port = server.local_addr().port();
-    let redirect_uri = format!("http://localhost:{}", port);
+    let redirect_uri = format!("http://localhost:{port}/callback");
 
     let (result_send, mut result_recv) = mpsc::channel(1);
 
@@ -82,7 +92,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
 
     let router = axum::Router::new()
         .route(
-            "/",
+            "/callback",
             axum::routing::get(
                 |extract::State(state): extract::State<RedirectState>,
                  extract::Query(params): extract::Query<RedirectParams>| async move {
