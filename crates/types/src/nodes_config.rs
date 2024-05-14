@@ -88,6 +88,10 @@ impl NodeConfig {
             roles,
         }
     }
+
+    pub fn has_role(&self, role: Role) -> bool {
+        self.roles.contains(role)
+    }
 }
 
 impl NodesConfiguration {
@@ -175,6 +179,16 @@ impl NodesConfiguration {
         self.nodes.values().find_map(|maybe| match maybe {
             MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
             _ => None,
+        })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
+        self.nodes.iter().filter_map(|(k, v)| {
+            if let MaybeNode::Node(node) = v {
+                Some((*k, node))
+            } else {
+                None
+            }
         })
     }
 

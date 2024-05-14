@@ -19,7 +19,7 @@ use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_core::{task_center, Metadata, MetadataWriter, TaskKind};
+use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -48,6 +48,7 @@ pub struct AdminRole {
 
 impl AdminRole {
     pub fn new(
+        task_center: TaskCenter,
         updateable_config: UpdateableConfiguration,
         metadata: Metadata,
         networking: Networking,
@@ -75,8 +76,12 @@ impl AdminRole {
             service_discovery,
         );
 
-        let controller =
-            restate_cluster_controller::Service::new(metadata, networking, router_builder);
+        let controller = restate_cluster_controller::Service::new(
+            task_center,
+            metadata,
+            networking,
+            router_builder,
+        );
 
         Ok(AdminRole {
             updateable_config,
@@ -100,7 +105,11 @@ impl AdminRole {
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
-            self.controller.run(),
+            self.controller.run(
+                self.updateable_config
+                    .clone()
+                    .map_as_updateable_owned(|c| &c.admin),
+            ),
         )?;
 
         // todo: Make address configurable
