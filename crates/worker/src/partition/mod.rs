@@ -8,13 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::{PARTITION_ACTUATOR_HANDLED, PARTITION_TIMER_DUE_HANDLED};
+use crate::metric_definitions::{
+    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_TIMER_DUE_HANDLED,
+    PP_APPLY_ACTIONS_DURATION, PP_APPLY_RECORD_DURATION,
+};
 use crate::partition::leadership::{ActionEffect, LeadershipState};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 use assert2::let_assert;
 use futures::StreamExt;
-use metrics::counter;
+use metrics::{counter, histogram};
 use restate_core::metadata;
 use restate_network::Networking;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
@@ -22,6 +25,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
+use std::time::Instant;
 use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
@@ -132,10 +136,13 @@ where
             networking,
         );
 
+        let mut cancellation = std::pin::pin!(cancellation_watcher());
+        let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
         loop {
             tokio::select! {
-                _ = cancellation_watcher() => break,
+                _ = &mut cancellation => break,
                 record = log_reader.read_next() => {
+                    let command_start = Instant::now();
                     let record = record?;
                     trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
 
@@ -182,10 +189,14 @@ where
                                 debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership lost to {}", announce_leader.node_id);
                             }
                         }
+                        histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str).record(command_start.elapsed());
                     } else {
                         // Commit our changes and notify actuators about actions if we are the leader
                         transaction.commit().await?;
+                        histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str).record(command_start.elapsed());
+                        let actions_start = Instant::now();
                         state.handle_actions(action_collector.drain(..)).await?;
+                        histogram!(PP_APPLY_ACTIONS_DURATION).record(actions_start.elapsed());
                     }
                 },
                 action_effect = action_effect_stream.next() => {
