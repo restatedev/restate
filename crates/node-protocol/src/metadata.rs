@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut};
 use enum_map::Enum;
 pub use restate_schema::{Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
@@ -17,10 +16,8 @@ use restate_types::partition_table::FixedPartitionTable;
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumIter;
 
-use crate::codec::{decode_default, encode_default, Targeted, WireDecode, WireEncode};
-use crate::common::ProtocolVersion;
 use crate::common::TargetName;
-use crate::CodecError;
+use crate::define_message;
 
 #[derive(
     Debug,
@@ -36,31 +33,9 @@ pub enum MetadataMessage {
     MetadataUpdate(MetadataUpdate),
 }
 
-impl Targeted for MetadataMessage {
-    const TARGET: TargetName = TargetName::MetadataManager;
-
-    fn kind(&self) -> &'static str {
-        self.into()
-    }
-}
-
-impl WireEncode for MetadataMessage {
-    fn encode<B: BufMut>(
-        &self,
-        buf: &mut B,
-        protocol_version: ProtocolVersion,
-    ) -> Result<(), CodecError> {
-        encode_default(self, buf, protocol_version)
-    }
-}
-
-impl WireDecode for MetadataMessage {
-    fn decode<B: Buf>(buf: &mut B, protocol_version: ProtocolVersion) -> Result<Self, CodecError>
-    where
-        Self: Sized,
-    {
-        decode_default(buf, protocol_version)
-    }
+define_message! {
+    @message = MetadataMessage,
+    @target = TargetName::MetadataManager,
 }
 
 /// The kind of versioned metadata that can be synchronized across nodes.

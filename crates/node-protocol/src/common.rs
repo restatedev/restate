@@ -8,10 +8,45 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::atomic::AtomicUsize;
+
 include!(concat!(env!("OUT_DIR"), "/dev.restate.common.rs"));
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::Flexbuffers;
+
+/// Used to identify a request in a RPC-style call going through Networking.
+#[derive(
+    Debug,
+    derive_more::Display,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct RequestId(u64);
+impl RequestId {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
+impl Default for RequestId {
+    fn default() -> Self {
+        static NEXT_REQUEST_ID: AtomicUsize = AtomicUsize::new(1);
+        RequestId(
+            NEXT_REQUEST_ID
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .try_into()
+                .unwrap(),
+        )
+    }
+}
 
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/common_descriptor.bin"));
@@ -67,5 +102,18 @@ impl From<restate_types::GenerationalNodeId> for NodeId {
             id: node_id.raw_id(),
             generation: Some(node_id.generation()),
         }
+    }
+}
+
+// write tests for RequestId
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_request_id() {
+        let request_id1 = RequestId::new();
+        let request_id2 = RequestId::new();
+        let request_id3 = RequestId::default();
+        assert!(request_id1.0 < request_id2.0 && request_id2.0 < request_id3.0);
     }
 }

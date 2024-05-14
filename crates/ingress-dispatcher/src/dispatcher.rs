@@ -10,15 +10,16 @@
 
 use crate::error::IngressDispatchError;
 use crate::{
-    IngressCorrelationId, IngressDispatcherRequest, IngressDispatcherRequestInner,
-    IngressDispatcherResponse, IngressRequestMode, IngressResponseSender,
+    IngressDispatcherRequest, IngressDispatcherRequestInner, IngressDispatcherResponse,
+    IngressRequestMode, IngressResponseSender,
 };
 use dashmap::DashMap;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_core::network::MessageHandler;
 use restate_node_protocol::codec::Targeted;
-use restate_node_protocol::ingress::IngressMessage;
+use restate_node_protocol::ingress::{IngressCorrelationId, IngressMessage};
+use restate_node_protocol::RpcMessage;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
@@ -132,15 +133,7 @@ impl MessageHandler for IngressDispatcher {
         trace!("Processing message '{}' from '{}'", msg.kind(), peer);
         match msg {
             IngressMessage::InvocationResponse(invocation_response) => {
-                let correlation_id = invocation_response
-                    .idempotency_id
-                    .as_ref()
-                    .map(|idempotency_id| {
-                        IngressCorrelationId::IdempotencyId(idempotency_id.clone())
-                    })
-                    .unwrap_or_else(|| {
-                        IngressCorrelationId::InvocationId(invocation_response.invocation_id)
-                    });
+                let correlation_id = invocation_response.correlation_id();
                 if let Some((_, sender)) = self.state.waiting_responses.remove(&correlation_id) {
                     let dispatcher_response = IngressDispatcherResponse {
                         // TODO we need to add back the expiration time for idempotent results
