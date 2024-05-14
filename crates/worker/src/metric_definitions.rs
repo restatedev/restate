@@ -10,13 +10,18 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, Unit};
+use metrics::{describe_counter, describe_histogram, Unit};
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.total";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
 pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handled.total";
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
+
+pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
+pub const PP_APPLY_ACTIONS_DURATION: &str = "restate.partition.apply_actions_duration.seconds";
+
+pub const PARTITION_LABEL: &str = "partition";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -43,5 +48,15 @@ pub(crate) fn describe_metrics() {
         PARTITION_STORAGE_TX_COMMITTED,
         Unit::Count,
         "Storage transactions committed by applying partition state machine commands"
+    );
+    describe_histogram!(
+        PP_APPLY_RECORD_DURATION,
+        Unit::Seconds,
+        "Time spent processing a single bifrost message"
+    );
+    describe_histogram!(
+        PP_APPLY_ACTIONS_DURATION,
+        Unit::Seconds,
+        "Time spent applying actions/effects in a single iteration"
     );
 }
