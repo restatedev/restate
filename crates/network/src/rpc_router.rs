@@ -31,6 +31,7 @@ use crate::Networking;
 /// tracking tokens if caller dropped the future.
 ///
 /// This type is designed to be used by senders of RpcRequest(s).
+#[derive(Clone)]
 pub struct RpcRouter<T>
 where
     T: RpcRequest,
