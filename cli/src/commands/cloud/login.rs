@@ -1,10 +1,11 @@
 use std::net::SocketAddr;
 
-use crate::{build_info, c_success, c_tip, cli_env::CliEnv};
+use crate::{build_info, c_println, c_success, c_tip, cli_env::CliEnv};
 use anyhow::{anyhow, Context, Result};
 use axum::extract::{self};
 use base64::Engine;
 use cling::prelude::*;
+use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use toml_edit::{table, value, DocumentMut};
@@ -118,10 +119,15 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
     let result_fut = result_recv.recv();
     tokio::pin!(result_fut);
 
-    c_tip!("If a browser does not open automatically, please continue by visiting: {login_uri}");
+    c_println!("Opening browser to {login_uri}");
     open::that(login_uri.to_string())?;
 
-    tokio::select! {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(indicatif::ProgressStyle::with_template("{spinner} {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+    progress.set_message("Waiting for login redirect...");
+
+    let result = tokio::select! {
         server_result = server => {
             match server_result {
                 Ok(()) => {
@@ -143,7 +149,9 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
                 }
             }
         }
-    }
+    };
+    progress.finish_and_clear();
+    result
 }
 
 #[derive(Clone)]

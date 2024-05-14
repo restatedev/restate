@@ -12,7 +12,9 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use cling::prelude::*;
+use indicatif::ProgressBar;
 use itertools::Itertools;
+use std::future::Future;
 use toml_edit::{table, value, DocumentMut};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -32,7 +34,11 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
 
     let client = CloudClient::new(&env)?;
 
-    let accounts = client.list_accounts().await?.into_body().await?.accounts;
+    let accounts = with_progress("Listing accounts...", async {
+        client.list_accounts().await?.into_body().await
+    })
+    .await?
+    .accounts;
 
     let account_i = match accounts.len() {
         0 => {
@@ -44,12 +50,15 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
         _ => account_picker(&accounts)?,
     };
 
-    let environments = client
-        .list_environments(&accounts[account_i].account_id)
-        .await?
-        .into_body()
-        .await?
-        .environments;
+    let environments = with_progress("Listing environments...", async {
+        client
+            .list_environments(&accounts[account_i].account_id)
+            .await?
+            .into_body()
+            .await
+    })
+    .await?
+    .environments;
 
     let environment_i = match environments.len() {
         0 => {
@@ -61,14 +70,17 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
         _ => environment_picker(&environments)?,
     };
 
-    let environment = client
-        .describe_environment(
-            &accounts[account_i].account_id,
-            &environments[environment_i].environment_id,
-        )
-        .await?
-        .into_body()
-        .await?;
+    let environment = with_progress("Describing environment...", async {
+        client
+            .describe_environment(
+                &accounts[account_i].account_id,
+                &environments[environment_i].environment_id,
+            )
+            .await?
+            .into_body()
+            .await
+    })
+    .await?;
 
     let profiles = list_profiles(&doc)?;
     let profile = profile_input(&profiles, &environments[environment_i].environment_id)?; // TODO should be name here
@@ -92,9 +104,24 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
 
     // write out config
     std::fs::write(env.config_file.as_path(), doc.to_string())?;
-    c_success!("Updated {} with credentials", env.config_file.display());
+    c_success!(
+        "Updated {} with environment details",
+        env.config_file.display()
+    );
 
     Ok(())
+}
+
+async fn with_progress<T>(msg: &'static str, f: impl Future<Output = T>) -> T {
+    let progress = ProgressBar::new_spinner();
+    progress
+        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    progress.set_message(msg);
+    let result = f.await;
+    progress.reset();
+    result
 }
 
 fn account_picker(accounts: &[ListAccountsResponseAccountsItem]) -> Result<usize> {
@@ -130,7 +157,7 @@ fn list_profiles(doc: &DocumentMut) -> Result<Vec<String>> {
 fn profile_input(profiles: &[String], environment_name: &str) -> Result<String> {
     input(
         &format!(
-            "Choose a friendly name for the Environment for use with the CLI. Current names: [{}]",
+            "Choose a friendly name for the Environment for use with the CLI.\n  Current names: [{}]\n",
             profiles.join(", ")
         ),
         environment_name.replace(' ', "-"),
