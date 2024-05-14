@@ -19,13 +19,18 @@ use assert2::let_assert;
 use futures::StreamExt;
 use metrics::{counter, histogram};
 use restate_core::metadata;
+use restate_core::worker_api::{PartitionProcessorStatus, ReplayStatus};
 use restate_network::Networking;
+use restate_node_protocol::cluster_controller::RunMode;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::time::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, watch};
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
@@ -47,6 +52,9 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use self::storage::invoker::InvokerStorageReader;
 
+/// Control messages from Manager to individual partition processor instances.
+pub enum PartitionProcessorControlCommand {}
+
 #[derive(Debug)]
 pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     pub partition_id: PartitionId,
@@ -55,7 +63,10 @@ pub(super) struct PartitionProcessor<RawEntryCodec, InvokerInputSender> {
     num_timers_in_memory_limit: Option<usize>,
     channel_size: usize,
 
+    status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
+    control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
+    status_watch_tx: watch::Sender<PartitionProcessorStatus>,
 
     _entry_codec: PhantomData<RawEntryCodec>,
 }
@@ -70,23 +81,29 @@ where
     pub(super) fn new(
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
+        status: PartitionProcessorStatus,
         num_timers_in_memory_limit: Option<usize>,
         channel_size: usize,
+        control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
+        status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
     ) -> Self {
         Self {
             partition_id,
             partition_key_range,
+            status,
             num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
+            control_rx,
+            status_watch_tx,
             _entry_codec: Default::default(),
         }
     }
 
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub(super) async fn run(
-        self,
+        mut self,
         networking: Networking,
         bifrost: Bifrost,
         partition_store: PartitionStore,
@@ -111,15 +128,22 @@ where
 
         let last_applied_lsn = partition_storage.load_applied_lsn().await?;
         let last_applied_lsn = last_applied_lsn.unwrap_or(Lsn::INVALID);
-        if tracing::event_enabled!(tracing::Level::DEBUG) {
-            let current_tail = bifrost
-                .find_tail(LogId::from(partition_id), FindTailAttributes::default())
-                .await?;
-            debug!(
-                last_applied_lsn = %last_applied_lsn,
-                current_log_tail = ?current_tail,
-                "PartitionProcessor creating log reader",
-            );
+        self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        let current_tail = bifrost
+            .find_tail(LogId::from(partition_id), FindTailAttributes::default())
+            .await?;
+        debug!(
+            last_applied_lsn = %last_applied_lsn,
+            current_log_tail = ?current_tail,
+            "PartitionProcessor creating log reader",
+        );
+        if current_tail.is_none() || current_tail.is_some_and(|tail| tail == last_applied_lsn) {
+            self.status.replay_status = ReplayStatus::Active;
+        } else {
+            // catching up.
+            self.status.replay_status = ReplayStatus::CatchingUp {
+                target_tail_lsn: current_tail.unwrap(),
+            }
         }
         let mut log_reader = LogReader::new(&bifrost, LogId::from(partition_id), last_applied_lsn);
 
@@ -135,12 +159,23 @@ where
             bifrost,
             networking,
         );
+        let mut status_update_timer = tokio::time::interval(Duration::from_millis(23));
+        status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut cancellation = std::pin::pin!(cancellation_watcher());
         let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
         loop {
             tokio::select! {
                 _ = &mut cancellation => break,
+                _command = self.control_rx.recv() => {
+                    // todo: handle leadership change requests here
+                }
+                _ = status_update_timer.tick() => {
+                    self.status_watch_tx.send_modify(|old| {
+                        old.clone_from(&self.status);
+                        old.updated_at = MillisSinceEpoch::now();
+                    });
+                }
                 record = log_reader.read_next() => {
                     let command_start = Instant::now();
                     let record = record?;
@@ -154,6 +189,7 @@ where
 
                     let leadership_change = Self::apply_record(
                             record,
+                            &mut self.status,
                             &mut state_machine,
                             &mut transaction,
                             &mut action_collector,
@@ -164,6 +200,8 @@ where
                     if let Some(announce_leader) = leadership_change {
                         let new_esn = EpochSequenceNumber::new(announce_leader.leader_epoch);
 
+                        self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+                        self.status.last_observed_leader_node = Some(announce_leader.node_id);
                         // update our own epoch sequence number to filter out messages from previous leaders
                         transaction.store_dedup_sequence_number(ProducerId::self_producer(), DedupSequenceNumber::Esn(new_esn)).await;
                         // commit all changes so far, this is important so that the actuators see all changes
@@ -177,6 +215,7 @@ where
                         if announce_leader.node_id == metadata().my_node_id() {
                             let was_follower = !state.is_leader();
                             (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage).await?;
+                            self.status.effective_mode = Some(RunMode::Leader);
                             if was_follower {
                                 Span::current().record("is_leader", state.is_leader());
                                 debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership acquired");
@@ -184,6 +223,7 @@ where
                         } else {
                             let was_leader = state.is_leader();
                             (state, action_effect_stream) = state.become_follower().await?;
+                            self.status.effective_mode = Some(RunMode::Follower);
                             if was_leader {
                                 Span::current().record("is_leader", state.is_leader());
                                 debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership lost to {}", announce_leader.node_id);
@@ -233,8 +273,10 @@ where
         Ok(state_machine)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apply_record<Codec>(
         record: (Lsn, Envelope),
+        status: &mut PartitionProcessorStatus,
         state_machine: &mut StateMachine<Codec>,
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
         action_collector: &mut ActionCollector,
@@ -248,6 +290,19 @@ where
         let (lsn, envelope) = record;
         transaction.store_applied_lsn(lsn).await?;
 
+        // Update replay status
+        status.last_applied_log_lsn = Some(record.0);
+        status.last_record_applied_at = Some(MillisSinceEpoch::now());
+        match status.replay_status {
+            ReplayStatus::CatchingUp {
+                // finished catching up
+                target_tail_lsn,
+            } if record.0 >= target_tail_lsn => {
+                status.replay_status = ReplayStatus::Active;
+            }
+            _ => {}
+        };
+
         if let Some(dedup_information) = is_targeted_to_me(&envelope.header, partition_key_range) {
             // deduplicate if deduplication information has been provided
             if let Some(dedup_information) = dedup_information {
@@ -257,14 +312,13 @@ where
                         envelope.header
                     );
                     return Ok(None);
-                } else {
-                    transaction
-                        .store_dedup_sequence_number(
-                            dedup_information.producer_id.clone(),
-                            dedup_information.sequence_number,
-                        )
-                        .await;
                 }
+                transaction
+                    .store_dedup_sequence_number(
+                        dedup_information.producer_id.clone(),
+                        dedup_information.sequence_number,
+                    )
+                    .await;
             }
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
@@ -306,6 +360,7 @@ where
                     .await?;
             }
         } else {
+            status.skipped_records += 1;
             trace!(
                 "Ignore message which is not targeted to me: {:?}",
                 envelope.header
