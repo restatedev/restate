@@ -24,7 +24,7 @@ use restate_schema_api::invocation_target::{InvocationTargetMetadata, Invocation
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocation, Source,
-    SpanRelation,
+    SpanRelation, WorkflowHandlerType,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
@@ -84,6 +84,12 @@ where
 
         // Check if Idempotency-Key is available
         let idempotency_key = parse_idempotency(req.headers())?;
+        if idempotency_key.is_some()
+            && invocation_target_meta.target_ty
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            return Err(HandlerError::UnsupportedIdempotencyKey);
+        }
 
         // Craft Invocation Target and Id
         let invocation_target = if let TargetType::Keyed { key } = target {
@@ -160,11 +166,10 @@ where
             let mut service_invocation =
                 ServiceInvocation::initialize(invocation_id, invocation_target, Source::Ingress);
             service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
+            service_invocation.completion_retention_time =
+                invocation_target_meta.compute_retention(idempotency_key.is_some());
             if let Some(key) = idempotency_key {
                 service_invocation.idempotency_key = Some(key);
-                // TODO set this value even in non-idempotency cases
-                service_invocation.completion_retention_time =
-                    Some(invocation_target_meta.idempotency_retention);
             }
             service_invocation.headers = headers;
             service_invocation.argument = body;
