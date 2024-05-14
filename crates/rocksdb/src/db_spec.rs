@@ -19,28 +19,6 @@ type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
 #[derive(
     Debug,
-    derive_more::Display,
-    strum_macros::VariantArray,
-    strum_macros::IntoStaticStr,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Hash,
-    Default,
-)]
-#[strum(serialize_all = "kebab-case")]
-pub enum Owner {
-    #[default]
-    // A system-wide database, or represents an operation that has no specific owner.
-    None,
-    PartitionProcessor,
-    Bifrost,
-    MetadataStore,
-}
-
-#[derive(
-    Debug,
     derive_more::Deref,
     derive_more::AsRef,
     derive_more::From,
@@ -141,7 +119,6 @@ impl CfNameMatch for CfExactPattern {
 #[builder(pattern = "owned", build_fn(name = "build"))]
 pub struct DbSpec<T> {
     pub(crate) name: DbName,
-    pub(crate) owner: Owner,
     pub(crate) path: PathBuf,
     /// All column families that should be flushed on shutdown, no flush will be performed if empty
     /// which should be the default for most cases.
@@ -171,15 +148,9 @@ pub struct DbSpec<T> {
 }
 
 impl<T> DbSpecBuilder<T> {
-    pub fn new(
-        name: DbName,
-        owner: Owner,
-        path: PathBuf,
-        db_options: rocksdb::Options,
-    ) -> DbSpecBuilder<T> {
+    pub fn new(name: DbName, path: PathBuf, db_options: rocksdb::Options) -> DbSpecBuilder<T> {
         Self {
             name: Some(name),
-            owner: Some(owner),
             path: Some(path),
             db_options: Some(db_options),
             ..Self::default()

@@ -15,6 +15,8 @@ use serde_with::serde_as;
 
 use restate_serde_util::NonZeroByteCount;
 
+use super::{CommonOptions, WorkerOptions};
+
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -108,8 +110,21 @@ impl RocksDbOptions {
     }
 
     pub fn rocksdb_write_buffer_size(&self) -> NonZeroUsize {
-        self.rocksdb_write_buffer_size
-            .unwrap_or(NonZeroUsize::new(50_000_000).unwrap()) // 50MB
+        // Default value is calculated from other defaults of the system
+        self.rocksdb_write_buffer_size.unwrap_or_else(|| {
+            // NOTE: This is a guess, based on the default values of the system, it doesn't reflect
+            // the actual configuration because the number of partitions can change over time. The
+            // goal here is to provide a reasonable default value for the _default_ system
+            // configuration.
+            let common_opts = CommonOptions::default();
+            let all_memtables = common_opts.rocksdb_total_memtables_size();
+            let num_partitions = WorkerOptions::default().bootstrap_num_partitions();
+            // Assuming 1 active and 2 immutable memtables per partition
+            // Assuming 256MB for bifrost's data cf (2 memtables * 128MB default write buffer size)
+            // Assuming 256MB for bifrost's metadata cf (2 memtables * 128MB default write buffer size)
+            let buffer_size = (all_memtables - 512_000_000) / (num_partitions * 3) as usize;
+            NonZeroUsize::new(buffer_size).unwrap()
+        })
     }
 
     pub fn rocksdb_max_total_wal_size(&self) -> NonZeroUsize {
