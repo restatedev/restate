@@ -234,7 +234,12 @@ impl InputContentType {
         &'a self,
         input_content_type: &'a str,
     ) -> Result<(&str, &str), InputValidationError> {
-        return match input_content_type.trim().split_once('/') {
+        let ct_without_args = input_content_type
+            .split_once(';')
+            .map(|(ct, _)| ct)
+            .unwrap_or(input_content_type);
+
+        return match ct_without_args.trim().split_once('/') {
             Some((first_part, second_part)) => Ok((first_part, second_part)),
             None => Err(InputValidationError::ContentTypeNotMatching(
                 input_content_type.to_owned(),
@@ -507,6 +512,11 @@ mod tests {
         };
 
         assert_input_valid!(input_rules, Some("application/restate+json"), Bytes::new());
+        assert_input_valid!(
+            input_rules,
+            Some("application/json; charset=utf8"),
+            Bytes::new()
+        );
         assert_input_not_valid!(input_rules, Some("text/json"), Bytes::new());
     }
 
@@ -522,6 +532,11 @@ mod tests {
         };
 
         assert_input_valid!(input_rules, Some("application/json"), Bytes::new());
+        assert_input_valid!(
+            input_rules,
+            Some("application/json; charset=utf8"),
+            Bytes::new()
+        );
         assert_input_not_valid!(input_rules, Some("application/cbor"), Bytes::new());
     }
 
