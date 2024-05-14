@@ -161,6 +161,10 @@ codegen-units = 1
 # Let's be defensive and abort on every panic
 panic = "abort"
 
+[profile.release-debug]
+inherits = "release"
+debug = true
+
 [profile.dev]
 # Let's be defensive and abort on every panic
 panic = "abort"

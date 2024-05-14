@@ -15,7 +15,7 @@ use futures::stream::{FuturesOrdered, FuturesUnordered};
 use futures::StreamExt;
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::metadata;
-use restate_rocksdb::{DbName, Owner, RocksDbManager};
+use restate_rocksdb::{DbName, RocksDbManager};
 use restate_types::config::{
     BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder, LocalLogletOptionsBuilder,
 };
@@ -174,14 +174,12 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
     group.finish();
     let db_manager = RocksDbManager::get();
 
-    let db = db_manager
-        .get_db(Owner::Bifrost, DbName::new("local-loglet"))
-        .unwrap();
+    let db = db_manager.get_db(DbName::new("local-loglet")).unwrap();
     let stats = db.get_statistics_str();
     let total_wb_usage = db_manager.get_total_write_buffer_usage();
     let wb_capacity = db_manager.get_total_write_buffer_capacity();
     let memory = db_manager
-        .get_memory_usage_stats(&[(Owner::Bifrost, DbName::new("local-loglet"))])
+        .get_memory_usage_stats(&[DbName::new("local-loglet")])
         .unwrap();
     test_runner_rt.block_on(tc.shutdown_node("completed", 0));
     test_runner_rt.block_on(RocksDbManager::get().shutdown());
