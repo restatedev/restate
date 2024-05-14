@@ -27,6 +27,7 @@ use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::{Entry, EntryType, InputEntry};
+use restate_types::service_protocol;
 
 #[tokio::test]
 async fn get_entries() {
@@ -74,7 +75,7 @@ async fn get_entries() {
         2,
         JournalEntry::Entry(EnrichedRawEntry::new(
             EnrichedEntryHeader::Run {},
-            restate_service_protocol::pb::protocol::RunEntryMessage {
+            service_protocol::RunEntryMessage {
                 name: "my-side-effect".to_string(),
                 result: None,
             }

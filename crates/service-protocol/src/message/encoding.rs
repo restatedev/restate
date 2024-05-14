@@ -234,17 +234,17 @@ fn decode_protocol_message(
     mut buf: impl Buf,
 ) -> Result<ProtocolMessage, prost::DecodeError> {
     Ok(match header.message_type() {
-        MessageType::Start => ProtocolMessage::Start(pb::protocol::StartMessage::decode(buf)?),
+        MessageType::Start => ProtocolMessage::Start(service_protocol::StartMessage::decode(buf)?),
         MessageType::Completion => {
-            ProtocolMessage::Completion(pb::protocol::CompletionMessage::decode(buf)?)
+            ProtocolMessage::Completion(service_protocol::CompletionMessage::decode(buf)?)
         }
         MessageType::Suspension => {
-            ProtocolMessage::Suspension(pb::protocol::SuspensionMessage::decode(buf)?)
+            ProtocolMessage::Suspension(service_protocol::SuspensionMessage::decode(buf)?)
         }
-        MessageType::Error => ProtocolMessage::Error(pb::protocol::ErrorMessage::decode(buf)?),
-        MessageType::End => ProtocolMessage::End(pb::protocol::EndMessage::decode(buf)?),
+        MessageType::Error => ProtocolMessage::Error(service_protocol::ErrorMessage::decode(buf)?),
+        MessageType::End => ProtocolMessage::End(service_protocol::EndMessage::decode(buf)?),
         MessageType::EntryAck => {
-            ProtocolMessage::EntryAck(pb::protocol::EntryAckMessage::decode(buf)?)
+            ProtocolMessage::EntryAck(service_protocol::EntryAckMessage::decode(buf)?)
         }
         _ => ProtocolMessage::UnparsedEntry(RawEntry::new(
             message_header_to_raw_header(header),

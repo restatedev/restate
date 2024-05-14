@@ -14,7 +14,7 @@ use http::Uri;
 use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::ShutdownError;
 use restate_schema_api::invocation_target::BadInputContentType;
-use restate_service_protocol::discovery::schema;
+use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
 use restate_types::invocation::ServiceType;
@@ -91,7 +91,7 @@ pub enum ServiceError {
     BadOutputContentType(String, InvalidHeaderValue),
     #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
     #[code(unknown)]
-    BadServiceAndHandlerType(ServiceType, Option<schema::HandlerType>),
+    BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),

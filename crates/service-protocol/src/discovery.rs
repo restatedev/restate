@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::pb::protocol;
-use crate::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use bytes::Bytes;
 use codederror::CodedError;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
@@ -21,7 +19,11 @@ use restate_errors::{META0003, META0012, META0013};
 use restate_schema_api::deployment::ProtocolType;
 use restate_schema_api::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
+use restate_types::endpoint_manifest;
 use restate_types::retries::{RetryIter, RetryPolicy};
+use restate_types::service_protocol::{
+    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -31,24 +33,6 @@ use tracing::warn;
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 const DISCOVER_PATH: &str = "/discover";
-
-pub mod schema {
-    #![allow(warnings)]
-    #![allow(clippy::all)]
-    #![allow(unknown_lints)]
-
-    include!(concat!(env!("OUT_DIR"), "/deployment.rs"));
-
-    impl From<ServiceType> for restate_types::invocation::ServiceType {
-        fn from(value: ServiceType) -> Self {
-            match value {
-                ServiceType::VirtualObject => restate_types::invocation::ServiceType::VirtualObject,
-                ServiceType::Service => restate_types::invocation::ServiceType::Service,
-                ServiceType::Workflow => restate_types::invocation::ServiceType::Workflow,
-            }
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct DiscoverEndpoint(Endpoint, HashMap<HeaderName, HeaderValue>);
@@ -77,7 +61,7 @@ impl DiscoverEndpoint {
 #[derive(Debug)]
 pub struct DiscoveredMetadata {
     pub protocol_type: ProtocolType,
-    pub services: Vec<schema::Service>,
+    pub services: Vec<endpoint_manifest::Service>,
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
     // and we need to represent unknown later versions
     pub supported_protocol_versions: RangeInclusive<i32>,
@@ -177,18 +161,18 @@ impl ServiceDiscovery {
         }
 
         // Parse the response
-        let response: schema::Endpoint =
+        let response: endpoint_manifest::Endpoint =
             serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?;
 
         Self::create_discovered_metadata_from_endpoint_response(response)
     }
 
     fn create_discovered_metadata_from_endpoint_response(
-        endpoint_response: schema::Endpoint,
+        endpoint_response: endpoint_manifest::Endpoint,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
-            Some(schema::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
-            Some(schema::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
+            Some(endpoint_manifest::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
+            Some(endpoint_manifest::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
             None => {
                 return Err(DiscoveryError::BadResponse("missing protocol mode".into()));
             }
@@ -228,7 +212,7 @@ impl ServiceDiscovery {
         let min_version = endpoint_response.min_protocol_version as i32;
         let max_version = endpoint_response.max_protocol_version as i32;
 
-        if !protocol::ServiceProtocolVersion::is_supported(min_version, max_version) {
+        if !ServiceProtocolVersion::is_supported(min_version, max_version) {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
                 min_version,
                 max_version,
@@ -299,13 +283,14 @@ impl ServiceDiscovery {
 
 #[cfg(test)]
 mod tests {
-    use crate::discovery::schema::ProtocolMode;
-    use crate::discovery::{schema, DiscoveryError, ServiceDiscovery};
-    use crate::MAX_SERVICE_PROTOCOL_VERSION;
+    use crate::discovery::endpoint_manifest::ProtocolMode;
+    use crate::discovery::{DiscoveryError, ServiceDiscovery};
+    use restate_types::endpoint_manifest;
+    use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
 
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {
-        let response = schema::Endpoint {
+        let response = endpoint_manifest::Endpoint {
             min_protocol_version: 0,
             max_protocol_version: 1,
             services: Vec::new(),
@@ -320,7 +305,7 @@ mod tests {
 
     #[test]
     fn fail_on_invalid_max_protocol_version_with_bad_response() {
-        let response = schema::Endpoint {
+        let response = endpoint_manifest::Endpoint {
             min_protocol_version: 1,
             max_protocol_version: i64::MAX,
             services: Vec::new(),
@@ -335,7 +320,7 @@ mod tests {
 
     #[test]
     fn fail_on_max_protocol_version_smaller_than_min_protocol_version_with_bad_response() {
-        let response = schema::Endpoint {
+        let response = endpoint_manifest::Endpoint {
             min_protocol_version: 10,
             max_protocol_version: 9,
             services: Vec::new(),
@@ -351,7 +336,7 @@ mod tests {
     #[test]
     fn fail_with_unsupported_protocol_version() {
         let unsupported_version = i32::from(MAX_SERVICE_PROTOCOL_VERSION) + 1;
-        let response = schema::Endpoint {
+        let response = endpoint_manifest::Endpoint {
             min_protocol_version: unsupported_version as i64,
             max_protocol_version: unsupported_version as i64,
             services: Vec::new(),

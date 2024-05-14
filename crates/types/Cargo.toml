@@ -33,9 +33,12 @@ http = { workspace = true }
 humantime = { workspace = true }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
+prost = { workspace = true }
 rand = { workspace = true }
+regress = { version = "0.9" }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true }
@@ -65,3 +68,12 @@ googletest = { workspace = true }
 rand = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[build-dependencies]
+prost-build = { workspace = true }
+prettyplease = "0.2"
+schemars = { workspace = true }
+serde_json = { workspace = true }
+syn = "2.0"
+typify = { version = "0.0.16" }
+jsonptr = "0.4.7"

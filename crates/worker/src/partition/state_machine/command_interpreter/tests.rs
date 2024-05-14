@@ -18,7 +18,6 @@ use prost::Message;
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_service_protocol::pb::protocol::SleepEntryMessage;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::invocation_status_table::{JournalMetadata, StatusTimestamps};
@@ -31,6 +30,7 @@ use restate_types::identifiers::{InvocationUuid, WithPartitionKey};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryResult;
 use restate_types::journal::{CompleteAwakeableEntry, Entry};
+use restate_types::service_protocol;
 use std::collections::HashMap;
 use test_log::test;
 
@@ -736,7 +736,7 @@ fn create_termination_journal(
             EnrichedEntryHeader::Sleep {
                 is_completed: false,
             },
-            SleepEntryMessage {
+            service_protocol::SleepEntryMessage {
                 wake_up_time: 1337,
                 result: None,
                 ..Default::default()

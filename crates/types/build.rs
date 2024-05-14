@@ -72,6 +72,6 @@ fn main() -> std::io::Result<()> {
     );
 
     let mut out_file = Path::new(&env::var("OUT_DIR").unwrap()).to_path_buf();
-    out_file.push("deployment.rs");
+    out_file.push("endpoint_manifest.rs");
     std::fs::write(out_file, contents)
 }

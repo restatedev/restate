@@ -11,11 +11,8 @@
 //! Module containing definitions of Protocol messages,
 //! including encoding and decoding of headers and message payloads.
 
-use super::pb;
-
 use bytes::Bytes;
 use prost::Message;
-use restate_types::errors::InvocationError;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::{Completion, EntryIndex};
@@ -25,16 +22,17 @@ mod header;
 
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::{MessageHeader, MessageKind, MessageType};
+use restate_types::service_protocol;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolMessage {
     // Core
-    Start(pb::protocol::StartMessage),
-    Completion(pb::protocol::CompletionMessage),
-    Suspension(pb::protocol::SuspensionMessage),
-    Error(pb::protocol::ErrorMessage),
-    End(pb::protocol::EndMessage),
-    EntryAck(pb::protocol::EntryAckMessage),
+    Start(service_protocol::StartMessage),
+    Completion(service_protocol::CompletionMessage),
+    Suspension(service_protocol::SuspensionMessage),
+    Error(service_protocol::ErrorMessage),
+    End(service_protocol::EndMessage),
+    EntryAck(service_protocol::EntryAckMessage),
 
     // Entries are not parsed at this point
     UnparsedEntry(PlainRawEntry),
@@ -49,14 +47,14 @@ impl ProtocolMessage {
         partial_state: bool,
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
     ) -> Self {
-        Self::Start(pb::protocol::StartMessage {
+        Self::Start(service_protocol::StartMessage {
             id,
             debug_id,
             known_entries,
             partial_state,
             state_map: state_map_entries
                 .into_iter()
-                .map(|(key, value)| pb::protocol::start_message::StateEntry { key, value })
+                .map(|(key, value)| service_protocol::start_message::StateEntry { key, value })
                 .collect(),
             key: key
                 .and_then(|b| String::from_utf8(b.to_vec()).ok())
@@ -65,7 +63,7 @@ impl ProtocolMessage {
     }
 
     pub fn new_entry_ack(entry_index: EntryIndex) -> ProtocolMessage {
-        Self::EntryAck(pb::protocol::EntryAckMessage { entry_index })
+        Self::EntryAck(service_protocol::EntryAckMessage { entry_index })
     }
 
     pub(crate) fn encoded_len(&self) -> usize {
@@ -85,24 +83,24 @@ impl From<Completion> for ProtocolMessage {
     fn from(completion: Completion) -> Self {
         match completion.result {
             CompletionResult::Empty => {
-                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                ProtocolMessage::Completion(service_protocol::CompletionMessage {
                     entry_index: completion.entry_index,
-                    result: Some(pb::protocol::completion_message::Result::Empty(
-                        pb::protocol::Empty {},
+                    result: Some(service_protocol::completion_message::Result::Empty(
+                        service_protocol::Empty {},
                     )),
                 })
             }
             CompletionResult::Success(b) => {
-                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                ProtocolMessage::Completion(service_protocol::CompletionMessage {
                     entry_index: completion.entry_index,
-                    result: Some(pb::protocol::completion_message::Result::Value(b)),
+                    result: Some(service_protocol::completion_message::Result::Value(b)),
                 })
             }
             CompletionResult::Failure(code, message) => {
-                ProtocolMessage::Completion(pb::protocol::CompletionMessage {
+                ProtocolMessage::Completion(service_protocol::CompletionMessage {
                     entry_index: completion.entry_index,
-                    result: Some(pb::protocol::completion_message::Result::Failure(
-                        pb::protocol::Failure {
+                    result: Some(service_protocol::completion_message::Result::Failure(
+                        service_protocol::Failure {
                             code: code.into(),
                             message: message.to_string(),
                         },
@@ -116,15 +114,5 @@ impl From<Completion> for ProtocolMessage {
 impl From<PlainRawEntry> for ProtocolMessage {
     fn from(value: PlainRawEntry) -> Self {
         Self::UnparsedEntry(value)
-    }
-}
-
-impl From<pb::protocol::ErrorMessage> for InvocationError {
-    fn from(value: pb::protocol::ErrorMessage) -> Self {
-        if value.description.is_empty() {
-            InvocationError::new(value.code, value.message)
-        } else {
-            InvocationError::new(value.code, value.message).with_description(value.description)
-        }
     }
 }

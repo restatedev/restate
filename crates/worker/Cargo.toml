@@ -38,7 +38,7 @@ restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = [ "service", "subscription"] }
 restate-serde-util = { workspace = true, features = ["proto"] }
 restate-service-client = { workspace = true }
-restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-id", "protocol", "message" ] }
+restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-id", "message" ] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-storage-query-postgres = { workspace = true }

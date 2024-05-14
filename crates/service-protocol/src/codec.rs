@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::pb::protocol;
-
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use restate_types::invocation::Header;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::*;
 use restate_types::journal::{CompletionResult, Entry, EntryType};
+use restate_types::service_protocol;
 use std::fmt::Debug;
 use std::mem;
 
@@ -27,7 +26,7 @@ macro_rules! match_decode {
     ($ty:expr, $buf:expr, { $($variant:ident),* }) => {
         match $ty {
               $(EntryType::$variant { .. } => paste::paste! {
-                  protocol::[<$variant EntryMessage>]::decode($buf)
+                  service_protocol::[<$variant EntryMessage>]::decode($buf)
                     .map_err(|e| RawEntryCodecError::new($ty.clone(), ErrorKind::Decode { source: Some(e.into()) }))
                     .and_then(|msg| msg.try_into().map_err(|f| RawEntryCodecError::new($ty.clone(), ErrorKind::MissingField(f))))
               },)*
@@ -50,10 +49,10 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     fn serialize_as_input_entry(headers: Vec<Header>, value: Bytes) -> EnrichedRawEntry {
         RawEntry::new(
             EnrichedEntryHeader::Input {},
-            protocol::InputEntryMessage {
+            service_protocol::InputEntryMessage {
                 headers: headers
                     .into_iter()
-                    .map(|h| protocol::Header {
+                    .map(|h| service_protocol::Header {
                         key: h.name.to_string(),
                         value: h.value.to_string(),
                     })
@@ -68,7 +67,7 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
 
     fn serialize_get_state_keys_completion(keys: Vec<Bytes>) -> CompletionResult {
         CompletionResult::Success(
-            protocol::get_state_keys_entry_message::StateKeys { keys }
+            service_protocol::get_state_keys_entry_message::StateKeys { keys }
                 .encode_to_vec()
                 .into(),
         )
@@ -127,11 +126,11 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
         // Prepare the result to serialize in protobuf
         let completion_result_message = match completion_result {
             CompletionResult::Empty => {
-                protocol::completion_message::Result::Empty(protocol::Empty {})
+                service_protocol::completion_message::Result::Empty(service_protocol::Empty {})
             }
-            CompletionResult::Success(b) => protocol::completion_message::Result::Value(b),
+            CompletionResult::Success(b) => service_protocol::completion_message::Result::Value(b),
             CompletionResult::Failure(code, message) => {
-                protocol::completion_message::Result::Failure(protocol::Failure {
+                service_protocol::completion_message::Result::Failure(service_protocol::Failure {
                     code: code.into(),
                     message: message.to_string(),
                 })
@@ -166,13 +165,6 @@ mod mocks {
     use super::*;
 
     use crate::awakeable_id::AwakeableIdentifier;
-    use crate::pb::protocol::{
-        awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
-        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
-        AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
-        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, GetStateKeysEntryMessage,
-        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
-    };
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::journal::enriched::{
@@ -181,6 +173,13 @@ mod mocks {
     use restate_types::journal::{
         AwakeableEntry, CompletableEntry, CompleteAwakeableEntry, EntryResult, GetStateKeysEntry,
         GetStateKeysResult, GetStateResult, InputEntry, OutputEntry,
+    };
+    use restate_types::service_protocol::{
+        awakeable_entry_message, call_entry_message, complete_awakeable_entry_message,
+        get_state_entry_message, get_state_keys_entry_message, output_entry_message,
+        AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+        CompleteAwakeableEntryMessage, Failure, GetStateEntryMessage, GetStateKeysEntryMessage,
+        InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
     };
 
     impl ProtobufRawEntryCodec {
@@ -221,7 +220,7 @@ mod mocks {
                         key: entry.key,
                         result: entry.value.map(|value| match value {
                             GetStateResult::Empty => {
-                                get_state_entry_message::Result::Empty(protocol::Empty {})
+                                get_state_entry_message::Result::Empty(service_protocol::Empty {})
                             }
                             GetStateResult::Result(v) => get_state_entry_message::Result::Value(v),
                             GetStateResult::Failure(code, reason) => {
@@ -451,12 +450,12 @@ mod tests {
                 is_completed: false,
                 enrichment_result: None,
             },
-            protocol::CallEntryMessage {
+            service_protocol::CallEntryMessage {
                 service_name: "MySvc".to_string(),
                 handler_name: "MyMethod".to_string(),
 
                 parameter: Bytes::from_static(b"input"),
-                ..protocol::CallEntryMessage::default()
+                ..service_protocol::CallEntryMessage::default()
             }
             .encode_to_vec()
             .into(),

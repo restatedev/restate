@@ -24,7 +24,7 @@ use restate_schema_api::invocation_target::{
 use restate_schema_api::subscription::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
 };
-use restate_service_protocol::discovery::schema;
+use restate_types::endpoint_manifest;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
@@ -65,7 +65,7 @@ impl SchemaUpdater {
         &mut self,
         requested_deployment_id: Option<DeploymentId>,
         deployment_metadata: DeploymentMetadata,
-        services: Vec<schema::Service>,
+        services: Vec<endpoint_manifest::Service>,
         force: bool,
     ) -> Result<DeploymentId, SchemaError> {
         let deployment_id: Option<DeploymentId>;
@@ -450,16 +450,16 @@ struct DiscoveredHandlerMetadata {
 impl DiscoveredHandlerMetadata {
     fn from_schema(
         service_type: ServiceType,
-        handler: schema::Handler,
+        handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
         let ty = match (service_type, handler.ty) {
-            (ServiceType::Service, None | Some(schema::HandlerType::Shared)) => {
+            (ServiceType::Service, None | Some(endpoint_manifest::HandlerType::Shared)) => {
                 InvocationTargetType::Service
             }
-            (ServiceType::VirtualObject, None | Some(schema::HandlerType::Exclusive)) => {
+            (ServiceType::VirtualObject, None | Some(endpoint_manifest::HandlerType::Exclusive)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             }
-            (ServiceType::VirtualObject, Some(schema::HandlerType::Shared)) => {
+            (ServiceType::VirtualObject, Some(endpoint_manifest::HandlerType::Shared)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
             (ServiceType::Workflow, None | Some(schema::HandlerType::Shared)) => {
@@ -494,7 +494,7 @@ impl DiscoveredHandlerMetadata {
 
     fn input_rules_from_schema(
         handler_name: &str,
-        schema: schema::InputPayload,
+        schema: endpoint_manifest::InputPayload,
     ) -> Result<InputRules, ServiceError> {
         let required = schema.required.unwrap_or(false);
 
@@ -527,7 +527,7 @@ impl DiscoveredHandlerMetadata {
     }
 
     fn output_rules_from_schema(
-        schema: schema::OutputPayload,
+        schema: endpoint_manifest::OutputPayload,
     ) -> Result<OutputRules, ServiceError> {
         Ok(if let Some(ct) = schema.content_type {
             OutputRules {
@@ -589,11 +589,11 @@ mod tests {
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
     const ANOTHER_GREETER_SERVICE_NAME: &str = "greeter.AnotherGreeter";
 
-    fn greeter_service() -> schema::Service {
-        schema::Service {
-            ty: schema::ServiceType::Service,
+    fn greeter_service() -> endpoint_manifest::Service {
+        endpoint_manifest::Service {
+            ty: endpoint_manifest::ServiceType::Service,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
-            handlers: vec![schema::Handler {
+            handlers: vec![endpoint_manifest::Handler {
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
@@ -602,11 +602,11 @@ mod tests {
         }
     }
 
-    fn greeter_virtual_object() -> schema::Service {
-        schema::Service {
-            ty: schema::ServiceType::VirtualObject,
+    fn greeter_virtual_object() -> endpoint_manifest::Service {
+        endpoint_manifest::Service {
+            ty: endpoint_manifest::ServiceType::VirtualObject,
             name: GREETER_SERVICE_NAME.parse().unwrap(),
-            handlers: vec![schema::Handler {
+            handlers: vec![endpoint_manifest::Handler {
                 name: "greet".parse().unwrap(),
                 ty: None,
                 input: None,
@@ -615,11 +615,11 @@ mod tests {
         }
     }
 
-    fn another_greeter_service() -> schema::Service {
-        schema::Service {
-            ty: schema::ServiceType::Service,
+    fn another_greeter_service() -> endpoint_manifest::Service {
+        endpoint_manifest::Service {
+            ty: endpoint_manifest::ServiceType::Service,
             name: ANOTHER_GREETER_SERVICE_NAME.parse().unwrap(),
-            handlers: vec![schema::Handler {
+            handlers: vec![endpoint_manifest::Handler {
                 name: "another_greeter".parse().unwrap(),
                 ty: None,
                 input: None,
@@ -918,18 +918,18 @@ mod tests {
         use restate_test_util::{check, let_assert};
         use test_log::test;
 
-        fn greeter_v1_service() -> schema::Service {
-            schema::Service {
-                ty: schema::ServiceType::Service,
+        fn greeter_v1_service() -> endpoint_manifest::Service {
+            endpoint_manifest::Service {
+                ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
                 handlers: vec![
-                    schema::Handler {
+                    endpoint_manifest::Handler {
                         name: "greet".parse().unwrap(),
                         ty: None,
                         input: None,
                         output: None,
                     },
-                    schema::Handler {
+                    endpoint_manifest::Handler {
                         name: "doSomething".parse().unwrap(),
                         ty: None,
                         input: None,
@@ -939,11 +939,11 @@ mod tests {
             }
         }
 
-        fn greeter_v2_service() -> schema::Service {
-            schema::Service {
-                ty: schema::ServiceType::Service,
+        fn greeter_v2_service() -> endpoint_manifest::Service {
+            endpoint_manifest::Service {
+                ty: endpoint_manifest::ServiceType::Service,
                 name: GREETER_SERVICE_NAME.parse().unwrap(),
-                handlers: vec![schema::Handler {
+                handlers: vec![endpoint_manifest::Handler {
                     name: "greet".parse().unwrap(),
                     ty: None,
                     input: None,
