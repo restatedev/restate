@@ -87,6 +87,7 @@ pub async fn modify_service<V>(
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
         idempotency_retention,
+        workflow_completion_retention,
     }): Json<ModifyServiceRequest>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     let mut modify_request = vec![];
@@ -96,6 +97,11 @@ pub async fn modify_service<V>(
     if let Some(new_idempotency_retention) = idempotency_retention {
         modify_request.push(ModifyServiceChange::IdempotencyRetention(
             new_idempotency_retention.into(),
+        ));
+    }
+    if let Some(new_workflow_completion_retention) = workflow_completion_retention {
+        modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
+            new_workflow_completion_retention.into(),
         ));
     }
 

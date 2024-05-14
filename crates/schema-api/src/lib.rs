@@ -333,6 +333,19 @@ pub mod service {
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         pub idempotency_retention: humantime::Duration,
+
+        /// # Workflow completion retention
+        ///
+        /// The retention duration of workflows. Only available on workflow services.
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+                skip_serializing_if = "Option::is_none"
+            )
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        pub workflow_completion_retention: Option<humantime::Duration>,
     }
 
     // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
@@ -448,6 +461,7 @@ pub mod service {
                     revision: 0,
                     public: true,
                     idempotency_retention: std::time::Duration::from_secs(60).into(),
+                    workflow_completion_retention: None,
                 }
             }
 
@@ -471,6 +485,7 @@ pub mod service {
                     revision: 0,
                     public: true,
                     idempotency_retention: std::time::Duration::from_secs(60).into(),
+                    workflow_completion_retention: None,
                 }
             }
         }

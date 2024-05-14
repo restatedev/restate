@@ -27,6 +27,7 @@ pub struct ServiceSchemas {
     pub ty: ServiceType,
     pub location: ServiceLocation,
     pub idempotency_retention: Duration,
+    pub workflow_completion_retention: Option<Duration>,
 }
 
 impl ServiceSchemas {
@@ -48,6 +49,7 @@ impl ServiceSchemas {
             revision: self.revision,
             public: self.location.public,
             idempotency_retention: self.idempotency_retention.into(),
+            workflow_completion_retention: self.workflow_completion_retention.map(Into::into),
         }
     }
 }

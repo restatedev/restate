@@ -65,6 +65,7 @@ impl ApplyMode {
 pub enum ModifyServiceChange {
     Public(bool),
     IdempotencyRetention(Duration),
+    WorkflowCompletionRetention(Duration),
 }
 
 /// Responsible for updating the registered schema information. This includes the discovery of
@@ -213,7 +214,7 @@ impl<V> SchemaRegistry<V> {
                         .is_some()
                     {
                         let mut updater = SchemaUpdater::from(schema_information);
-                        updater.modify_service(service_name.clone(), changes.clone());
+                        updater.modify_service(service_name.clone(), changes.clone())?;
                         Ok(updater.into_inner())
                     } else {
                         Err(SchemaError::NotFound(format!(

@@ -19,7 +19,7 @@ use restate_schema::Schema;
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
-    DEFAULT_IDEMPOTENCY_RETENTION,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
 };
 use restate_schema_api::subscription::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
@@ -202,6 +202,11 @@ impl SchemaUpdater {
                         public: true,
                     },
                     idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                    workflow_completion_retention: if service_type == ServiceType::Workflow {
+                        Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                    } else {
+                        None
+                    },
                 }
             };
 
@@ -386,7 +391,11 @@ impl SchemaUpdater {
         }
     }
 
-    pub fn modify_service(&mut self, name: String, changes: Vec<ModifyServiceChange>) {
+    pub fn modify_service(
+        &mut self,
+        name: String,
+        changes: Vec<ModifyServiceChange>,
+    ) -> Result<(), SchemaError> {
         if let Some(schemas) = self.schema_information.services.get_mut(&name) {
             for command in changes {
                 match command {
@@ -402,11 +411,31 @@ impl SchemaUpdater {
                             h.target_meta.idempotency_retention = new_idempotency_retention;
                         }
                     }
+                    ModifyServiceChange::WorkflowCompletionRetention(
+                        new_workflow_completion_retention,
+                    ) => {
+                        if schemas.ty != ServiceType::Workflow {
+                            return Err(SchemaError::Service(
+                                ServiceError::CannotModifyRetentionTime(schemas.ty),
+                            ));
+                        }
+                        schemas.workflow_completion_retention =
+                            Some(new_workflow_completion_retention);
+                        for h in schemas.handlers.values_mut().filter(|w| {
+                            w.target_meta.target_ty
+                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        }) {
+                            h.target_meta.completion_retention =
+                                Some(new_workflow_completion_retention);
+                        }
+                    }
                 }
             }
         }
 
         self.modified = true;
+
+        Ok(())
     }
 }
 
@@ -522,6 +551,13 @@ impl DiscoveredHandlerMetadata {
                         target_meta: InvocationTargetMetadata {
                             public: true,
                             idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                            completion_retention: if handler.ty
+                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                            {
+                                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                            } else {
+                                None
+                            },
                             target_ty: handler.ty,
                             input_rules: handler.input,
                             output_rules: handler.output,
@@ -676,7 +712,7 @@ mod tests {
         updater.modify_service(
             GREETER_SERVICE_NAME.to_owned(),
             vec![ModifyServiceChange::Public(false)],
-        );
+        )?;
         let schemas = updater.into_inner();
 
         assert!(version_before_modification < schemas.version());
