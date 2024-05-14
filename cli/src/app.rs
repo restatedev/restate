@@ -15,7 +15,7 @@ use figment::Profile;
 use tracing::info;
 use tracing_log::AsTrace;
 
-use crate::cli_env::CliEnv;
+use crate::cli_env::{CliEnv, EnvironmentSource};
 use crate::commands::*;
 
 #[derive(Run, Parser, Clone)]
@@ -66,8 +66,12 @@ pub struct GlobalOpts {
     #[clap(flatten)]
     pub ui_config: UiConfig,
 
-    /// Environment to select from the config file
-    #[arg(long, short, global = true)]
+    /// Environment to select from the config file. Environment is read from these sources in order of precedence:
+    ///
+    /// 1. This command line argument
+    /// 2. $RESTATE_ENVIRONMENT
+    /// 3. The file $RESTATE_CLI_CONFIG_HOME/environment (default: $HOME/.config/restate/environment)
+    #[arg(long, short, global = true, verbatim_doc_comment)]
     pub environment: Option<Profile>,
 }
 
@@ -116,11 +120,26 @@ fn init(
         .with_ansi(env.colorful)
         .init();
 
+    match &env.environment_source {
+        EnvironmentSource::Argument => {
+            info!("Using environment from --environment")
+        }
+        EnvironmentSource::Environment => {
+            info!("Using environment from $RESTATE_ENVIRONMENT")
+        }
+        EnvironmentSource::File => {
+            info!("Using environment from {}", env.environment_file.display())
+        }
+        EnvironmentSource::None => {
+            info!("Didn't load an environment")
+        }
+    }
+
     // We only log after we've initialized the logger with the desired log
     // level.
     match &env.loaded_env_file {
         Some(path) => {
-            info!("Loaded environment file from: {}", path.display())
+            info!("Loaded .env file from: {}", path.display())
         }
         None => info!("Didn't load '.env' file"),
     };
