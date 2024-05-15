@@ -11,6 +11,7 @@
 mod environments;
 mod login;
 
+use base64::Engine;
 use cling::prelude::*;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -35,8 +36,7 @@ pub struct EnvironmentInfo {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {
-    pub access_token: String,
-    pub access_token_expiry: u64, // unix seconds
+    access_token: String,
 }
 
 impl Default for CloudConfig {
@@ -54,6 +54,45 @@ impl Default for CloudConfig {
             credentials: None,
         }
     }
+}
+
+impl Credentials {
+    pub fn expiry(&self) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+        let claims = match self.access_token.split('.').nth(1).and_then(
+            |claims: &str| -> Option<TokenClaims> {
+                base64::prelude::BASE64_URL_SAFE_NO_PAD
+                    .decode(claims)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            },
+        ) {
+            Some(claims) => claims,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Restate Cloud credentials are invalid; first run `restate cloud login`"
+                ))
+            }
+        };
+
+        chrono::DateTime::from_timestamp(claims.exp, 0).ok_or(anyhow::anyhow!(
+            "Restate Cloud credentials are invalid; first run `restate cloud login`"
+        ))
+    }
+
+    pub fn access_token(&self) -> anyhow::Result<&str> {
+        if self.expiry()? > chrono::Local::now() {
+            Ok(&self.access_token)
+        } else {
+            Err(anyhow::anyhow!(
+                "Restate Cloud credentials have expired; first run `restate cloud login`"
+            ))
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct TokenClaims {
+    exp: i64,
 }
 
 #[derive(Run, Subcommand, Clone)]

@@ -64,24 +64,12 @@ impl DataFusionHttpClient {
             .build()?;
 
         let base_url = env.admin_base_url()?.clone();
-        let bearer_token = env.config.bearer_token.as_ref();
-
-        #[cfg(feature = "cloud")]
-        let bearer_token = if env.config.cloud.environment_info.is_some() {
-            bearer_token.or(env
-                .config
-                .cloud
-                .credentials
-                .as_ref()
-                .map(|c| &c.access_token))
-        } else {
-            bearer_token
-        };
+        let bearer_token = env.bearer_token()?.map(str::to_string);
 
         Ok(Self {
             inner: raw_client,
             base_url,
-            bearer_token: bearer_token.cloned(),
+            bearer_token,
             request_timeout: env.request_timeout,
         })
     }

@@ -14,8 +14,9 @@ use figment::Profile;
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
-use crate::cli_env::CliEnv;
+use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::MetaClientInterface;
+use crate::ui::duration_to_human_rough;
 use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
@@ -125,30 +126,51 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);
     c_println!("{}", table);
 
-    #[cfg(feature = "cloud")]
-    if let Some(environment_info) = &env.config.cloud.environment_info {
-        c_println!();
-        c_println!("Cloud");
-        let mut table = Table::new();
+    match env.config.environment_type {
+        EnvironmentType::Default => {}
+        #[cfg(feature = "cloud")]
+        EnvironmentType::Cloud => {
+            c_println!();
+            c_println!("Cloud");
+            let mut table = Table::new();
 
-        table.load_preset(comfy_table::presets::NOTHING);
-        table.add_row(vec!["Account ID", &environment_info.account_id]);
-        table.add_row(vec!["Environment ID", &environment_info.environment_id]);
-        if let Some(credentials) = &env.config.cloud.credentials {
-            if credentials.access_token_expiry
-                > std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            {
-                table.add_row(vec!["Logged in?", "true"]);
+            let (account_id, environment_id) = match &env.config.cloud.environment_info {
+                Some(environment_info) => (
+                    environment_info.account_id.as_str(),
+                    environment_info.environment_id.as_str(),
+                ),
+                None => ("(NONE)", "(NONE)"),
+            };
+
+            table.load_preset(comfy_table::presets::NOTHING);
+            table.add_row(vec!["Account ID", account_id]);
+            table.add_row(vec!["Environment ID", environment_id]);
+
+            if let Some(credentials) = &env.config.cloud.credentials {
+                match credentials.expiry() {
+                    Ok(expiry) => {
+                        let delta = expiry.signed_duration_since(chrono::Utc::now());
+                        if delta > chrono::TimeDelta::zero() {
+                            let left =
+                                duration_to_human_rough(delta, chrono_humanize::Tense::Present);
+                            table.add_row(vec![
+                                "Logged in?",
+                                &format!("true (expires in {})", left),
+                            ]);
+                        } else {
+                            table.add_row(vec!["Logged in?", "false (token expired)"]);
+                        }
+                    }
+                    Err(_) => {
+                        table.add_row(vec!["Logged in?", "false (invalid token)"]);
+                    }
+                }
             } else {
-                table.add_row(vec!["Logged in?", "false (token expired)"]);
+                table.add_row(vec!["Logged in?", "false (no token)"]);
             }
-        } else {
-            table.add_row(vec!["Logged in?", "false (no token)"]);
+
+            c_println!("{}", table);
         }
-        c_println!("{}", table);
     }
 
     c_println!();

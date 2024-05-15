@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use crate::{build_info, c_println, c_success, cli_env::CliEnv};
 use anyhow::{anyhow, Context, Result};
 use axum::extract::{self};
-use base64::Engine;
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
@@ -39,11 +38,6 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
     );
 
     Ok(())
-}
-
-#[derive(Serialize, Deserialize)]
-struct TokenClaims {
-    exp: i64,
 }
 
 async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
@@ -224,25 +218,8 @@ async fn handle_redirect(state: &RedirectState, params: RedirectParams) -> Resul
 }
 
 fn write_access_token(doc: &mut DocumentMut, access_token: &str) -> Result<()> {
-    let claims = match access_token
-        .split('.')
-        .nth(1)
-        .map(|claims: &str| -> Result<TokenClaims> {
-            Ok(serde_json::from_slice(
-                &base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(claims)?,
-            )?)
-        }) {
-        Some(Ok(claims)) => claims,
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Invalid access token; could not parse expiry"
-            ))
-        }
-    };
-
     let cloud = doc["global"].or_insert(table())["cloud"].or_insert(table());
     cloud["access_token"] = value(access_token);
-    cloud["access_token_expiry"] = value(claims.exp);
 
     Ok(())
 }

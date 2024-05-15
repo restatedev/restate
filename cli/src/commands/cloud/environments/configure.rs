@@ -171,6 +171,7 @@ fn write_environment(
     profile: &str,
 ) -> Result<()> {
     let profile_block = doc[profile].or_insert(table());
+    profile_block["environment_type"] = value("cloud");
     profile_block["ingress_base_url"] = value(&environment.ingress_base_url);
     profile_block["admin_base_url"] = value(&environment.admin_base_url);
 

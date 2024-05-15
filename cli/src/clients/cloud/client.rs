@@ -93,21 +93,10 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 impl CloudClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let access_token = if let Some(credentials) = &env.config.cloud.credentials {
-            if credentials.access_token_expiry
-                < std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            {
-                return Err(anyhow::anyhow!(
-                    "Restate Cloud credentials have expired; first run restate cloud login"
-                ));
-            }
-
-            &credentials.access_token
+            credentials.access_token()?.to_string()
         } else {
             return Err(anyhow::anyhow!(
-                "Missing Restate Cloud credentials; first run restate cloud login"
+                "Restate Cloud credentials have not been provided; first run `restate cloud login`"
             ));
         };
 
@@ -125,7 +114,7 @@ impl CloudClient {
         Ok(Self {
             inner: raw_client,
             base_url: env.config.cloud.api_base_url.clone(),
-            access_token: access_token.clone(),
+            access_token,
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }

@@ -48,6 +48,8 @@ pub const EDITOR_ENV: &str = "RESTATE_EDITOR";
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
+    pub environment_type: EnvironmentType,
+
     pub ingress_base_url: Option<Url>,
     pub admin_base_url: Option<Url>,
     pub bearer_token: Option<String>,
@@ -61,6 +63,8 @@ pub const LOCAL_PROFILE: Profile = Profile::const_new("local");
 impl CliConfig {
     pub fn local() -> Self {
         Self {
+            environment_type: EnvironmentType::Default,
+
             ingress_base_url: Some(Url::parse("http://localhost:8080/").unwrap()),
             admin_base_url: Some(Url::parse("http://localhost:9070/").unwrap()),
             bearer_token: None,
@@ -69,6 +73,15 @@ impl CliConfig {
             cloud: crate::commands::cloud::CloudConfig::default(),
         }
     }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentType {
+    #[default]
+    Default,
+    #[cfg(feature = "cloud")]
+    Cloud,
 }
 
 #[derive(Clone)]
@@ -311,6 +324,25 @@ impl CliEnv {
         match self.config.admin_base_url.as_ref() {
             Some(admin_base_url) => Ok(admin_base_url),
             None => Err(anyhow!("No Restate admin endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+        }
+    }
+
+    pub fn bearer_token(&self) -> Result<Option<&str>> {
+        match self.config.environment_type {
+            EnvironmentType::Default => Ok(self.config.bearer_token.as_deref()),
+            #[cfg(feature = "cloud")]
+            EnvironmentType::Cloud => {
+                // first check for manual overrides for this environment / env vars
+                if let Some(bearer_token) = &self.config.bearer_token {
+                    return Ok(Some(bearer_token));
+                }
+                if let Some(cloud_credentials) = &self.config.cloud.credentials {
+                    return Ok(Some(cloud_credentials.access_token()?));
+                }
+                Err(anyhow::anyhow!(
+                    "Restate Cloud credentials have not been provided; first run `restate cloud login`"
+                ))
+            }
         }
     }
 }
