@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod edit;
 mod list_environments;
 mod use_environment;
+mod view;
 
 use cling::prelude::*;
 
@@ -19,4 +21,8 @@ pub enum Config {
     ListEnvironments(list_environments::ListEnvironments),
     /// Set the current environment in $RESTATE_CONFIG_HOME/environment
     UseEnvironment(use_environment::UseEnvironment),
+    /// Dump the current content of the CLI config file
+    View(view::View),
+    /// Edit the CLI config file
+    Edit(edit::Edit),
 }
