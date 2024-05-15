@@ -1,8 +1,15 @@
-use crate::{c_println, cli_env::CliEnv, console::StyledTable};
-use anyhow::{Context, Result};
+use crate::{
+    c_println,
+    cli_env::{CliConfig, CliEnv},
+    console::StyledTable,
+};
+use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use toml_edit::DocumentMut;
+use figment::{
+    providers::{Format, Serialized, Toml},
+    Figment, Profile,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list_environments")]
@@ -12,40 +19,39 @@ pub async fn run_list_environments(
     State(env): State<CliEnv>,
     _opts: &ListEnvironments,
 ) -> Result<()> {
-    let config_data = if env.config_file.is_file() {
-        std::fs::read_to_string(env.config_file.as_path())?
-    } else {
-        "".into()
-    };
+    let defaults = CliConfig::default();
 
-    let doc = config_data
-        .parse::<DocumentMut>()
-        .context("Failed to parse config file as TOML")?;
+    let mut figment = Figment::from(Serialized::defaults(defaults));
+
+    // Load configuration file
+    if env.config_file.is_file() {
+        figment = figment.merge(Toml::file_exact(env.config_file).nested());
+    }
 
     let mut table = Table::new_styled(&env.ui_config);
-    let header = vec!["CURRENT", "NAME", "ADMIN_URL"];
+    let header = vec!["CURRENT", "NAME", "ADMIN_BASE_URL"];
     table.set_styled_header(header);
 
-    for (environment_name, config) in doc.iter() {
-        if environment_name == "global" {
+    for profile in figment.profiles() {
+        if profile == Profile::Global {
             continue;
         }
 
-        let admin_url = config
-            .get("admin_base_url")
-            .and_then(|u| u.as_str())
-            .unwrap_or("N/A");
+        let figment = figment.clone().select(profile.clone());
 
-        let current = if environment_name == env.environment.as_str() {
-            "*"
-        } else {
-            ""
-        };
+        let admin_base_url = figment.find_value("admin_base_url").ok();
+
+        let current = if profile == env.environment { "*" } else { "" };
 
         let row = vec![
             Cell::new(current),
-            Cell::new(environment_name),
-            Cell::new(admin_url),
+            Cell::new(profile.as_str()),
+            Cell::new(
+                admin_base_url
+                    .as_ref()
+                    .and_then(|u| u.as_str())
+                    .unwrap_or(""),
+            ),
         ];
 
         table.add_row(row);
