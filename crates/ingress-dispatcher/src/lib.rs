@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use restate_core::metadata;
 use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{
     partitioner, IdempotencyId, InvocationId, PartitionKey, WithPartitionKey,
 };
 use restate_types::invocation::{
-    HandlerType, Idempotency, InvocationResponse, InvocationTarget, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
+    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use std::fmt::Display;
@@ -102,7 +103,7 @@ impl IngressDispatcherRequest {
         let correlation_id = ingress_correlation_id(
             &service_invocation.invocation_id,
             &service_invocation.invocation_target,
-            service_invocation.idempotency.as_ref(),
+            service_invocation.idempotency_key.as_ref(),
         );
 
         let my_node_id = metadata().my_node_id();
@@ -168,7 +169,15 @@ impl IngressDispatcherRequest {
                             .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
                             .to_owned(),
                         &**handler,
-                        HandlerType::Exclusive,
+                        VirtualObjectHandlerType::Exclusive,
+                    ),
+                    EventReceiverServiceType::Workflow => InvocationTarget::workflow(
+                        &**name,
+                        std::str::from_utf8(&key)
+                            .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
+                            .to_owned(),
+                        &**handler,
+                        WorkflowHandlerType::Workflow,
                     ),
                     EventReceiverServiceType::Service => {
                         InvocationTarget::service(&**name, &**handler)
@@ -211,13 +220,13 @@ impl IngressDispatcherRequest {
 pub fn ingress_correlation_id(
     id: &InvocationId,
     invocation_target: &InvocationTarget,
-    idempotency: Option<&Idempotency>,
+    idempotency: Option<&ByteString>,
 ) -> IngressCorrelationId {
     if let Some(idempotency) = idempotency {
         IngressCorrelationId::IdempotencyId(IdempotencyId::combine(
             *id,
             invocation_target,
-            idempotency.key.clone(),
+            idempotency.clone(),
         ))
     } else {
         IngressCorrelationId::InvocationId(*id)

@@ -55,6 +55,10 @@ pub(crate) enum HandlerError {
         "cannot use the delay query parameter with calls. The delay is supported only with sends"
     )]
     UnsupportedDelay,
+    #[error(
+    "cannot use the idempotency key with workflow handlers. The handler invocation will already be idempotent by the workflow key itself."
+    )]
+    UnsupportedIdempotencyKey,
     #[error("bad awakeable id '{0}': {1}")]
     BadAwakeableId(String, IdDecodeError),
 }
@@ -89,7 +93,8 @@ impl HandlerError {
             | HandlerError::UnsupportedDelay
             | HandlerError::BadHeader(_, _)
             | HandlerError::BadAwakeableId(_, _)
-            | HandlerError::InputValidation(_) => StatusCode::BAD_REQUEST,
+            | HandlerError::InputValidation(_)
+            | HandlerError::UnsupportedIdempotencyKey => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,

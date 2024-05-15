@@ -13,7 +13,6 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
 
-use bytes::Bytes;
 use futures::Stream;
 use tokio_stream::StreamExt;
 
@@ -24,7 +23,7 @@ use restate_storage_api::StorageError;
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
-use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source, SpanRelation};
+use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::state_mut::ExternalStateMutation;
 
 mod idempotency_table_test;
@@ -75,7 +74,6 @@ async fn test_read_write() {
     // run the tests
     //
     inbox_table_test::run_tests(rocksdb.clone()).await;
-    journal_table_test::run_tests(rocksdb.clone()).await;
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
     invocation_status_table_test::run_tests(rocksdb.clone()).await;
@@ -85,17 +83,18 @@ async fn test_read_write() {
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocation {
     let invocation_target = InvocationTarget::mock_from_service_id(service_id);
-    ServiceInvocation::new(
-        InvocationId::generate(&invocation_target),
+    ServiceInvocation {
+        invocation_id: InvocationId::generate(&invocation_target),
         invocation_target,
-        Bytes::new(),
-        Source::Ingress,
-        None,
-        SpanRelation::None,
-        vec![],
-        None,
-        None,
-    )
+        argument: Default::default(),
+        source: Source::Ingress,
+        response_sink: None,
+        span_context: Default::default(),
+        headers: vec![],
+        execution_time: None,
+        completion_retention_time: None,
+        idempotency_key: None,
+    }
 }
 
 pub(crate) fn mock_random_service_invocation() -> ServiceInvocation {

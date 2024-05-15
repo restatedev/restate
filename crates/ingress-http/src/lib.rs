@@ -46,7 +46,7 @@ mod mocks {
     use restate_schema_api::service::mocks::MockServiceMetadataResolver;
     use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
     use restate_types::identifiers::DeploymentId;
-    use restate_types::invocation::{HandlerType, ServiceType};
+    use restate_types::invocation::{InvocationTargetType, ServiceType, VirtualObjectHandlerType};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,15 +76,16 @@ mod mocks {
                 name: service_name.to_string(),
                 handlers: vec![HandlerMetadata {
                     name: handler_name.to_string(),
-                    ty: invocation_target_metadata.handler_ty,
+                    ty: invocation_target_metadata.target_ty.into(),
                     input_description: "any".to_string(),
                     output_description: "any".to_string(),
                 }],
-                ty: invocation_target_metadata.service_ty,
+                ty: invocation_target_metadata.target_ty.into(),
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
                 idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION.into(),
+                workflow_completion_retention: None,
             });
             self.1
                 .add(service_name, [(handler_name, invocation_target_metadata)]);
@@ -135,12 +136,14 @@ mod mocks {
         mock_schemas.add_service_and_target(
             "greeter.Greeter",
             "greet",
-            InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared),
+            InvocationTargetMetadata::mock(InvocationTargetType::Service),
         );
         mock_schemas.add_service_and_target(
             "greeter.GreeterObject",
             "greet",
-            InvocationTargetMetadata::mock(ServiceType::VirtualObject, HandlerType::Exclusive),
+            InvocationTargetMetadata::mock(InvocationTargetType::VirtualObject(
+                VirtualObjectHandlerType::Exclusive,
+            )),
         );
 
         mock_schemas

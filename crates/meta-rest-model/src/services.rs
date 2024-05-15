@@ -33,6 +33,7 @@ pub struct ModifyServiceRequest {
     /// If false, the service can be invoked only from another Restate service.
     #[serde(default)]
     pub public: Option<bool>,
+
     /// # Idempotency retention
     ///
     /// Modify the retention of idempotent requests for this service.
@@ -41,6 +42,15 @@ pub struct ModifyServiceRequest {
     #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<humantime::Duration>,
+
+    /// # Workflow completion retention
+    ///
+    /// Modify the retention of the workflow completion. This can be modified only for workflow services!
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    pub workflow_completion_retention: Option<humantime::Duration>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

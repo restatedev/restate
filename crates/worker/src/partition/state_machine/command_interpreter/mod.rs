@@ -37,9 +37,9 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
-    HandlerType, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SpanRelationCause, TerminationFlavor,
+    InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
+    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
+    Source, SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -56,6 +56,7 @@ use restate_wal_protocol::Command;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::pin::pin;
@@ -223,27 +224,33 @@ where
         effects.set_parent_span_context(&service_invocation.span_context);
 
         // If an idempotency key is set, handle idempotency
-        if let Some(idempotency) = &service_invocation.idempotency {
-            let idempotency_id = IdempotencyId::combine(
-                service_invocation.invocation_id,
-                &service_invocation.invocation_target,
-                idempotency.key.clone(),
-            );
-            if self
-                .try_resolve_idempotent_request(
-                    effects,
-                    state,
-                    &idempotency_id,
-                    &service_invocation.invocation_id,
-                    service_invocation.response_sink.as_ref(),
-                )
-                .await?
+        if let Some(idempotency_key) = &service_invocation.idempotency_key {
+            if service_invocation.invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             {
-                // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
-                return Ok(());
+                warn!("The idempotency key for workflow methods is ignored!");
+            } else {
+                let idempotency_id = IdempotencyId::combine(
+                    service_invocation.invocation_id,
+                    &service_invocation.invocation_target,
+                    idempotency_key.clone(),
+                );
+                if self
+                    .try_resolve_idempotent_request(
+                        effects,
+                        state,
+                        &idempotency_id,
+                        &service_invocation.invocation_id,
+                        service_invocation.response_sink.as_ref(),
+                    )
+                    .await?
+                {
+                    // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
+                    return Ok(());
+                }
+                // Idempotent invocation needs to be processed for the first time, let's roll!
+                effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
             }
-            // Idempotent invocation needs to be processed for the first time, let's roll!
-            effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
         }
 
         // If an execution_time is set, we schedule the invocation to be processed later
@@ -258,7 +265,9 @@ where
         }
 
         // If it's exclusive, we need to acquire the exclusive lock
-        if service_invocation.invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+        if service_invocation.invocation_target.invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
             let keyed_service_id = service_invocation
                 .invocation_target
                 .as_keyed_service_id()
@@ -281,6 +290,47 @@ where
                         inbox_seq_number,
                     ),
                 );
+                return Ok(());
+            }
+        }
+
+        if service_invocation.invocation_target.invocation_target_ty()
+            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            let keyed_service_id = service_invocation
+                .invocation_target
+                .as_keyed_service_id()
+                .expect("When the handler type is Workflow, the invocation target must have a key");
+
+            let service_status = state.get_virtual_object_status(&keyed_service_id).await?;
+
+            // If locked, then we check the original invocation
+            if let VirtualObjectStatus::Locked(original_invocation_id) = service_status {
+                if let Some(response_sink) = service_invocation.response_sink {
+                    let invocation_status =
+                        state.get_invocation_status(&original_invocation_id).await?;
+
+                    match invocation_status {
+                        InvocationStatus::Completed(
+                            CompletedInvocation { response_result, .. }) => {
+                            self.send_response_to_sinks(
+                                effects,
+                                &service_invocation.invocation_id,
+                                None,
+                                iter::once(response_sink),
+                                response_result,
+                            );
+                        }
+                        InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
+                        is => effects.append_response_sink(
+                            original_invocation_id,
+                            is,
+                            response_sink
+                        )
+                    }
+                }
+
+                // TODO ADD ATTACH INVOCATION ID NOTIFICATION TO INGRESS!!!!!!
                 return Ok(());
             }
         }
@@ -600,8 +650,8 @@ where
         } = inboxed_invocation;
 
         // Reply back to callers with error, and publish end trace
-        let idempotency_id = inboxed_invocation.idempotency.map(|idempotency| {
-            IdempotencyId::combine(invocation_id, &invocation_target, idempotency.key)
+        let idempotency_id = inboxed_invocation.idempotency_key.map(|idempotency| {
+            IdempotencyId::combine(invocation_id, &invocation_target, idempotency)
         });
 
         self.send_response_to_sinks(
@@ -830,20 +880,36 @@ where
                 match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
                     InvocationStatus::Completed(CompletedInvocation {
                         invocation_target,
-                        idempotency_key: Some(idempotency_key),
+                        idempotency_key,
                         ..
                     }) => {
                         effects.free_invocation(invocation_id);
-                        // Also cleanup the associated idempotency key
-                        effects.delete_idempotency_id(IdempotencyId::combine(
-                            invocation_id,
-                            &invocation_target,
-                            idempotency_key,
-                        ));
-                    }
-                    InvocationStatus::Completed(_) => {
-                        // Just free the invocation
-                        effects.free_invocation(invocation_id);
+
+                        // Also cleanup the associated idempotency key if any
+                        if let Some(idempotency_key) = idempotency_key {
+                            effects.delete_idempotency_id(IdempotencyId::combine(
+                                invocation_id,
+                                &invocation_target,
+                                idempotency_key,
+                            ));
+                        }
+
+                        // For workflow, we should also clean up the service lock, associated state and promises.
+                        if invocation_target.invocation_target_ty()
+                            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        {
+                            let service_id = invocation_target
+                                .as_keyed_service_id()
+                                .expect("Workflow methods must have keyed service id");
+
+                            effects.unlock_service_id(service_id.clone());
+                            effects.clear_all_state(
+                                service_id.clone(),
+                                invocation_id,
+                                ServiceInvocationSpanContext::empty(),
+                            );
+                            // TODO CLEANUP PROMISES
+                        }
                     }
                     InvocationStatus::Free => {
                         // Nothing to do
@@ -1143,8 +1209,10 @@ where
     }
 
     fn try_pop_inbox(effects: &mut Effects, invocation_target: &InvocationTarget) {
-        // Inbox exists only for exclusive handler cases
-        if invocation_target.handler_ty() == Some(HandlerType::Exclusive) {
+        // Inbox exists only for virtual object exclusive handler cases
+        if invocation_target.invocation_target_ty()
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
             effects.pop_inbox(invocation_target.as_keyed_service_id().expect(
                 "When the handler type is Exclusive, the invocation target must have a key",
             ))
@@ -1312,7 +1380,7 @@ where
                     span_context,
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
-                    ..
+                    completion_retention_time,
                 }) = enrichment_result
                 {
                     let_assert!(
@@ -1320,18 +1388,25 @@ where
                             journal_entry.deserialize_entry_ref::<Codec>()?
                     );
 
-                    let service_invocation = Self::create_service_invocation(
-                        *callee_invocation_id,
-                        callee_invocation_target.clone(),
-                        request,
-                        Source::Service(
+                    let service_invocation = ServiceInvocation {
+                        invocation_id: *callee_invocation_id,
+                        invocation_target: callee_invocation_target.clone(),
+                        argument: request.parameter,
+                        source: Source::Service(
                             invocation_id,
                             invocation_metadata.invocation_target.clone(),
                         ),
-                        Some((invocation_id, entry_index)),
-                        span_context.clone(),
-                        None,
-                    );
+                        response_sink: Some(ServiceInvocationResponseSink::partition_processor(
+                            invocation_id,
+                            entry_index,
+                        )),
+                        span_context: span_context.clone(),
+                        headers: vec![],
+                        execution_time: None,
+                        completion_retention_time: *completion_retention_time,
+                        idempotency_key: None,
+                    };
+
                     self.handle_outgoing_message(
                         OutboxMessage::ServiceInvocation(service_invocation),
                         effects,
@@ -1347,7 +1422,7 @@ where
                     invocation_id: callee_invocation_id,
                     invocation_target: callee_invocation_target,
                     span_context,
-                    ..
+                    completion_retention_time,
                 } = enrichment_result;
 
                 let_assert!(
@@ -1364,15 +1439,21 @@ where
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
 
-                let service_invocation = Self::create_service_invocation(
-                    *callee_invocation_id,
-                    callee_invocation_target.clone(),
-                    request,
-                    Source::Service(invocation_id, invocation_metadata.invocation_target.clone()),
-                    None,
-                    span_context.clone(),
-                    delay,
-                );
+                let service_invocation = ServiceInvocation {
+                    invocation_id: *callee_invocation_id,
+                    invocation_target: callee_invocation_target.clone(),
+                    argument: request.parameter,
+                    source: Source::Service(
+                        invocation_id,
+                        invocation_metadata.invocation_target.clone(),
+                    ),
+                    response_sink: None,
+                    span_context: span_context.clone(),
+                    headers: vec![],
+                    execution_time: delay,
+                    completion_retention_time: *completion_retention_time,
+                    idempotency_key: None,
+                };
 
                 let pointer_span_id = match span_context.span_cause() {
                     Some(SpanRelationCause::Linked(_, span_id)) => Some(*span_id),
@@ -1587,40 +1668,6 @@ where
             effects.set_parent_span_context(&journal_metadata.span_context)
         }
         Ok(status)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn create_service_invocation(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-        invoke_request: InvokeRequest,
-        source: Source,
-        response_target: Option<(InvocationId, EntryIndex)>,
-        span_context: ServiceInvocationSpanContext,
-        execution_time: Option<MillisSinceEpoch>,
-    ) -> ServiceInvocation {
-        let InvokeRequest { parameter, .. } = invoke_request;
-
-        let response_sink = if let Some((caller, entry_index)) = response_target {
-            Some(ServiceInvocationResponseSink::PartitionProcessor {
-                caller,
-                entry_index,
-            })
-        } else {
-            None
-        };
-
-        ServiceInvocation {
-            invocation_id,
-            invocation_target,
-            argument: parameter,
-            source,
-            response_sink,
-            span_context,
-            headers: vec![],
-            execution_time,
-            idempotency: None,
-        }
     }
 }
 

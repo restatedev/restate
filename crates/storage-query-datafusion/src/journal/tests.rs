@@ -61,6 +61,7 @@ async fn get_entries() {
                 enrichment_result: Some(CallEnrichmentResult {
                     invocation_id: invoked_invocation_id,
                     invocation_target: invoked_invocation_target.clone(),
+                    completion_retention_time: None,
                     span_context: Default::default(),
                 }),
             },

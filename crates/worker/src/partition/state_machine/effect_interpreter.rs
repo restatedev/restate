@@ -24,7 +24,9 @@ use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_storage_api::timer_table::{Timer, TimerKey};
 use restate_storage_api::Result as StorageResult;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
-use restate_types::invocation::{HandlerType, InvocationInput};
+use restate_types::invocation::{
+    InvocationInput, InvocationTargetType, VirtualObjectHandlerType, WorkflowHandlerType,
+};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::{PlainRawEntry, RawEntryCodec};
 use restate_types::journal::{Completion, CompletionResult, EntryType};
@@ -303,6 +305,11 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     message,
                 });
             }
+            Effect::UnlockService(service_id) => {
+                state_storage
+                    .store_service_status(&service_id, VirtualObjectStatus::Unlocked)
+                    .await?;
+            }
             Effect::SetState {
                 service_id,
                 key,
@@ -541,8 +548,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
-        if in_flight_invocation_metadata.invocation_target.handler_ty()
-            == Some(HandlerType::Exclusive)
+        let invocation_target_type = in_flight_invocation_metadata
+            .invocation_target
+            .invocation_target_ty();
+        if invocation_target_type
+            == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            || invocation_target_type
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
             state_storage
                 .store_service_status(

@@ -11,22 +11,38 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
-use restate_types::invocation::{HandlerType, ServiceType};
-use std::fmt;
+use restate_types::invocation::InvocationTargetType;
 use std::str::FromStr;
 use std::time::Duration;
+use std::{cmp, fmt};
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
+pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvocationTargetMetadata {
     pub public: bool,
+    /// Retention timer to be used for the completion. See [`InvocationTargetMetadata::compute_retention`] for more details.
+    pub completion_retention: Option<Duration>,
+    /// Retention timer that should be used only if an idempotency key is set. See [`InvocationTargetMetadata::compute_retention`] for more details.
     pub idempotency_retention: Duration,
-    pub service_ty: ServiceType,
-    pub handler_ty: HandlerType,
+    pub target_ty: InvocationTargetType,
     pub input_rules: InputRules,
     pub output_rules: OutputRules,
+}
+
+impl InvocationTargetMetadata {
+    pub fn compute_retention(&self, has_idempotency_key: bool) -> Option<Duration> {
+        if has_idempotency_key {
+            Some(cmp::max(
+                self.completion_retention.unwrap_or_default(),
+                self.idempotency_retention,
+            ))
+        } else {
+            self.completion_retention
+        }
+    }
 }
 
 /// This API resolves invocation targets.
@@ -411,12 +427,12 @@ pub mod mocks {
     }
 
     impl InvocationTargetMetadata {
-        pub fn mock(service_ty: ServiceType, handler_ty: HandlerType) -> Self {
+        pub fn mock(invocation_target_type: InvocationTargetType) -> Self {
             Self {
                 public: true,
                 idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                service_ty,
-                handler_ty,
+                completion_retention: None,
+                target_ty: invocation_target_type,
                 input_rules: Default::default(),
                 output_rules: Default::default(),
             }

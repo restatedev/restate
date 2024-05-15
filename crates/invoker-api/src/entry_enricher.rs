@@ -66,6 +66,7 @@ pub mod mocks {
                             enrichment_result: Some(CallEnrichmentResult {
                                 invocation_id: InvocationId::mock_random(),
                                 invocation_target: InvocationTarget::service("", ""),
+                                completion_retention_time: None,
                                 span_context: current_invocation_span_context.clone(),
                             }),
                         }
@@ -81,6 +82,7 @@ pub mod mocks {
                     enrichment_result: CallEnrichmentResult {
                         invocation_id: InvocationId::mock_random(),
                         invocation_target: InvocationTarget::service("", ""),
+                        completion_retention_time: None,
                         span_context: current_invocation_span_context.clone(),
                     },
                 },

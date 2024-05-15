@@ -13,7 +13,6 @@ use super::HandlerError;
 
 use http::Uri;
 use restate_schema_api::service::ServiceMetadataResolver;
-use restate_types::invocation::ServiceType;
 use std::collections::VecDeque;
 
 pub(crate) enum AwakeableRequestType {
@@ -42,8 +41,8 @@ impl AwakeableRequestType {
 }
 
 pub(crate) enum TargetType {
-    Service,
-    VirtualObject { key: String },
+    Unkeyed,
+    Keyed { key: String },
 }
 
 pub(crate) enum InvokeType {
@@ -68,19 +67,20 @@ impl ServiceRequestType {
         Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
     {
         // We need to query the service type before continuing to parse
-        let ct = schemas
+        let service_type = schemas
             .resolve_latest_service_type(&service_name)
             .ok_or(HandlerError::NotFound)?;
 
-        let target_type = match ct {
-            ServiceType::Service => TargetType::Service,
-            ServiceType::VirtualObject => TargetType::VirtualObject {
+        let target_type = if service_type.is_keyed() {
+            TargetType::Keyed {
                 key: urlencoding::decode(
                     path_parts.pop_front().ok_or(HandlerError::BadServicePath)?,
                 )
                 .map_err(HandlerError::UrlDecodingError)?
                 .into_owned(),
-            },
+            }
+        } else {
+            TargetType::Unkeyed
         };
 
         let handler = path_parts

@@ -107,12 +107,11 @@ pub mod v1 {
             enriched_entry_header, inbox_entry, invocation_resolution_result, invocation_status,
             invocation_target, outbox_message, response_result, source, span_relation, timer,
             virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
-            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata,
-            IdempotentRequestMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalMeta, KvPair, OutboxMessage,
-            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
-            VirtualObjectStatus,
+            EnrichedEntryHeader, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
+            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
+            JournalEntry, JournalMeta, KvPair, OutboxMessage, ResponseResult, SequenceNumber,
+            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+            SpanRelation, StateMutation, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -340,15 +339,7 @@ pub mod v1 {
                     value.completion_retention_time.unwrap_or_default(),
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::InFlightInvocationMetadata {
                     invocation_target,
@@ -396,14 +387,7 @@ pub mod v1 {
                     modification_time: timestamps.modification_time().as_u64(),
                     source: Some(Source::from(source)),
                     completion_retention_time: Some(Duration::from(completion_retention_time)),
-                    idempotency_key: Some(match idempotency_key {
-                        Some(key) => {
-                            invocation_status::invoked::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::invoked::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -461,15 +445,7 @@ pub mod v1 {
                     value.completion_retention_time.unwrap_or_default(),
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok((
                     crate::invocation_status_table::InFlightInvocationMetadata {
@@ -528,14 +504,7 @@ pub mod v1 {
                     completion_retention_time: Some(Duration::from(
                         metadata.completion_retention_time,
                     )),
-                    idempotency_key: Some(match metadata.idempotency_key {
-                        Some(key) => {
-                            invocation_status::suspended::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::suspended::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: metadata.idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -586,10 +555,11 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(value.execution_time))
                 };
 
-                let idempotency = value
-                    .idempotency
-                    .map(restate_types::invocation::Idempotency::try_from)
-                    .transpose()?;
+                let completion_retention_time = std::time::Duration::try_from(
+                    value.completion_retention_time.unwrap_or_default(),
+                )?;
+
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
@@ -603,7 +573,8 @@ pub mod v1 {
                     headers,
                     argument: value.argument,
                     execution_time,
-                    idempotency,
+                    idempotency_key,
+                    completion_retention_time,
                     invocation_target,
                 })
             }
@@ -621,7 +592,8 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    idempotency,
+                    completion_retention_time,
+                    idempotency_key,
                 } = value;
 
                 let headers = headers.into_iter().map(Into::into).collect();
@@ -640,7 +612,8 @@ pub mod v1 {
                     headers,
                     argument,
                     execution_time: execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    idempotency: idempotency.map(Into::into),
+                    completion_retention_time: Some(Duration::from(completion_retention_time)),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -661,15 +634,7 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("source"))?,
                 )?;
 
-                let idempotency_key = match value
-                    .idempotency_key
-                    .ok_or(ConversionError::missing_field("idempotency_key"))?
-                {
-                    invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(key) => {
-                        Some(ByteString::from(key))
-                    }
-                    invocation_status::completed::IdempotencyKey::IdempotencyKeyNone(_) => None,
-                };
+                let idempotency_key = value.idempotency_key.map(ByteString::from);
 
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
@@ -703,14 +668,7 @@ pub mod v1 {
                     result: Some(ResponseResult::from(response_result)),
                     creation_time: timestamps.creation_time().as_u64(),
                     modification_time: timestamps.modification_time().as_u64(),
-                    idempotency_key: Some(match idempotency_key {
-                        Some(key) => {
-                            invocation_status::completed::IdempotencyKey::IdempotencyKeyValue(
-                                key.to_string(),
-                            )
-                        }
-                        _ => invocation_status::completed::IdempotencyKey::IdempotencyKeyNone(()),
-                    }),
+                    idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -860,7 +818,8 @@ pub mod v1 {
                     source,
                     headers,
                     execution_time,
-                    idempotency,
+                    idempotency_key,
+                    completion_retention_time,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -896,9 +855,11 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(execution_time))
                 };
 
-                let idempotency = idempotency
-                    .map(restate_types::invocation::Idempotency::try_from)
+                let completion_retention_time = completion_retention_time
+                    .map(std::time::Duration::try_from)
                     .transpose()?;
+
+                let idempotency_key = idempotency_key.map(ByteString::from);
 
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
@@ -909,7 +870,8 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    idempotency,
+                    completion_retention_time,
+                    idempotency_key,
                 })
             }
         }
@@ -931,32 +893,8 @@ pub mod v1 {
                     source: Some(source),
                     headers,
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    idempotency: value.idempotency.map(Into::into),
-                }
-            }
-        }
-
-        impl TryFrom<IdempotentRequestMetadata> for restate_types::invocation::Idempotency {
-            type Error = ConversionError;
-
-            fn try_from(value: IdempotentRequestMetadata) -> Result<Self, Self::Error> {
-                let retention: std::time::Duration = value
-                    .retention
-                    .ok_or(ConversionError::missing_field("retention"))?
-                    .try_into()?;
-
-                Ok(Self {
-                    key: ByteString::from(value.key),
-                    retention,
-                })
-            }
-        }
-
-        impl From<restate_types::invocation::Idempotency> for IdempotentRequestMetadata {
-            fn from(value: restate_types::invocation::Idempotency) -> Self {
-                Self {
-                    key: value.key.to_string(),
-                    retention: Some(value.retention.into()),
+                    completion_retention_time: value.completion_retention_time.map(Duration::from),
+                    idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                 }
             }
         }
@@ -1005,42 +943,56 @@ pub mod v1 {
             type Error = ConversionError;
 
             fn try_from(value: InvocationTarget) -> Result<Self, Self::Error> {
-                match invocation_target::Ty::try_from(value.ty) {
+                let name =
+                    ByteString::try_from(value.name).map_err(ConversionError::invalid_data)?;
+                let handler =
+                    ByteString::try_from(value.handler).map_err(ConversionError::invalid_data)?;
+
+                match invocation_target::Ty::try_from(value.service_and_handler_ty) {
                     Ok(invocation_target::Ty::Service) => {
-                        Ok(restate_types::invocation::InvocationTarget::Service {
-                            name: ByteString::try_from(value.name)
-                                .map_err(ConversionError::invalid_data)?,
-                            handler: ByteString::try_from(value.handler)
-                                .map_err(ConversionError::invalid_data)?,
-                        })
+                        Ok(restate_types::invocation::InvocationTarget::Service { name, handler })
                     }
-                    Ok(invocation_target::Ty::VirtualObject) => {
+                    Ok(invocation_target::Ty::VirtualObjectExclusive) => {
                         Ok(restate_types::invocation::InvocationTarget::VirtualObject {
-                            name: ByteString::try_from(value.name)
-                                .map_err(ConversionError::invalid_data)?,
-                            handler: ByteString::try_from(value.handler)
-                                .map_err(ConversionError::invalid_data)?,
+                            name,
+                            handler,
                             key: ByteString::try_from(value.key)
                                 .map_err(ConversionError::invalid_data)?,
-                            handler_ty: match invocation_target::HandlerType::try_from(
-                                value.handler_ty,
-                            ) {
-                                Ok(invocation_target::HandlerType::Exclusive) => {
-                                    restate_types::invocation::HandlerType::Exclusive
-                                }
-                                Ok(invocation_target::HandlerType::Shared) => {
-                                    restate_types::invocation::HandlerType::Shared
-                                }
-                                _ => {
-                                    return Err(ConversionError::unexpected_enum_variant(
-                                        "handler_ty",
-                                        value.handler_ty,
-                                    ))
-                                }
-                            },
+                            handler_ty:
+                                restate_types::invocation::VirtualObjectHandlerType::Exclusive,
                         })
                     }
-                    _ => Err(ConversionError::unexpected_enum_variant("ty", value.ty)),
+                    Ok(invocation_target::Ty::VirtualObjectShared) => {
+                        Ok(restate_types::invocation::InvocationTarget::VirtualObject {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::VirtualObjectHandlerType::Shared,
+                        })
+                    }
+                    Ok(invocation_target::Ty::WorkflowWorkflow) => {
+                        Ok(restate_types::invocation::InvocationTarget::Workflow {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::WorkflowHandlerType::Workflow,
+                        })
+                    }
+                    Ok(invocation_target::Ty::WorkflowShared) => {
+                        Ok(restate_types::invocation::InvocationTarget::Workflow {
+                            name,
+                            handler,
+                            key: ByteString::try_from(value.key)
+                                .map_err(ConversionError::invalid_data)?,
+                            handler_ty: restate_types::invocation::WorkflowHandlerType::Shared,
+                        })
+                    }
+                    _ => Err(ConversionError::unexpected_enum_variant(
+                        "ty",
+                        value.service_and_handler_ty,
+                    )),
                 }
             }
         }
@@ -1050,9 +1002,9 @@ pub mod v1 {
                 match value {
                     restate_types::invocation::InvocationTarget::Service { name, handler } => {
                         InvocationTarget {
-                            ty: invocation_target::Ty::Service.into(),
                             name: name.into_bytes(),
                             handler: handler.into_bytes(),
+                            service_and_handler_ty: invocation_target::Ty::Service.into(),
                             ..InvocationTarget::default()
                         }
                     }
@@ -1062,16 +1014,34 @@ pub mod v1 {
                         handler,
                         handler_ty,
                     } => InvocationTarget {
-                        ty: invocation_target::Ty::VirtualObject.into(),
                         name: name.into_bytes(),
                         handler: handler.into_bytes(),
                         key: key.into_bytes(),
-                        handler_ty: match handler_ty {
-                            restate_types::invocation::HandlerType::Shared => {
-                                invocation_target::HandlerType::Shared
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::VirtualObjectHandlerType::Shared => {
+                                invocation_target::Ty::VirtualObjectShared
                             }
-                            restate_types::invocation::HandlerType::Exclusive => {
-                                invocation_target::HandlerType::Exclusive
+                            restate_types::invocation::VirtualObjectHandlerType::Exclusive => {
+                                invocation_target::Ty::VirtualObjectExclusive
+                            }
+                        }
+                        .into(),
+                    },
+                    restate_types::invocation::InvocationTarget::Workflow {
+                        name,
+                        key,
+                        handler,
+                        handler_ty,
+                    } => InvocationTarget {
+                        name: name.into_bytes(),
+                        handler: handler.into_bytes(),
+                        key: key.into_bytes(),
+                        service_and_handler_ty: match handler_ty {
+                            restate_types::invocation::WorkflowHandlerType::Shared => {
+                                invocation_target::Ty::WorkflowShared
+                            }
+                            restate_types::invocation::WorkflowHandlerType::Workflow => {
+                                invocation_target::Ty::WorkflowWorkflow
                             }
                         }
                         .into(),
@@ -1671,10 +1641,15 @@ pub mod v1 {
                                     .ok_or(ConversionError::missing_field("span_context"))?,
                             )?;
 
+                        let completion_retention_time = Some(std::time::Duration::try_from(
+                            success.completion_retention_time.unwrap_or_default(),
+                        )?);
+
                         Some(restate_types::journal::enriched::CallEnrichmentResult {
                             invocation_id,
                             invocation_target,
                             span_context,
+                            completion_retention_time,
                         })
                     }
                 };
@@ -1694,11 +1669,15 @@ pub mod v1 {
                             invocation_id,
                             invocation_target,
                             span_context,
+                            completion_retention_time,
                         } => invocation_resolution_result::Result::Success(
                             invocation_resolution_result::Success {
                                 invocation_id: Some(InvocationId::from(invocation_id)),
                                 invocation_target: Some(invocation_target.into()),
                                 span_context: Some(SpanContext::from(span_context)),
+                                completion_retention_time: Some(Duration::from(
+                                    completion_retention_time.unwrap_or_default(),
+                                )),
                             },
                         ),
                     },
@@ -1734,10 +1713,15 @@ pub mod v1 {
                             .ok_or(ConversionError::missing_field("span_context"))?,
                     )?;
 
+                let completion_retention_time = Some(std::time::Duration::try_from(
+                    value.completion_retention_time.unwrap_or_default(),
+                )?);
+
                 Ok(restate_types::journal::enriched::CallEnrichmentResult {
                     invocation_id,
                     span_context,
                     invocation_target,
+                    completion_retention_time,
                 })
             }
         }
@@ -1750,6 +1734,9 @@ pub mod v1 {
                     invocation_id: Some(InvocationId::from(value.invocation_id)),
                     invocation_target: Some(value.invocation_target.into()),
                     span_context: Some(SpanContext::from(value.span_context)),
+                    completion_retention_time: Some(Duration::from(
+                        value.completion_retention_time.unwrap_or_default(),
+                    )),
                 }
             }
         }

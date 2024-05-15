@@ -12,20 +12,16 @@ message InvocationTarget {
     enum Ty {
         UNKNOWN_TY = 0;
         SERVICE = 1;
-        VIRTUAL_OBJECT = 2;
+        VIRTUAL_OBJECT_EXCLUSIVE = 2;
+        VIRTUAL_OBJECT_SHARED = 3;
+        WORKFLOW_WORKFLOW = 4;
+        WORKFLOW_SHARED = 5;
     }
 
-    enum HandlerType {
-        UNKNOWN_HANDLER_TYPE = 0;
-        EXCLUSIVE = 1;
-        SHARED = 2;
-    }
-
-    Ty ty = 1;
+    Ty service_and_handler_ty = 1;
     bytes name = 2;
     bytes handler = 3;
     bytes key = 4;
-    HandlerType handler_ty = 5;
 }
 
 message ServiceId {
@@ -93,10 +89,7 @@ message InvocationStatus {
         }
         Source source = 9;
         Duration completion_retention_time = 10;
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 11;
-            string idempotency_key_value = 12;
-        }
+        optional string idempotency_key = 11;
     }
 
     message Suspended {
@@ -112,10 +105,7 @@ message InvocationStatus {
         }
         Source source = 10;
         Duration completion_retention_time = 11;
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 12;
-            string idempotency_key_value = 13;
-        }
+        optional string idempotency_key = 12;
     }
 
     message Completed {
@@ -125,10 +115,7 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
 
-        oneof idempotency_key {
-            google.protobuf.Empty idempotency_key_none = 12;
-            string idempotency_key_value = 13;
-        }
+        optional string idempotency_key = 12;
     }
 
     message Free {
@@ -147,7 +134,8 @@ message InvocationStatus {
         SpanContext span_context = 9;
         repeated Header headers = 10;
         uint64 execution_time = 11;
-        IdempotentRequestMetadata idempotency = 12;
+        Duration completion_retention_time = 12;
+        optional string idempotency_key = 13;
     }
 
     oneof status {
@@ -229,7 +217,8 @@ message ServiceInvocation {
     Source source = 6;
     repeated Header headers = 7;
     uint64 execution_time = 8;
-    IdempotentRequestMetadata idempotency = 9;
+    Duration completion_retention_time = 9;
+    optional string idempotency_key = 10;
 }
 
 message StateMutation {
@@ -255,6 +244,7 @@ message InvocationResolutionResult {
         InvocationId invocation_id = 1;
         InvocationTarget invocation_target = 2;
         SpanContext span_context = 3;
+        Duration completion_retention_time = 4;
     }
 
     oneof result {
@@ -267,6 +257,7 @@ message BackgroundCallResolutionResult {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
     SpanContext span_context = 3;
+    Duration completion_retention_time = 4;
 }
 message EnrichedEntryHeader {
 
@@ -480,9 +471,4 @@ message DedupSequenceNumber {
 
 message IdempotencyMetadata {
     InvocationId invocation_id = 1;
-}
-
-message IdempotentRequestMetadata {
-    string key = 1;
-    Duration retention = 2;
 }

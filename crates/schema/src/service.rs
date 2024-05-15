@@ -27,6 +27,7 @@ pub struct ServiceSchemas {
     pub ty: ServiceType,
     pub location: ServiceLocation,
     pub idempotency_retention: Duration,
+    pub workflow_completion_retention: Option<Duration>,
 }
 
 impl ServiceSchemas {
@@ -38,7 +39,7 @@ impl ServiceSchemas {
                 .iter()
                 .map(|(h_name, h_schemas)| HandlerMetadata {
                     name: h_name.clone(),
-                    ty: h_schemas.target_meta.handler_ty,
+                    ty: h_schemas.target_meta.target_ty.into(),
                     input_description: h_schemas.target_meta.input_rules.to_string(),
                     output_description: h_schemas.target_meta.output_rules.to_string(),
                 })
@@ -48,6 +49,7 @@ impl ServiceSchemas {
             revision: self.revision,
             public: self.location.public,
             idempotency_retention: self.idempotency_retention.into(),
+            workflow_completion_retention: self.workflow_completion_retention.map(Into::into),
         }
     }
 }

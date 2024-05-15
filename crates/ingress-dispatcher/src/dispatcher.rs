@@ -211,7 +211,7 @@ mod tests {
     use restate_test_util::{let_assert, matchers::*};
     use restate_types::identifiers::{IdempotencyId, InvocationId, WithPartitionKey};
     use restate_types::invocation::{
-        HandlerType, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation,
+        InvocationTarget, ResponseResult, ServiceInvocation, VirtualObjectHandlerType,
     };
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::partition_table::{FindPartition, FixedPartitionTable};
@@ -245,7 +245,7 @@ mod tests {
                     "MySvc",
                     "MyKey",
                     "pippo",
-                    HandlerType::Exclusive,
+                    VirtualObjectHandlerType::Exclusive,
                 );
                 let argument = Bytes::from_static(b"nbfjksdfs");
                 let idempotency_key = ByteString::from_static("123");
@@ -265,10 +265,8 @@ mod tests {
                     restate_types::invocation::Source::Ingress,
                 );
                 invocation.argument = argument.clone();
-                invocation.idempotency = Some(Idempotency {
-                    key: idempotency_key.clone(),
-                    retention: Duration::from_secs(60),
-                });
+                invocation.idempotency_key = Some(idempotency_key.clone());
+                invocation.completion_retention_time = Some(Duration::from_secs(60));
                 let (ingress_req, _, res) = IngressDispatcherRequest::invocation(invocation);
                 dispatcher.dispatch_ingress_request(ingress_req).await?;
 
@@ -296,10 +294,8 @@ mod tests {
                         invocation_id: eq(invocation_id),
                         invocation_target: eq(invocation_target.clone()),
                         argument: eq(argument.clone()),
-                        idempotency: some(eq(Idempotency {
-                            key: idempotency_key.clone(),
-                            retention: Duration::from_secs(60),
-                        }))
+                        idempotency_key: some(eq(idempotency_key.clone())),
+                        completion_retention_time: some(eq(Duration::from_secs(60)))
                     })
                 );
 

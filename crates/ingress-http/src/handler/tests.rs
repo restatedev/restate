@@ -28,7 +28,7 @@ use restate_schema_api::invocation_target::{
 };
 use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::{HandlerType, Header, Idempotency, ResponseResult, ServiceType};
+use restate_types::invocation::{Header, InvocationTargetType, ResponseResult};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -112,7 +112,7 @@ async fn call_service_with_get() {
                 input_rules: InputRules {
                     input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
                 },
-                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
             },
         ),
         |ingress_req| {
@@ -359,11 +359,12 @@ async fn idempotency_key_parsing() {
             ))
         );
         assert_eq!(
-            service_invocation.idempotency,
-            Some(Idempotency {
-                key: ByteString::from_static("123456"),
-                retention: Duration::from_secs(60 * 60 * 24)
-            })
+            service_invocation.idempotency_key,
+            Some(ByteString::from_static("123456"))
+        );
+        assert_eq!(
+            service_invocation.completion_retention_time,
+            Some(Duration::from_secs(60 * 60 * 24))
         );
 
         response_tx
@@ -490,7 +491,7 @@ async fn private_service() {
             "greet",
             InvocationTargetMetadata {
                 public: false,
-                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
             },
         ),
         request_handler_not_reached,
@@ -519,7 +520,7 @@ async fn invalid_input() {
                         ),
                     }],
                 },
-                ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+                ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
             },
         ),
         request_handler_not_reached,
@@ -542,7 +543,7 @@ async fn set_custom_content_type_on_response() {
                     has_json_schema: false,
                 },
             },
-            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+            ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },
     );
     let req = hyper::Request::builder()
@@ -589,7 +590,7 @@ async fn set_custom_content_type_on_empty_response() {
                     has_json_schema: false,
                 },
             },
-            ..InvocationTargetMetadata::mock(ServiceType::Service, HandlerType::Shared)
+            ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },
     );
     let req = hyper::Request::builder()

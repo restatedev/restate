@@ -14,8 +14,10 @@ use http::Uri;
 use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::ShutdownError;
 use restate_schema_api::invocation_target::BadInputContentType;
+use restate_service_protocol::discovery::schema;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
+use restate_types::invocation::ServiceType;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum SchemaRegistryError {
@@ -87,6 +89,12 @@ pub enum ServiceError {
     #[error("the handler '{0}' output content-type is not valid: {1}")]
     #[code(unknown)]
     BadOutputContentType(String, InvalidHeaderValue),
+    #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
+    #[code(unknown)]
+    BadServiceAndHandlerType(ServiceType, Option<schema::HandlerType>),
+    #[error("modifying retention time for service type {0} is unsupported")]
+    #[code(unknown)]
+    CannotModifyRetentionTime(ServiceType),
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -107,7 +115,7 @@ pub enum SubscriptionError {
     InvalidServiceSinkAuthority(Uri),
     #[error("invalid sink URI '{0}': cannot find service/handler specified in the sink URI.")]
     SinkServiceNotFound(Uri),
-    #[error("invalid sink URI '{0}': virtual object shared handlers cannot be used as sinks.")]
+    #[error("invalid sink URI '{0}': shared handlers cannot be used as sinks.")]
     InvalidSinkSharedHandler(Uri),
 
     #[error(transparent)]

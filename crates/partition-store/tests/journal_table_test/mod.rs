@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::storage_test_environment;
+
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
-use restate_partition_store::PartitionStore;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -21,6 +22,7 @@ use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use std::pin::pin;
+use std::time::Duration;
 
 // false positive because of Bytes
 #[allow(clippy::declare_interior_mutable_const)]
@@ -39,6 +41,7 @@ static MOCK_INVOKE_JOURNAL_ENTRY: Lazy<JournalEntry> = Lazy::new(|| {
                     name: ByteString::from_static("MySvc"),
                     handler: ByteString::from_static("MyHandler"),
                 },
+                completion_retention_time: Some(Duration::from_secs(10)),
                 span_context: ServiceInvocationSpanContext::empty(),
             }),
         },
@@ -124,7 +127,10 @@ async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
     }
 }
 
-pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
+#[tokio::test]
+async fn journal_tests() {
+    let mut rocksdb = storage_test_environment().await;
+
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;

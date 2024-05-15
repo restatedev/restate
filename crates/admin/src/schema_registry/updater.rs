@@ -19,14 +19,16 @@ use restate_schema::Schema;
 use restate_schema_api::deployment::DeploymentMetadata;
 use restate_schema_api::invocation_target::{
     InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
-    DEFAULT_IDEMPOTENCY_RETENTION,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
 };
 use restate_schema_api::subscription::{
     EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
 };
 use restate_service_protocol::discovery::schema;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::invocation::{HandlerType, ServiceType};
+use restate_types::invocation::{
+    InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -127,7 +129,6 @@ impl SchemaUpdater {
         for (service_name, service) in proposed_services {
             let service_type = ServiceType::from(service.ty);
             let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                service_type,
                 service
                     .handlers
                     .into_iter()
@@ -201,6 +202,11 @@ impl SchemaUpdater {
                         public: true,
                     },
                     idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
+                    workflow_completion_retention: if service_type == ServiceType::Workflow {
+                        Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                    } else {
+                        None
+                    },
                 }
             };
 
@@ -329,16 +335,19 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                let ty = match (service_schemas.ty, handler_schemas.target_meta.handler_ty) {
-                    (ServiceType::VirtualObject, HandlerType::Exclusive) => {
+                let ty = match handler_schemas.target_meta.target_ty {
+                    InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) => {
+                        EventReceiverServiceType::Workflow
+                    }
+                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive) => {
                         EventReceiverServiceType::VirtualObject
                     }
-                    (ServiceType::VirtualObject, HandlerType::Shared) => {
+                    InvocationTargetType::Workflow(_) | InvocationTargetType::VirtualObject(_) => {
                         return Err(SchemaError::Subscription(
                             SubscriptionError::InvalidSinkSharedHandler(sink),
                         ))
                     }
-                    (ServiceType::Service, _) => EventReceiverServiceType::Service,
+                    InvocationTargetType::Service => EventReceiverServiceType::Service,
                 };
 
                 Sink::Service {
@@ -382,7 +391,11 @@ impl SchemaUpdater {
         }
     }
 
-    pub fn modify_service(&mut self, name: String, changes: Vec<ModifyServiceChange>) {
+    pub fn modify_service(
+        &mut self,
+        name: String,
+        changes: Vec<ModifyServiceChange>,
+    ) -> Result<(), SchemaError> {
         if let Some(schemas) = self.schema_information.services.get_mut(&name) {
             for command in changes {
                 match command {
@@ -398,18 +411,38 @@ impl SchemaUpdater {
                             h.target_meta.idempotency_retention = new_idempotency_retention;
                         }
                     }
+                    ModifyServiceChange::WorkflowCompletionRetention(
+                        new_workflow_completion_retention,
+                    ) => {
+                        if schemas.ty != ServiceType::Workflow {
+                            return Err(SchemaError::Service(
+                                ServiceError::CannotModifyRetentionTime(schemas.ty),
+                            ));
+                        }
+                        schemas.workflow_completion_retention =
+                            Some(new_workflow_completion_retention);
+                        for h in schemas.handlers.values_mut().filter(|w| {
+                            w.target_meta.target_ty
+                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                        }) {
+                            h.target_meta.completion_retention =
+                                Some(new_workflow_completion_retention);
+                        }
+                    }
                 }
             }
         }
 
         self.modified = true;
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct DiscoveredHandlerMetadata {
     name: String,
-    ty: HandlerType,
+    ty: InvocationTargetType,
     input: InputRules,
     output: OutputRules,
 }
@@ -419,15 +452,27 @@ impl DiscoveredHandlerMetadata {
         service_type: ServiceType,
         handler: schema::Handler,
     ) -> Result<Self, ServiceError> {
-        let handler_type = match handler.ty {
-            None => HandlerType::default_for_service_type(service_type),
-            Some(schema::HandlerType::Exclusive) => HandlerType::Exclusive,
-            Some(schema::HandlerType::Shared) => HandlerType::Shared,
+        let ty = match (service_type, handler.ty) {
+            (ServiceType::Service, None | Some(schema::HandlerType::Shared)) => {
+                InvocationTargetType::Service
+            }
+            (ServiceType::VirtualObject, None | Some(schema::HandlerType::Exclusive)) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            }
+            (ServiceType::VirtualObject, Some(schema::HandlerType::Shared)) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+            }
+            _ => {
+                return Err(ServiceError::BadServiceAndHandlerType(
+                    service_type,
+                    handler.ty,
+                ))
+            }
         };
 
         Ok(Self {
             name: handler.name.to_string(),
-            ty: handler_type,
+            ty,
             input: handler
                 .input
                 .map(|s| DiscoveredHandlerMetadata::input_rules_from_schema(&handler.name, s))
@@ -495,7 +540,6 @@ impl DiscoveredHandlerMetadata {
     }
 
     fn compute_handlers(
-        service_ty: ServiceType,
         handlers: Vec<DiscoveredHandlerMetadata>,
     ) -> HashMap<String, HandlerSchemas> {
         handlers
@@ -507,8 +551,14 @@ impl DiscoveredHandlerMetadata {
                         target_meta: InvocationTargetMetadata {
                             public: true,
                             idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
-                            service_ty,
-                            handler_ty: handler.ty,
+                            completion_retention: if handler.ty
+                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                            {
+                                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                            } else {
+                                None
+                            },
+                            target_ty: handler.ty,
                             input_rules: handler.input,
                             output_rules: handler.output,
                         },
@@ -662,7 +712,7 @@ mod tests {
         updater.modify_service(
             GREETER_SERVICE_NAME.to_owned(),
             vec![ModifyServiceChange::Public(false)],
-        );
+        )?;
         let schemas = updater.into_inner();
 
         assert!(version_before_modification < schemas.version());

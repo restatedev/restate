@@ -290,7 +290,9 @@ pub mod deployment {
 #[cfg(feature = "service")]
 pub mod service {
     use restate_types::identifiers::{DeploymentId, ServiceRevision};
-    use restate_types::invocation::{HandlerType, ServiceType};
+    use restate_types::invocation::{
+        InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
+    };
 
     #[derive(Debug, Clone)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -331,6 +333,46 @@ pub mod service {
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
         pub idempotency_retention: humantime::Duration,
+
+        /// # Workflow completion retention
+        ///
+        /// The retention duration of workflows. Only available on workflow services.
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+                skip_serializing_if = "Option::is_none",
+                default
+            )
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        pub workflow_completion_retention: Option<humantime::Duration>,
+    }
+
+    // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub enum HandlerMetadataType {
+        Exclusive,
+        Shared,
+        Workflow,
+    }
+
+    impl From<InvocationTargetType> for HandlerMetadataType {
+        fn from(value: InvocationTargetType) -> Self {
+            match value {
+                InvocationTargetType::Service => HandlerMetadataType::Shared,
+                InvocationTargetType::VirtualObject(h_ty) => match h_ty {
+                    VirtualObjectHandlerType::Exclusive => HandlerMetadataType::Exclusive,
+                    VirtualObjectHandlerType::Shared => HandlerMetadataType::Shared,
+                },
+                InvocationTargetType::Workflow(h_ty) => match h_ty {
+                    WorkflowHandlerType::Workflow => HandlerMetadataType::Workflow,
+                    WorkflowHandlerType::Shared => HandlerMetadataType::Shared,
+                },
+            }
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -339,7 +381,7 @@ pub mod service {
     pub struct HandlerMetadata {
         pub name: String,
 
-        pub ty: HandlerType,
+        pub ty: HandlerMetadataType,
 
         // # Human readable input description
         //
@@ -410,7 +452,7 @@ pub mod service {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
-                            ty: HandlerType::Shared,
+                            ty: HandlerMetadataType::Shared,
                             input_description: "any".to_string(),
                             output_description: "any".to_string(),
                         })
@@ -420,6 +462,7 @@ pub mod service {
                     revision: 0,
                     public: true,
                     idempotency_retention: std::time::Duration::from_secs(60).into(),
+                    workflow_completion_retention: None,
                 }
             }
 
@@ -433,7 +476,7 @@ pub mod service {
                         .into_iter()
                         .map(|s| HandlerMetadata {
                             name: s.as_ref().to_string(),
-                            ty: HandlerType::Exclusive,
+                            ty: HandlerMetadataType::Exclusive,
                             input_description: "any".to_string(),
                             output_description: "any".to_string(),
                         })
@@ -443,6 +486,7 @@ pub mod service {
                     revision: 0,
                     public: true,
                     idempotency_retention: std::time::Duration::from_secs(60).into(),
+                    workflow_completion_retention: None,
                 }
             }
         }
@@ -488,6 +532,7 @@ pub mod subscription {
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum EventReceiverServiceType {
         VirtualObject,
+        Workflow,
         Service,
     }
 

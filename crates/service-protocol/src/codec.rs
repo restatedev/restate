@@ -174,7 +174,7 @@ mod mocks {
         InputEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, SetStateEntryMessage,
     };
     use restate_types::identifiers::InvocationId;
-    use restate_types::invocation::{HandlerType, InvocationTarget};
+    use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::journal::enriched::{
         AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
     };
@@ -247,8 +247,9 @@ mod mocks {
                                     name: entry.request.service_name.clone(),
                                     key: entry.request.key.clone(),
                                     handler: entry.request.handler_name.clone(),
-                                    handler_ty: HandlerType::Exclusive,
+                                    handler_ty: VirtualObjectHandlerType::Exclusive,
                                 },
+                                completion_retention_time: None,
                                 span_context: Default::default(),
                             }),
                         },
@@ -282,8 +283,9 @@ mod mocks {
                                     name: entry.request.service_name.clone(),
                                     key: entry.request.key.clone(),
                                     handler: entry.request.handler_name.clone(),
-                                    handler_ty: HandlerType::Exclusive,
+                                    handler_ty: VirtualObjectHandlerType::Exclusive,
                                 },
+                                completion_retention_time: None,
                                 span_context: Default::default(),
                             },
                         },

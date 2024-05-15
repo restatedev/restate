@@ -23,7 +23,8 @@ use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherReques
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
-    Header, Idempotency, InvocationTarget, ResponseResult, ServiceInvocation, Source, SpanRelation,
+    Header, InvocationTarget, InvocationTargetType, ResponseResult, ServiceInvocation, Source,
+    SpanRelation, WorkflowHandlerType,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
@@ -82,25 +83,40 @@ where
         };
 
         // Check if Idempotency-Key is available
-        let idempotency =
-            parse_idempotency(req.headers(), invocation_target_meta.idempotency_retention)?;
+        let idempotency_key = parse_idempotency(req.headers())?;
+        if idempotency_key.is_some()
+            && invocation_target_meta.target_ty
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            return Err(HandlerError::UnsupportedIdempotencyKey);
+        }
 
         // Craft Invocation Target and Id
-        let invocation_target = if let TargetType::VirtualObject { key } = target {
-            InvocationTarget::virtual_object(
-                &*service_name,
-                key,
-                &*handler_name,
-                invocation_target_meta.handler_ty,
-            )
+        let invocation_target = if let TargetType::Keyed { key } = target {
+            match invocation_target_meta.target_ty {
+                InvocationTargetType::VirtualObject(handler_ty) => {
+                    InvocationTarget::virtual_object(
+                        &*service_name,
+                        key,
+                        &*handler_name,
+                        handler_ty,
+                    )
+                }
+                InvocationTargetType::Workflow(handler_ty) => {
+                    InvocationTarget::workflow(&*service_name, key, &*handler_name, handler_ty)
+                }
+                InvocationTargetType::Service => {
+                    panic!("Unexpected keyed target, this should have been checked before in the path parsing.")
+                }
+            }
         } else {
             InvocationTarget::service(&*service_name, &*handler_name)
         };
-        let invocation_id = if let Some(ref idempotency) = idempotency {
+        let invocation_id = if let Some(ref idempotency_key) = idempotency_key {
             // We need this to make sure the internal services will deliver correctly this idempotent invocation always
             //  to the same partition. This piece of logic could be improved and moved into ingress-dispatcher with
             //  https://github.com/restatedev/restate/issues/1329
-            InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency.key)
+            InvocationId::generate_with_idempotency_key(&invocation_target, idempotency_key)
         } else {
             InvocationId::generate(&invocation_target)
         };
@@ -150,7 +166,11 @@ where
             let mut service_invocation =
                 ServiceInvocation::initialize(invocation_id, invocation_target, Source::Ingress);
             service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
-            service_invocation.idempotency = idempotency;
+            service_invocation.completion_retention_time =
+                invocation_target_meta.compute_retention(idempotency_key.is_some());
+            if let Some(key) = idempotency_key {
+                service_invocation.idempotency_key = Some(key);
+            }
             service_invocation.headers = headers;
             service_invocation.argument = body;
 
@@ -336,10 +356,7 @@ fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     Ok(None)
 }
 
-fn parse_idempotency(
-    headers: &HeaderMap,
-    retention: Duration,
-) -> Result<Option<Idempotency>, HandlerError> {
+fn parse_idempotency(headers: &HeaderMap) -> Result<Option<ByteString>, HandlerError> {
     let idempotency_key = if let Some(idempotency_key) = headers.get(IDEMPOTENCY_KEY) {
         ByteString::from(
             idempotency_key
@@ -350,8 +367,5 @@ fn parse_idempotency(
         return Ok(None);
     };
 
-    Ok(Some(Idempotency {
-        key: idempotency_key,
-        retention,
-    }))
+    Ok(Some(idempotency_key))
 }
