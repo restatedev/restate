@@ -16,7 +16,6 @@ use restate_types::art::render_restate_logo;
 use crate::build_info;
 use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::MetaClientInterface;
-use crate::ui::duration_to_human_rough;
 use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
@@ -151,8 +150,10 @@ pub async fn run(State(env): State<CliEnv>) {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
-                            let left =
-                                duration_to_human_rough(delta, chrono_humanize::Tense::Present);
+                            let left = crate::ui::duration_to_human_rough(
+                                delta,
+                                chrono_humanize::Tense::Present,
+                            );
                             table.add_row(vec![
                                 "Logged in?",
                                 &format!("true (expires in {})", left),
