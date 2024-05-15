@@ -31,10 +31,15 @@ pub async fn run(State(env): State<CliEnv>) {
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec![
         "Ingress base URL",
-        env.config.ingress_base_url.as_ref(),
+        env.ingress_base_url()
+            .map(|u| u.as_ref())
+            .unwrap_or("(NONE)"),
     ]);
 
-    table.add_row(vec!["Admin base URL", env.config.admin_base_url.as_ref()]);
+    table.add_row(vec![
+        "Admin base URL",
+        env.admin_base_url().map(|u| u.as_ref()).unwrap_or("(NONE)"),
+    ]);
 
     if env.config.bearer_token.is_some() {
         table.add_row(vec!["Authentication Token", "(set)"]);
@@ -151,13 +156,10 @@ pub async fn run(State(env): State<CliEnv>) {
     if let Ok(client) = crate::clients::MetasClient::new(&env) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
-                c_success!("Admin Service '{}' is healthy!", env.config.admin_base_url);
+                c_success!("Admin Service '{}' is healthy!", client.base_url);
             }
             Ok(envelope) => {
-                c_error!(
-                    "Admin Service '{}' is unhealthy:",
-                    env.config.admin_base_url
-                );
+                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
                 let url = envelope.url().clone();
                 let status_code = envelope.status_code();
                 let body = envelope.into_text().await;
@@ -165,10 +167,7 @@ pub async fn run(State(env): State<CliEnv>) {
                 c_eprintln!("   >> {}", body.unwrap_or_default());
             }
             Err(e) => {
-                c_error!(
-                    "Admin Service '{}' is unhealthy:",
-                    env.config.admin_base_url
-                );
+                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
                 c_eprintln!("   >> {}", e);
             }
         }

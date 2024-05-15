@@ -33,8 +33,6 @@ pub const ENVIRONMENT_ENV: &str = "RESTATE_ENVIRONMENT";
 
 pub const RESTATE_HOST_ENV: &str = "RESTATE_HOST";
 pub const RESTATE_HOST_SCHEME_ENV: &str = "RESTATE_HOST_SCHEME";
-// The default is localhost unless the CLI configuration states a different default.
-pub const RESTATE_HOST_DEFAULT: &str = "localhost";
 pub const RESTATE_HOST_SCHEME_DEFAULT: &str = "http";
 
 /// Environment variable to override the default config dir path
@@ -48,29 +46,23 @@ pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const ADMIN_URL_ENV: &str = "RESTATE_ADMIN_URL";
 pub const EDITOR_ENV: &str = "RESTATE_EDITOR";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
-    pub ingress_base_url: Url,
-    pub admin_base_url: Url,
+    pub ingress_base_url: Option<Url>,
+    pub admin_base_url: Option<Url>,
     pub bearer_token: Option<String>,
 
     #[cfg(feature = "cloud")]
     pub cloud: crate::commands::cloud::CloudConfig,
 }
 
-impl Default for CliConfig {
-    fn default() -> Self {
+pub const LOCAL_PROFILE: Profile = Profile::const_new("local");
+
+impl CliConfig {
+    pub fn local() -> Self {
         Self {
-            ingress_base_url: Url::parse(&format!(
-                "{}://{}:8080/",
-                RESTATE_HOST_SCHEME_DEFAULT, RESTATE_HOST_DEFAULT
-            ))
-            .unwrap(),
-            admin_base_url: Url::parse(&format!(
-                "{}://{}:9070/",
-                RESTATE_HOST_SCHEME_DEFAULT, RESTATE_HOST_DEFAULT
-            ))
-            .unwrap(),
+            ingress_base_url: Some(Url::parse("http://localhost:8080/").unwrap()),
+            admin_base_url: Some(Url::parse("http://localhost:9070/").unwrap()),
             bearer_token: None,
 
             #[cfg(feature = "cloud")]
@@ -120,7 +112,7 @@ impl Display for EnvironmentSource {
             Self::Argument => write!(f, "argument"),
             Self::Environment => write!(f, "${}", ENVIRONMENT_ENV),
             Self::File => write!(f, "file"),
-            Self::None => write!(f, "none"),
+            Self::None => write!(f, "default"),
         }
     }
 }
@@ -164,8 +156,8 @@ impl CliEnv {
                 EnvironmentSource::File,
             )
         } else {
-            // 4. default environment
-            (Profile::Default, EnvironmentSource::None)
+            // 4. default to 'local'
+            (LOCAL_PROFILE, EnvironmentSource::None)
         };
 
         let default_editor = os_env
@@ -213,8 +205,11 @@ impl CliEnv {
         crate::console::set_colors_enabled(colorful);
 
         let defaults = CliConfig::default();
+        let local = CliConfig::local();
 
-        let mut figment = Figment::from(Serialized::defaults(defaults)).select(environment.clone());
+        let mut figment = Figment::from(Serialized::defaults(defaults))
+            .merge(Serialized::from(local, LOCAL_PROFILE))
+            .select(environment.clone());
 
         // Load configuration file
         if config_file.as_path().is_file() {
@@ -302,6 +297,20 @@ impl CliEnv {
                 (3) set the {EDITOR_ENV} env variable to a default editor.  ",
                 status.code()
             ))
+        }
+    }
+
+    pub fn ingress_base_url(&self) -> Result<&Url> {
+        match self.config.ingress_base_url.as_ref() {
+            Some(ingress_base_url) => Ok(ingress_base_url),
+            None => Err(anyhow!("No Restate ingress endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+        }
+    }
+
+    pub fn admin_base_url(&self) -> Result<&Url> {
+        match self.config.admin_base_url.as_ref() {
+            Some(admin_base_url) => Ok(admin_base_url),
+            None => Err(anyhow!("No Restate admin endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
         }
     }
 }
@@ -405,11 +414,19 @@ mod tests {
         os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         assert_eq!(
-            cli_env.config.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "http://localhost:8080/".to_string()
         );
         assert_eq!(
-            cli_env.config.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "http://localhost:9070/".to_string()
         );
 
@@ -420,11 +437,19 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
 
         assert_eq!(
-            cli_env.config.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "http://example.com:8080/".to_string()
         );
         assert_eq!(
-            cli_env.config.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "http://example.com:9070/".to_string()
         );
 
@@ -437,11 +462,19 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         // Note that Uri adds a trailing slash to the path as expected
         assert_eq!(
-            cli_env.config.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "https://api.restate.dev:4567/".to_string()
         );
         assert_eq!(
-            cli_env.config.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "https://admin.restate.dev:4567/".to_string()
         );
 

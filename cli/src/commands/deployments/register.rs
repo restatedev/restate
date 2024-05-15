@@ -152,7 +152,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.set_message(format!(
         "Asking restate server at {} for a dry-run discovery of {}",
-        env.config.admin_base_url, discover_opts.deployment
+        &client.base_url, discover_opts.deployment
     ));
 
     // This fails if the endpoint exists and --force is not set.
@@ -366,7 +366,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     progress.set_message(format!(
         "Asking restate server {} to confirm this deployment (at {})",
-        env.config.admin_base_url, discover_opts.deployment
+        &client.base_url, discover_opts.deployment
     ));
 
     let dry_run_result = client

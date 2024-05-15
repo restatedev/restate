@@ -108,7 +108,7 @@ pub struct MetasClient {
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl MetasClient {
-    pub fn new(env: &CliEnv) -> reqwest::Result<Self> {
+    pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -120,6 +120,7 @@ impl MetasClient {
             .connect_timeout(env.connect_timeout)
             .build()?;
 
+        let base_url = env.admin_base_url()?.clone();
         let bearer_token = env.config.bearer_token.as_ref();
 
         #[cfg(feature = "cloud")]
@@ -136,7 +137,7 @@ impl MetasClient {
 
         Ok(Self {
             inner: raw_client,
-            base_url: env.config.admin_base_url.clone(),
+            base_url,
             bearer_token: bearer_token.cloned(),
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })

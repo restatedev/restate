@@ -1,6 +1,6 @@
 use crate::{
     c_println,
-    cli_env::{CliConfig, CliEnv},
+    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE},
     console::StyledTable,
 };
 use anyhow::Result;
@@ -20,8 +20,10 @@ pub async fn run_list_environments(
     _opts: &ListEnvironments,
 ) -> Result<()> {
     let defaults = CliConfig::default();
+    let local = CliConfig::local();
 
-    let mut figment = Figment::from(Serialized::defaults(defaults));
+    let mut figment =
+        Figment::from(Serialized::defaults(defaults)).merge(Serialized::from(local, LOCAL_PROFILE));
 
     // Load configuration file
     if env.config_file.is_file() {
@@ -33,7 +35,7 @@ pub async fn run_list_environments(
     table.set_styled_header(header);
 
     for profile in figment.profiles() {
-        if profile == Profile::Global {
+        if profile == Profile::Global || profile == Profile::Default {
             continue;
         }
 
@@ -50,7 +52,7 @@ pub async fn run_list_environments(
                 admin_base_url
                     .as_ref()
                     .and_then(|u| u.as_str())
-                    .unwrap_or(""),
+                    .unwrap_or("(NONE)"),
             ),
         ];
 
