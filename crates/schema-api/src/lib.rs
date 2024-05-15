@@ -341,7 +341,8 @@ pub mod service {
             feature = "serde",
             serde(
                 with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
-                skip_serializing_if = "Option::is_none"
+                skip_serializing_if = "Option::is_none",
+                default
             )
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
