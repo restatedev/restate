@@ -855,9 +855,9 @@ pub mod v1 {
                     Some(MillisSinceEpoch::new(execution_time))
                 };
 
-                let completion_retention_time = Some(std::time::Duration::try_from(
-                    completion_retention_time.unwrap_or_default(),
-                )?);
+                let completion_retention_time = completion_retention_time
+                    .map(std::time::Duration::try_from)
+                    .transpose()?;
 
                 let idempotency_key = idempotency_key.map(ByteString::from);
 
@@ -893,9 +893,7 @@ pub mod v1 {
                     source: Some(source),
                     headers,
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    completion_retention_time: Some(Duration::from(
-                        value.completion_retention_time.unwrap_or_default(),
-                    )),
+                    completion_retention_time: value.completion_retention_time.map(Duration::from),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                 }
             }
