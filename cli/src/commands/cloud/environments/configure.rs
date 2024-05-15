@@ -83,7 +83,13 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
     .await?;
 
     let profiles = list_profiles(&doc)?;
-    let profile = profile_input(&profiles, &environments[environment_i].environment_id)?; // TODO should be name here
+    let profile = profile_input(
+        &profiles,
+        environments[environment_i]
+            .name
+            .as_deref()
+            .unwrap_or(&environments[environment_i].environment_id),
+    )?;
 
     write_environment(
         &mut doc,
@@ -129,7 +135,10 @@ fn account_picker(accounts: &[ListAccountsResponseAccountsItem]) -> Result<usize
         "Select an Account:",
         accounts
             .iter()
-            .map(|acc| format!("nameshouldgohere ({})", acc.account_id))
+            .map(|acc| match acc.description.as_deref() {
+                Some(description) => format!("{description} ({})", &acc.account_id),
+                None => acc.account_id.to_string(),
+            })
             .collect_vec()
             .as_ref(),
     )
@@ -140,7 +149,10 @@ fn environment_picker(environments: &[ListEnvironmentsResponseEnvironmentsItem])
         "Select an Environment:",
         environments
             .iter()
-            .map(|env| format!("nameshouldgohere ({})", env.environment_id))
+            .map(|env| match env.name.as_deref() {
+                Some(name) => format!("{name} ({})", env.environment_id),
+                None => env.environment_id.to_string(),
+            })
             .collect_vec()
             .as_ref(),
     )
@@ -149,7 +161,7 @@ fn environment_picker(environments: &[ListEnvironmentsResponseEnvironmentsItem])
 fn list_profiles(doc: &DocumentMut) -> Result<Vec<String>> {
     Ok(doc
         .iter()
-        .filter(|(k, _)| k != &"global")
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("global") && !k.eq_ignore_ascii_case("default"))
         .map(|(k, _)| k.to_string())
         .collect())
 }

@@ -159,7 +159,7 @@
     "CreateEnvironmentRequest": {
       "type": "object",
       "properties": {
-        "description": {
+        "name": {
           "type": "string"
         }
       }
@@ -168,6 +168,9 @@
       "type": "object",
       "properties": {
         "environmentId": {
+          "type": "string"
+        },
+        "name": {
           "type": "string"
         }
       },
@@ -187,6 +190,9 @@
             "type": "object",
             "properties": {
               "environmentId": {
+                "type": "string"
+              },
+              "name": {
                 "type": "string"
               }
             },
@@ -217,7 +223,7 @@
         "environmentId": {
           "type": "string"
         },
-        "description": {
+        "name": {
           "type": "string"
         },
         "status": {
