@@ -1,4 +1,3 @@
-#![allow(clippy::async_yields_async)]
 // Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
@@ -8,6 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+
+#![allow(clippy::async_yields_async)]
 
 //! Utilities for benchmarking the Restate runtime
 use std::num::NonZeroU64;

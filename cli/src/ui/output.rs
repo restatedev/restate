@@ -1,3 +1,4 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
