@@ -11,7 +11,6 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_core::metadata;
-pub use restate_node_protocol::ingress::IngressCorrelationId;
 use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{
     partitioner, IdempotencyId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,

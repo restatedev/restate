@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::TargetName;
 use crate::define_message;
-use crate::RpcMessage;
 
 #[derive(
     Debug,
