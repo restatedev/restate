@@ -11,6 +11,7 @@
 use bytes::Bytes;
 use bytestring::ByteString;
 use restate_core::metadata;
+pub use restate_node_protocol::ingress::IngressCorrelationId;
 use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{
     partitioner, IdempotencyId, InvocationId, PartitionKey, WithPartitionKey,
@@ -31,14 +32,6 @@ pub mod error;
 pub use dispatcher::{DispatchIngressRequest, IngressDispatcher};
 pub type IngressResponseSender = oneshot::Sender<IngressDispatcherResponse>;
 pub type IngressResponseReceiver = oneshot::Receiver<IngressDispatcherResponse>;
-
-// TODO we could eventually remove this type and replace it with something simpler once
-//  https://github.com/restatedev/restate/issues/1329 is in place
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum IngressCorrelationId {
-    InvocationId(InvocationId),
-    IdempotencyId(IdempotencyId),
-}
 
 #[derive(Debug)]
 enum IngressDispatcherRequestInner {

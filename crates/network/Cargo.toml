@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
+dashmap = { workspace = true }
 drain = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }

@@ -14,6 +14,7 @@ pub mod error;
 mod handshake;
 pub(crate) mod metric_definitions;
 mod networking;
+pub mod rpc_router;
 
 pub use connection::ConnectionSender;
 pub use connection_manager::ConnectionManager;
