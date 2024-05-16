@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use restate_types::logs::metadata::LogletParams;
-use restate_types::logs::{Payload, SequenceNumber};
+use restate_types::logs::SequenceNumber;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
@@ -111,7 +112,7 @@ impl Ord for OffsetWatcher {
 pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
-    log: Mutex<Vec<Payload>>,
+    log: Mutex<Vec<Bytes>>,
     // internal offset of the first record (or slot available)
     trim_point_offset: AtomicU64,
     last_committed_offset: AtomicU64,
@@ -173,7 +174,10 @@ impl MemoryLoglet {
         }
     }
 
-    fn read_after(&self, after: LogletOffset) -> Result<Option<LogRecord<LogletOffset>>, Error> {
+    fn read_after(
+        &self,
+        after: LogletOffset,
+    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, Error> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Acquire));
         // are we reading after before the trim point? Note that if trim_point == after then we
@@ -201,7 +205,7 @@ impl MemoryLoglet {
 impl LogletBase for MemoryLoglet {
     type Offset = LogletOffset;
 
-    async fn append(&self, payload: Payload) -> Result<LogletOffset, Error> {
+    async fn append(&self, payload: Bytes) -> Result<LogletOffset, Error> {
         let mut log = self.log.lock().unwrap();
         let offset = self.index_to_offset(log.len());
         debug!(
@@ -233,24 +237,23 @@ impl LogletBase for MemoryLoglet {
     async fn read_next_single(
         &self,
         after: LogletOffset,
-    ) -> Result<LogRecord<Self::Offset>, Error> {
+    ) -> Result<LogRecord<Self::Offset, Bytes>, Error> {
         loop {
             let next_record = self.read_after(after)?;
             if let Some(next_record) = next_record {
                 break Ok(next_record);
-            } else {
-                // Wait and respond when available.
-                let receiver = self.watch_for_offset(after.next());
-                receiver.await.unwrap();
-                continue;
             }
+            // Wait and respond when available.
+            let receiver = self.watch_for_offset(after.next());
+            receiver.await.unwrap();
+            continue;
         }
     }
 
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset>>, Error> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, Error> {
         self.read_after(after)
     }
 }
@@ -273,19 +276,19 @@ mod tests {
         assert_eq!(None, loglet.find_tail().await?);
 
         // Append 1
-        let offset = loglet.append(Payload::from("record1")).await?;
+        let offset = loglet.append(Bytes::from_static(b"record1")).await?;
         assert_eq!(LogletOffset::OLDEST, offset);
         assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset::OLDEST), loglet.find_tail().await?);
 
         // Append 2
-        let offset = loglet.append(Payload::from("record2")).await?;
+        let offset = loglet.append(Bytes::from_static(b"record2")).await?;
         assert_eq!(LogletOffset(2), offset);
         assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(2)), loglet.find_tail().await?);
 
         // Append 3
-        let offset = loglet.append(Payload::from("record3")).await?;
+        let offset = loglet.append(Bytes::from_static(b"record3")).await?;
         assert_eq!(LogletOffset(3), offset);
         assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(3)), loglet.find_tail().await?);
@@ -296,17 +299,17 @@ mod tests {
         assert_eq!(offset, loglet.get_trim_point().await?.next());
         assert_eq!(LogletOffset::OLDEST, offset);
         assert!(record.is_data());
-        assert_eq!(Payload::from("record1"), record.into_payload_unchecked());
+        assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
 
         // read record 2 (reading next after OLDEST)
         let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
         assert_eq!(LogletOffset(2), offset);
-        assert_eq!(Payload::from("record2"), record.into_payload_unchecked());
+        assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
 
         // read record 3
         let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
         assert_eq!(LogletOffset(3), offset);
-        assert_eq!(Payload::from("record3"), record.into_payload_unchecked());
+        assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
 
         // read from the future returns None
         assert!(loglet
@@ -320,7 +323,7 @@ mod tests {
                 // read future record 4
                 let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(3)).await?;
                 assert_eq!(LogletOffset(4), offset);
-                assert_eq!(Payload::from("record4"), record.into_payload_unchecked());
+                assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
                 Ok(())
             }
         });
@@ -332,7 +335,7 @@ mod tests {
                 // read future record 10
                 let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(9)).await?;
                 assert_eq!(LogletOffset(10), offset);
-                assert_eq!(Payload::from("record10"), record.into_payload_unchecked());
+                assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
                 Ok(())
             }
         });
@@ -342,7 +345,7 @@ mod tests {
         assert!(!handle1.is_finished());
 
         // Append 4
-        let offset = loglet.append(Payload::from("record4")).await?;
+        let offset = loglet.append(Bytes::from_static(b"record4")).await?;
         assert_eq!(LogletOffset(4), offset);
         assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(4)), loglet.find_tail().await?);

@@ -438,7 +438,7 @@ impl LogReader {
     fn deserialize_record(record: Record) -> anyhow::Result<Envelope> {
         match record {
             Record::Data(payload) => {
-                let envelope = Envelope::from_bytes(payload.as_ref())?;
+                let envelope = Envelope::from_bytes(payload.into_body())?;
                 Ok(envelope)
             }
             Record::TrimGap(_) => {
