@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 
 use crate::{build_info, c_println, c_success, cli_env::CliEnv};
 use anyhow::{anyhow, Context, Result};
-use axum::extract::{self};
+use axum::{extract, response::Html};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
@@ -100,12 +100,18 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
             axum::routing::get(
                 |extract::State(state): extract::State<RedirectState>,
                  extract::Query(params): extract::Query<RedirectParams>| async move {
+                    let post_login = include_str!("./postlogin.html");
                     match handle_redirect(&state, params).await {
                         Ok(access_token) => {
                             state.result_send.send(Ok(access_token)).await.expect(
                                 "Expected access_token to be sent successfully over channel",
                             );
-                            "Login Successful! You can close this window."
+                            Html::from(
+                                post_login.replace(
+                                    "MESSAGE",
+                                    "Login Successful! You can close this window.",
+                                ),
+                            )
                         }
                         Err(err) => {
                             state
@@ -113,7 +119,9 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
                                 .send(Err(err))
                                 .await
                                 .expect("Expected error to be sent successfully over channel");
-                            "Login failed – please try again."
+                            Html::from(
+                                post_login.replace("MESSAGE", "Login failed – please try again."),
+                            )
                         }
                     }
                 },
