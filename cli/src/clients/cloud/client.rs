@@ -59,7 +59,7 @@ where
             return Err(Error::Api(Box::new(ApiError {
                 http_status_code,
                 url,
-                body: serde_json::from_str(&body)?,
+                body: serde_json::from_str(&body).unwrap_or(body.into()),
             })));
         }
 

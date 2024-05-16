@@ -20,6 +20,15 @@ pub struct ApiErrorBody {
     message: String,
 }
 
+impl From<String> for ApiErrorBody {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            restate_code: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ApiError {
     pub http_status_code: reqwest::StatusCode,
