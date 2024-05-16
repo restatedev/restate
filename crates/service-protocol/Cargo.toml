@@ -28,16 +28,19 @@ bytes = { workspace = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
+itertools = { workspace = true }
+once_cell = { workspace = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
+regress = { version = "0.9", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 size = { version = "0.4.1", optional = true }
+strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["time"] }
 tracing = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-regress = { version = "0.9", optional = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }

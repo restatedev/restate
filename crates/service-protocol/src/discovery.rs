@@ -15,11 +15,17 @@ use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
+use itertools::Itertools;
+use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013};
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
 use restate_types::retries::{RetryIter, RetryPolicy};
+use restate_types::service_discovery::{
+    ServiceDiscoveryProtocolVersion, MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+    MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
+};
 use restate_types::service_protocol::{
     ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
     MIN_SERVICE_PROTOCOL_VERSION,
@@ -27,12 +33,43 @@ use restate_types::service_protocol::{
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::ops::RangeInclusive;
+use std::ops::{Deref, RangeInclusive};
+use strum::IntoEnumIterator;
 use tracing::warn;
 
-const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
+const SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v1+json";
+static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: Lazy<HeaderValue> = Lazy::new(|| {
+    let supported_versions = ServiceDiscoveryProtocolVersion::iter()
+        .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
+        .take_while(|version| version <= &MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION)
+        .map(service_discovery_protocol_to_content_type)
+        .join(", ");
+    HeaderValue::from_str(&supported_versions)
+        .expect("header value to contain only valid characters")
+});
 
 const DISCOVER_PATH: &str = "/discover";
+
+fn service_discovery_protocol_to_content_type(
+    version: ServiceDiscoveryProtocolVersion,
+) -> &'static str {
+    match version {
+        ServiceDiscoveryProtocolVersion::Unspecified => {
+            unreachable!("unspecified protocol version should never be used")
+        }
+        ServiceDiscoveryProtocolVersion::V1 => SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
+    }
+}
+
+fn parse_service_discovery_protocol_version_from_content_type(
+    content_type: &str,
+) -> Option<ServiceDiscoveryProtocolVersion> {
+    match content_type {
+        SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V1),
+        _ => None,
+    }
+}
 
 #[derive(Clone)]
 pub struct DiscoverEndpoint(Endpoint, HashMap<HeaderName, HeaderValue>);
@@ -51,7 +88,12 @@ impl DiscoverEndpoint {
     }
 
     fn request(&self) -> Request<Body> {
-        let mut headers = HeaderMap::from_iter([(ACCEPT, APPLICATION_JSON)]);
+        let mut headers = HeaderMap::from_iter([(
+            ACCEPT,
+            SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
+                .deref()
+                .clone(),
+        )]);
         headers.extend(self.1.clone());
         let path = PathAndQuery::from_static(DISCOVER_PATH);
         Request::new(Parts::new(self.0.clone(), path, headers), Body::empty())
@@ -143,28 +185,62 @@ impl ServiceDiscovery {
         )
         .await?;
 
-        // Validate response parts.
+        // Retrieve chosen service discovery protocol version.
         // No need to retry these: if the validation fails, they're sdk bugs.
         let content_type = parts.headers.remove(CONTENT_TYPE);
+        let service_discovery_protocol_version =
+            Self::retrieve_service_discovery_protocol_version(content_type)?;
+
+        let response = match service_discovery_protocol_version {
+            ServiceDiscoveryProtocolVersion::Unspecified => {
+                unreachable!("unspecified service discovery protocol should not be chosen")
+            }
+            ServiceDiscoveryProtocolVersion::V1 => {
+                serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
+            }
+        };
+
+        Self::create_discovered_metadata_from_endpoint_response(response)
+    }
+
+    fn retrieve_service_discovery_protocol_version(
+        content_type: Option<HeaderValue>,
+    ) -> Result<ServiceDiscoveryProtocolVersion, DiscoveryError> {
         match content_type {
             // False positive with Bytes field
             #[allow(clippy::borrow_interior_mutable_const)]
-            Some(ct) if ct == APPLICATION_JSON => {}
             Some(ct) => {
-                return Err(DiscoveryError::BadResponse(
-                    format!("Bad content type header: {ct:?}").into(),
-                ));
+                let content_type = ct.to_str().map_err(|e| {
+                    DiscoveryError::BadResponse(
+                        format!("Could not parse content type header: {e}").into(),
+                    )
+                })?;
+                let service_discovery_protocol_version =
+                    parse_service_discovery_protocol_version_from_content_type(content_type)
+                        .ok_or_else(|| {
+                            DiscoveryError::BadResponse(
+                                format!(
+                                    "Bad content type header: {ct:?}. Expected one of '{:?}'",
+                                    SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS.deref()
+                                )
+                                .into(),
+                            )
+                        })?;
+
+                if !service_discovery_protocol_version.is_supported() {
+                    return Err(DiscoveryError::BadResponse(format!("The returned service discovery protocol version '{}' is not supported by the server.", service_discovery_protocol_version.as_repr()).into()));
+                }
+
+                Ok(service_discovery_protocol_version)
             }
-            None => {
-                return Err(DiscoveryError::BadResponse(format!("No content type header was specified. Expected '{APPLICATION_JSON:?}' content type.").into()))
-            }
+            None => Err(DiscoveryError::BadResponse(
+                format!(
+                    "No content type header was specified. Expected one of '{:?}' content type.",
+                    SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS.deref()
+                )
+                .into(),
+            )),
         }
-
-        // Parse the response
-        let response: endpoint_manifest::Endpoint =
-            serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?;
-
-        Self::create_discovered_metadata_from_endpoint_response(response)
     }
 
     fn create_discovered_metadata_from_endpoint_response(
@@ -284,8 +360,12 @@ impl ServiceDiscovery {
 #[cfg(test)]
 mod tests {
     use crate::discovery::endpoint_manifest::ProtocolMode;
-    use crate::discovery::{DiscoveryError, ServiceDiscovery};
+    use crate::discovery::{
+        parse_service_discovery_protocol_version_from_content_type, DiscoveryError,
+        ServiceDiscovery, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
+    };
     use restate_types::endpoint_manifest;
+    use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
     use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
 
     #[test]
@@ -345,6 +425,27 @@ mod tests {
 
         assert!(
             matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
+        );
+    }
+
+    #[test]
+    fn parse_service_discovery_protocol_version() {
+        assert_eq!(
+            parse_service_discovery_protocol_version_from_content_type(
+                SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE
+            ),
+            Some(ServiceDiscoveryProtocolVersion::V1)
+        );
+
+        assert_eq!(
+            parse_service_discovery_protocol_version_from_content_type(
+                "application/vnd.restate.endpointmanifest.v1+protobuf"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_service_discovery_protocol_version_from_content_type("foobar"),
+            None
         );
     }
 }

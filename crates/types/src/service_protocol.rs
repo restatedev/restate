@@ -29,8 +29,8 @@ impl ServiceProtocolVersion {
             && max_version >= i32::from(MIN_SERVICE_PROTOCOL_VERSION)
     }
 
-    pub fn is_supported(version: ServiceProtocolVersion) -> bool {
-        MIN_SERVICE_PROTOCOL_VERSION <= version && version <= MAX_SERVICE_PROTOCOL_VERSION
+    pub fn is_supported(&self) -> bool {
+        MIN_SERVICE_PROTOCOL_VERSION <= *self && *self <= MAX_SERVICE_PROTOCOL_VERSION
     }
 
     pub fn choose_max_supported_version(

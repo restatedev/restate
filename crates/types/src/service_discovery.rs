@@ -12,3 +12,20 @@ include!(concat!(
     env!("OUT_DIR"),
     "/dev.restate.service.discovery.rs"
 ));
+
+/// Min/max supported service discovery protocol versions by this server version.
+pub const MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION: ServiceDiscoveryProtocolVersion =
+    ServiceDiscoveryProtocolVersion::V1;
+pub const MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION: ServiceDiscoveryProtocolVersion =
+    ServiceDiscoveryProtocolVersion::V1;
+
+impl ServiceDiscoveryProtocolVersion {
+    pub fn as_repr(&self) -> i32 {
+        i32::from(*self)
+    }
+
+    pub fn is_supported(&self) -> bool {
+        MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION <= *self
+            && *self <= MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION
+    }
+}

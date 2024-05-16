@@ -412,8 +412,7 @@ where
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
-                if !ServiceProtocolVersion::is_supported(pinned_deployment.service_protocol_version)
-                {
+                if !pinned_deployment.service_protocol_version.is_supported() {
                     shortcircuit!(Err(InvocationTaskError::UnsupportedServiceProtocolVersion(
                         pinned_deployment.service_protocol_version
                     )));

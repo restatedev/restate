@@ -22,6 +22,10 @@ fn main() -> std::io::Result<()> {
             "protocol.ServiceProtocolVersion",
             "#[derive(::serde::Serialize, ::serde::Deserialize, ::strum_macros::FromRepr)]",
         )
+        .enum_attribute(
+            "discovery.ServiceDiscoveryProtocolVersion",
+            "#[derive(::strum_macros::EnumIter, ::strum_macros::FromRepr)]",
+        )
         .compile_protos(
             &[
                 "service-protocol/dev/restate/service/protocol.proto",
