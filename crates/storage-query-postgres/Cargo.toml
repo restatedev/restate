@@ -29,7 +29,6 @@ codederror = { workspace = true }
 datafusion = { workspace = true }
 datafusion-expr = { workspace = true }
 derive_builder = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 paste = { workspace = true}
 pgwire = "0.15"
