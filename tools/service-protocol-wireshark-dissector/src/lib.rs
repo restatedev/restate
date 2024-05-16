@@ -30,7 +30,7 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
 
     // We should store it somewhere, but right now wireshark doesn't support conversations in lua api
     // so we just keep it simple and assume all messages are self contained within the same http data frame
-    // https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&cad=rja&uact=8&ved=2ahUKEwihmdPY68f9AhVPjqQKHQPLBIQQFnoECBEQAQ&url=https%3A%2F%2Fask.wireshark.org%2Fquestion%2F11650%2Flua-wireshark-dissector-combine-data-from-2-udp-packets%2F&usg=AOvVaw0c4wqIkCFxhH57-TRu7wnV
+    // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
     let mut dec = Decoder::default();
 
     // Convert the buffer and push it to the decoder
