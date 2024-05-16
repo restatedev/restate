@@ -9,8 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
+use crate::flexbuffers_storage_encode_decode;
 use crate::identifiers::PartitionId;
+use crate::time::MillisSinceEpoch;
 
 pub mod metadata;
 
@@ -26,8 +29,8 @@ pub mod metadata;
     derive_more::Display,
     derive_more::From,
     derive_more::Into,
-    serde::Serialize,
-    serde::Deserialize,
+    Serialize,
+    Deserialize,
 )]
 pub struct LogId(u64);
 
@@ -59,8 +62,8 @@ impl From<PartitionId> for LogId {
     derive_more::From,
     derive_more::Add,
     derive_more::Display,
-    serde::Serialize,
-    serde::Deserialize,
+    Serialize,
+    Deserialize,
 )]
 pub struct Lsn(u64);
 
@@ -106,28 +109,71 @@ where
     fn prev(self) -> Self;
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Header {
+    created_at: MillisSinceEpoch,
+    // additional custom headers can be added here. Those should be somewhat
+    // generic and values must be optional.
+    pub custom_data_1: Option<u64>,
+}
+
+impl Default for Header {
+    fn default() -> Self {
+        Self {
+            created_at: MillisSinceEpoch::now(),
+            custom_data_1: None,
+        }
+    }
+}
+
+/// Owned payload that loglets accept and return as is. This payload is converted
+/// into Payload by bifrost on read and write.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Envelope {
+    header: Header,
+    body: Bytes,
+}
+
 /// Owned payload.
-#[derive(
-    Debug,
-    Clone,
-    Default,
-    Eq,
-    PartialEq,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Deref,
-    derive_more::DerefMut,
-)]
-pub struct Payload(Bytes);
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Payload {
+    header: Header,
+    body: Bytes,
+}
 
-impl From<&str> for Payload {
-    fn from(value: &str) -> Self {
-        Payload(Bytes::copy_from_slice(value.as_bytes()))
+impl Payload {
+    pub fn new(body: impl Into<Bytes>) -> Self {
+        Self {
+            header: Header::default(),
+            body: body.into(),
+        }
+    }
+
+    /// Sets the custom data 1 field on the record header
+    pub fn with_custom_data_1(mut self, value: u64) -> Self {
+        self.header.custom_data_1 = Some(value);
+        self
+    }
+
+    pub fn body(&self) -> &Bytes {
+        &self.body
+    }
+
+    pub fn split(self) -> (Header, Bytes) {
+        (self.header, self.body)
+    }
+
+    pub fn into_body(self) -> Bytes {
+        self.body
+    }
+
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    pub fn into_header(self) -> Header {
+        self.header
     }
 }
 
-impl From<String> for Payload {
-    fn from(value: String) -> Self {
-        Payload(Bytes::from(value))
-    }
-}
+flexbuffers_storage_encode_decode!(Payload);
