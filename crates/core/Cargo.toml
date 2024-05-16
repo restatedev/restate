@@ -20,10 +20,8 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
-bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
@@ -52,7 +50,6 @@ restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
 rand = { workspace = true }
-test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

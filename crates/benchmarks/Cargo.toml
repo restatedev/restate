@@ -20,7 +20,6 @@ restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
