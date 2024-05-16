@@ -116,7 +116,7 @@ mod tests {
                     info!(?record, "read record");
                     assert_eq!(expected_lsn, record.offset);
                     assert_eq!(
-                        Payload::from(format!("record{}", expected_lsn)),
+                        Payload::new(format!("record{}", expected_lsn)),
                         record.record.into_payload_unchecked()
                     );
                     assert_eq!(expected_lsn, reader.current_read_pointer());
@@ -133,7 +133,7 @@ mod tests {
             // append 5 records to the log
             for i in 1..=5 {
                 let lsn = bifrost
-                    .append(LogId::from(0), format!("record{}", i).into())
+                    .append(LogId::from(0), Payload::new(format!("record{}", i)))
                     .await?;
                 info!(?lsn, "appended record");
             }
@@ -147,7 +147,7 @@ mod tests {
             // write 5 more records.
             for i in 6..=10 {
                 bifrost
-                    .append(LogId::from(0), format!("record{}", i).into())
+                    .append(LogId::from(0), Payload::new(format!("record{}", i)))
                     .await?;
             }
 
