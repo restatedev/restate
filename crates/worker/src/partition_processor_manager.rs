@@ -397,7 +397,7 @@ impl PartitionProcessorManager {
                 leader_epoch,
             }),
         );
-        let payload = Payload::from(envelope.to_bytes()?);
+        let payload = Payload::new(envelope.to_bytes()?);
 
         bifrost
             .append(LogId::from(partition_id), payload)

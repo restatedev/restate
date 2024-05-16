@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use bytes::Bytes;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
-use restate_types::logs::{Lsn, Payload, SequenceNumber};
+use restate_types::logs::{Lsn, SequenceNumber};
 
 use crate::{Error, LogRecord, LsnExt, ProviderError};
 
@@ -104,7 +105,7 @@ pub trait LogletBase: Send + Sync {
     type Offset: SequenceNumber;
 
     /// Append a record to the loglet.
-    async fn append(&self, payload: Payload) -> Result<Self::Offset, Error>;
+    async fn append(&self, data: Bytes) -> Result<Self::Offset, Error>;
 
     /// Find the tail of the loglet. If the loglet is empty or have been trimmed, the loglet should
     /// return `None`.
@@ -116,22 +117,24 @@ pub trait LogletBase: Send + Sync {
 
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
     /// defined for the loglet.
-    async fn read_next_single(&self, after: Self::Offset)
-        -> Result<LogRecord<Self::Offset>, Error>;
+    async fn read_next_single(
+        &self,
+        after: Self::Offset,
+    ) -> Result<LogRecord<Self::Offset, Bytes>, Error>;
 
     /// Read the next record if it's been committed, otherwise, return None without waiting.
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset>>, Error>;
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, Error>;
 }
 
 #[async_trait]
 impl LogletBase for LogletWrapper {
     type Offset = Lsn;
 
-    async fn append(&self, payload: Payload) -> Result<Lsn, Error> {
-        let offset = self.loglet.append(payload).await?;
+    async fn append(&self, data: Bytes) -> Result<Lsn, Error> {
+        let offset = self.loglet.append(data).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
@@ -146,7 +149,7 @@ impl LogletBase for LogletWrapper {
         Ok(self.base_lsn.offset_by(offset))
     }
 
-    async fn read_next_single(&self, after: Lsn) -> Result<LogRecord<Lsn>, Error> {
+    async fn read_next_single(&self, after: Lsn) -> Result<LogRecord<Lsn, Bytes>, Error> {
         // convert LSN to loglet offset
         let offset = after.into_offset(self.base_lsn);
         self.loglet
@@ -158,7 +161,7 @@ impl LogletBase for LogletWrapper {
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset>>, Error> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, Error> {
         let offset = after.into_offset(self.base_lsn);
         self.loglet
             .read_next_single_opt(offset)
