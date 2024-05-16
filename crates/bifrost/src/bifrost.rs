@@ -18,13 +18,13 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
+use tracing::{error, instrument};
 
 use restate_core::{metadata, Metadata, MetadataKind};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
-use tracing::{error, instrument};
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
