@@ -14,14 +14,32 @@ use anyhow::{Context, Result};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
-use std::future::Future;
+use std::{future::Future, str::FromStr};
 use toml_edit::{table, value, DocumentMut};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_configure")]
-pub struct Configure {}
+pub struct Configure {
+    /// The Cloud environment to configure the CLI for.
+    /// Format: [ACCOUNT/]ENVIRONMENT where ACCOUNT and ENVIRONMENT may be either names or IDs.
+    environment_specifier: Option<EnvironmentSpecifier>,
+}
 
-pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Result<()> {
+#[derive(Clone)]
+struct EnvironmentSpecifier(Option<String>, String);
+
+impl FromStr for EnvironmentSpecifier {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once('/') {
+            Some((account, environment)) => Ok(Self(Some(account.into()), environment.into())),
+            None => Ok(Self(None, s.into())),
+        }
+    }
+}
+
+pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Result<()> {
     let config_data = if env.config_file.is_file() {
         std::fs::read_to_string(env.config_file.as_path())?
     } else {
@@ -40,14 +58,35 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
     .await?
     .accounts;
 
-    let account_i = match accounts.len() {
-        0 => {
-            return Err(anyhow::anyhow!(
-                "No accounts set up; use the Restate Cloud UI to create your first account"
-            ))
+    let (account, environment) =
+        if let Some(EnvironmentSpecifier(account, environment)) = &opts.environment_specifier {
+            (
+                account.as_ref().map(String::as_str),
+                Some(environment.as_str()),
+            )
+        } else {
+            (None, None)
+        };
+
+    let account_i = if let Some(account) = account {
+        match accounts
+            .iter()
+            .find_position(|acc| acc.account_id == account)
+            .or(accounts.iter().find_position(|env| env.name == account))
+        {
+            Some((i, _)) => i,
+            None => return Err(anyhow::anyhow!("Couldn't find account {account}",)),
         }
-        1 => 0,
-        _ => account_picker(&accounts)?,
+    } else {
+        match accounts.len() {
+            0 => {
+                return Err(anyhow::anyhow!(
+                    "No accounts set up; use the Restate Cloud UI to create your first account"
+                ))
+            }
+            1 => 0,
+            _ => account_picker(&accounts)?,
+        }
     };
 
     let environments = with_progress("Listing environments...", async {
@@ -60,14 +99,32 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
     .await?
     .environments;
 
-    let environment_i = match environments.len() {
-        0 => {
-            return Err(anyhow::anyhow!(
+    let environment_i = if let Some(environment) = environment {
+        match environments
+            .iter()
+            .find_position(|env| env.environment_id == environment)
+            .or(environments
+                .iter()
+                .find_position(|env| env.name == environment))
+        {
+            Some((i, _)) => i,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Couldn't find environment {environment} in account {}",
+                    accounts[account_i].name,
+                ))
+            }
+        }
+    } else {
+        match environments.len() {
+            0 => {
+                return Err(anyhow::anyhow!(
                 "No environments set up; use the Restate Cloud UI to create your first environment"
             ))
+            }
+            1 => 0,
+            _ => environment_picker(&environments)?,
         }
-        1 => 0,
-        _ => environment_picker(&environments)?,
     };
 
     let environment = with_progress("Describing environment...", async {
