@@ -1,0 +1,22 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/service-protocol/blob/main/LICENSE
+
+syntax = "proto3";
+
+package dev.restate.service.discovery;
+
+option java_package = "dev.restate.generated.service.discovery";
+option go_package = "restate.dev/sdk-go/pb/service/discovery";
+
+// Service discovery protocol version.
+enum ServiceDiscoveryProtocolVersion {
+  SERVICE_DISCOVERY_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  // initial service discovery protocol version using endpoint_manifest_schema.json
+  V1 = 1;
+}

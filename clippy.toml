@@ -1,2 +1,0 @@
-# https://github.com/rust-lang/rust-clippy/issues/9801
-ignore-interior-mutability = ["bytes::Bytes", "bytestring::ByteString", "http::header::HeaderName", "http::header::HeaderValue"]
