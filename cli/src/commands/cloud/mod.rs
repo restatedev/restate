@@ -44,12 +44,10 @@ impl Default for CloudConfig {
         Self {
             environment_info: None,
             // TODO; move to production URLs
-            api_base_url: Url::parse("https://api.dev.restate.cloud").unwrap(),
-            login_base_url: Url::parse(
-                "https://restate-cloud-signup-test.auth.eu-central-1.amazoncognito.com",
-            )
-            .unwrap(),
-            client_id: "1v1rkegmilgjlphium3ksgurek".into(),
+            api_base_url: Url::parse("https://api.us.restate.cloud").unwrap(),
+            login_base_url: Url::parse("https://restate-cloud.auth.us-east-2.amazoncognito.com")
+                .unwrap(),
+            client_id: "5q3dsdnrr5r400jvibd8d3k66l".into(),
             redirect_ports: vec![33912, 44643, 47576, 54788, 61844],
             credentials: None,
         }
