@@ -462,6 +462,12 @@ impl DiscoveredHandlerMetadata {
             (ServiceType::VirtualObject, Some(schema::HandlerType::Shared)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
+            (ServiceType::Workflow, None | Some(schema::HandlerType::Shared)) => {
+                InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
+            }
+            (ServiceType::Workflow, Some(schema::HandlerType::Workflow)) => {
+                InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+            }
             _ => {
                 return Err(ServiceError::BadServiceAndHandlerType(
                     service_type,
