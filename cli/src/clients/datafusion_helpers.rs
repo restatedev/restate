@@ -860,6 +860,7 @@ fn parse_service_type(s: &str) -> ServiceType {
     match s {
         "service" => ServiceType::Service,
         "virtual_object" => ServiceType::VirtualObject,
+        "workflow" => ServiceType::Workflow,
         _ => panic!("Unexpected instance type"),
     }
 }
