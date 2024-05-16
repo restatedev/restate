@@ -1,14 +1,14 @@
 use crate::{
     c_success,
     cli_env::CliEnv,
-    clients::{
-        cloud::generated::{
+    clients::cloud::{
+        generated::{
             DescribeEnvironmentResponse, ListAccountsResponseAccountsItem,
             ListEnvironmentsResponseEnvironmentsItem,
         },
-        cloud::{CloudClient, CloudClientInterface},
+        CloudClient, CloudClientInterface,
     },
-    console::{choose, input},
+    console::{choose, confirm_or_exit, input},
 };
 use anyhow::{Context, Result};
 use cling::prelude::*;
@@ -83,13 +83,11 @@ pub async fn run_configure(State(env): State<CliEnv>, _opts: &Configure) -> Resu
     .await?;
 
     let profiles = list_profiles(&doc)?;
-    let profile = profile_input(
-        &profiles,
-        environments[environment_i]
-            .name
-            .as_deref()
-            .unwrap_or(&environments[environment_i].environment_id),
-    )?;
+    let profile = profile_input(&profiles, &environments[environment_i].name)?;
+
+    if profiles.contains(&profile) {
+        confirm_or_exit(&env, "Overwrite existing profile {profile}?")?
+    }
 
     write_environment(
         &mut doc,
@@ -133,14 +131,7 @@ async fn with_progress<T>(msg: &'static str, f: impl Future<Output = T>) -> T {
 fn account_picker(accounts: &[ListAccountsResponseAccountsItem]) -> Result<usize> {
     choose(
         "Select an Account:",
-        accounts
-            .iter()
-            .map(|acc| match acc.description.as_deref() {
-                Some(description) => format!("{description} ({})", &acc.account_id),
-                None => acc.account_id.to_string(),
-            })
-            .collect_vec()
-            .as_ref(),
+        accounts.iter().map(|acc| &acc.name).collect_vec().as_ref(),
     )
 }
 
@@ -149,10 +140,7 @@ fn environment_picker(environments: &[ListEnvironmentsResponseEnvironmentsItem])
         "Select an Environment:",
         environments
             .iter()
-            .map(|env| match env.name.as_deref() {
-                Some(name) => format!("{name} ({})", env.environment_id),
-                None => env.environment_id.to_string(),
-            })
+            .map(|env| &env.name)
             .collect_vec()
             .as_ref(),
     )
@@ -172,7 +160,7 @@ fn profile_input(profiles: &[String], environment_name: &str) -> Result<String> 
             "Choose a friendly name for the Environment for use with the CLI.\n  Current names: [{}]\n",
             profiles.join(", ")
         ),
-        environment_name.replace(' ', "-"),
+        environment_name.into(),
     )
 }
 

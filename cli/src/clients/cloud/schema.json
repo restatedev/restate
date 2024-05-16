@@ -89,12 +89,13 @@
               "accountId": {
                 "type": "string"
               },
-              "description": {
+              "name": {
                 "type": "string"
               }
             },
             "required": [
-              "accountId"
+              "accountId",
+              "name"
             ]
           }
         }
@@ -106,20 +107,27 @@
     "CreateAccountRequest": {
       "type": "object",
       "properties": {
-        "description": {
+        "name": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     },
     "CreateAccountResponse": {
       "type": "object",
       "properties": {
         "accountId": {
           "type": "string"
+        },
+        "name": {
+          "type": "string"
         }
       },
       "required": [
-        "accountId"
+        "accountId",
+        "name"
       ]
     },
     "UpdateAccountRequest": {
@@ -128,9 +136,8 @@
         "accountId": {
           "type": "string"
         },
-        "description": {
-          "type": "string",
-          "nullable": true
+        "name": {
+          "type": "string"
         }
       },
       "required": [
@@ -143,12 +150,13 @@
         "accountId": {
           "type": "string"
         },
-        "description": {
+        "name": {
           "type": "string"
         }
       },
       "required": [
-        "accountId"
+        "accountId",
+        "name"
       ]
     },
     "AccountId": {
@@ -162,7 +170,10 @@
         "name": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     },
     "CreateEnvironmentResponse": {
       "type": "object",
@@ -175,7 +186,8 @@
         }
       },
       "required": [
-        "environmentId"
+        "environmentId",
+        "name"
       ]
     },
     "ListEnvironmentsRequest": {
@@ -197,7 +209,8 @@
               }
             },
             "required": [
-              "environmentId"
+              "environmentId",
+              "name"
             ]
           }
         }
@@ -265,6 +278,7 @@
       },
       "required": [
         "environmentId",
+        "name",
         "status",
         "apiKeys",
         "ingressBaseUrl",
