@@ -19,6 +19,7 @@ restate-serde-util = { workspace = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+base62 = { version = "2.0.2" }
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -31,6 +32,7 @@ flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
+num-traits = { version = "0.2.17" }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
 rand = { workspace = true }
@@ -49,12 +51,6 @@ toml = { version = "0.8.12" }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
-
-base62 = { version = "2.0.2" }
-# See this https://github.com/jonasbb/serde_with/issues/355#issuecomment-909512315
-cfg_eval = { version = "0.1.2" }
-num-traits = { version = "0.2.17" }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]

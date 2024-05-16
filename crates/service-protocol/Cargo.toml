@@ -42,7 +42,6 @@ regress = { version = "0.9", optional = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
-test-log = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

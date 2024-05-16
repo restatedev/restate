@@ -13,7 +13,6 @@ test-util = []
 
 [dependencies]
 restate-core = { workspace = true }
-restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 
@@ -24,7 +23,6 @@ bytestring = { workspace = true, features = ["serde"] }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
-drain = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 humantime = { workspace = true }
 metrics = { workspace = true }
@@ -46,13 +44,13 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
+restate-metadata-store = { workspace = true }
 restate-test-util = { workspace = true }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 futures = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }
-test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

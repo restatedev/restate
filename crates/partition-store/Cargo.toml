@@ -24,7 +24,6 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
-drain = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
@@ -54,7 +53,6 @@ googletest = { workspace = true }
 num-bigint = "0.4"
 rand = { workspace = true }
 tempfile = { workspace = true }
-test-log = { workspace = true }
 
 [[bench]]
 name = "basic_benchmark"

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = ["serde"]
-serde = ["dep:serde", "dep:bincode", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde", "restate-storage-api/serde"]
+serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde", "restate-storage-api/serde"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
@@ -20,15 +20,12 @@ restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
-assert2 = { workspace = true }
 async-trait = { workspace = true }
-bincode = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
-drain = { workspace = true }
 enum-map = { workspace = true }
 flexbuffers = {  workspace = true }
 once_cell = { workspace = true }
@@ -47,7 +44,6 @@ tracing = { workspace = true }
 restate-test-util = { workspace = true }
 
 googletest = { workspace = true }
-test-log = { workspace = true }
-tracing-test = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+assert2 = { workspace = true }
