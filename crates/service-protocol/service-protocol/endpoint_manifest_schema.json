@@ -1,9 +1,9 @@
 {
-  "$id": "https://restate.dev/deployment.manifest.json",
+  "$id": "https://restate.dev/endpoint.manifest.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "title": "Deployment",
-  "description": "Restate deployment manifest",
+  "title": "Endpoint",
+  "description": "Restate endpoint manifest v1",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
@@ -11,11 +11,15 @@
     },
     "minProtocolVersion": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "Minimum supported protocol version"
     },
     "maxProtocolVersion": {
       "type": "integer",
-      "maximum": 0
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "Maximum supported protocol version"
     },
     "services": {
       "type": "array",
@@ -29,7 +33,7 @@
           },
           "ty": {
             "title": "ServiceType",
-            "enum": ["VIRTUAL_OBJECT", "SERVICE"]
+            "enum": ["VIRTUAL_OBJECT", "SERVICE", "WORKFLOW"]
           },
           "handlers": {
             "type": "array",
@@ -43,8 +47,8 @@
                 },
                 "ty": {
                   "title": "HandlerType",
-                  "enum": ["EXCLUSIVE", "SHARED"],
-                  "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object. This should be unset for Services."
+                  "enum": ["WORKFLOW", "EXCLUSIVE", "SHARED"],
+                  "description": "If unspecified, defaults to EXCLUSIVE for Virtual Object or WORKFLOW for Workflows. This should be unset for Services."
                 },
                 "input": {
                   "type": "object",

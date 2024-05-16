@@ -8,6 +8,6 @@ This repo contains specification documents and Protobuf schemas of the Restate S
 
 To format the spec document:
 
-```
+```shell
 npx prettier -w service-invocation-protocol.md
 ```

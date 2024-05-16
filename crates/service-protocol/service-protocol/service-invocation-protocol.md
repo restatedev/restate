@@ -133,7 +133,15 @@ The `EndMessage` marks the end of the invocation lifecycle, that is the end of t
 
 ### Initiating the stream
 
-When opening the stream, the HTTP request method MUST be `POST` and the request path MUST have the following format:
+As described above, the runtime opens an HTTP request to the SDK to initiate the message stream.
+
+#### Method
+
+The request method used is always `POST`.
+
+#### Path
+
+The request path has the following format:
 
 ```
 /invoke/{serviceName}/{handlerName}
@@ -150,9 +158,28 @@ An arbitrary path MAY prepend the aforementioned path format.
 In case the path format is not respected, or `serviceName` or `handlerName` is unknown, the SDK MUST close the stream
 replying back with a `404` status code.
 
-In case the invocation is accepted, `200` status code MUST be returned.
+#### Content type and protocol version
 
-Additionally, the header `x-restate-server` MAY be sent back, with the following format:
+The request contains the content-type `application/vnd.restate.invocation.vX` where `X` is the service protocol version
+chosen by the runtime, e.g.:
+
+```http request
+content-type: application/vnd.restate.invocation.v1
+```
+
+The service protocol version is defined by `ServiceProtocolVersion` in
+[`protocol.proto`](dev/restate/service/protocol.proto).
+
+The SDK MUST return back the same content-type in the successful response case. If the SDK doesn't support the
+content-type, It SHOULD close the stream replying back with a `415` status code.
+
+#### Stream ready
+
+To notify that the stream is ready to be used, the SDK MUST reply with `200` status code.
+
+#### SDK version
+
+The SDK MAY send back the response header `x-restate-server`:
 
 ```http request
 x-restate-server: <sdk-name> / <sdk-version>
@@ -198,15 +225,14 @@ The `StartMessage` carries the metadata required to bootstrap the invocation sta
     0                   1                   2                   3
     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-    |             0x0000            | Reserved  |         PV        |
+    |             0x0000            |            Reserved           |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
 Flags:
 
-- 6 bits (MSB): Reserved
-- 10 bits `PV`: Protocol version. Mask: `0x0000_03FF_0000_0000`
+- 16 bits: Reserved
 
 ### Entries and Completions
 
@@ -319,6 +345,9 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 | `ClearStateEntryMessage`        | `0x0801` | No          | No       | Clear the value of a service instance state key.                                                                                                                 |
 | `ClearAllStateEntryMessage`     | `0x0802` | No          | No       | Clear all the values of the service instance state.                                                                                                              |
 | `RunEntryMessage`               | `0x0C05` | No          | No       | Run non-deterministic user provided code and persist the result.                                                                                                 |
+| `GetPromiseEntryMessage`        | `0x0808` | Yes         | No       | Get or wait the value of the given promise. If the value is not present yet, this entry will block waiting for the value.                                        |
+| `PeekPromiseEntryMessage`       | `0x0809` | Yes         | No       | Get the value of the given promise. If the value is not present, this entry completes immediately with empty completion.                                         |
+| `CompletePromiseEntryMessage`   | `0x080A` | Yes         | No       | Complete the given promise. If the promise was completed already, this entry completes with a failure.                                                           |
 
 #### Awakeable identifier
 
@@ -379,6 +408,29 @@ closing the stream afterward.
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     |                             Length                            |
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+## Endpoint discovery
+
+Restate expects SDKs to provide reflective information about the exposed services and the supported protocol versions at
+`/discovery`. These reflective information are propagated through an _endpoint manifest_. This document MUST follow the
+schema defined in [endpoint_manifest_schema.json](./endpoint_manifest_schema.json) and is identified by the content-type
+string `application/vnd.restate.endpointmanifest.vX+json`, where `X` is the manifest version.
+
+When sending the discovery request, the Restate runtime might specify a set of supported endpoint manifest schemas in
+the [`Accept`](https://httpwg.org/specs/rfc9110.html#field.accept) header, for example:
+
+```http
+accept: application/vnd.restate.endpointmanifest.v2+json, application/vnd.restate.endpointmanifest.v1+json
+```
+
+When replying, the content-type MUST contain the chosen endpoint manifest type/version:
+
+```http
+content-type: application/vnd.restate.endpointmanifest.v1+json
+```
+
+The service discovery protocol version is defined by `ServiceDiscoveryProtocolVersion` in
+[`discovery.proto`](dev/restate/service/discovery.proto).
 
 ## Optional features
 

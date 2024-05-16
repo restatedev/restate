@@ -14,6 +14,13 @@ package dev.restate.service.protocol;
 option java_package = "dev.restate.generated.service.protocol";
 option go_package = "restate.dev/sdk-go/pb/service/protocol";
 
+// Service protocol version.
+enum ServiceProtocolVersion {
+  SERVICE_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  // initial service protocol version
+  V1 = 1;
+}
+
 // --- Core frames ---
 
 // Type: 0x0000 + 0
@@ -195,6 +202,60 @@ message GetStateKeysEntryMessage {
     StateKeys value = 14;
     Failure failure = 15;
   };
+
+  // Entry name
+  string name = 12;
+}
+
+// Completable: Yes
+// Fallible: No
+// Type: 0x0800 + 8
+message GetPromiseEntryMessage {
+  string key = 1;
+
+  oneof result {
+    bytes value = 14;
+    Failure failure = 15;
+  };
+
+  // Entry name
+  string name = 12;
+}
+
+// Completable: Yes
+// Fallible: No
+// Type: 0x0800 + 9
+message PeekPromiseEntryMessage {
+  string key = 1;
+
+  oneof result {
+    Empty empty = 13;
+    bytes value = 14;
+    Failure failure = 15;
+  };
+
+  // Entry name
+  string name = 12;
+}
+
+// Completable: Yes
+// Fallible: No
+// Type: 0x0800 + A
+message CompletePromiseEntryMessage {
+  string key = 1;
+
+  // The value to use to complete the promise
+  oneof completion {
+    bytes completion_value = 2;
+    Failure completion_failure = 3;
+  };
+
+  oneof result {
+    // Returns empty if value was set successfully
+    Empty empty = 13;
+    // Returns a failure if the promise was already completed
+    Failure failure = 15;
+  }
 
   // Entry name
   string name = 12;
