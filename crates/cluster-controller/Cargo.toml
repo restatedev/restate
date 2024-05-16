@@ -19,6 +19,7 @@ restate-node-protocol = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 drain = { workspace = true }

@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::PartitionId;
 use serde::{Deserialize, Serialize};
+
+use restate_types::identifiers::PartitionId;
+use restate_types::processors::RunMode;
 
 use crate::common::{KeyRange, RequestId, TargetName};
 use crate::define_rpc;
@@ -30,12 +32,6 @@ pub struct AttachRequest {
 pub struct AttachResponse {
     pub request_id: RequestId,
     pub actions: Vec<Action>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
-pub enum RunMode {
-    Leader,
-    Follower,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

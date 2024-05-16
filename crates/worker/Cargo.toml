@@ -59,6 +59,7 @@ humantime = { workspace = true }
 metrics =  { workspace = true }
 opentelemetry = { workspace = true }
 pin-project = { workspace = true }
+rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
