@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod cluster_controller;
 pub mod codec;
 pub mod common;
 mod error;
@@ -49,6 +50,10 @@ impl<M> MessageEnvelope<M> {
 
     pub fn split(self) -> (GenerationalNodeId, M) {
         (self.peer, self.body)
+    }
+
+    pub fn body(&self) -> &M {
+        &self.body
     }
 }
 
