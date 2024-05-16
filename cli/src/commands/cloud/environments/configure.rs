@@ -153,7 +153,7 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
     let profile = profile_input(&profiles, &environments[environment_i].name)?;
 
     if profiles.contains(&profile) {
-        confirm_or_exit(&env, "Overwrite existing profile {profile}?")?
+        confirm_or_exit(&env, &format!("Overwrite existing profile {profile}?"))?
     }
 
     write_environment(
