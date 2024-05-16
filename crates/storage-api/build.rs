@@ -13,5 +13,12 @@ fn main() -> std::io::Result<()> {
         .bytes(["."])
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .compile_protos(&["proto/dev/restate/storage/v1/domain.proto"], &["proto"])
+        .extern_path(
+            ".dev.restate.service.protocol",
+            "::restate_types::service_protocol",
+        )
+        .compile_protos(
+            &["proto/dev/restate/storage/v1/domain.proto"],
+            &["proto", "../types/service-protocol"],
+        )
 }

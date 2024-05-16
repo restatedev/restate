@@ -6732,6 +6732,7 @@ dependencies = [
  "bytes",
  "mlua",
  "restate-service-protocol",
+ "restate-types",
  "thiserror",
 ]
 

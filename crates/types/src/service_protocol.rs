@@ -9,26 +9,36 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::InvocationError;
+use std::ops::RangeInclusive;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
 pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
 
+pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
+
 include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
 
 impl ServiceProtocolVersion {
-    pub fn is_supported(min_version: i32, max_version: i32) -> bool {
+    pub fn as_repr(&self) -> i32 {
+        i32::from(*self)
+    }
+
+    pub fn is_compatible(min_version: i32, max_version: i32) -> bool {
         min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
             && max_version >= i32::from(MIN_SERVICE_PROTOCOL_VERSION)
     }
 
-    pub fn max_supported_version(
-        min_version: i32,
-        max_version: i32,
+    pub fn is_supported(version: ServiceProtocolVersion) -> bool {
+        MIN_SERVICE_PROTOCOL_VERSION <= version && version <= MAX_SERVICE_PROTOCOL_VERSION
+    }
+
+    pub fn choose_max_supported_version(
+        versions: &RangeInclusive<i32>,
     ) -> Option<ServiceProtocolVersion> {
-        if ServiceProtocolVersion::is_supported(min_version, max_version) {
+        if ServiceProtocolVersion::is_compatible(*versions.start(), *versions.end()) {
             ServiceProtocolVersion::from_repr(std::cmp::min(
-                max_version,
+                *versions.end(),
                 i32::from(MAX_SERVICE_PROTOCOL_VERSION),
             ))
         } else {

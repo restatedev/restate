@@ -959,8 +959,12 @@ where
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         match kind {
-            InvokerEffectKind::SelectedDeployment(deployment_id) => {
-                effects.store_chosen_deployment(invocation_id, deployment_id, invocation_metadata);
+            InvokerEffectKind::PinnedDeployment(pinned_deployment) => {
+                effects.store_pinned_deployment(
+                    invocation_id,
+                    pinned_deployment,
+                    invocation_metadata,
+                );
             }
             InvokerEffectKind::JournalEntry { entry_index, entry } => {
                 self.handle_journal_entry(

@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
+use restate_types::identifiers::EntryIndex;
 use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::{DeploymentId, EntryIndex};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use std::collections::HashSet;
 
@@ -25,7 +26,7 @@ pub struct Effect {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EffectKind {
     /// This is sent before any new entry is created by the invoker. This won't be sent if the deployment_id is already set.
-    SelectedDeployment(DeploymentId),
+    PinnedDeployment(PinnedDeployment),
     JournalEntry {
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,

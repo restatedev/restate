@@ -456,16 +456,17 @@ impl DiscoveredHandlerMetadata {
             (ServiceType::Service, None | Some(endpoint_manifest::HandlerType::Shared)) => {
                 InvocationTargetType::Service
             }
-            (ServiceType::VirtualObject, None | Some(endpoint_manifest::HandlerType::Exclusive)) => {
-                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-            }
+            (
+                ServiceType::VirtualObject,
+                None | Some(endpoint_manifest::HandlerType::Exclusive),
+            ) => InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive),
             (ServiceType::VirtualObject, Some(endpoint_manifest::HandlerType::Shared)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
-            (ServiceType::Workflow, None | Some(schema::HandlerType::Shared)) => {
+            (ServiceType::Workflow, None | Some(endpoint_manifest::HandlerType::Shared)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
             }
-            (ServiceType::Workflow, Some(schema::HandlerType::Workflow)) => {
+            (ServiceType::Workflow, Some(endpoint_manifest::HandlerType::Workflow)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             }
             _ => {

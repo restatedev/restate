@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "google/protobuf/empty.proto";
+import "dev/restate/service/protocol.proto";
 
 package dev.restate.storage.domain.v1;
 
@@ -83,13 +84,11 @@ message InvocationStatus {
         repeated ServiceInvocationResponseSink response_sinks = 3;
         uint64 creation_time = 4;
         uint64 modification_time = 5;
-        oneof deployment_id {
-            google.protobuf.Empty none = 7;
-            string value = 8;
-        }
-        Source source = 9;
-        Duration completion_retention_time = 10;
-        optional string idempotency_key = 11;
+        optional string deployment_id = 7;
+        Source source = 8;
+        Duration completion_retention_time = 9;
+        optional string idempotency_key = 10;
+        optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
     }
 
     message Suspended {
@@ -99,13 +98,11 @@ message InvocationStatus {
         uint64 creation_time = 4;
         uint64 modification_time = 5;
         repeated uint32 waiting_for_completed_entries = 6;
-        oneof deployment_id {
-            google.protobuf.Empty none = 8;
-            string value = 9;
-        }
-        Source source = 10;
-        Duration completion_retention_time = 11;
-        optional string idempotency_key = 12;
+        optional string deployment_id = 7;
+        Source source = 8;
+        Duration completion_retention_time = 9;
+        optional string idempotency_key = 10;
+        optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 11;
     }
 
     message Completed {

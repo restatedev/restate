@@ -60,7 +60,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
     InvocationStatus::Invoked(InFlightInvocationMetadata {
         invocation_target,
         journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
-        deployment_id: None,
+        pinned_deployment: None,
         response_sinks: HashSet::new(),
         timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
         source: Source::Ingress,
@@ -74,7 +74,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
         metadata: InFlightInvocationMetadata {
             invocation_target,
             journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
-            deployment_id: None,
+            pinned_deployment: None,
             response_sinks: HashSet::new(),
             timestamps: StatusTimestamps::new(MillisSinceEpoch::new(0), MillisSinceEpoch::new(0)),
             source: Source::Ingress,

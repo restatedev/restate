@@ -337,12 +337,12 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                 state_storage.delete_timer(&timer_key).await?;
                 collector.push(Action::DeleteTimer { timer_key });
             }
-            Effect::StoreDeploymentId {
+            Effect::StorePinnedDeployment {
                 invocation_id,
-                deployment_id,
+                pinned_deployment,
                 mut metadata,
             } => {
-                metadata.set_deployment_id(deployment_id);
+                metadata.set_pinned_deployment(pinned_deployment);
 
                 // We recreate the InvocationStatus in Invoked state as the invoker can notify the
                 // chosen deployment_id only when the invocation is in-flight.

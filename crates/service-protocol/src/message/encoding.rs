@@ -16,6 +16,7 @@ use std::mem;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use size::Size;
 use tracing::warn;
 
@@ -33,13 +34,16 @@ pub enum EncodingError {
 
 // --- Input message encoder
 
-pub struct Encoder {
-    protocol_version: u16,
-}
+pub struct Encoder {}
 
 impl Encoder {
-    pub fn new(protocol_version: u16) -> Self {
-        Self { protocol_version }
+    pub fn new(service_protocol_version: ServiceProtocolVersion) -> Self {
+        assert_eq!(
+            service_protocol_version,
+            ServiceProtocolVersion::V1,
+            "Encoder only supports service protocol version V1"
+        );
+        Self {}
     }
 
     /// Encodes a message to bytes
@@ -63,7 +67,7 @@ impl Encoder {
         mut buf: impl BufMut,
         msg: ProtocolMessage,
     ) -> Result<(), prost::EncodeError> {
-        let header = generate_header(&msg, self.protocol_version);
+        let header = generate_header(&msg);
         buf.put_u64(header.into());
 
         // Note:
@@ -74,13 +78,13 @@ impl Encoder {
     }
 }
 
-fn generate_header(msg: &ProtocolMessage, protocol_version: u16) -> MessageHeader {
+fn generate_header(msg: &ProtocolMessage) -> MessageHeader {
     let len: u32 = msg
         .encoded_len()
         .try_into()
         .expect("Protocol messages can't be larger than u32");
     match msg {
-        ProtocolMessage::Start(_) => MessageHeader::new_start(protocol_version, len),
+        ProtocolMessage::Start(_) => MessageHeader::new_start(len),
         ProtocolMessage::Completion(_) => MessageHeader::new(MessageType::Completion, len),
         ProtocolMessage::Suspension(_) => MessageHeader::new(MessageType::Suspension, len),
         ProtocolMessage::Error(_) => MessageHeader::new(MessageType::Error, len),
@@ -122,14 +126,17 @@ pub struct Decoder {
     message_size_limit: usize,
 }
 
-impl Default for Decoder {
-    fn default() -> Self {
-        Decoder::new(usize::MAX, None)
-    }
-}
-
 impl Decoder {
-    pub fn new(message_size_warning: usize, message_size_limit: Option<usize>) -> Self {
+    pub fn new(
+        service_protocol_version: ServiceProtocolVersion,
+        message_size_warning: usize,
+        message_size_limit: Option<usize>,
+    ) -> Self {
+        assert_eq!(
+            service_protocol_version,
+            ServiceProtocolVersion::V1,
+            "Decoder only supports service protocol version V1"
+        );
         Self {
             buf: SegmentedBuf::new(),
             state: DecoderState::WaitingHeader,
@@ -347,9 +354,8 @@ mod tests {
 
     #[test]
     fn fill_decoder_with_several_messages() {
-        let protocol_version = 1;
-        let encoder = Encoder::new(protocol_version);
-        let mut decoder = Decoder::default();
+        let encoder = Encoder::new(ServiceProtocolVersion::V1);
+        let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
 
         let expected_msg_0 = ProtocolMessage::new_start_message(
             "key".into(),
@@ -377,10 +383,6 @@ mod tests {
         decoder.push(encoder.encode(expected_msg_2.clone()));
 
         let (actual_msg_header_0, actual_msg_0) = decoder.consume_next().unwrap().unwrap();
-        assert_eq!(
-            actual_msg_header_0.protocol_version(),
-            Some(protocol_version)
-        );
         assert_eq!(actual_msg_header_0.message_type(), MessageType::Start);
         assert_eq!(actual_msg_0, expected_msg_0);
 
@@ -407,8 +409,8 @@ mod tests {
     }
 
     fn partial_decoding_test(split_index: usize) {
-        let encoder = Encoder::new(0);
-        let mut decoder = Decoder::default();
+        let encoder = Encoder::new(ServiceProtocolVersion::V1);
+        let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
 
         let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
             vec![],
@@ -433,9 +435,13 @@ mod tests {
 
     #[test]
     fn hit_message_size_limit() {
-        let mut decoder = Decoder::new((u8::MAX / 2) as usize, Some(u8::MAX as usize));
+        let mut decoder = Decoder::new(
+            ServiceProtocolVersion::V1,
+            (u8::MAX / 2) as usize,
+            Some(u8::MAX as usize),
+        );
 
-        let encoder = Encoder::new(0);
+        let encoder = Encoder::new(ServiceProtocolVersion::V1);
         let message = ProtocolMessage::from(
             ProtobufRawEntryCodec::serialize_as_input_entry(
                 vec![],

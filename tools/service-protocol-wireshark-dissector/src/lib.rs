@@ -14,6 +14,7 @@ use mlua::{Table, Value};
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{Decoder, MessageType, ProtocolMessage};
+use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unexpected lua value received")]
@@ -31,7 +32,7 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
     // We should store it somewhere, but right now wireshark doesn't support conversations in lua api
     // so we just keep it simple and assume all messages are self contained within the same http data frame
     // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
-    let mut dec = Decoder::default();
+    let mut dec = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
 
     // Convert the buffer and push it to the decoder
     let buf = match buf_lua {
@@ -74,9 +75,6 @@ fn decode_packages<'lua>(lua: &'lua Lua, buf_lua: Value<'lua>) -> LuaResult<Tabl
         );
 
         // Optional flags
-        if let Some(protocol_version) = header.protocol_version() {
-            set_table_values!(message_table, "protocol_version" => protocol_version);
-        }
         if let Some(completed) = header.completed() {
             set_table_values!(message_table, "completed" => completed);
         }

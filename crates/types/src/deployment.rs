@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
 
@@ -18,6 +19,7 @@ use crate::base62_util::base62_max_length_for_type;
 use crate::errors::IdDecodeError;
 use crate::id_util::{IdDecoder, IdEncoder, IdResourceType};
 use crate::identifiers::{DeploymentId, ResourceId, TimestampAwareId};
+use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
 
 impl ResourceId for DeploymentId {
@@ -75,6 +77,36 @@ impl schemars::JsonSchema for DeploymentId {
 
     fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         <String as schemars::JsonSchema>::json_schema(g)
+    }
+}
+
+/// Deployment which was chosen to run an invocation on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PinnedDeployment {
+    pub deployment_id: DeploymentId,
+    pub service_protocol_version: ServiceProtocolVersion,
+}
+
+impl Display for PinnedDeployment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "id: {}, service protocol version: {}",
+            self.deployment_id,
+            self.service_protocol_version.as_repr()
+        )
+    }
+}
+
+impl PinnedDeployment {
+    pub fn new(
+        deployment_id: DeploymentId,
+        service_protocol_version: ServiceProtocolVersion,
+    ) -> Self {
+        Self {
+            deployment_id,
+            service_protocol_version,
+        }
     }
 }
 

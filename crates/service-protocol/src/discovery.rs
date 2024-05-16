@@ -17,12 +17,12 @@ use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
 use restate_errors::{META0003, META0012, META0013};
 use restate_schema_api::deployment::ProtocolType;
-use restate_schema_api::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
 use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::service_protocol::{
-    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION,
+    ServiceProtocolVersion, MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+    MIN_SERVICE_PROTOCOL_VERSION,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -212,7 +212,7 @@ impl ServiceDiscovery {
         let min_version = endpoint_response.min_protocol_version as i32;
         let max_version = endpoint_response.max_protocol_version as i32;
 
-        if !ServiceProtocolVersion::is_supported(min_version, max_version) {
+        if !ServiceProtocolVersion::is_compatible(min_version, max_version) {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
                 min_version,
                 max_version,

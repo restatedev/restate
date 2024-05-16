@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .enum_attribute(
             "protocol.ServiceProtocolVersion",
-            "#[derive(::strum_macros::FromRepr)]",
+            "#[derive(::serde::Serialize, ::serde::Deserialize, ::strum_macros::FromRepr)]",
         )
         .compile_protos(
             &[

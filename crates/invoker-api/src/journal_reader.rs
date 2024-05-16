@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use futures::Stream;
-use restate_types::identifiers::{DeploymentId, InvocationId};
+use restate_types::deployment::PinnedDeployment;
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryIndex;
@@ -20,17 +21,17 @@ use std::future::Future;
 pub struct JournalMetadata {
     pub length: EntryIndex,
     pub span_context: ServiceInvocationSpanContext,
-    pub deployment_id: Option<DeploymentId>,
+    pub pinned_deployment: Option<PinnedDeployment>,
 }
 
 impl JournalMetadata {
     pub fn new(
         length: EntryIndex,
         span_context: ServiceInvocationSpanContext,
-        deployment_id: Option<DeploymentId>,
+        pinned_deployment: Option<PinnedDeployment>,
     ) -> Self {
         Self {
-            deployment_id,
+            pinned_deployment,
             span_context,
             length,
         }

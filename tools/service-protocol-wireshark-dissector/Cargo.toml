@@ -22,6 +22,7 @@ luajit = ["mlua/luajit"]
 [dependencies]
 # Dependencies needed to decode packets
 restate-service-protocol = { workspace = true, features = ["codec", "message"] }
+restate-types = { workspace = true }
 
 bytes = { workspace = true }
 thiserror = { workspace = true }

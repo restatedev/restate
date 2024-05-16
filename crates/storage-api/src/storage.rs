@@ -78,11 +78,13 @@ pub mod v1 {
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
         use prost::Message;
+        use restate_types::deployment::PinnedDeployment;
 
         use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::WithPartitionKey;
+        use restate_types::identifiers::{DeploymentId, WithPartitionKey};
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
+        use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::storage::{
             StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
         };
@@ -292,6 +294,34 @@ pub mod v1 {
             }
         }
 
+        fn derive_pinned_deployment(
+            deployment_id: Option<String>,
+            service_protocol_version: Option<i32>,
+        ) -> Result<Option<PinnedDeployment>, ConversionError> {
+            let deployment_id = deployment_id
+                .map(|deployment_id| deployment_id.parse().expect("valid deployment id"));
+
+            if let Some(deployment_id) = deployment_id {
+                let service_protocol_version =
+                    service_protocol_version.ok_or(ConversionError::invalid_data(anyhow!(
+                        "service_protocol_version has not been set"
+                    )))?;
+                let service_protocol_version = ServiceProtocolVersion::from_repr(
+                    service_protocol_version,
+                )
+                .ok_or(ConversionError::unexpected_enum_variant(
+                    "service_protocol_version",
+                    service_protocol_version,
+                ))?;
+                Ok(Some(PinnedDeployment::new(
+                    deployment_id,
+                    service_protocol_version,
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+
         impl TryFrom<Invoked> for crate::invocation_status_table::InFlightInvocationMetadata {
             type Error = ConversionError;
 
@@ -302,15 +332,8 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let deployment_id =
-                    value.deployment_id.and_then(
-                        |one_of_deployment_id| match one_of_deployment_id {
-                            invocation_status::invoked::DeploymentId::None(_) => None,
-                            invocation_status::invoked::DeploymentId::Value(id) => {
-                                Some(id.parse().expect("valid deployment id"))
-                            }
-                        },
-                    );
+                let pinned_deployment =
+                    derive_pinned_deployment(value.deployment_id, value.service_protocol_version)?;
 
                 let journal_metadata = crate::invocation_status_table::JournalMetadata::try_from(
                     value
@@ -344,7 +367,7 @@ pub mod v1 {
                 Ok(crate::invocation_status_table::InFlightInvocationMetadata {
                     invocation_target,
                     journal_metadata,
-                    deployment_id,
+                    pinned_deployment,
                     response_sinks,
                     timestamps: crate::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
@@ -361,7 +384,7 @@ pub mod v1 {
             fn from(value: crate::invocation_status_table::InFlightInvocationMetadata) -> Self {
                 let crate::invocation_status_table::InFlightInvocationMetadata {
                     invocation_target,
-                    deployment_id,
+                    pinned_deployment,
                     response_sinks,
                     journal_metadata,
                     timestamps,
@@ -370,24 +393,28 @@ pub mod v1 {
                     idempotency_key,
                 } = value;
 
+                let (deployment_id, service_protocol_version) = match pinned_deployment {
+                    None => (None, None),
+                    Some(pinned_deployment) => (
+                        Some(pinned_deployment.deployment_id.to_string()),
+                        Some(pinned_deployment.service_protocol_version.as_repr()),
+                    ),
+                };
+
                 Invoked {
                     invocation_target: Some(invocation_target.into()),
                     response_sinks: response_sinks
                         .into_iter()
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
                         .collect(),
-                    deployment_id: Some(match deployment_id {
-                        None => invocation_status::invoked::DeploymentId::None(()),
-                        Some(deployment_id) => invocation_status::invoked::DeploymentId::Value(
-                            deployment_id.to_string(),
-                        ),
-                    }),
+                    deployment_id,
+                    service_protocol_version,
                     journal_meta: Some(JournalMeta::from(journal_metadata)),
                     creation_time: timestamps.creation_time().as_u64(),
                     modification_time: timestamps.modification_time().as_u64(),
                     source: Some(Source::from(source)),
                     completion_retention_time: Some(Duration::from(completion_retention_time)),
-                    idempotency_key: idempotency_key.map(|s| s.to_string()),
+                    idempotency_key: idempotency_key.map(|key| key.to_string()),
                 }
             }
         }
@@ -407,13 +434,8 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("invocation_target"))?,
                 )?;
 
-                let deployment_id =
-                    value.deployment_id.and_then(
-                        |one_of_deployment_id| match one_of_deployment_id {
-                            invocation_status::suspended::DeploymentId::None(_) => None,
-                            invocation_status::suspended::DeploymentId::Value(id) => Some(id),
-                        },
-                    );
+                let pinned_deployment =
+                    derive_pinned_deployment(value.deployment_id, value.service_protocol_version)?;
 
                 let journal_metadata = crate::invocation_status_table::JournalMetadata::try_from(
                     value
@@ -451,8 +473,7 @@ pub mod v1 {
                     crate::invocation_status_table::InFlightInvocationMetadata {
                         invocation_target,
                         journal_metadata,
-                        deployment_id: deployment_id
-                            .map(|d| d.parse().expect("valid deployment id")),
+                        pinned_deployment,
                         response_sinks,
                         timestamps: crate::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
@@ -483,6 +504,14 @@ pub mod v1 {
                 let waiting_for_completed_entries =
                     waiting_for_completed_entries.into_iter().collect();
 
+                let (deployment_id, service_protocol_version) = match metadata.pinned_deployment {
+                    None => (None, None),
+                    Some(pinned_deployment) => (
+                        Some(pinned_deployment.deployment_id.to_string()),
+                        Some(pinned_deployment.service_protocol_version.as_repr()),
+                    ),
+                };
+
                 Suspended {
                     invocation_target: Some(metadata.invocation_target.into()),
                     response_sinks: metadata
@@ -491,12 +520,8 @@ pub mod v1 {
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
                         .collect(),
                     journal_meta: Some(journal_meta),
-                    deployment_id: Some(match metadata.deployment_id {
-                        None => invocation_status::suspended::DeploymentId::None(()),
-                        Some(deployment_id) => invocation_status::suspended::DeploymentId::Value(
-                            deployment_id.to_string(),
-                        ),
-                    }),
+                    deployment_id,
+                    service_protocol_version,
                     creation_time: metadata.timestamps.creation_time().as_u64(),
                     modification_time: metadata.timestamps.modification_time().as_u64(),
                     waiting_for_completed_entries,
@@ -504,7 +529,7 @@ pub mod v1 {
                     completion_retention_time: Some(Duration::from(
                         metadata.completion_retention_time,
                     )),
-                    idempotency_key: metadata.idempotency_key.map(|s| s.to_string()),
+                    idempotency_key: metadata.idempotency_key.map(|key| key.to_string()),
                 }
             }
         }

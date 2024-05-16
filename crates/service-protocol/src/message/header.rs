@@ -11,7 +11,6 @@
 use restate_types::journal::EntryType;
 
 const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
-const VERSION_MASK: u64 = 0x03FF_0000_0000;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const REQUIRES_ACK_MASK: u64 = 0x8000_0000_0000;
 
@@ -85,10 +84,6 @@ impl MessageType {
                 | MessageType::InvokeEntry
                 | MessageType::AwakeableEntry
         )
-    }
-
-    fn has_protocol_version(&self) -> bool {
-        *self == MessageType::Start
     }
 
     fn has_requires_ack_flag(&self) -> bool {
@@ -215,9 +210,6 @@ pub struct MessageHeader {
     length: u32,
 
     // --- Flags
-    /// Only `StartMessage` has protocol_version.
-    protocol_version: Option<u16>,
-
     /// Only `CompletableEntries` have completed flag. See [`MessageType#allows_completed_flag`].
     completed_flag: Option<bool>,
     /// All Entry messages may have requires ack flag.
@@ -227,18 +219,12 @@ pub struct MessageHeader {
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self::_new(ty, None, None, None, length)
+        Self::_new(ty, None, None, length)
     }
 
     #[inline]
-    pub fn new_start(protocol_version: u16, length: u32) -> Self {
-        Self::_new(
-            MessageType::Start,
-            Some(protocol_version),
-            None,
-            None,
-            length,
-        )
+    pub fn new_start(length: u32) -> Self {
+        Self::_new(MessageType::Start, None, None, length)
     }
 
     #[inline]
@@ -252,7 +238,6 @@ impl MessageHeader {
         MessageHeader {
             ty,
             length,
-            protocol_version: None,
             completed_flag,
             // It is always false when sending entries from the runtime
             requires_ack_flag: Some(false),
@@ -262,7 +247,6 @@ impl MessageHeader {
     #[inline]
     fn _new(
         ty: MessageType,
-        protocol_version: Option<u16>,
         completed_flag: Option<bool>,
         requires_ack_flag: Option<bool>,
         length: u32,
@@ -270,7 +254,6 @@ impl MessageHeader {
         MessageHeader {
             ty,
             length,
-            protocol_version,
             completed_flag,
             requires_ack_flag,
         }
@@ -284,11 +267,6 @@ impl MessageHeader {
     #[inline]
     pub fn message_type(&self) -> MessageType {
         self.ty
-    }
-
-    #[inline]
-    pub fn protocol_version(&self) -> Option<u16> {
-        self.protocol_version
     }
 
     #[inline]
@@ -325,18 +303,13 @@ impl TryFrom<u64> for MessageHeader {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
-        let protocol_version = if ty.has_protocol_version() {
-            Some(((value & VERSION_MASK) >> 32) as u16)
-        } else {
-            None
-        };
+
         let completed_flag = read_flag_if!(ty.has_completed_flag(), value, COMPLETED_MASK);
         let requires_ack_flag = read_flag_if!(ty.has_requires_ack_flag(), value, REQUIRES_ACK_MASK);
         let length = value as u32;
 
         Ok(MessageHeader::_new(
             ty,
-            protocol_version,
             completed_flag,
             requires_ack_flag,
             length,
@@ -359,9 +332,6 @@ impl From<MessageHeader> for u64 {
         let mut res =
             ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
 
-        if let Some(protocol_version) = message_header.protocol_version {
-            res |= (protocol_version as u64) << 32;
-        }
         write_flag!(message_header.completed_flag, &mut res, COMPLETED_MASK);
         write_flag!(
             message_header.requires_ack_flag,
@@ -445,7 +415,6 @@ mod tests {
                 assert_eq!(header.message_type(), $ty);
                 assert_eq!(header.message_kind(), $kind);
                 assert_eq!(header.completed(), $completed);
-                assert_eq!(header.protocol_version(), $protocol_version);
                 assert_eq!(header.requires_ack(), $requires_ack);
                 assert_eq!(header.frame_length(), $len);
             }
@@ -454,7 +423,7 @@ mod tests {
 
     roundtrip_test!(
         start,
-        MessageHeader::new_start(1, 25),
+        MessageHeader::new_start(25),
         Start,
         Core,
         25,
@@ -501,7 +470,7 @@ mod tests {
 
     roundtrip_test!(
         set_state_with_requires_ack,
-        MessageHeader::_new(SetStateEntry, None, None, Some(true), 10341),
+        MessageHeader::_new(SetStateEntry, None, Some(true), 10341),
         SetStateEntry,
         State,
         10341,
@@ -519,7 +488,7 @@ mod tests {
 
     roundtrip_test!(
         custom_entry_with_requires_ack,
-        MessageHeader::_new(MessageType::CustomEntry(0xFC00), None, None, Some(true), 10341),
+        MessageHeader::_new(MessageType::CustomEntry(0xFC00), None, Some(true), 10341),
         MessageType::CustomEntry(0xFC00),
         MessageKind::CustomEntry,
         10341,

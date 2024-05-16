@@ -10,8 +10,6 @@
 
 //! This crate contains all the different APIs for accessing schemas.
 
-pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
-
 #[cfg(feature = "invocation_target")]
 pub mod invocation_target;
 
@@ -194,7 +192,7 @@ pub mod deployment {
     pub mod mocks {
         use super::*;
 
-        use crate::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
+        use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
         use std::collections::HashMap;
 
         impl Deployment {

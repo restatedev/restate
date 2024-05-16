@@ -18,10 +18,9 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::invocation_status_table::{InvocationStatus, JournalMetadata};
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::{Timer, TimerKey};
+use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationErrorCode;
-use restate_types::identifiers::{
-    DeploymentId, EntryIndex, IdempotencyId, InvocationId, ServiceId,
-};
+use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId, ServiceId};
 use restate_types::ingress::IngressResponse;
 use restate_types::invocation::{
     InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocation,
@@ -108,9 +107,9 @@ pub(crate) enum Effect {
     DeleteTimer(TimerKey),
 
     // Journal operations
-    StoreDeploymentId {
+    StorePinnedDeployment {
         invocation_id: InvocationId,
-        deployment_id: DeploymentId,
+        pinned_deployment: PinnedDeployment,
         metadata: InFlightInvocationMetadata,
     },
     AppendResponseSink {
@@ -477,10 +476,13 @@ impl Effect {
                     "Effect: Delete timer"
                 )
             }
-            Effect::StoreDeploymentId { deployment_id, .. } => debug_if_leader!(
+            Effect::StorePinnedDeployment {
+                pinned_deployment, ..
+            } => debug_if_leader!(
                 is_leader,
-                restate.deployment.id = %deployment_id,
-                "Effect: Store deployment id to storage"
+                restate.deployment.id = %pinned_deployment.deployment_id,
+                restate.deployment.service_protocol_version = %pinned_deployment.service_protocol_version.as_repr(),
+                "Effect: Store chosen deployment to storage"
             ),
             Effect::AppendJournalEntry {
                 journal_entry,
@@ -854,15 +856,15 @@ impl Effects {
         self.effects.push(Effect::DeleteTimer(timer_key));
     }
 
-    pub(crate) fn store_chosen_deployment(
+    pub(crate) fn store_pinned_deployment(
         &mut self,
         invocation_id: InvocationId,
-        deployment_id: DeploymentId,
+        pinned_deployment: PinnedDeployment,
         metadata: InFlightInvocationMetadata,
     ) {
-        self.effects.push(Effect::StoreDeploymentId {
+        self.effects.push(Effect::StorePinnedDeployment {
             invocation_id,
-            deployment_id,
+            pinned_deployment,
             metadata,
         })
     }

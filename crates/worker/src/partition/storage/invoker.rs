@@ -55,7 +55,7 @@ where
             let journal_metadata = JournalMetadata::new(
                 invoked_status.journal_metadata.length,
                 invoked_status.journal_metadata.span_context,
-                invoked_status.deployment_id,
+                invoked_status.pinned_deployment,
             );
             let journal_stream = self
                 .0

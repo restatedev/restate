@@ -10,7 +10,6 @@
 
 use super::*;
 
-use restate_types::identifiers::DeploymentId;
 use restate_types::journal::Completion;
 use restate_types::retries;
 use std::fmt;
@@ -85,7 +84,7 @@ enum InvocationState {
         entries_to_ack: HashSet<EntryIndex>,
 
         // If Some, we need to notify the deployment id to the partition processor
-        chosen_deployment: Option<DeploymentId>,
+        pinned_deployment: Option<PinnedDeployment>,
     },
 
     WaitingRetry {
@@ -154,7 +153,7 @@ impl InvocationStateMachine {
             journal_tracker: Default::default(),
             abort_handle,
             entries_to_ack: Default::default(),
-            chosen_deployment: None,
+            pinned_deployment: None,
         };
     }
 
@@ -164,34 +163,34 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_chosen_deployment(&mut self, endpoint_id: DeploymentId) {
+    pub(super) fn notify_pinned_deployment(&mut self, deployment: PinnedDeployment) {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight {
-                chosen_deployment: None,
+                pinned_deployment: None,
                 ..
             }
         ));
 
         if let InvocationState::InFlight {
-            chosen_deployment, ..
+            pinned_deployment, ..
         } = &mut self.invocation_state
         {
-            *chosen_deployment = Some(endpoint_id);
+            *pinned_deployment = Some(deployment);
         }
     }
 
-    pub(super) fn chosen_deployment_to_notify(&mut self) -> Option<DeploymentId> {
+    pub(super) fn pinned_deployment_to_notify(&mut self) -> Option<PinnedDeployment> {
         debug_assert!(matches!(
             &self.invocation_state,
             InvocationState::InFlight { .. }
         ));
 
         if let InvocationState::InFlight {
-            chosen_deployment, ..
+            pinned_deployment, ..
         } = &mut self.invocation_state
         {
-            chosen_deployment.take()
+            pinned_deployment.take()
         } else {
             None
         }

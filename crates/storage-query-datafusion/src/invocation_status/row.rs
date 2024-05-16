@@ -90,7 +90,7 @@ fn fill_in_flight_invocation_metadata(
     meta: InFlightInvocationMetadata,
 ) {
     // journal_metadata and stats are filled by other functions
-    if let Some(deployment_id) = meta.deployment_id {
+    if let Some(deployment_id) = meta.pinned_deployment {
         row.pinned_deployment_id(deployment_id.to_string());
     }
     fill_invoked_by(row, output, meta.source)

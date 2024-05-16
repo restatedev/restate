@@ -56,7 +56,7 @@ use crate::invocation_task::InvocationTaskError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
-use restate_service_protocol::RESTATE_SERVICE_PROTOCOL_VERSION;
+use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::InvocationTarget;
 
 use crate::metric_definitions::{
@@ -100,7 +100,7 @@ where
     SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
-    EE: EntryEnricher + Clone + Send + 'static,
+    EE: EntryEnricher + Clone + Send + Sync + 'static,
     DMR: DeploymentResolver + Clone + Send + 'static,
 {
     fn start_invocation_task(
@@ -121,7 +121,6 @@ where
                 partition,
                 invocation_id,
                 invocation_target,
-                RESTATE_SERVICE_PROTOCOL_VERSION,
                 opts.inactivity_timeout.into(),
                 opts.abort_timeout.into(),
                 opts.disable_eager_state,
@@ -235,7 +234,7 @@ where
     SR: JournalReader + StateReader + Clone + Send + Sync + 'static,
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
-    EE: EntryEnricher + Clone + Send + 'static,
+    EE: EntryEnricher + Clone + Send + Sync + 'static,
     EMR: DeploymentResolver + Clone + Send + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<SR> {
@@ -374,11 +373,11 @@ where
                     inner
                 } = invocation_task_msg;
                 match inner {
-                    InvocationTaskOutputInner::SelectedDeployment(deployment_id, has_changed) => {
-                        self.handle_selected_deployment(
+                    InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
+                        self.handle_pinned_deployment(
                             partition,
                             invocation_id,
-                            deployment_id,
+                            deployment_metadata,
                             has_changed,
                         ).await
                     }
@@ -550,14 +549,14 @@ where
         fields(
             restate.invocation.id = %invocation_id,
             restate.invoker.partition_leader_epoch = ?partition,
-            restate.deployment.id = %deployment_id,
+            restate.deployment.id = %pinned_deployment.deployment_id,
         )
     )]
-    async fn handle_selected_deployment(
+    async fn handle_pinned_deployment(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        deployment_id: DeploymentId,
+        pinned_deployment: PinnedDeployment,
         has_changed: bool,
     ) {
         if let Some((_, ism)) = self
@@ -566,17 +565,20 @@ where
         {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
-                "Chosen deployment {}. Invocation state: {:?}",
-                deployment_id,
+                "Pinned deployment '{}'. Invocation state: {:?}",
+                pinned_deployment,
                 ism.invocation_state_debug()
             );
 
-            self.status_store
-                .on_deployment_chosen(&partition, &invocation_id, deployment_id);
+            self.status_store.on_deployment_chosen(
+                &partition,
+                &invocation_id,
+                pinned_deployment.deployment_id,
+            );
             // If we think this selected deployment has been freshly picked, otherwise
             // we assume that we have stored it previously.
             if has_changed {
-                ism.notify_chosen_deployment(deployment_id);
+                ism.notify_pinned_deployment(pinned_deployment);
             }
         } else {
             // If no state machine, this might be an event for an aborted invocation.
@@ -648,11 +650,11 @@ where
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
-            if let Some(deployment_id) = ism.chosen_deployment_to_notify() {
+            if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Effect {
                         invocation_id,
-                        kind: EffectKind::SelectedDeployment(deployment_id),
+                        kind: EffectKind::PinnedDeployment(pinned_deployment),
                     })
                     .await;
             }

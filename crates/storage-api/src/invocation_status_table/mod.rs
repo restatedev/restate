@@ -12,7 +12,8 @@ use crate::{protobuf_storage_encode_decode, Result};
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::Stream;
-use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, PartitionKey};
+use restate_types::deployment::PinnedDeployment;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -250,7 +251,7 @@ impl InboxedInvocation {
 pub struct InFlightInvocationMetadata {
     pub invocation_target: InvocationTarget,
     pub journal_metadata: JournalMetadata,
-    pub deployment_id: Option<DeploymentId>,
+    pub pinned_deployment: Option<PinnedDeployment>,
     pub response_sinks: HashSet<ServiceInvocationResponseSink>,
     pub timestamps: StatusTimestamps,
     pub source: Source,
@@ -267,7 +268,7 @@ impl InFlightInvocationMetadata {
             Self {
                 invocation_target: service_invocation.invocation_target,
                 journal_metadata: JournalMetadata::initialize(service_invocation.span_context),
-                deployment_id: None,
+                pinned_deployment: None,
                 response_sinks: service_invocation.response_sink.into_iter().collect(),
                 timestamps: StatusTimestamps::now(),
                 source: service_invocation.source,
@@ -292,7 +293,7 @@ impl InFlightInvocationMetadata {
             Self {
                 invocation_target: inboxed_invocation.invocation_target,
                 journal_metadata: JournalMetadata::initialize(inboxed_invocation.span_context),
-                deployment_id: None,
+                pinned_deployment: None,
                 response_sinks: inboxed_invocation.response_sinks,
                 timestamps: inboxed_invocation.timestamps,
                 source: inboxed_invocation.source,
@@ -306,12 +307,12 @@ impl InFlightInvocationMetadata {
         )
     }
 
-    pub fn set_deployment_id(&mut self, deployment_id: DeploymentId) {
+    pub fn set_pinned_deployment(&mut self, pinned_deployment: PinnedDeployment) {
         debug_assert_eq!(
-            self.deployment_id, None,
-            "No deployment_id should be fixed for the current invocation"
+            self.pinned_deployment, None,
+            "No deployment should be chosen for the current invocation"
         );
-        self.deployment_id = Some(deployment_id);
+        self.pinned_deployment = Some(pinned_deployment);
         self.timestamps.update();
     }
 }
@@ -386,7 +387,7 @@ mod mocks {
                     VirtualObjectHandlerType::Exclusive,
                 ),
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
-                deployment_id: None,
+                pinned_deployment: None,
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::now(),
                 source: Source::Ingress,
