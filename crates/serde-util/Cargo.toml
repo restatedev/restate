@@ -13,7 +13,6 @@ schema = ["dep:schemars"]
 proto = ["dep:prost", "dep:bytes"]
 
 [dependencies]
-base64 = { workspace = true }
 bytes = { workspace = true, optional = true }
 bytesize = { version = "1.3.0" }
 http = { workspace = true }

@@ -40,7 +40,6 @@ futures = { workspace = true }
 http = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
-is-terminal = { version = "0.4.9" }
 itertools = { workspace = true }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
@@ -57,7 +56,6 @@ tracing-subscriber = { workspace = true }
 unicode-width = { version = "0.1.11" }
 url = { version = "2.4.1" }
 zip = "0.6"
-zip-extensions = "0.6"
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [

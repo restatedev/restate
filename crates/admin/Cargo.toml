@@ -15,8 +15,6 @@ options_schema = ["restate-service-client/options_schema"]
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-fs-util = { workspace = true }
-restate-futures-util = { workspace = true }
 restate-meta-rest-model = { workspace = true, features = ["schema"] }
 restate-node-services = { workspace = true, features = ["servers", "clients"] }
 restate-schema = { workspace = true }
@@ -29,14 +27,12 @@ restate-wal-protocol = { workspace = true }
 anyhow = { workspace = true }
 arrow-flight = { workspace = true }
 axum = { workspace = true }
-bincode = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true, features = ["full"] }

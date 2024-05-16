@@ -46,7 +46,6 @@ codederror = { workspace = true }
 datafusion = { workspace = true }
 derive-getters = { workspace = true }
 derive_builder = { workspace = true }
-drain = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
@@ -64,7 +63,6 @@ semver = {  version = "1.0", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-serde_yaml = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
@@ -83,7 +81,5 @@ restate-test-util = { workspace = true }
 tempfile = { workspace = true }
 
 googletest = { workspace = true }
-test-log = { workspace = true }
-tracing-test = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
