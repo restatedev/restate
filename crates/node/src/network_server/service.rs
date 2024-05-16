@@ -51,8 +51,10 @@ impl NetworkServer {
     }
 
     pub async fn run(self, options: CommonOptions) -> Result<(), anyhow::Error> {
+        let tc = task_center();
         // Configure Metric Exporter
         let mut state_builder = NodeCtrlHandlerStateBuilder::default();
+        state_builder.task_center(tc.clone());
 
         if !options.disable_prometheus {
             state_builder.prometheus_handle(Some(install_global_prometheus_recorder(&options)));
@@ -89,7 +91,7 @@ impl NetworkServer {
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(NodeSvcServer::new(NodeSvcHandler::new(
-                task_center(),
+                tc,
                 self.worker_deps,
                 self.connection_manager,
             )))
