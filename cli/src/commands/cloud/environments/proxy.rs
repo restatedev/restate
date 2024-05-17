@@ -15,6 +15,7 @@ use crate::{
 use anyhow::Result;
 use clap::builder::PossibleValue;
 use cling::prelude::*;
+use itertools::Itertools;
 use std::net::SocketAddr;
 use tracing::info;
 use url::Url;
@@ -22,7 +23,8 @@ use url::Url;
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_proxy")]
 pub struct Proxy {
-    port: Port,
+    /// The port to forward to the Cloud environment. Defaults to all ports
+    port: Option<Port>,
 }
 
 #[derive(Copy, Clone)]
@@ -74,9 +76,9 @@ pub async fn run_proxy(State(env): State<CliEnv>, opts: &Proxy) -> Result<()> {
         ));
     };
 
-    let base_url = match opts.port {
-        Port::Ingress => env.ingress_base_url()?,
-        Port::Admin => env.admin_base_url()?,
+    let ports = match opts.port {
+        None => vec![Port::Ingress, Port::Admin],
+        Some(choice) => vec![choice],
     };
 
     let client = reqwest::Client::builder()
@@ -91,20 +93,33 @@ pub async fn run_proxy(State(env): State<CliEnv>, opts: &Proxy) -> Result<()> {
         .http2_prior_knowledge()
         .build()?;
 
-    let server = axum::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], u16::from(opts.port))))?;
+    let servers: Vec<_> = ports
+        .into_iter()
+        .map(|port| {
+            let base_url = match port {
+                Port::Ingress => env.ingress_base_url()?,
+                Port::Admin => env.admin_base_url()?,
+            }
+            .clone();
 
-    let router = axum::Router::new()
-        .fallback(axum::routing::any(handler))
-        .with_state(HandlerState {
-            client,
-            base_url: base_url.clone(),
-            access_token,
-        });
+            let router = axum::Router::new()
+                .fallback(axum::routing::any(handler))
+                .with_state(HandlerState {
+                    client: client.clone(),
+                    base_url,
+                    access_token: access_token.clone(),
+                });
 
-    let server = server.serve(router.into_make_service());
-    c_success!("Serving on {}", server.local_addr());
+            let server =
+                axum::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], u16::from(port))))?;
 
-    Ok(server.await?)
+            c_success!("Serving on {}", server.local_addr());
+            Result::<_, anyhow::Error>::Ok(server.serve(router.into_make_service()))
+        })
+        .try_collect()?;
+
+    futures::future::try_join_all(servers).await?;
+    Ok(())
 }
 
 struct HandlerError(anyhow::Error);
