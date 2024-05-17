@@ -9,15 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use chrono_humanize::Tense;
-use comfy_table::Table;
+use comfy_table::{Attribute, Cell, Table};
 use dialoguer::console::style;
 use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::JournalEntry;
 use crate::clients::datafusion_helpers::JournalEntryType;
 use crate::clients::datafusion_helpers::{Invocation, InvocationState};
+use crate::clients::datafusion_helpers::{JournalEntry, SimpleInvocation};
 use crate::ui::console::Icon;
 use crate::ui::console::StyledTable;
 use crate::{c_indent_table, c_indentln, c_println};
@@ -209,6 +209,21 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
             );
         }
     }
+}
+
+pub fn render_simple_invocation_list(env: &CliEnv, invocations: &[SimpleInvocation]) {
+    let mut invocations_table = Table::new_styled(&env.ui_config);
+    invocations_table.set_styled_header(vec!["ID", "TARGET", "STATUS"]);
+
+    for inv in invocations {
+        invocations_table.add_row(vec![
+            Cell::new(&inv.id).add_attribute(Attribute::Bold),
+            Cell::new(&inv.target),
+            Cell::new(invocation_status(inv.status)),
+        ]);
+    }
+    c_indent_table!(0, invocations_table);
+    c_println!();
 }
 
 // [2023-12-14 15:38:52.500 +00:00] rIEqK14GCdkAYxo-wzTfrK2e6tJssIrtQ CheckoutProcess::checkout

@@ -241,6 +241,40 @@ impl Display for JournalEntryType {
 }
 
 #[derive(Debug, Clone)]
+pub struct SimpleInvocation {
+    pub id: String,
+    pub target: String,
+    pub status: InvocationState,
+}
+
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+struct SimpleInvocationRowResult {
+    id: Option<String>,
+    target: Option<String>,
+    status: String,
+}
+
+pub async fn find_active_invocations_simple(
+    client: &DataFusionHttpClient,
+    filter: &str,
+) -> Result<Vec<SimpleInvocation>> {
+    let query = format!(
+        "SELECT id, target, status FROM sys_invocation WHERE {}",
+        filter
+    );
+    let rows = client
+        .run_query_and_map_results::<SimpleInvocationRowResult>(query)
+        .await?
+        .map(|row| SimpleInvocation {
+            id: row.id.expect("id"),
+            target: row.target.expect("target"),
+            status: row.status.parse().expect("Unexpected status"),
+        })
+        .collect();
+    Ok(rows)
+}
+
+#[derive(Debug, Clone)]
 pub struct InvocationDetailed {
     pub invocation: Invocation,
     pub journal: Vec<JournalEntry>,
