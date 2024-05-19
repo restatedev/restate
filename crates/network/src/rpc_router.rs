@@ -10,6 +10,7 @@
 
 use std::sync::{Arc, Weak};
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
@@ -135,31 +136,25 @@ where
 
     /// Returns None if an in-flight request holds the same correlation_id.
     pub fn new_token(&self, correlation_id: T::CorrelationId) -> Option<RpcToken<T>> {
-        let (sender, receiver) = oneshot::channel();
-        let existing = self
-            .inner
-            .in_flight
-            .insert(correlation_id.clone(), RpcTokenSender { sender });
+        match self.inner.in_flight.entry(correlation_id.clone()) {
+            Entry::Occupied(_) => {
+                warn!(
+                    "correlation id {:?} was already in-flight when this rpc was issued, this is an indicator that the correlation_id is not unique across RPC calls",
+                    correlation_id
+                );
+                None
+            }
+            Entry::Vacant(entry) => {
+                let (sender, receiver) = oneshot::channel();
+                entry.insert(RpcTokenSender { sender });
 
-        if existing.is_some() {
-            // in this extraordinary case, we put the old token back even that it wouldn't really
-            // guarantee correctness since the response might have arrived by now, but we do it
-            // anyway as a best hope.
-            self.inner
-                .in_flight
-                .entry(correlation_id.clone())
-                .and_modify(|val| *val = existing.unwrap());
-            warn!(
-                "correlation id {:?} was already in-flight when this rpc was issued, this is an indicator that the correlation_id is not unique across RPC calls",
-                correlation_id
-            );
-            return None;
+                Some(RpcToken {
+                    correlation_id,
+                    router: Arc::downgrade(&self.inner),
+                    receiver: Some(receiver),
+                })
+            }
         }
-        Some(RpcToken {
-            correlation_id,
-            router: Arc::downgrade(&self.inner),
-            receiver: Some(receiver),
-        })
     }
 
     /// Returns None if an in-flight request holds the same correlation_id.
@@ -309,8 +304,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use futures::future::join_all;
     use restate_node_protocol::common::TargetName;
     use restate_types::GenerationalNodeId;
+    use tokio::sync::Barrier;
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct TestCorrelationId(u64);
@@ -420,5 +417,63 @@ mod test {
         let (from, msg) = msg.split();
         assert_eq!(GenerationalNodeId::new(1, 1), from);
         assert_eq!("a very real message", msg.text);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_response_tracker_modifications() {
+        let num_responses = 10000;
+        let response_tracker = ResponseTracker::default();
+
+        let rpc_tokens: Vec<RpcToken<TestResponse>> = (0..num_responses)
+            .map(|idx| {
+                response_tracker
+                    .new_token(TestCorrelationId(idx))
+                    .expect("first time created")
+            })
+            .collect();
+
+        let barrier = Arc::new(Barrier::new((2 * num_responses) as usize));
+
+        for idx in 0..num_responses {
+            let response_tracker_handle_message = response_tracker.clone();
+            let barrier_handle_message = Arc::clone(&barrier);
+
+            tokio::spawn(async move {
+                barrier_handle_message.wait().await;
+                response_tracker_handle_message.handle_message(MessageEnvelope::new(
+                    GenerationalNodeId::new(0, 0),
+                    0,
+                    TestResponse {
+                        text: format!("{}", idx),
+                        correlation_id: TestCorrelationId(idx),
+                    },
+                ));
+            });
+
+            let response_tracker_new_token = response_tracker.clone();
+            let barrier_new_token = Arc::clone(&barrier);
+
+            tokio::spawn(async move {
+                barrier_new_token.wait().await;
+                response_tracker_new_token.new_token(TestCorrelationId(idx));
+            });
+        }
+
+        let results = join_all(rpc_tokens.into_iter().map(|rpc_token| async {
+            rpc_token
+                .recv()
+                .await
+                .expect("should complete successfully")
+        }))
+        .await;
+
+        for result in results {
+            let (_, response) = result.split();
+
+            assert_eq!(
+                response.text.parse::<u64>().expect("valid u64"),
+                response.correlation_id.0
+            );
+        }
     }
 }
