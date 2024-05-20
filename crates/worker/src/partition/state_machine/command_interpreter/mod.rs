@@ -29,7 +29,8 @@ use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+    CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,

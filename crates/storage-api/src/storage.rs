@@ -107,16 +107,16 @@ pub mod v1 {
             Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::storage::v1::{
-            enriched_entry_header, entry_result,inbox_entry, invocation_resolution_result, invocation_status,
-            invocation_target, outbox_message,promise, response_result, source, span_relation,
-            submit_notification_sink, timer, virtual_object_status, BackgroundCallResolutionResult,
-            DedupSequenceNumber, Duration, EnrichedEntryHeader, EntryResult,EpochSequenceNumber, Header,
-            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalEntryId,JournalMeta, KvPair, OutboxMessage,
-           Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
+            invocation_status, invocation_target, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
+            BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
+            EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
+            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
+            JournalEntry, JournalEntryId, JournalMeta, KvPair, OutboxMessage, Promise,
+            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
             ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
-            SubmitNotificationSink, Timer,
-            VirtualObjectStatus,
+            SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
 
