@@ -19,6 +19,7 @@ pub mod outbox_table;
 mod owned_iter;
 mod partition_store;
 mod partition_store_manager;
+pub mod promise_table;
 pub mod scan;
 pub mod service_status_table;
 pub mod state_table;

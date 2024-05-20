@@ -11,6 +11,7 @@
 use crate::metric_definitions::{PARTITION_STORAGE_TX_COMMITTED, PARTITION_STORAGE_TX_CREATED};
 use crate::partition::shuffle::{OutboxReader, OutboxReaderError};
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
 use restate_storage_api::deduplication_table::{
@@ -24,6 +25,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::promise_table::{OwnedPromiseRow, Promise};
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
 };
@@ -560,6 +562,7 @@ where
     }
 }
 
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
 impl<TransactionType> ReadOnlyInvocationStatusTable for Transaction<TransactionType>
 where
     TransactionType: restate_storage_api::Transaction + Send,
@@ -620,6 +623,48 @@ where
         idempotency_id: &IdempotencyId,
     ) -> impl Future<Output = ()> + Send {
         self.inner.delete_idempotency_metadata(idempotency_id)
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> restate_storage_api::promise_table::ReadOnlyPromiseTable
+    for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn get_promise(
+        &mut self,
+        service_id: &ServiceId,
+        key: &ByteString,
+    ) -> impl Future<Output = StorageResult<Option<Promise>>> + Send {
+        self.inner.get_promise(service_id, key)
+    }
+
+    fn all_promises(
+        &mut self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<OwnedPromiseRow>> + Send {
+        self.inner.all_promises(range)
+    }
+}
+
+// Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
+impl<TransactionType> restate_storage_api::promise_table::PromiseTable
+    for Transaction<TransactionType>
+where
+    TransactionType: restate_storage_api::Transaction + Send,
+{
+    fn put_promise(
+        &mut self,
+        service_id: &ServiceId,
+        key: &ByteString,
+        metadata: Promise,
+    ) -> impl Future<Output = ()> + Send {
+        self.inner.put_promise(service_id, key, metadata)
+    }
+
+    fn delete_all_promises(&mut self, service_id: &ServiceId) -> impl Future<Output = ()> + Send {
+        self.inner.delete_all_promises(service_id)
     }
 }
 

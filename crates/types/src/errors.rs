@@ -78,6 +78,7 @@ pub mod codes {
     pub const GONE: InvocationErrorCode = InvocationErrorCode(410);
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
+    pub const CONFLICT: InvocationErrorCode = InvocationErrorCode(409);
 }
 
 /// This struct represents errors arisen when processing a service invocation.
@@ -203,6 +204,9 @@ pub const CANCELED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::ABORTED, "canceled");
 
 pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
+
+pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::CONFLICT, "promise was already completed");
 
 /// Error parsing/decoding a resource ID.
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]

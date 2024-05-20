@@ -31,6 +31,7 @@ mod inbox_table_test;
 mod invocation_status_table_test;
 mod journal_table_test;
 mod outbox_table_test;
+mod promise_table_test;
 mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;

@@ -302,6 +302,15 @@ fn message_header_to_raw_header(message_header: &MessageHeader) -> PlainEntryHea
             is_completed: expect_flag!(message_header, completed),
         },
         MessageType::ClearAllStateEntry => PlainEntryHeader::ClearAllState {},
+        MessageType::GetPromiseEntry => PlainEntryHeader::GetPromise {
+            is_completed: expect_flag!(message_header, completed),
+        },
+        MessageType::PeekPromiseEntry => PlainEntryHeader::PeekPromise {
+            is_completed: expect_flag!(message_header, completed),
+        },
+        MessageType::CompletePromiseEntry => PlainEntryHeader::CompletePromise {
+            is_completed: expect_flag!(message_header, completed),
+        },
         MessageType::SleepEntry => PlainEntryHeader::Sleep {
             is_completed: expect_flag!(message_header, completed),
         },
@@ -332,6 +341,9 @@ fn raw_header_to_message_type(entry_header: &PlainEntryHeader) -> MessageType {
         PlainEntryHeader::ClearState { .. } => MessageType::ClearStateEntry,
         PlainEntryHeader::GetStateKeys { .. } => MessageType::GetStateKeysEntry,
         PlainEntryHeader::ClearAllState { .. } => MessageType::ClearAllStateEntry,
+        PlainEntryHeader::GetPromise { .. } => MessageType::GetPromiseEntry,
+        PlainEntryHeader::PeekPromise { .. } => MessageType::PeekPromiseEntry,
+        PlainEntryHeader::CompletePromise { .. } => MessageType::CompletePromiseEntry,
         PlainEntryHeader::Sleep { .. } => MessageType::SleepEntry,
         PlainEntryHeader::Call { .. } => MessageType::InvokeEntry,
         PlainEntryHeader::OneWayCall { .. } => MessageType::BackgroundInvokeEntry,

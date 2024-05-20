@@ -81,6 +81,7 @@ pub enum TableKind {
     Idempotency,
     Inbox,
     Journal,
+    Promise,
 }
 
 impl TableKind {
@@ -96,6 +97,7 @@ impl TableKind {
             Self::PartitionStateMachine => &[KeyKind::Fsm],
             Self::Timers => &[KeyKind::Timers],
             Self::Journal => &[KeyKind::Journal],
+            Self::Promise => &[KeyKind::Promise],
         }
     }
 

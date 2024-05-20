@@ -56,6 +56,15 @@ pub mod mocks {
                     EnrichedEntryHeader::GetStateKeys { is_completed }
                 }
                 PlainEntryHeader::ClearAllState {} => EnrichedEntryHeader::ClearAllState {},
+                PlainEntryHeader::GetPromise { is_completed } => {
+                    EnrichedEntryHeader::GetPromise { is_completed }
+                }
+                PlainEntryHeader::PeekPromise { is_completed } => {
+                    EnrichedEntryHeader::PeekPromise { is_completed }
+                }
+                PlainEntryHeader::CompletePromise { is_completed } => {
+                    EnrichedEntryHeader::CompletePromise { is_completed }
+                }
                 PlainEntryHeader::Sleep { is_completed } => {
                     EnrichedEntryHeader::Sleep { is_completed }
                 }

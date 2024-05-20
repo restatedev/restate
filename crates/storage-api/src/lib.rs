@@ -32,6 +32,7 @@ pub mod inbox_table;
 pub mod invocation_status_table;
 pub mod journal_table;
 pub mod outbox_table;
+pub mod promise_table;
 pub mod service_status_table;
 pub mod state_table;
 mod storage;
@@ -56,6 +57,7 @@ pub trait Transaction:
     + fsm_table::FsmTable
     + timer_table::TimerTable
     + idempotency_table::IdempotencyTable
+    + promise_table::PromiseTable
     + Send
 {
     fn commit(self) -> impl Future<Output = Result<()>> + Send;
