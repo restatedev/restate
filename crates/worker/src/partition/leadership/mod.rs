@@ -395,12 +395,12 @@ where
                 )
                 .await?;
             }
-            Action::IngressAttachNotification(attach_notification) => {
+            Action::IngressSubmitNotification(attach_notification) => {
                 Self::send_ingress_message(
                     networking,
-                    Some(attach_notification.inner.submitted_invocation_id),
+                    Some(attach_notification.inner.original_invocation_id),
                     attach_notification.target_node,
-                    ingress::IngressMessage::AttachedInvocationNotification(
+                    ingress::IngressMessage::SubmittedInvocationNotification(
                         attach_notification.inner,
                     ),
                 )

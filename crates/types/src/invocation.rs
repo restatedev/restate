@@ -272,14 +272,14 @@ pub struct ServiceInvocation {
 
     // Where to send the response, if any
     pub response_sink: Option<ServiceInvocationResponseSink>,
-    // Where to send the attach notification, if any.
-    //  The attach notification is sent back both when this invocation request attached to an existing invocation,
+    // Where to send the submit notification, if any.
+    //  The submit notification is sent back both when this invocation request attached to an existing invocation,
     //  or when this request started a fresh invocation.
-    pub attach_notification_sink: Option<AttachNotificationSink>,
+    pub submit_notification_sink: Option<SubmitNotificationSink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum AttachNotificationSink {
+pub enum SubmitNotificationSink {
     Ingress(GenerationalNodeId),
 }
 
@@ -300,7 +300,7 @@ impl ServiceInvocation {
             execution_time: None,
             completion_retention_time: None,
             idempotency_key: None,
-            attach_notification_sink: None,
+            submit_notification_sink: None,
         }
     }
 
@@ -752,10 +752,13 @@ impl From<TraceId> for TraceIdDef {
     }
 }
 
-/// Defines how to query the invocation
+/// Defines how to query the invocation.
+/// This is used in some commands, such as [AttachInvocationRequest], to uniquely address an existing invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum InvocationQuery {
     Invocation(InvocationId),
+    /// Query a workflow handler invocation.
+    /// There can be at most one running workflow method for the given ServiceId. This uniqueness constraint is guaranteed by the PP state machine.
     Workflow(ServiceId),
 }
 
@@ -842,7 +845,7 @@ mod mocks {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
-                attach_notification_sink: None,
+                submit_notification_sink: None,
             }
         }
     }

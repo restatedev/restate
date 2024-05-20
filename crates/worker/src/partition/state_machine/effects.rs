@@ -182,7 +182,7 @@ pub(crate) enum Effect {
 
     // Send ingress response
     IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
-    IngressAttachNotification(IngressResponseEnvelope<ingress::AttachedInvocationNotification>),
+    IngressSubmitNotification(IngressResponseEnvelope<ingress::SubmittedInvocationNotification>),
 }
 
 macro_rules! debug_if_leader {
@@ -353,10 +353,10 @@ impl Effect {
                 correlation_ids,
                 e
             ),
-            Effect::IngressAttachNotification(attach_notification) => debug_if_leader!(
+            Effect::IngressSubmitNotification(attach_notification) => debug_if_leader!(
                 is_leader,
                 "Effect: Ingress attach invocation {} to {}",
-                attach_notification.inner.submitted_invocation_id,
+                attach_notification.inner.original_invocation_id,
                 attach_notification.inner.attached_invocation_id,
             ),
             Effect::DeleteInboxEntry {
@@ -857,10 +857,10 @@ impl Effects {
 
     pub(crate) fn send_ingress_attach_notification(
         &mut self,
-        attach_notification: IngressResponseEnvelope<ingress::AttachedInvocationNotification>,
+        attach_notification: IngressResponseEnvelope<ingress::SubmittedInvocationNotification>,
     ) {
         self.effects
-            .push(Effect::IngressAttachNotification(attach_notification));
+            .push(Effect::IngressSubmitNotification(attach_notification));
     }
 
     pub(crate) fn set_state(

@@ -95,7 +95,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         execution_time: None,
         completion_retention_time: None,
         idempotency_key: None,
-        attach_notification_sink: None,
+        submit_notification_sink: None,
     }
 }
 

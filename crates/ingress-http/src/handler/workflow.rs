@@ -14,15 +14,14 @@ use super::HandlerError;
 
 use crate::{GetOutputResult, InvocationStorageReader};
 use bytes::Bytes;
-use http::{header, Method, Request, Response};
+use http::{Method, Request, Response};
 use http_body_util::Full;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::invocation_target::InvocationTargetResolver;
 use restate_types::identifiers::ServiceId;
-use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::InvocationQuery;
-use tracing::{info, trace, warn};
+use tracing::{info, warn};
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
@@ -93,50 +92,18 @@ where
             return Err(HandlerError::Unavailable);
         };
 
-        // Prepare response metadata
-        let mut response_builder = hyper::Response::builder();
-
-        // Add idempotency expiry time if available
-        // TODO reintroduce this once available
-        // if let Some(expiry_time) = response.idempotency_expiry_time() {
-        //     response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
-        // }
-
-        match response.result {
-            IngressResponseResult::Success(invocation_target, response_payload) => {
-                trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
-
-                // Resolve invocation target metadata.
-                // We need it for the output content type.
-                let invocation_target_metadata = self
-                    .schemas
+        Self::reply_with_invocation_response(
+            response.result,
+            response.idempotency_expiry_time.as_deref(),
+            move |invocation_target| {
+                self.schemas
                     .resolve_latest_invocation_target(
                         invocation_target.service_name(),
                         invocation_target.handler_name(),
                     )
-                    .ok_or(HandlerError::NotFound)?;
-
-                // Write out the content-type, if any
-                // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) = invocation_target_metadata
-                    .output_rules
-                    .infer_content_type(response_payload.is_empty())
-                {
-                    response_builder = response_builder.header(
-                        header::CONTENT_TYPE,
-                        // TODO we need this to_str().unwrap() because these two HeaderValue come from two different http crates
-                        //  We can remove it once https://github.com/restatedev/restate/issues/96 is done
-                        ct.to_str().unwrap(),
-                    )
-                }
-
-                Ok(response_builder.body(Full::new(response_payload)).unwrap())
-            }
-            IngressResponseResult::Failure(error) => {
-                info!(rpc.response = ?error, "Complete external HTTP request with a failure");
-                Ok(HandlerError::Invocation(error).fill_builder(response_builder))
-            }
-        }
+                    .ok_or(HandlerError::NotFound)
+            },
+        )
     }
 
     pub(crate) async fn handle_workflow_get_output<B: http_body::Body>(
@@ -170,49 +137,13 @@ where
             }
         };
 
-        // Prepare response metadata
-        let mut response_builder = hyper::Response::builder();
-
-        // Add idempotency expiry time if available
-        // TODO reintroduce this once available
-        // if let Some(expiry_time) = response.idempotency_expiry_time() {
-        //     response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
-        // }
-
-        match response.response {
-            IngressResponseResult::Success(invocation_target, response_payload) => {
-                trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
-
-                // Resolve invocation target metadata.
-                // We need it for the output content type.
-                let invocation_target_metadata = self
-                    .schemas
-                    .resolve_latest_invocation_target(
-                        invocation_target.service_name(),
-                        invocation_target.handler_name(),
-                    )
-                    .ok_or(HandlerError::NotFound)?;
-
-                // Write out the content-type, if any
-                // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) = invocation_target_metadata
-                    .output_rules
-                    .infer_content_type(response_payload.is_empty())
-                {
-                    response_builder = response_builder.header(
-                        header::CONTENT_TYPE,
-                        // TODO we need this to_str().unwrap() because these two HeaderValue come from two different http crates
-                        //  We can remove it once https://github.com/restatedev/restate/issues/96 is done
-                        ct.to_str().unwrap(),
-                    )
-                }
-
-                Ok(response_builder.body(Full::new(response_payload)).unwrap())
-            }
-            IngressResponseResult::Failure(error) => {
-                info!(rpc.response = ?error, "Complete external HTTP request with a failure");
-                Ok(HandlerError::Invocation(error).fill_builder(response_builder))
-            }
-        }
+        Self::reply_with_invocation_response(response.response, None, move |invocation_target| {
+            self.schemas
+                .resolve_latest_invocation_target(
+                    invocation_target.service_name(),
+                    invocation_target.handler_name(),
+                )
+                .ok_or(HandlerError::NotFound)
+        })
     }
 }

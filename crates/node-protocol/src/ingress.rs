@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::ingress::{AttachedInvocationNotification, InvocationResponse};
+use restate_types::ingress::{InvocationResponse, SubmittedInvocationNotification};
 use serde::{Deserialize, Serialize};
 
 use crate::common::TargetName;
@@ -25,7 +25,7 @@ use crate::define_message;
 )]
 pub enum IngressMessage {
     InvocationResponse(InvocationResponse),
-    AttachedInvocationNotification(AttachedInvocationNotification),
+    SubmittedInvocationNotification(SubmittedInvocationNotification),
 }
 
 define_message! {

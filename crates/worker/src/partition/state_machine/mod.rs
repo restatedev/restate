@@ -665,7 +665,7 @@ mod tests {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
-                attach_notification_sink: None,
+                submit_notification_sink: None,
             }))
             .await;
         assert_that!(
@@ -753,7 +753,7 @@ mod tests {
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
         use restate_types::invocation::{
-            AttachInvocationRequest, AttachNotificationSink, InvocationQuery, InvocationTarget,
+            AttachInvocationRequest, InvocationQuery, InvocationTarget, SubmitNotificationSink,
         };
         use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
@@ -1021,7 +1021,7 @@ mod tests {
         }
 
         #[test(tokio::test)]
-        async fn latch_invocation_while_executing() {
+        async fn attach_with_service_invocation_command_while_executing() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
                 .build()
@@ -1138,7 +1138,7 @@ mod tests {
         }
 
         #[test(tokio::test)]
-        async fn latch_invocation_while_executing_with_send() {
+        async fn attach_with_send_service_invocation() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
                 .build()
@@ -1194,7 +1194,7 @@ mod tests {
                     response_sink: None,
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(retention),
-                    attach_notification_sink: Some(AttachNotificationSink::Ingress(ingress_id_2)),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id_2)),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1202,11 +1202,11 @@ mod tests {
                 actions,
                 all!(
                     not(contains(pat!(Action::IngressResponse(_)))),
-                    contains(pat!(Action::IngressAttachNotification(eq(
+                    contains(pat!(Action::IngressSubmitNotification(eq(
                         IngressResponseEnvelope {
                             target_node: ingress_id_2,
-                            inner: ingress::AttachedInvocationNotification {
-                                submitted_invocation_id: second_invocation_id,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id: second_invocation_id,
                                 attached_invocation_id: first_invocation_id,
                                 idempotency_id: Some(idempotency_id.clone())
                             },
@@ -1263,7 +1263,7 @@ mod tests {
         }
 
         #[test(tokio::test)]
-        async fn attach() {
+        async fn attach_command() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
                 .build()
@@ -1873,7 +1873,7 @@ mod tests {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
-                attach_notification_sink: None,
+                submit_notification_sink: None,
             }))
             .await;
 

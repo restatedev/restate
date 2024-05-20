@@ -47,7 +47,7 @@ pub enum Action {
     },
     AbortInvocation(InvocationId),
     IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
-    IngressAttachNotification(IngressResponseEnvelope<ingress::AttachedInvocationNotification>),
+    IngressSubmitNotification(IngressResponseEnvelope<ingress::SubmittedInvocationNotification>),
     ScheduleInvocationStatusCleanup {
         invocation_id: InvocationId,
         retention: Duration,

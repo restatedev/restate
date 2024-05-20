@@ -28,6 +28,7 @@ mod error;
 mod health;
 mod invocation;
 mod path_parsing;
+mod responses;
 mod service_handler;
 #[cfg(test)]
 mod tests;

@@ -161,7 +161,7 @@ impl DispatchIngressRequest for IngressDispatcher {
                     .insert(ingress_response_key.1, response_sender);
                 (None, self.state.get_and_increment_msg_index(), None)
             }
-            IngressRequestMode::WaitAttachNotification(id, tx) => {
+            IngressRequestMode::WaitSubmitNotification(id, tx) => {
                 self.state.waiting_submit_notification.insert(id, tx);
                 let msg_index = self.state.get_and_increment_msg_index();
                 (None, msg_index, None)
@@ -250,11 +250,11 @@ impl MessageHandler for IngressDispatcher {
                     }
                 }
             }
-            IngressMessage::AttachedInvocationNotification(attach_idempotent_invocation) => {
+            IngressMessage::SubmittedInvocationNotification(attach_idempotent_invocation) => {
                 if let Some((_, sender)) = self
                     .state
                     .waiting_submit_notification
-                    .remove(&attach_idempotent_invocation.submitted_invocation_id)
+                    .remove(&attach_idempotent_invocation.original_invocation_id)
                 {
                     if let Err(response) = sender.send(SubmittedInvocationNotification {
                         invocation_id: attach_idempotent_invocation.attached_invocation_id,
@@ -266,13 +266,13 @@ impl MessageHandler for IngressDispatcher {
                         );
                     } else {
                         trace!(
-                            restate.invocation.id = %attach_idempotent_invocation.submitted_invocation_id,
+                            restate.invocation.id = %attach_idempotent_invocation.original_invocation_id,
                             partition_processor_peer = %peer,
                             "Sent response of invocation out"
                         );
                     }
                 } else {
-                    trace!("Ignoring submit notification '{:?}' because no handler was found locally waiting for its invocation Id", &attach_idempotent_invocation.submitted_invocation_id);
+                    trace!("Ignoring submit notification '{:?}' because no handler was found locally waiting for its invocation Id", &attach_idempotent_invocation.original_invocation_id);
                 }
             }
         }
@@ -337,7 +337,6 @@ mod tests {
     use restate_wal_protocol::Envelope;
     use std::time::Duration;
     use test_log::test;
-    use tokio::sync::oneshot::error::TryRecvError;
 
     #[test(tokio::test)]
     async fn idempotent_invoke() -> anyhow::Result<()> {
@@ -452,7 +451,7 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn get_output_result_should_not_complete_pending_attach() {
+    async fn attach_invocation() {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
         let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
             .add_mock_nodes_config()
@@ -472,7 +471,7 @@ mod tests {
 
                 let invocation_id = InvocationId::mock_random();
 
-                let (attach_req, _, mut attach_res) =
+                let (attach_req, _, attach_res) =
                     IngressDispatcherRequest::attach(InvocationQuery::Invocation(invocation_id));
                 dispatcher.dispatch_ingress_request(attach_req).await?;
 
@@ -494,28 +493,8 @@ mod tests {
                     })))
                 );
 
-                // Now check that sending response for get output doesn't complete attach
-                let response = Bytes::from_static(b"vmoaifnuei");
-                node_env
-                    .network_sender
-                    .send(
-                        metadata().my_node_id().into(),
-                        &IngressMessage::InvocationResponse(InvocationResponse {
-                            correlation_ids: InvocationResponseCorrelationIds::from_invocation_id(
-                                invocation_id,
-                            ),
-                            response: IngressResponseResult::Success(
-                                InvocationTarget::mock_service(),
-                                response.clone(),
-                            ),
-                        }),
-                    )
-                    .await?;
-
-                // Should not be completed yet, but the channel should still be available
-                assert_that!(attach_res.try_recv(), err(eq(TryRecvError::Empty)));
-
                 // Now send the attach response
+                let response = Bytes::from_static(b"vmoaifnuei");
                 node_env
                     .network_sender
                     .send(

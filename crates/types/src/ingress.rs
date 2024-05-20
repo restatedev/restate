@@ -21,8 +21,10 @@ pub struct IngressResponseEnvelope<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttachedInvocationNotification {
-    pub submitted_invocation_id: InvocationId,
+pub struct SubmittedInvocationNotification {
+    /// Invocation id that was submitted in the ServiceInvocation
+    pub original_invocation_id: InvocationId,
+    /// Invocation id we attached to.
     pub attached_invocation_id: InvocationId,
     pub idempotency_id: Option<IdempotencyId>,
 }

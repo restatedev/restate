@@ -107,15 +107,15 @@ pub mod v1 {
             Ingress, PartitionProcessor, ResponseSink,
         };
         use crate::storage::v1::{
-            attach_notification_sink, enriched_entry_header, entry_result,inbox_entry,
-            invocation_resolution_result, invocation_status, invocation_target, outbox_message,
-           promise, response_result, source, span_relation, timer, virtual_object_status,
-            AttachNotificationSink, BackgroundCallResolutionResult,
-            DedupSequenceNumber, Duration, EnrichedEntryHeader, EntryResult, EpochSequenceNumber,
-            Header, IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair,
-            OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
+            enriched_entry_header, entry_result,inbox_entry, invocation_resolution_result, invocation_status,
+            invocation_target, outbox_message,promise, response_result, source, span_relation,
+            submit_notification_sink, timer, virtual_object_status, BackgroundCallResolutionResult,
+            DedupSequenceNumber, Duration, EnrichedEntryHeader, EntryResult,EpochSequenceNumber, Header,
+            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatus, InvocationTarget, JournalEntry, JournalEntryId,JournalMeta, KvPair, OutboxMessage,
+           Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer,
             VirtualObjectStatus,
         };
         use crate::StorageError;
@@ -917,7 +917,7 @@ pub mod v1 {
                     execution_time,
                     idempotency_key,
                     completion_retention_time,
-                    attach_notification_sink,
+                    submit_notification_sink,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -959,7 +959,7 @@ pub mod v1 {
 
                 let idempotency_key = idempotency_key.map(ByteString::from);
 
-                let attach_notification_sink = attach_notification_sink
+                let submit_notification_sink = submit_notification_sink
                     .map(TryInto::try_into)
                     .transpose()?;
 
@@ -974,7 +974,7 @@ pub mod v1 {
                     execution_time,
                     completion_retention_time,
                     idempotency_key,
-                    attach_notification_sink,
+                    submit_notification_sink: submit_notification_sink,
                 })
             }
         }
@@ -998,21 +998,21 @@ pub mod v1 {
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
                     completion_retention_time: value.completion_retention_time.map(Duration::from),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
-                    attach_notification_sink: value.attach_notification_sink.map(Into::into),
+                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
                 }
             }
         }
 
-        impl TryFrom<AttachNotificationSink> for restate_types::invocation::AttachNotificationSink {
+        impl TryFrom<SubmitNotificationSink> for restate_types::invocation::SubmitNotificationSink {
             type Error = ConversionError;
 
-            fn try_from(value: AttachNotificationSink) -> Result<Self, Self::Error> {
+            fn try_from(value: SubmitNotificationSink) -> Result<Self, Self::Error> {
                 let notification_sink = match value
                     .notification_sink
                     .ok_or(ConversionError::missing_field("notification_sink"))?
                 {
-                    attach_notification_sink::NotificationSink::IngressNodeId(ingress_node_id) => {
-                        restate_types::invocation::AttachNotificationSink::Ingress(
+                    submit_notification_sink::NotificationSink::IngressNodeId(ingress_node_id) => {
+                        restate_types::invocation::SubmitNotificationSink::Ingress(
                             ingress_node_id.into(),
                         )
                     }
@@ -1022,17 +1022,17 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::invocation::AttachNotificationSink> for AttachNotificationSink {
-            fn from(value: restate_types::invocation::AttachNotificationSink) -> Self {
+        impl From<restate_types::invocation::SubmitNotificationSink> for SubmitNotificationSink {
+            fn from(value: restate_types::invocation::SubmitNotificationSink) -> Self {
                 let notification_sink = match value {
-                    restate_types::invocation::AttachNotificationSink::Ingress(node_id) => {
-                        attach_notification_sink::NotificationSink::IngressNodeId(
+                    restate_types::invocation::SubmitNotificationSink::Ingress(node_id) => {
+                        submit_notification_sink::NotificationSink::IngressNodeId(
                             super::GenerationalNodeId::from(node_id),
                         )
                     }
                 };
 
-                AttachNotificationSink {
+                SubmitNotificationSink {
                     notification_sink: Some(notification_sink),
                 }
             }

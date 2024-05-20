@@ -17,9 +17,9 @@ use restate_types::identifiers::{
 };
 use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
-    AttachNotificationSink, InvocationQuery, InvocationResponse, InvocationTarget,
-    InvocationTargetType, ServiceInvocation, ServiceInvocationResponseSink, SpanRelation,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    InvocationQuery, InvocationResponse, InvocationTarget, InvocationTargetType, ServiceInvocation,
+    ServiceInvocationResponseSink, SpanRelation, SubmitNotificationSink, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use std::fmt::Display;
@@ -127,7 +127,7 @@ enum IngressRequestMode {
         deduplication_id: IngressDeduplicationId,
         proxying_partition_key: Option<PartitionKey>,
     },
-    WaitAttachNotification(InvocationId, IngressSubmittedInvocationNotificationSender),
+    WaitSubmitNotification(InvocationId, IngressSubmittedInvocationNotificationSender),
     FireAndForget,
 }
 
@@ -204,14 +204,14 @@ impl IngressDispatcherRequest {
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
         {
             let my_node_id = metadata().my_node_id();
-            service_invocation.attach_notification_sink =
-                Some(AttachNotificationSink::Ingress(my_node_id));
+            service_invocation.submit_notification_sink =
+                Some(SubmitNotificationSink::Ingress(my_node_id));
 
             let (tx, rx) = oneshot::channel();
 
             (
                 IngressDispatcherRequest {
-                    request_mode: IngressRequestMode::WaitAttachNotification(
+                    request_mode: IngressRequestMode::WaitSubmitNotification(
                         service_invocation.invocation_id,
                         tx,
                     ),
@@ -407,7 +407,7 @@ pub mod mocks {
             service_invocation
         }
 
-        pub fn expect_one_way_invocation_with_attach_notification(
+        pub fn expect_one_way_invocation_with_submit_notification(
             self,
         ) -> (
             ServiceInvocation,
@@ -416,7 +416,7 @@ pub mod mocks {
             let_assert!(
                 IngressDispatcherRequest {
                     inner: IngressDispatcherRequestInner::Invoke(service_invocation),
-                    request_mode: IngressRequestMode::WaitAttachNotification(_, tx),
+                    request_mode: IngressRequestMode::WaitSubmitNotification(_, tx),
                 } = self
             );
             (service_invocation, tx)

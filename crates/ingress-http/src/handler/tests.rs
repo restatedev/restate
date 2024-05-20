@@ -424,7 +424,7 @@ async fn idempotency_key_and_send() {
     let response = handle(req, move |ingress_req| {
         // Get the function invocation and assert on it
         let (service_invocation, notification_tx) =
-            ingress_req.expect_one_way_invocation_with_attach_notification();
+            ingress_req.expect_one_way_invocation_with_submit_notification();
         assert_eq!(
             service_invocation.invocation_target.service_name(),
             "greeter.Greeter"
@@ -444,7 +444,7 @@ async fn idempotency_key_and_send() {
             Some(Duration::from_secs(60 * 60 * 24))
         );
         assert_that!(
-            service_invocation.attach_notification_sink,
+            service_invocation.submit_notification_sink,
             some(anything())
         );
 

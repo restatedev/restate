@@ -22,7 +22,6 @@ use metrics::{counter, histogram};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcherRequest};
 use restate_schema_api::invocation_target::{InvocationTargetMetadata, InvocationTargetResolver};
 use restate_types::identifiers::InvocationId;
-use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
     WorkflowHandlerType,
@@ -244,40 +243,11 @@ where
             return Err(HandlerError::Unavailable);
         };
 
-        // Prepare response metadata
-        let mut response_builder = hyper::Response::builder();
-
-        // Add idempotency expiry time if available
-        // TODO reintroduce this once available
-        // if let Some(expiry_time) = response.idempotency_expiry_time() {
-        //     response_builder = response_builder.header(IDEMPOTENCY_EXPIRES, expiry_time);
-        // }
-
-        match response.result {
-            IngressResponseResult::Success(_, response_payload) => {
-                trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
-
-                // Write out the content-type, if any
-                // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) = invocation_target_metadata
-                    .output_rules
-                    .infer_content_type(response_payload.is_empty())
-                {
-                    response_builder = response_builder.header(
-                        header::CONTENT_TYPE,
-                        // TODO we need this to_str().unwrap() because these two HeaderValue come from two different http crates
-                        //  We can remove it once https://github.com/restatedev/restate/issues/96 is done
-                        ct.to_str().unwrap(),
-                    )
-                }
-
-                Ok(response_builder.body(Full::new(response_payload)).unwrap())
-            }
-            IngressResponseResult::Failure(error) => {
-                info!(rpc.response = ?error, "Complete external HTTP request with a failure");
-                Ok(HandlerError::Invocation(error).fill_builder(response_builder))
-            }
-        }
+        Self::reply_with_invocation_response(
+            response.result,
+            response.idempotency_expiry_time.as_deref(),
+            move |_| Ok(invocation_target_metadata),
+        )
     }
 
     async fn handle_service_send(

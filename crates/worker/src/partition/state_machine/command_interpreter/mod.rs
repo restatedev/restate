@@ -40,10 +40,10 @@ use restate_types::ingress::{
     IngressResponseEnvelope, IngressResponseResult, InvocationResponseCorrelationIds,
 };
 use restate_types::invocation::{
-    AttachInvocationRequest, AttachNotificationSink, InvocationQuery, InvocationResponse,
-    InvocationTarget, InvocationTargetType, InvocationTermination, ResponseResult,
-    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
-    SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
+    InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelationCause,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -251,13 +251,13 @@ where
                     .await?
                 {
                     // Notify the ingress, if needed, of the chosen invocation_id
-                    if let Some(AttachNotificationSink::Ingress(target_node)) =
-                        service_invocation.attach_notification_sink
+                    if let Some(SubmitNotificationSink::Ingress(target_node)) =
+                        service_invocation.submit_notification_sink
                     {
                         effects.send_ingress_attach_notification(IngressResponseEnvelope {
                             target_node,
-                            inner: ingress::AttachedInvocationNotification {
-                                submitted_invocation_id: service_invocation.invocation_id,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id: service_invocation.invocation_id,
                                 attached_invocation_id: original_invocation_id,
                                 idempotency_id: Some(idempotency_id.clone()),
                             },
@@ -353,13 +353,13 @@ where
                 }
 
                 // Notify the ingress, if needed, of the chosen invocation_id
-                if let Some(AttachNotificationSink::Ingress(target_node)) =
-                    service_invocation.attach_notification_sink
+                if let Some(SubmitNotificationSink::Ingress(target_node)) =
+                    service_invocation.submit_notification_sink
                 {
                     effects.send_ingress_attach_notification(IngressResponseEnvelope {
                         target_node,
-                        inner: ingress::AttachedInvocationNotification {
-                            submitted_invocation_id: service_invocation.invocation_id,
+                        inner: ingress::SubmittedInvocationNotification {
+                            original_invocation_id: service_invocation.invocation_id,
                             attached_invocation_id: original_invocation_id,
                             idempotency_id: None,
                         },
@@ -370,13 +370,13 @@ where
         }
 
         // If we reach this point, we have not yet notified the ingress of the fact that we did not attach to any existing invocation
-        if let Some(AttachNotificationSink::Ingress(target_node)) =
-            service_invocation.attach_notification_sink
+        if let Some(SubmitNotificationSink::Ingress(target_node)) =
+            service_invocation.submit_notification_sink
         {
             effects.send_ingress_attach_notification(IngressResponseEnvelope {
                 target_node,
-                inner: ingress::AttachedInvocationNotification {
-                    submitted_invocation_id: service_invocation.invocation_id,
+                inner: ingress::SubmittedInvocationNotification {
+                    original_invocation_id: service_invocation.invocation_id,
                     idempotency_id,
                     attached_invocation_id: service_invocation.invocation_id,
                 },
@@ -1666,7 +1666,7 @@ where
                         execution_time: None,
                         completion_retention_time: *completion_retention_time,
                         idempotency_key: None,
-                        attach_notification_sink: None,
+                        submit_notification_sink: None,
                     };
 
                     self.handle_outgoing_message(
@@ -1715,7 +1715,7 @@ where
                     execution_time: delay,
                     completion_retention_time: *completion_retention_time,
                     idempotency_key: None,
-                    attach_notification_sink: None,
+                    submit_notification_sink: None,
                 };
 
                 let pointer_span_id = match span_context.span_cause() {
