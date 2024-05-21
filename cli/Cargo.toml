@@ -23,7 +23,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint"] }
 arrow_convert = { version = "0.6.6" }
-axum = { workspace = true }
+axum = { workspace = true, default-features = false, features = ["http1", "query", "tokio"] }
 bytes = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
@@ -48,10 +48,7 @@ itertools = { workspace = true }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
 open = "5.1.2"
-reqwest = { version = "0.11.22", default-features = false, features = [
-    "json",
-    "rustls-tls",
-] }
+reqwest = { version = "0.11.22", default-features = false, features = ["json","rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 termcolor = { version = "1.4.0" }
@@ -62,12 +59,12 @@ toml_edit = "0.22.12"
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
+typify = "0.1.0"
 unicode-width = { version = "0.1.11" }
 url = { version = "2.4.1" }
 uuid = { workspace = true }
 zip = "0.6"
 zip-extensions = "0.6"
-typify = "0.1.0"
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [
