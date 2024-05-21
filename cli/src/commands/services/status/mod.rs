@@ -51,7 +51,7 @@ pub async fn run_status(State(env): State<CliEnv>, opts: &Status) -> Result<()> 
 }
 
 async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
-    let client = AdminClient::new(env)?;
+    let client = AdminClient::new(env).await?;
     let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     if let Some(svc) = &opts.service {

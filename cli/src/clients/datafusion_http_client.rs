@@ -52,8 +52,8 @@ impl From<AdminClient> for DataFusionHttpClient {
 }
 
 impl DataFusionHttpClient {
-    pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
-        let inner = AdminClient::new(env)?;
+    pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
+        let inner = AdminClient::new(env).await?;
 
         Ok(Self { inner })
     }

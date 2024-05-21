@@ -40,7 +40,7 @@ pub(crate) async fn get_current_state(
     //
     // 0. require that this is a keyed service
     //
-    let client = AdminClient::new(env)?;
+    let client = AdminClient::new(env).await?;
     let service_meta = client.get_service(service).await?.into_body().await?;
     if service_meta.ty != ServiceType::VirtualObject {
         bail!("Only virtual objects support state");
@@ -79,7 +79,7 @@ pub(crate) async fn update_state(
         object_key: service_key.to_string(),
     };
 
-    let client = AdminClient::new(env)?;
+    let client = AdminClient::new(env).await?;
     let _ = client.patch_state(service, req).await?.success_or_error()?;
 
     Ok(())

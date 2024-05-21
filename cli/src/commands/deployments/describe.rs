@@ -47,7 +47,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 }
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
-    let client = AdminClient::new(env)?;
+    let client = AdminClient::new(env).await?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.

@@ -41,7 +41,7 @@ pub struct Cancel {
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
-    let client = clients::AdminClient::new(&env)?;
+    let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
     let q = opts.query.trim();

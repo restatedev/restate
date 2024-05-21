@@ -17,6 +17,7 @@ mod health;
 mod invocations;
 mod services;
 mod subscriptions;
+mod version;
 
 use codederror::CodedError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
@@ -92,6 +93,7 @@ where
             delete(openapi_handler!(subscriptions::delete_subscription)),
         )
         .route("/health", get(openapi_handler!(health::health)))
+        .route("/version", get(openapi_handler!(version::version)))
         .route_openapi_specification(
             "/openapi",
             OpenApiBuilder::new("Admin API", env!("CARGO_PKG_VERSION")),

@@ -10,17 +10,23 @@
 
 //! A wrapper client for admin HTTP service.
 
+use anyhow::bail;
 use http::StatusCode;
+use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
-use crate::build_info;
 use crate::cli_env::CliEnv;
+use crate::{build_info, c_warn};
 
 use super::errors::ApiError;
+
+/// Min/max supported admin API versions
+const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
+const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -103,12 +109,13 @@ pub struct AdminClient {
     pub(crate) base_url: Url,
     pub(crate) bearer_token: Option<String>,
     pub(crate) request_timeout: Duration,
+    pub(crate) admin_api_version: AdminApiVersion,
 }
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl AdminClient {
-    pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
+    pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -123,12 +130,34 @@ impl AdminClient {
         let base_url = env.admin_base_url()?.clone();
         let bearer_token = env.bearer_token()?.map(str::to_string);
 
-        Ok(Self {
+        let mut client = Self {
             inner: raw_client,
             base_url,
             bearer_token,
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
-        })
+            admin_api_version: AdminApiVersion::Unknown,
+        };
+
+        let version_information: VersionInformation = match client
+            .run(reqwest::Method::GET, client.base_url.join("/version")?)
+            .await
+        {
+            Ok(envelope) => envelope.into_body().await?,
+            Err(_) => {
+                c_warn!("Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.", client.base_url);
+                return Ok(client);
+            }
+        };
+
+        if let Some(admin_api_version) = AdminApiVersion::choose_max_supported_version(
+            MIN_ADMIN_API_VERSION..=MAX_ADMIN_API_VERSION,
+            version_information.min_admin_api_version..=version_information.max_admin_api_version,
+        ) {
+            client.admin_api_version = admin_api_version;
+            Ok(client)
+        } else {
+            bail!("The CLI is not compatible with the Restate server '{}'. Please update the CLI to match the Restate server version '{}'.", client.base_url, version_information.version);
+        }
     }
 
     /// Prepare a request builder for the given method and path.

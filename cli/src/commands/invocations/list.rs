@@ -65,7 +65,7 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 }
 
 async fn list(env: &CliEnv, opts: &List) -> Result<()> {
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env).await?;
     let statuses: HashSet<InvocationState> = HashSet::from_iter(opts.status.clone());
     // Prepare filters
     let mut active_filters: Vec<String> = vec![]; // "WHERE 1 = 1\n".to_string();

@@ -43,7 +43,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 }
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
-    let client = AdminClient::new(env)?;
+    let client = AdminClient::new(env).await?;
     let service = client.get_service(&opts.name).await?.into_body().await?;
 
     let mut table = Table::new_styled(&env.ui_config);

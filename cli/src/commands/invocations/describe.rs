@@ -39,7 +39,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 }
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
-    let sql_client = clients::DataFusionHttpClient::new(env)?;
+    let sql_client = clients::DataFusionHttpClient::new(env).await?;
 
     let Some(inv) = get_invocation(&sql_client, &opts.invocation_id).await? else {
         bail!("Invocation {} not found!", opts.invocation_id);

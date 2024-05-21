@@ -127,7 +127,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     });
 
     // Preparing the discovery request
-    let client = crate::clients::AdminClient::new(&env)?;
+    let client = AdminClient::new(&env).await?;
 
     let mk_request_body = |force, dry_run| match &discover_opts.deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
