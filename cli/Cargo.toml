@@ -23,7 +23,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint"] }
 arrow_convert = { version = "0.6.6" }
-axum = { workspace = true, default-features = false, features = ["http1", "query", "tokio"] }
+axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
@@ -47,7 +47,7 @@ itertools = { workspace = true }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
 open = "5.1.2"
-reqwest = { version = "0.11.22", default-features = false, features = ["json","rustls-tls", "stream"] }
+reqwest = { version = "0.11.22", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 termcolor = { version = "1.4.0" }
