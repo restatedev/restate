@@ -59,7 +59,7 @@ impl From<Port> for u16 {
 struct HandlerState {
     client: reqwest::Client,
     base_url: Url,
-    access_token: String,
+    bearer_token: String,
 }
 
 pub async fn run_proxy(State(env): State<CliEnv>, opts: &Proxy) -> Result<()> {
@@ -68,8 +68,11 @@ pub async fn run_proxy(State(env): State<CliEnv>, opts: &Proxy) -> Result<()> {
         _ => return Err(anyhow::anyhow!("First switch to a Cloud environment using `restate config use-environment` or configure one with `restate cloud environment configure`"))
     }
 
-    let access_token = if let Some(credentials) = &env.config.cloud.credentials {
-        credentials.access_token()?.to_string()
+    let bearer_token = if let Some(bearer_token) = &env.config.bearer_token {
+        // the user may have specifically set an api token
+        bearer_token.clone()
+    } else if let Some(cloud_credentials) = &env.config.cloud.credentials {
+        cloud_credentials.access_token()?.to_string()
     } else {
         return Err(anyhow::anyhow!(
             "Restate Cloud credentials have not been provided; first run `restate cloud login`"
@@ -107,7 +110,7 @@ pub async fn run_proxy(State(env): State<CliEnv>, opts: &Proxy) -> Result<()> {
                 .with_state(HandlerState {
                     client: client.clone(),
                     base_url,
-                    access_token: access_token.clone(),
+                    bearer_token: bearer_token.clone(),
                 });
 
             let server =
@@ -160,7 +163,7 @@ async fn handler(
         .request(head.method, url)
         .body(body)
         .headers(head.headers)
-        .bearer_auth(&state.access_token)
+        .bearer_auth(&state.bearer_token)
         .build()?;
     let mut result = state.client.execute(request).await?;
 
