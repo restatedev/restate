@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use futures::{Future, FutureExt};
 use metrics::counter;
 use restate_types::config::CommonOptions;
+use tokio::runtime::RuntimeMetrics;
 use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -142,6 +143,10 @@ pub struct TaskCenter {
 static_assertions::assert_impl_all!(TaskCenter: Send, Sync, Clone);
 
 impl TaskCenter {
+    pub fn default_runtime_metrics(&self) -> RuntimeMetrics {
+        self.inner.default_runtime_handle.metrics()
+    }
+
     /// Use to monitor an on-going shutdown when requested
     pub fn watch_shutdown(&self) -> WaitForCancellationFutureOwned {
         self.inner.global_cancel_token.clone().cancelled_owned()
