@@ -10,10 +10,11 @@
 
 use cling::prelude::*;
 use comfy_table::Table;
+use figment::Profile;
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
-use crate::cli_env::CliEnv;
+use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::MetaClientInterface;
 use crate::{c_eprintln, c_error, c_println, c_success};
 
@@ -28,11 +29,19 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!();
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
-    table.add_row(vec!["Ingress base URL", env.ingress_base_url.as_ref()]);
+    table.add_row(vec![
+        "Ingress base URL",
+        env.ingress_base_url()
+            .map(|u| u.as_ref())
+            .unwrap_or("(NONE)"),
+    ]);
 
-    table.add_row(vec!["Admin base URL", env.admin_base_url.as_ref()]);
+    table.add_row(vec![
+        "Admin base URL",
+        env.admin_base_url().map(|u| u.as_ref()).unwrap_or("(NONE)"),
+    ]);
 
-    if env.bearer_token.is_some() {
+    if env.config.bearer_token.is_some() {
         table.add_row(vec!["Authentication Token", "(set)"]);
     }
 
@@ -54,6 +63,28 @@ pub async fn run(State(env): State<CliEnv>) {
             }
         ),
     ]);
+
+    table.add_row(vec![
+        "Environment File",
+        &format!(
+            "{} {}",
+            env.environment_file.display(),
+            if env.environment_file.exists() {
+                "(exists)"
+            } else {
+                "(does not exist)"
+            }
+        ),
+    ]);
+
+    if env.environment == Profile::Default {
+        table.add_row(vec!["Environment", "default"]);
+    } else {
+        table.add_row(vec![
+            "Environment",
+            &format!("{} (source: {})", env.environment, env.environment_source),
+        ]);
+    }
 
     table.add_row(vec![
         "Config File",
@@ -94,15 +125,64 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);
     c_println!("{}", table);
 
+    match env.config.environment_type {
+        EnvironmentType::Default => {}
+        #[cfg(feature = "cloud")]
+        EnvironmentType::Cloud => {
+            c_println!();
+            c_println!("Cloud");
+            let mut table = Table::new();
+
+            let (account_id, environment_id) = match &env.config.cloud.environment_info {
+                Some(environment_info) => (
+                    environment_info.account_id.as_str(),
+                    environment_info.environment_id.as_str(),
+                ),
+                None => ("(NONE)", "(NONE)"),
+            };
+
+            table.load_preset(comfy_table::presets::NOTHING);
+            table.add_row(vec!["Account ID", account_id]);
+            table.add_row(vec!["Environment ID", environment_id]);
+
+            if let Some(credentials) = &env.config.cloud.credentials {
+                match credentials.expiry() {
+                    Ok(expiry) => {
+                        let delta = expiry.signed_duration_since(chrono::Utc::now());
+                        if delta > chrono::TimeDelta::zero() {
+                            let left = crate::ui::duration_to_human_rough(
+                                delta,
+                                chrono_humanize::Tense::Present,
+                            );
+                            table.add_row(vec![
+                                "Logged in?",
+                                &format!("true (expires in {})", left),
+                            ]);
+                        } else {
+                            table.add_row(vec!["Logged in?", "false (token expired)"]);
+                        }
+                    }
+                    Err(_) => {
+                        table.add_row(vec!["Logged in?", "false (invalid token)"]);
+                    }
+                }
+            } else {
+                table.add_row(vec!["Logged in?", "false (no token)"]);
+            }
+
+            c_println!("{}", table);
+        }
+    }
+
     c_println!();
     // Get admin client, don't fail completely if we can't get one!
     if let Ok(client) = crate::clients::MetasClient::new(&env) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
-                c_success!("Admin Service '{}' is healthy!", env.admin_base_url);
+                c_success!("Admin Service '{}' is healthy!", client.base_url);
             }
             Ok(envelope) => {
-                c_error!("Admin Service '{}' is unhealthy:", env.admin_base_url);
+                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
                 let url = envelope.url().clone();
                 let status_code = envelope.status_code();
                 let body = envelope.into_text().await;
@@ -110,7 +190,7 @@ pub async fn run(State(env): State<CliEnv>) {
                 c_eprintln!("   >> {}", body.unwrap_or_default());
             }
             Err(e) => {
-                c_error!("Admin Service '{}' is unhealthy:", env.admin_base_url);
+                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
                 c_eprintln!("   >> {}", e);
             }
         }

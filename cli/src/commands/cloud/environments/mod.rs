@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[cfg(feature = "cloud")]
-pub mod cloud;
-pub mod config;
-pub mod deployments;
-pub mod examples;
-pub mod invocations;
-pub mod services;
-pub mod sql;
-pub mod state;
-pub mod whoami;
+mod configure;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+#[clap(visible_alias = "env", alias = "environment")]
+pub enum Environments {
+    /// Set up the CLI to talk to this Environment
+    Configure(configure::Configure),
+}

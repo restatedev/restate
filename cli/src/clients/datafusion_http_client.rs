@@ -51,7 +51,7 @@ pub struct DataFusionHttpClient {
 }
 
 impl DataFusionHttpClient {
-    pub fn new(env: &CliEnv) -> reqwest::Result<Self> {
+    pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -63,10 +63,13 @@ impl DataFusionHttpClient {
             .connect_timeout(env.connect_timeout)
             .build()?;
 
+        let base_url = env.admin_base_url()?.clone();
+        let bearer_token = env.bearer_token()?.map(str::to_string);
+
         Ok(Self {
             inner: raw_client,
-            base_url: env.admin_base_url.clone(),
-            bearer_token: env.bearer_token.clone(),
+            base_url,
+            bearer_token,
             request_timeout: env.request_timeout,
         })
     }

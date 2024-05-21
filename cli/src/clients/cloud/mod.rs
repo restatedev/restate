@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#[cfg(feature = "cloud")]
-pub mod cloud;
-pub mod config;
-pub mod deployments;
-pub mod examples;
-pub mod invocations;
-pub mod services;
-pub mod sql;
-pub mod state;
-pub mod whoami;
+mod client;
+mod interface;
+
+pub use self::client::CloudClient;
+pub use self::interface::CloudClientInterface;
+
+pub mod generated {
+    use serde::{Deserialize, Serialize};
+    typify::import_types!(schema = "src/clients/cloud/schema.json");
+}

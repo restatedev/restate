@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A wrapper client for meta HTTP service.
+//! A wrapper client for Restate Cloud HTTP service.
 
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
@@ -20,7 +20,7 @@ use url::Url;
 use crate::build_info;
 use crate::cli_env::CliEnv;
 
-use super::errors::ApiError;
+use super::super::errors::ApiError;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -48,10 +48,6 @@ where
         self.inner.status()
     }
 
-    pub fn url(&self) -> &Url {
-        self.inner.url()
-    }
-
     pub async fn into_body(self) -> Result<T, Error> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
@@ -63,7 +59,7 @@ where
             return Err(Error::Api(Box::new(ApiError {
                 http_status_code,
                 url,
-                body: serde_json::from_str(&body)?,
+                body: serde_json::from_str(&body).unwrap_or(body.into()),
             })));
         }
 
@@ -71,19 +67,6 @@ where
         let body = self.inner.text().await?;
         debug!("  {}", body);
         Ok(serde_json::from_str(&body)?)
-    }
-
-    pub async fn into_text(self) -> Result<String, Error> {
-        Ok(self.inner.text().await?)
-    }
-    pub fn success_or_error(self) -> Result<StatusCode, Error> {
-        let http_status_code = self.inner.status();
-        let url = self.inner.url().clone();
-        info!("Response from {} ({})", url, http_status_code);
-        match self.inner.error_for_status() {
-            Ok(_) => Ok(http_status_code),
-            Err(e) => Err(Error::Network(e)),
-        }
     }
 }
 
@@ -96,19 +79,27 @@ impl<T> From<reqwest::Response> for Envelope<T> {
     }
 }
 
-/// A handy client for the meta HTTP service.
+/// A handy client for the Cloud HTTP service.
 #[derive(Clone)]
-pub struct MetasClient {
+pub struct CloudClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Url,
-    pub(crate) bearer_token: Option<String>,
+    pub(crate) access_token: String,
     pub(crate) request_timeout: Duration,
 }
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl MetasClient {
+impl CloudClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
+        let access_token = if let Some(credentials) = &env.config.cloud.credentials {
+            credentials.access_token()?.to_string()
+        } else {
+            return Err(anyhow::anyhow!(
+                "Restate Cloud credentials have not been provided; first run `restate cloud login`"
+            ));
+        };
+
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -120,28 +111,24 @@ impl MetasClient {
             .connect_timeout(env.connect_timeout)
             .build()?;
 
-        let base_url = env.admin_base_url()?.clone();
-        let bearer_token = env.bearer_token()?.map(str::to_string);
-
         Ok(Self {
             inner: raw_client,
-            base_url,
-            bearer_token,
+            base_url: env.config.cloud.api_base_url.clone(),
+            access_token,
             request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }
 
     /// Prepare a request builder for the given method and path.
     fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
-        let request_builder = self
-            .inner
+        self.inner
             .request(method, path)
-            .timeout(self.request_timeout);
-
-        match self.bearer_token.as_deref() {
-            Some(token) => request_builder.bearer_auth(token),
-            None => request_builder,
-        }
+            .timeout(self.request_timeout)
+            .header(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            )
+            .bearer_auth(&self.access_token)
     }
 
     /// Prepare a request builder that encodes the body as JSON.
@@ -191,8 +178,8 @@ impl MetasClient {
     }
 }
 
-// Ensure that MetaClient is Send + Sync. Compiler will fail if it's not.
+// Ensure that CloudClient is Send + Sync. Compiler will fail if it's not.
 const _: () = {
     const fn assert_send<T: Send + Sync>() {}
-    assert_send::<MetasClient>();
+    assert_send::<CloudClient>();
 };

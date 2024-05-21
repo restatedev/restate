@@ -12,22 +12,27 @@
 
 #[cfg(test)]
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dotenvy::dotenv;
+use figment::providers::{Format, Serialized, Toml};
+use figment::{Figment, Profile};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::app::{GlobalOpts, UiConfig};
 
-pub const CONFIG_FILENAME: &str = "config.yaml";
+pub const CONFIG_FILENAME: &str = "config.toml";
+
+pub const ENVIRONMENT_FILENAME: &str = "environment";
+pub const ENVIRONMENT_ENV: &str = "RESTATE_ENVIRONMENT";
 
 pub const RESTATE_HOST_ENV: &str = "RESTATE_HOST";
 pub const RESTATE_HOST_SCHEME_ENV: &str = "RESTATE_HOST_SCHEME";
-// The default is localhost unless the CLI configuration states a different default.
-pub const RESTATE_HOST_DEFAULT: &str = "localhost";
 pub const RESTATE_HOST_SCHEME_DEFAULT: &str = "http";
 
 /// Environment variable to override the default config dir path
@@ -41,17 +46,50 @@ pub const INGRESS_URL_ENV: &str = "RESTATE_INGRESS_URL";
 pub const ADMIN_URL_ENV: &str = "RESTATE_ADMIN_URL";
 pub const EDITOR_ENV: &str = "RESTATE_EDITOR";
 
-#[derive(Clone, Default)]
-pub struct CliConfig {}
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct CliConfig {
+    pub environment_type: EnvironmentType,
+
+    pub ingress_base_url: Option<Url>,
+    pub admin_base_url: Option<Url>,
+    pub bearer_token: Option<String>,
+
+    #[cfg(feature = "cloud")]
+    pub cloud: crate::commands::cloud::CloudConfig,
+}
+
+pub const LOCAL_PROFILE: Profile = Profile::const_new("local");
+
+impl CliConfig {
+    pub fn local() -> Self {
+        Self {
+            environment_type: EnvironmentType::Default,
+
+            ingress_base_url: Some(Url::parse("http://localhost:8080/").unwrap()),
+            admin_base_url: Some(Url::parse("http://localhost:9070/").unwrap()),
+            bearer_token: None,
+
+            #[cfg(feature = "cloud")]
+            cloud: crate::commands::cloud::CloudConfig::default(),
+        }
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentType {
+    #[default]
+    Default,
+    #[cfg(feature = "cloud")]
+    Cloud,
+}
 
 #[derive(Clone)]
 pub struct CliEnv {
     pub loaded_env_file: Option<PathBuf>,
     pub config_home: PathBuf,
     pub config_file: PathBuf,
-    pub ingress_base_url: Url,
-    pub admin_base_url: Url,
-    pub bearer_token: Option<String>,
+    pub environment_file: PathBuf,
     /// Should we use colors and emojis or not?
     pub colorful: bool,
     /// Auto answer yes to prompts that asks for confirmation
@@ -65,6 +103,31 @@ pub struct CliEnv {
 
     /// Default text editor for state editing
     pub editor: Option<String>,
+
+    /// Current environment
+    pub environment: Profile,
+    pub environment_source: EnvironmentSource,
+    /// Environment-specific config
+    pub config: CliConfig,
+}
+
+#[derive(Clone)]
+pub enum EnvironmentSource {
+    Argument,
+    Environment,
+    File,
+    None,
+}
+
+impl Display for EnvironmentSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Argument => write!(f, "argument"),
+            Self::Environment => write!(f, "${}", ENVIRONMENT_ENV),
+            Self::File => write!(f, "file"),
+            Self::None => write!(f, "default"),
+        }
+    }
 }
 
 impl CliEnv {
@@ -80,18 +143,6 @@ impl CliEnv {
         // Load .env file. Best effort.
         let maybe_env = dotenv();
 
-        let restate_host = os_env
-            .get(RESTATE_HOST_ENV)
-            .as_deref()
-            .unwrap_or(RESTATE_HOST_DEFAULT)
-            .to_owned();
-
-        let restate_host_scheme = os_env
-            .get(RESTATE_HOST_SCHEME_ENV)
-            .as_deref()
-            .unwrap_or(RESTATE_HOST_SCHEME_DEFAULT)
-            .to_owned();
-
         let config_home = os_env
             .get(CLI_CONFIG_HOME_ENV)
             .map(|x| Ok(PathBuf::from(x)))
@@ -102,23 +153,25 @@ impl CliEnv {
             .map(PathBuf::from)
             .unwrap_or_else(|| config_home.join(CONFIG_FILENAME));
 
-        let bearer_token = os_env.get(RESTATE_AUTH_TOKEN_ENV);
+        let environment_file = config_home.join(ENVIRONMENT_FILENAME);
 
-        let ingress_base_url = os_env
-            .get(INGRESS_URL_ENV)
-            .as_deref()
-            .map(Url::parse)
-            .unwrap_or_else(|| {
-                Url::parse(&format!("{}://{}:8080/", restate_host_scheme, restate_host))
-            })?;
-
-        let admin_base_url = os_env
-            .get(ADMIN_URL_ENV)
-            .as_deref()
-            .map(Url::parse)
-            .unwrap_or_else(|| {
-                Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))
-            })?;
+        let (environment, environment_source) = if let Some(environment) = &global_opts.environment
+        {
+            // 1. command line argument
+            (environment.clone(), EnvironmentSource::Argument)
+        } else if let Some(environment) = os_env.get(ENVIRONMENT_ENV) {
+            // 2. RESTATE_ENVIRONMENT env
+            (Profile::new(&environment), EnvironmentSource::Environment)
+        } else if environment_file.is_file() {
+            // 3. environment file
+            (
+                Profile::new(std::fs::read_to_string(&environment_file)?.trim()),
+                EnvironmentSource::File,
+            )
+        } else {
+            // 4. default to 'local'
+            (LOCAL_PROFILE, EnvironmentSource::None)
+        };
 
         let default_editor = os_env
             .get(EDITOR_ENV)
@@ -164,20 +217,76 @@ impl CliEnv {
         // without passing the environment around.
         crate::console::set_colors_enabled(colorful);
 
+        let defaults = CliConfig::default();
+        let local = CliConfig::local();
+
+        let mut figment = Figment::from(Serialized::defaults(defaults))
+            .merge(Serialized::from(local, LOCAL_PROFILE))
+            .select(environment.clone());
+
+        // Load configuration file
+        if config_file.as_path().is_file() {
+            figment = figment.merge(Toml::file_exact(config_file.as_path()).nested());
+        };
+        figment = Self::merge_with_env(os_env, figment)?;
+
         Ok(Self {
             loaded_env_file: maybe_env.ok(),
             config_home,
             config_file,
-            ingress_base_url,
-            admin_base_url,
-            bearer_token,
+            environment_file,
             connect_timeout: Duration::from_millis(global_opts.connect_timeout),
             request_timeout: global_opts.request_timeout.map(Duration::from_millis),
             colorful,
             auto_confirm: global_opts.yes,
             ui_config: global_opts.ui_config.clone(),
             editor: default_editor,
+            environment,
+            environment_source,
+            config: figment.extract()?,
         })
+    }
+
+    fn merge_with_env(os_env: &OsEnv, figment: Figment) -> Result<Figment> {
+        let figment = if let Some(restate_host) = os_env.get(RESTATE_HOST_ENV) {
+            let restate_host_scheme = os_env
+                .get(RESTATE_HOST_SCHEME_ENV)
+                .as_deref()
+                .unwrap_or(RESTATE_HOST_SCHEME_DEFAULT)
+                .to_owned();
+
+            figment
+                .join((
+                    "ingress_base_url",
+                    Url::parse(&format!("{}://{}:8080/", restate_host_scheme, restate_host))?,
+                ))
+                .join((
+                    "admin_base_url",
+                    Url::parse(&format!("{}://{}:9070/", restate_host_scheme, restate_host))?,
+                ))
+        } else {
+            figment
+        };
+
+        let figment = if let Some(ingress_url) = os_env.get(INGRESS_URL_ENV) {
+            figment.join(("ingress_base_url", Url::parse(&ingress_url)?))
+        } else {
+            figment
+        };
+
+        let figment = if let Some(admin_url) = os_env.get(ADMIN_URL_ENV) {
+            figment.join(("admin_base_url", Url::parse(&admin_url)?))
+        } else {
+            figment
+        };
+
+        let figment = if let Some(bearer_token) = os_env.get(RESTATE_AUTH_TOKEN_ENV) {
+            figment.join(("bearer_token", bearer_token))
+        } else {
+            figment
+        };
+
+        Ok(figment)
     }
 
     pub fn open_default_editor(&self, path: &Path) -> anyhow::Result<()> {
@@ -201,6 +310,39 @@ impl CliEnv {
                 (3) set the {EDITOR_ENV} env variable to a default editor.  ",
                 status.code()
             ))
+        }
+    }
+
+    pub fn ingress_base_url(&self) -> Result<&Url> {
+        match self.config.ingress_base_url.as_ref() {
+            Some(ingress_base_url) => Ok(ingress_base_url),
+            None => Err(anyhow!("No Restate ingress endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+        }
+    }
+
+    pub fn admin_base_url(&self) -> Result<&Url> {
+        match self.config.admin_base_url.as_ref() {
+            Some(admin_base_url) => Ok(admin_base_url),
+            None => Err(anyhow!("No Restate admin endpoint has been configured for environment '{}'; provide it using ${}, or add to the config file with `restate config edit`", self.environment.as_str(), RESTATE_HOST_ENV)),
+        }
+    }
+
+    pub fn bearer_token(&self) -> Result<Option<&str>> {
+        match self.config.environment_type {
+            EnvironmentType::Default => Ok(self.config.bearer_token.as_deref()),
+            #[cfg(feature = "cloud")]
+            EnvironmentType::Cloud => {
+                // first check for manual overrides for this environment / env vars
+                if let Some(bearer_token) = &self.config.bearer_token {
+                    return Ok(Some(bearer_token));
+                }
+                if let Some(cloud_credentials) = &self.config.cloud.credentials {
+                    return Ok(Some(cloud_credentials.access_token()?));
+                }
+                Err(anyhow::anyhow!(
+                    "Restate Cloud credentials have not been provided; first run `restate cloud login`"
+                ))
+            }
         }
     }
 }
@@ -285,7 +427,7 @@ mod tests {
 
         // RESTATE_CLI_CONFIG_FILE overrides the config file only!
         os_env.clear();
-        let new_config_file = PathBuf::from("/to/infinity/and/beyond.yaml");
+        let new_config_file = PathBuf::from("/to/infinity/and/beyond.toml");
         os_env.insert(CLI_CONFIG_FILE_ENV, new_config_file.display().to_string());
 
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
@@ -300,13 +442,23 @@ mod tests {
     fn test_base_url_override() -> Result<()> {
         // By default, we use the const value defined in this file.
         let mut os_env = OsEnv::default();
+        // avoid using any files from the test runner
+        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         assert_eq!(
-            cli_env.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "http://localhost:8080/".to_string()
         );
         assert_eq!(
-            cli_env.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "http://localhost:9070/".to_string()
         );
 
@@ -317,11 +469,19 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
 
         assert_eq!(
-            cli_env.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "http://example.com:8080/".to_string()
         );
         assert_eq!(
-            cli_env.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "http://example.com:9070/".to_string()
         );
 
@@ -334,11 +494,19 @@ mod tests {
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         // Note that Uri adds a trailing slash to the path as expected
         assert_eq!(
-            cli_env.ingress_base_url.to_string(),
+            cli_env
+                .config
+                .ingress_base_url
+                .expect("ingress_base_url must be provided")
+                .to_string(),
             "https://api.restate.dev:4567/".to_string()
         );
         assert_eq!(
-            cli_env.admin_base_url.to_string(),
+            cli_env
+                .config
+                .admin_base_url
+                .expect("admin_base_url must be provided")
+                .to_string(),
             "https://admin.restate.dev:4567/".to_string()
         );
 
@@ -360,12 +528,14 @@ mod tests {
     #[test]
     fn test_bearer_token_applied() {
         let mut os_env = OsEnv::default();
+        // avoid using any files from the test runner
+        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
-        assert_eq!(cli_env.bearer_token, None);
+        assert_eq!(cli_env.config.bearer_token, None);
 
         os_env.clear();
         os_env.insert(RESTATE_AUTH_TOKEN_ENV, "token".to_string());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
-        assert_eq!(cli_env.bearer_token, Some("token".to_string()));
+        assert_eq!(cli_env.config.bearer_token, Some("token".to_string()));
     }
 }
