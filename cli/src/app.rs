@@ -80,7 +80,7 @@ pub struct GlobalOpts {
 pub enum Command {
     /// Prints general information about the configured environment
     #[clap(name = "whoami")]
-    WhoAmiI(whoami::WhoAmI),
+    WhoAmI(whoami::WhoAmI),
     /// Manage Restate's service registry
     #[clap(subcommand)]
     Services(services::Services),
