@@ -24,3 +24,5 @@ pub use read_stream::LogReadStream;
 pub use record::*;
 pub use service::BifrostService;
 pub use types::*;
+
+pub const SMALL_BATCH_THRESHOLD_COUNT: usize = 4;

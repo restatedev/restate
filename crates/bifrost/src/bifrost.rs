@@ -18,6 +18,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
+use smallvec::SmallVec;
 use tracing::{error, instrument};
 
 use restate_core::{metadata, Metadata, MetadataKind};
@@ -28,7 +29,7 @@ use restate_types::Version;
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
-use crate::{Error, FindTailAttributes, LogReadStream, LogRecord};
+use crate::{Error, FindTailAttributes, LogReadStream, LogRecord, SMALL_BATCH_THRESHOLD_COUNT};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -66,6 +67,18 @@ impl Bifrost {
     #[instrument(level = "debug", skip(self, payload), err)]
     pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.inner.append(log_id, payload).await
+    }
+
+    /// Appends a batch of records to a log. The log id must exist, otherwise the
+    /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the first
+    /// record in this batch. This will only return after all records have been stored.
+    #[instrument(level = "debug", skip(self, payloads), err)]
+    pub async fn append_batch(
+        &mut self,
+        log_id: LogId,
+        payloads: &[Payload],
+    ) -> Result<Lsn, Error> {
+        self.inner.append_batch(log_id, payloads).await
     }
 
     /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
@@ -163,6 +176,20 @@ impl BifrostInner {
         let mut buf = BytesMut::default();
         StorageCodec::encode(payload, &mut buf).expect("serialization to bifrost is infallible");
         loglet.append(buf.freeze()).await
+    }
+
+    pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn, Error> {
+        let loglet = self.writeable_loglet(log_id).await?;
+        let raw_payloads: SmallVec<[_; SMALL_BATCH_THRESHOLD_COUNT]> = payloads
+            .iter()
+            .map(|payload| {
+                let mut buf = BytesMut::new();
+                StorageCodec::encode(payload, &mut buf)
+                    .expect("serialization to bifrost is infallible");
+                buf.freeze()
+            })
+            .collect();
+        loglet.append_batch(&raw_payloads).await
     }
 
     pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord, Error> {

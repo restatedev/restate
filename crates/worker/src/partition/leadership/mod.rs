@@ -139,6 +139,7 @@ where
     ) -> Result<(Self, ActionEffectStream), Error> {
         if let LeadershipState::Follower(mut follower_state) = self {
             let leader_epoch = epoch_sequence_number.leader_epoch;
+            let metadata = metadata();
 
             let invoker_rx = Self::resume_invoked_invocations(
                 &mut follower_state.invoker_tx,
@@ -161,7 +162,7 @@ where
                 ShuffleMetadata::new(
                     follower_state.partition_id,
                     leader_epoch,
-                    metadata().my_node_id().into(),
+                    metadata.my_node_id().into(),
                 ),
                 partition_storage.clone(),
                 shuffle_tx,
@@ -183,6 +184,7 @@ where
                 epoch_sequence_number,
                 follower_state.partition_key_range.clone(),
                 follower_state.bifrost.clone(),
+                metadata,
             );
 
             let (actions_effects_tx, actions_effects_rx) =
@@ -422,7 +424,7 @@ where
 
     pub async fn handle_action_effect(
         &mut self,
-        action_effect: ActionEffect,
+        action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
         match self {
             LeadershipState::Follower(_) => {
@@ -431,7 +433,7 @@ where
             LeadershipState::Leader { leader_state, .. } => {
                 leader_state
                     .action_effect_handler
-                    .handle(action_effect)
+                    .handle(action_effects)
                     .await?
             }
         };
