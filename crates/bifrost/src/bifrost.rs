@@ -15,14 +15,16 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use enum_map::EnumMap;
 use once_cell::sync::OnceCell;
+use tracing::{error, instrument};
 
 use restate_core::{metadata, Metadata, MetadataKind};
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::storage::StorageCodec;
 use restate_types::Version;
-use tracing::{error, instrument};
 
 use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
@@ -158,14 +160,20 @@ impl BifrostInner {
     pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
         let loglet = self.writeable_loglet(log_id).await?;
-        loglet.append(payload).await
+        let mut buf = BytesMut::default();
+        StorageCodec::encode(payload, &mut buf).expect("serialization to bifrost is infallible");
+        loglet.append(buf.freeze()).await
     }
 
     pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord, Error> {
         self.fail_if_shutting_down()?;
 
         let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
-        loglet.read_next_single(after).await
+        Ok(loglet
+            .read_next_single(after)
+            .await?
+            .decode()
+            .expect("decoding a bifrost envelope succeeds"))
     }
 
     pub async fn read_next_single_opt(
@@ -176,7 +184,11 @@ impl BifrostInner {
         self.fail_if_shutting_down()?;
 
         let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
-        loglet.read_next_single_opt(after).await
+        Ok(loglet.read_next_single_opt(after).await?.map(|record| {
+            record
+                .decode()
+                .expect("decoding a bifrost envelope succeeds")
+        }))
     }
 
     pub async fn find_tail(

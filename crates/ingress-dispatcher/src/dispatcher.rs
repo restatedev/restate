@@ -397,7 +397,7 @@ mod tests {
                 let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
 
                 let output_message =
-                    Envelope::from_bytes(log_record.record.payload().unwrap().as_ref())?;
+                    Envelope::from_bytes(log_record.record.into_payload_unchecked().into_body())?;
 
                 let_assert!(
                     Envelope {
