@@ -397,7 +397,7 @@ mod tests {
                 let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
 
                 let output_message =
-                    Envelope::from_bytes(log_record.record.payload().unwrap().as_ref())?;
+                    Envelope::from_bytes(log_record.record.into_payload_unchecked().into_body())?;
 
                 let_assert!(
                     Envelope {
@@ -484,7 +484,7 @@ mod tests {
                 let bifrost_messages = bifrost.read_all(LogId::from(partition_id)).await?;
 
                 let output_message_1 =
-                    Envelope::from_bytes(bifrost_messages[0].record.payload().unwrap().as_ref())?;
+                    Envelope::from_bytes(bifrost_messages[0].record.payload().unwrap().body())?;
 
                 assert_that!(
                     output_message_1.command,
