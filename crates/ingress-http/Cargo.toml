@@ -29,7 +29,6 @@ serde_json = { workspace = true }
 
 # Futures
 futures = { workspace = true }
-restate-futures-util = { workspace = true }
 
 # Tokio + Hyper
 hyper = { version = "1", features = ["server"] }

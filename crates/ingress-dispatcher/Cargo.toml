@@ -26,7 +26,6 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 dashmap = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
