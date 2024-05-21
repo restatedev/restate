@@ -27,9 +27,7 @@ restate-types = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
-drain = { workspace = true }
 futures = { workspace = true }
 h2 = { version = "0.3.20" }
 humantime = { workspace = true }

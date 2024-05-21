@@ -80,7 +80,6 @@ async-channel = "2.1.1"
 async-trait = "0.1.73"
 axum = "0.6.18"
 base64 = "0.21"
-bincode = { version = "2.0.0-rc", default-features = false, features = ["std", "serde", ] }
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
 bytestring = { version = "1.2", features = ["serde"] }
@@ -93,7 +92,6 @@ datafusion-expr = { version = "35.0.0" }
 derive-getters = {  version = "0.3.0" }
 derive_builder = "0.12.0"
 derive_more = { version = "0.99.17" }
-drain = "0.1.1"
 enum-map = { version = "2.7.3" }
 enumset = { version = "1.1.3" }
 flexbuffers = { version = "2.0.0" }

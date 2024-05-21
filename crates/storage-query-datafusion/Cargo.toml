@@ -48,5 +48,4 @@ restate-storage-api = { workspace = true, features = ["mocks"] }
 restate-service-protocol = { workspace = true, features = ["mocks"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
-drain = { workspace = true }
 googletest = { workspace = true }
