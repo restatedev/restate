@@ -164,6 +164,7 @@ impl Worker {
             metadata.clone(),
             metadata_store_client,
             partition_store_manager.clone(),
+            router_builder,
             networking,
             bifrost,
             invoker.handle(),
