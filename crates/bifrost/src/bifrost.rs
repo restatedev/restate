@@ -68,6 +68,17 @@ impl Bifrost {
         self.inner.append(log_id, payload).await
     }
 
+    /// Appends a single record to a log. The log id must exist, otherwise the
+    /// operation fails with [`Error::UnknownLogId`]
+    #[instrument(level = "debug", skip(self, payloads), err)]
+    pub async fn append_batch(
+        &mut self,
+        log_id: LogId,
+        payloads: &[Payload],
+    ) -> Result<Lsn, Error> {
+        self.inner.append_batch(log_id, payloads).await
+    }
+
     /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
     /// read after. This means that the record returned will have a LSN strictly greater than
     /// `after`. If no records are committed yet after this LSN, this read operation will "wait"
@@ -160,9 +171,24 @@ impl BifrostInner {
     pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
         let loglet = self.writeable_loglet(log_id).await?;
-        let mut buf = BytesMut::default();
+        let mut buf = BytesMut::new();
         StorageCodec::encode(payload, &mut buf).expect("serialization to bifrost is infallible");
         loglet.append(buf.freeze()).await
+    }
+
+    pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn, Error> {
+        let loglet = self.writeable_loglet(log_id).await?;
+        let raw_payloads: Vec<_> = payloads
+            .iter()
+            .map(|payload| {
+                //for payload in payloads {
+                let mut buf = BytesMut::new();
+                StorageCodec::encode(payload, &mut buf)
+                    .expect("serialization to bifrost is infallible");
+                buf.freeze()
+            })
+            .collect();
+        loglet.append_batch(&raw_payloads).await
     }
 
     pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord, Error> {
