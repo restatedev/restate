@@ -14,7 +14,6 @@ options_schema = ["dep:schemars"]
 [dependencies]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-futures-util = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-timer-queue = { workspace = true }
@@ -24,7 +23,6 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 derive_builder = { workspace = true }
-drain = { workspace = true }
 opentelemetry = { workspace = true }
 rdkafka = { version = "0.34", features = ["libz-static", "cmake-build"] }
 schemars = { workspace = true, optional = true }

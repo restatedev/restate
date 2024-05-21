@@ -1464,17 +1464,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
-name = "cfg_eval"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45565fc9416b9896014f5732ac776f810ee53a66730c17e4020c3ec064a8f88f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.65",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2483,15 +2472,6 @@ name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
-name = "drain"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f1a0abf3fcefad9b4dd0e414207a7408e12b68414a01e6bb19b897d5bd7632d"
-dependencies = [
- "tokio",
-]
 
 [[package]]
 name = "dyn-clone"
@@ -5200,14 +5180,12 @@ dependencies = [
  "anyhow",
  "arrow-flight",
  "axum",
- "bincode",
  "bytes",
  "bytestring",
  "codederror",
  "datafusion",
  "derive_builder",
  "derive_more",
- "drain",
  "futures",
  "http 0.2.12",
  "hyper 0.14.28",
@@ -5215,8 +5193,6 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
- "restate-fs-util",
- "restate-futures-util",
  "restate-meta-rest-model",
  "restate-node-services",
  "restate-schema",
@@ -5255,7 +5231,6 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "criterion",
- "drain",
  "futures",
  "futures-util",
  "hyper 0.14.28",
@@ -5283,7 +5258,6 @@ dependencies = [
  "criterion",
  "derive_builder",
  "derive_more",
- "drain",
  "enum-map",
  "futures",
  "googletest",
@@ -5305,7 +5279,6 @@ dependencies = [
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "tempfile",
- "test-log",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -5341,7 +5314,6 @@ dependencies = [
  "http 0.2.12",
  "indicatif",
  "indoc",
- "is-terminal",
  "itertools 0.11.0",
  "octocrab",
  "once_cell",
@@ -5367,7 +5339,6 @@ dependencies = [
  "uuid",
  "vergen",
  "zip",
- "zip-extensions",
 ]
 
 [[package]]
@@ -5378,10 +5349,8 @@ dependencies = [
  "arc-swap",
  "codederror",
  "derive_builder",
- "drain",
  "futures",
  "restate-core",
- "restate-errors",
  "restate-network",
  "restate-node-protocol",
  "restate-types",
@@ -5399,10 +5368,8 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
- "bincode",
  "bytes",
  "bytestring",
- "derive-getters",
  "derive_builder",
  "derive_more",
  "enum-map",
@@ -5423,7 +5390,6 @@ dependencies = [
  "static_assertions",
  "strum 0.26.2",
  "strum_macros 0.26.2",
- "test-log",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -5439,7 +5405,6 @@ version = "0.9.1"
 dependencies = [
  "codederror",
  "paste",
- "restate-test-util",
  "termimad",
  "test-log",
  "thiserror",
@@ -5494,7 +5459,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "dashmap",
- "drain",
  "futures",
  "googletest",
  "restate-bifrost",
@@ -5538,7 +5502,6 @@ dependencies = [
  "pin-project-lite",
  "restate-core",
  "restate-errors",
- "restate-futures-util",
  "restate-ingress-dispatcher",
  "restate-schema-api",
  "restate-service-protocol",
@@ -5568,12 +5531,10 @@ dependencies = [
  "base64 0.21.7",
  "bytes",
  "derive_builder",
- "drain",
  "opentelemetry",
  "rdkafka",
  "restate-core",
  "restate-errors",
- "restate-futures-util",
  "restate-ingress-dispatcher",
  "restate-schema",
  "restate-schema-api",
@@ -5612,9 +5573,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "codederror",
- "derive-getters",
  "derive_builder",
- "drain",
  "futures",
  "googletest",
  "h2 0.3.26",
@@ -5713,10 +5672,8 @@ version = "0.9.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "bincode",
  "bytes",
  "dashmap",
- "drain",
  "enum-map",
  "enumset",
  "futures",
@@ -5727,15 +5684,12 @@ dependencies = [
  "pin-project",
  "rand",
  "restate-core",
- "restate-errors",
  "restate-grpc-util",
  "restate-node-protocol",
  "restate-node-services",
  "restate-test-util",
  "restate-types",
- "restate-wal-protocol",
  "static_assertions",
- "test-log",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -5759,7 +5713,6 @@ dependencies = [
  "datafusion",
  "derive-getters",
  "derive_builder",
- "drain",
  "enum-map",
  "enumset",
  "futures",
@@ -5797,11 +5750,9 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "serde_yaml",
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "tempfile",
- "test-log",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -5812,7 +5763,6 @@ dependencies = [
  "tower-http 0.4.4",
  "tracing",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]
@@ -5862,7 +5812,6 @@ dependencies = [
  "criterion",
  "derive_builder",
  "derive_more",
- "drain",
  "enum-map",
  "futures",
  "futures-util",
@@ -5886,7 +5835,6 @@ dependencies = [
  "strum_macros 0.26.2",
  "sync_wrapper",
  "tempfile",
- "test-log",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -5980,7 +5928,6 @@ dependencies = [
 name = "restate-serde-util"
 version = "0.9.1"
 dependencies = [
- "base64 0.21.7",
  "bytes",
  "bytesize",
  "http 0.2.12",
@@ -5999,7 +5946,6 @@ dependencies = [
  "clap",
  "codederror",
  "derive_builder",
- "drain",
  "enumset",
  "figment",
  "futures-util",
@@ -6043,7 +5989,6 @@ dependencies = [
  "base64 0.21.7",
  "bs58",
  "bytestring",
- "derive-getters",
  "derive_builder",
  "futures",
  "http-serde",
@@ -6053,7 +5998,6 @@ dependencies = [
  "jsonwebtoken",
  "once_cell",
  "pem 3.0.3",
- "restate-schema-api",
  "restate-types",
  "ring 0.17.8",
  "rustls",
@@ -6091,7 +6035,6 @@ dependencies = [
  "size",
  "strum 0.26.2",
  "strum_macros 0.26.2",
- "test-log",
  "thiserror",
  "tokio",
  "tracing",
@@ -6132,7 +6075,6 @@ dependencies = [
  "datafusion",
  "datafusion-expr",
  "derive_builder",
- "drain",
  "futures",
  "googletest",
  "paste",
@@ -6166,7 +6108,6 @@ dependencies = [
  "datafusion",
  "datafusion-expr",
  "derive_builder",
- "drain",
  "futures",
  "paste",
  "pgwire",
@@ -6202,7 +6143,6 @@ version = "0.9.1"
 dependencies = [
  "ahash",
  "derive_builder",
- "futures",
  "futures-util",
  "pin-project",
  "priority-queue",
@@ -6261,7 +6201,6 @@ dependencies = [
  "base64 0.21.7",
  "bytes",
  "bytestring",
- "cfg_eval",
  "clap",
  "derive_builder",
  "derive_more",
@@ -6303,7 +6242,6 @@ dependencies = [
  "tracing-opentelemetry",
  "typify 0.0.16",
  "ulid",
- "uuid",
  "xxhash-rust",
 ]
 
@@ -6314,13 +6252,11 @@ dependencies = [
  "anyhow",
  "assert2",
  "async-trait",
- "bincode",
  "bytes",
  "bytestring",
  "codederror",
  "derive_builder",
  "derive_more",
- "drain",
  "enum-map",
  "flexbuffers",
  "googletest",
@@ -6337,12 +6273,10 @@ dependencies = [
  "static_assertions",
  "strum 0.26.2",
  "strum_macros 0.26.2",
- "test-log",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "tracing-test",
 ]
 
 [[package]]
@@ -6356,7 +6290,6 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_builder",
- "drain",
  "futures",
  "googletest",
  "humantime",
@@ -6763,19 +6696,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.65",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap 2.2.6",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -7967,12 +7887,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f962df74c8c05a667b5ee8bcf162993134c104e96440b663c8daa176dc772d8c"
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8425,16 +8339,13 @@ name = "xtask"
 version = "0.9.1"
 dependencies = [
  "anyhow",
- "drain",
  "reqwest",
  "restate-admin",
  "restate-bifrost",
  "restate-core",
  "restate-metadata-store",
- "restate-node",
  "restate-node-services",
  "restate-schema-api",
- "restate-server",
  "restate-service-client",
  "restate-service-protocol",
  "restate-types",
@@ -8516,15 +8427,6 @@ dependencies = [
  "sha1",
  "time",
  "zstd 0.11.2+zstd.1.5.2",
-]
-
-[[package]]
-name = "zip-extensions"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cecf62554c4ff96bce01a7ef123d160c3ffe9180638820f8b4d545c65b221b8c"
-dependencies = [
- "zip",
 ]
 
 [[package]]
