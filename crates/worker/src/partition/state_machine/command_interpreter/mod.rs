@@ -220,7 +220,7 @@ where
         &mut self,
         effects: &mut Effects,
         state: &mut State,
-        service_invocation: ServiceInvocation,
+        mut service_invocation: ServiceInvocation,
     ) -> Result<(), Error> {
         debug_assert!(
             self.partition_key_range.contains(&service_invocation.partition_key()),
@@ -241,7 +241,7 @@ where
             {
                 warn!("The idempotency key for workflow methods is ignored!");
             } else {
-                if let Some(original_invocation_id) = self
+                if let Some(attached_invocation_id) = self
                     .try_resolve_idempotent_request(
                         effects,
                         state,
@@ -251,19 +251,13 @@ where
                     )
                     .await?
                 {
-                    // Notify the ingress, if needed, of the chosen invocation_id
-                    if let Some(SubmitNotificationSink::Ingress(target_node)) =
-                        service_invocation.submit_notification_sink
-                    {
-                        effects.send_ingress_attach_notification(IngressResponseEnvelope {
-                            target_node,
-                            inner: ingress::SubmittedInvocationNotification {
-                                original_invocation_id: service_invocation.invocation_id,
-                                attached_invocation_id: original_invocation_id,
-                                idempotency_id: Some(idempotency_id.clone()),
-                            },
-                        })
-                    }
+                    Self::send_submit_notification_if_needed(
+                        service_invocation.invocation_id,
+                        Some(attached_invocation_id),
+                        Some(idempotency_id.clone()),
+                        service_invocation.submit_notification_sink,
+                        effects,
+                    );
 
                     // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
                     return Ok(());
@@ -304,6 +298,13 @@ where
                 let inbox_seq_number = self.enqueue_into_inbox(
                     effects,
                     InboxEntry::Invocation(keyed_service_id, service_invocation.invocation_id),
+                );
+                Self::send_submit_notification_if_needed(
+                    service_invocation.invocation_id,
+                    None,
+                    idempotency_id,
+                    service_invocation.submit_notification_sink.take(),
+                    effects,
                 );
                 effects.store_inboxed_invocation(
                     service_invocation.invocation_id,
@@ -353,36 +354,24 @@ where
                     }
                 }
 
-                // Notify the ingress, if needed, of the chosen invocation_id
-                if let Some(SubmitNotificationSink::Ingress(target_node)) =
-                    service_invocation.submit_notification_sink
-                {
-                    effects.send_ingress_attach_notification(IngressResponseEnvelope {
-                        target_node,
-                        inner: ingress::SubmittedInvocationNotification {
-                            original_invocation_id: service_invocation.invocation_id,
-                            attached_invocation_id: original_invocation_id,
-                            idempotency_id: None,
-                        },
-                    })
-                }
+                Self::send_submit_notification_if_needed(
+                    service_invocation.invocation_id,
+                    Some(original_invocation_id),
+                    idempotency_id,
+                    service_invocation.submit_notification_sink.take(),
+                    effects,
+                );
                 return Ok(());
             }
         }
 
-        // If we reach this point, we have not yet notified the ingress of the fact that we did not attach to any existing invocation
-        if let Some(SubmitNotificationSink::Ingress(target_node)) =
-            service_invocation.submit_notification_sink
-        {
-            effects.send_ingress_attach_notification(IngressResponseEnvelope {
-                target_node,
-                inner: ingress::SubmittedInvocationNotification {
-                    original_invocation_id: service_invocation.invocation_id,
-                    idempotency_id,
-                    attached_invocation_id: service_invocation.invocation_id,
-                },
-            })
-        }
+        Self::send_submit_notification_if_needed(
+            service_invocation.invocation_id,
+            None,
+            idempotency_id,
+            service_invocation.submit_notification_sink.take(),
+            effects,
+        );
 
         // We're ready to invoke the service!
         effects.invoke_service(service_invocation);
@@ -2010,6 +1999,27 @@ where
             effects.set_parent_span_context(&journal_metadata.span_context)
         }
         Ok(status)
+    }
+
+    fn send_submit_notification_if_needed(
+        original_invocation_id: InvocationId,
+        attached_invocation_id: Option<InvocationId>,
+        idempotency_id: Option<IdempotencyId>,
+        submit_notification_sink: Option<SubmitNotificationSink>,
+        effects: &mut Effects,
+    ) {
+        // Notify the ingress, if needed, of the chosen invocation_id
+        if let Some(SubmitNotificationSink::Ingress(target_node)) = submit_notification_sink {
+            effects.send_ingress_attach_notification(IngressResponseEnvelope {
+                target_node,
+                inner: ingress::SubmittedInvocationNotification {
+                    original_invocation_id,
+                    attached_invocation_id: attached_invocation_id
+                        .unwrap_or(original_invocation_id),
+                    idempotency_id,
+                },
+            })
+        }
     }
 }
 

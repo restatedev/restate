@@ -748,6 +748,7 @@ mod tests {
         use restate_storage_api::idempotency_table::{
             IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
         };
+        use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
@@ -1258,6 +1259,125 @@ mod tests {
                             target_node: eq(ingress_id_2),
                         }
                     ))))),
+                )
+            );
+        }
+
+        #[test(tokio::test)]
+        async fn attach_inboxed_with_send_service_invocation() {
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
+
+            let invocation_target = InvocationTarget::mock_virtual_object();
+
+            // Initialize locked virtual object state
+            async {
+                let mut tx = state_machine.rocksdb_storage.transaction();
+                tx.put_virtual_object_status(
+                    &invocation_target.as_keyed_service_id().unwrap(),
+                    VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
+                )
+                .await;
+                tx.commit().await.unwrap();
+            }
+            .await;
+
+            // Send first invocation, this should end up in the inbox
+            let idempotency_key = ByteString::from_static("my-idempotency-key");
+            let attached_invocation_id =
+                InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency_key);
+            let ingress_id = GenerationalNodeId::new(1, 1);
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id: attached_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id)),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                all!(
+                    not(contains(pat!(Action::Invoke {
+                        invocation_id: eq(attached_invocation_id),
+                    }))),
+                    contains(pat!(Action::IngressSubmitNotification(eq(
+                        IngressResponseEnvelope {
+                            target_node: ingress_id,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id: attached_invocation_id,
+                                attached_invocation_id,
+                                idempotency_id: Some(IdempotencyId::combine(
+                                    attached_invocation_id,
+                                    &invocation_target,
+                                    idempotency_key.clone(),
+                                ))
+                            },
+                        }
+                    ))))
+                )
+            );
+            // Invocation is inboxed
+            assert_that!(
+                state_machine
+                    .rocksdb_storage
+                    .transaction()
+                    .peek_inbox(&invocation_target.as_keyed_service_id().unwrap())
+                    .await
+                    .unwrap(),
+                some(pat!(SequenceNumberInboxEntry {
+                    inbox_entry: eq(InboxEntry::Invocation(
+                        invocation_target.as_keyed_service_id().unwrap(),
+                        attached_invocation_id
+                    ))
+                }))
+            );
+
+            // Now send the request that should get the submit notification
+            let idempotency_key = ByteString::from_static("my-idempotency-key");
+            let original_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency_key.clone()),
+            );
+            let idempotency_id = IdempotencyId::combine(
+                attached_invocation_id,
+                &invocation_target,
+                idempotency_key.clone(),
+            );
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id: original_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id)),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                all!(
+                    not(contains(pat!(Action::Invoke {
+                        invocation_id: eq(original_invocation_id),
+                    }))),
+                    not(contains(pat!(Action::IngressResponse(_)))),
+                    contains(pat!(Action::IngressSubmitNotification(eq(
+                        IngressResponseEnvelope {
+                            target_node: ingress_id,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id,
+                                attached_invocation_id,
+                                idempotency_id: Some(idempotency_id.clone())
+                            },
+                        }
+                    ))))
                 )
             );
         }
