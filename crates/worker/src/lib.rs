@@ -12,6 +12,7 @@ extern crate core;
 
 mod error;
 mod handle;
+mod ingress_integration;
 mod invoker_integration;
 mod metric_definitions;
 mod partition;
@@ -26,6 +27,7 @@ use restate_types::config::UpdateableConfiguration;
 pub use subscription_controller::SubscriptionController;
 pub use subscription_integration::SubscriptionControllerHandle;
 
+use crate::ingress_integration::InvocationStorageReaderImpl;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -53,7 +55,8 @@ type PartitionProcessor = partition::PartitionProcessor<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 
-type ExternalClientIngress = HyperServerIngress<UpdateableSchema, IngressDispatcher>;
+type ExternalClientIngress =
+    HyperServerIngress<UpdateableSchema, IngressDispatcher, InvocationStorageReaderImpl>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -121,12 +124,6 @@ impl Worker {
         router_builder.add_message_handler(ingress_dispatcher.clone());
 
         let config = updateable_config.pinned();
-        // http ingress
-        let ingress_http = HyperServerIngress::from_options(
-            &config.ingress,
-            ingress_dispatcher.clone(),
-            schema_view.clone(),
-        );
 
         // ingress_kafka
         let ingress_kafka = IngressKafkaService::new(ingress_dispatcher.clone());
@@ -146,6 +143,14 @@ impl Worker {
             &[],
         )
         .await?;
+
+        // http ingress
+        let ingress_http = HyperServerIngress::from_options(
+            &config.ingress,
+            ingress_dispatcher.clone(),
+            schema_view.clone(),
+            InvocationStorageReaderImpl::new(partition_store_manager.clone()),
+        );
 
         let invoker = InvokerService::from_options(
             &config.common.service_client,

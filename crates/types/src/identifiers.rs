@@ -359,6 +359,12 @@ impl WithPartitionKey for ServiceId {
     }
 }
 
+impl fmt::Display for ServiceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.service_name, self.key)
+    }
+}
+
 /// InvocationId is a unique identifier of the invocation,
 /// including enough routing information for the network service
 /// to route requests to the correct partition processors.

@@ -16,6 +16,8 @@ mod server;
 pub use server::{HyperServerIngress, IngressServerError, StartSignal};
 
 use bytes::Bytes;
+use restate_types::ingress::InvocationResponse;
+use restate_types::invocation::InvocationQuery;
 use std::net::{IpAddr, SocketAddr};
 
 /// Client connection information for a given RPC request
@@ -36,9 +38,25 @@ impl ConnectInfo {
     }
 }
 
+pub enum GetOutputResult {
+    NotFound,
+    NotReady,
+    Ready(InvocationResponse),
+}
+
+pub trait InvocationStorageReader {
+    fn get_output(
+        &self,
+        query: InvocationQuery,
+    ) -> impl std::future::Future<Output = Result<GetOutputResult, anyhow::Error>> + Send;
+}
+
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
+    use super::*;
+
+    use anyhow::Error;
     use restate_schema_api::invocation_target::mocks::MockInvocationTargetResolver;
     use restate_schema_api::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
@@ -46,8 +64,12 @@ mod mocks {
     use restate_schema_api::service::mocks::MockServiceMetadataResolver;
     use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
     use restate_types::identifiers::DeploymentId;
-    use restate_types::invocation::{InvocationTargetType, ServiceType, VirtualObjectHandlerType};
+    use restate_types::ingress::InvocationResponse;
+    use restate_types::invocation::{
+        InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
+    };
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub(super) struct GreetingRequest {
@@ -147,5 +169,19 @@ mod mocks {
         );
 
         mock_schemas
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct MockStorageReader(pub(crate) HashMap<InvocationQuery, InvocationResponse>);
+
+    impl InvocationStorageReader for MockStorageReader {
+        async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
+            Ok(self
+                .0
+                .get(&query)
+                .cloned()
+                .map(GetOutputResult::Ready)
+                .unwrap_or(GetOutputResult::NotFound))
+        }
     }
 }

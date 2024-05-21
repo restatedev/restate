@@ -12,7 +12,8 @@ use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{EntryIndex, InvocationId};
-use restate_types::ingress::IngressResponse;
+use restate_types::ingress;
+use restate_types::ingress::IngressResponseEnvelope;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::message::MessageIndex;
@@ -45,7 +46,8 @@ pub enum Action {
         completion: Completion,
     },
     AbortInvocation(InvocationId),
-    IngressResponse(IngressResponse),
+    IngressResponse(IngressResponseEnvelope<ingress::InvocationResponse>),
+    IngressSubmitNotification(IngressResponseEnvelope<ingress::SubmittedInvocationNotification>),
     ScheduleInvocationStatusCleanup {
         invocation_id: InvocationId,
         retention: Duration,

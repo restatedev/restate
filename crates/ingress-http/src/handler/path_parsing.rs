@@ -11,9 +11,61 @@
 use super::Handler;
 use super::HandlerError;
 
+use crate::InvocationStorageReader;
 use http::Uri;
 use restate_schema_api::service::ServiceMetadataResolver;
-use std::collections::VecDeque;
+
+pub(crate) enum WorkflowRequestType {
+    Attach(String, String),
+    GetOutput(String, String),
+}
+
+impl WorkflowRequestType {
+    fn from_path_chunks<'a>(
+        mut path_parts: impl Iterator<Item = &'a str>,
+    ) -> Result<Self, HandlerError> {
+        // Parse invocation id
+        let workflow_name = path_parts
+            .next()
+            .ok_or(HandlerError::BadWorkflowPath)?
+            .to_owned();
+        let workflow_key = path_parts
+            .next()
+            .ok_or(HandlerError::BadWorkflowPath)?
+            .to_owned();
+
+        // Resolve or reject
+        match path_parts.next().ok_or(HandlerError::BadWorkflowPath)? {
+            "output" => Ok(WorkflowRequestType::GetOutput(workflow_name, workflow_key)),
+            "attach" => Ok(WorkflowRequestType::Attach(workflow_name, workflow_key)),
+            _ => Err(HandlerError::NotFound),
+        }
+    }
+}
+
+pub(crate) enum InvocationRequestType {
+    Attach(String),
+    GetOutput(String),
+}
+
+impl InvocationRequestType {
+    fn from_path_chunks<'a>(
+        mut path_parts: impl Iterator<Item = &'a str>,
+    ) -> Result<Self, HandlerError> {
+        // Parse invocation id
+        let invocation_id = path_parts
+            .next()
+            .ok_or(HandlerError::BadInvocationPath)?
+            .to_string();
+
+        // Resolve or reject
+        match path_parts.next().ok_or(HandlerError::BadInvocationPath)? {
+            "output" => Ok(InvocationRequestType::GetOutput(invocation_id)),
+            "attach" => Ok(InvocationRequestType::Attach(invocation_id)),
+            _ => Err(HandlerError::NotFound),
+        }
+    }
+}
 
 pub(crate) enum AwakeableRequestType {
     Resolve { awakeable_id: String },
@@ -21,18 +73,17 @@ pub(crate) enum AwakeableRequestType {
 }
 
 impl AwakeableRequestType {
-    fn from_path_chunks(mut path_parts: VecDeque<&str>) -> Result<Self, HandlerError> {
+    fn from_path_chunks<'a>(
+        mut path_parts: impl Iterator<Item = &'a str>,
+    ) -> Result<Self, HandlerError> {
         // Parse awakeables id
         let awakeable_id = path_parts
-            .pop_front()
+            .next()
             .ok_or(HandlerError::BadAwakeablesPath)?
             .to_string();
 
         // Resolve or reject
-        match path_parts
-            .pop_front()
-            .ok_or(HandlerError::BadAwakeablesPath)?
-        {
+        match path_parts.next().ok_or(HandlerError::BadAwakeablesPath)? {
             "resolve" => Ok(AwakeableRequestType::Resolve { awakeable_id }),
             "reject" => Ok(AwakeableRequestType::Reject { awakeable_id }),
             _ => Err(HandlerError::NotFound),
@@ -58,8 +109,8 @@ pub(crate) struct ServiceRequestType {
 }
 
 impl ServiceRequestType {
-    fn from_path_chunks<Schemas>(
-        mut path_parts: VecDeque<&str>,
+    fn from_path_chunks<'a, Schemas>(
+        mut path_parts: impl Iterator<Item = &'a str>,
         service_name: String,
         schemas: &Schemas,
     ) -> Result<Self, HandlerError>
@@ -73,22 +124,20 @@ impl ServiceRequestType {
 
         let target_type = if service_type.is_keyed() {
             TargetType::Keyed {
-                key: urlencoding::decode(
-                    path_parts.pop_front().ok_or(HandlerError::BadServicePath)?,
-                )
-                .map_err(HandlerError::UrlDecodingError)?
-                .into_owned(),
+                key: urlencoding::decode(path_parts.next().ok_or(HandlerError::BadServicePath)?)
+                    .map_err(HandlerError::UrlDecodingError)?
+                    .into_owned(),
             }
         } else {
             TargetType::Unkeyed
         };
 
         let handler = path_parts
-            .pop_front()
+            .next()
             .ok_or(HandlerError::BadServicePath)?
             .to_owned();
 
-        let last_segment = path_parts.pop_front();
+        let last_segment = path_parts.next();
 
         let invoke_ty = match last_segment {
             None => InvokeType::Call,
@@ -96,7 +145,7 @@ impl ServiceRequestType {
             Some(_) => return Err(HandlerError::BadServicePath),
         };
 
-        if !path_parts.is_empty() {
+        if path_parts.next().is_some() {
             return Err(HandlerError::BadServicePath);
         }
 
@@ -113,24 +162,33 @@ pub(crate) enum RequestType {
     Health,
     OpenAPI,
     Awakeable(AwakeableRequestType),
+    Invocation(InvocationRequestType),
     Service(ServiceRequestType),
+    Workflow(WorkflowRequestType),
 }
 
-impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
     Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
+    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(crate) fn parse_path(&self, uri: &Uri) -> Result<RequestType, HandlerError> {
-        let mut path_parts: VecDeque<&str> = uri.path().split('/').skip(1).collect();
+        let mut path_parts = uri.path().split('/').skip(1);
 
-        let first_segment = path_parts.pop_front().ok_or(HandlerError::NotFound)?;
+        let first_segment = path_parts.next().ok_or(HandlerError::NotFound)?;
 
         match first_segment {
-            "restate" => match path_parts.pop_front().ok_or(HandlerError::NotFound)? {
+            "restate" => match path_parts.next().ok_or(HandlerError::NotFound)? {
                 "health" => Ok(RequestType::Health),
                 "awakeables" | "a" => Ok(RequestType::Awakeable(
                     AwakeableRequestType::from_path_chunks(path_parts)?,
+                )),
+                "invocation" => Ok(RequestType::Invocation(
+                    InvocationRequestType::from_path_chunks(path_parts)?,
+                )),
+                "workflow" => Ok(RequestType::Workflow(
+                    WorkflowRequestType::from_path_chunks(path_parts)?,
                 )),
                 _ => Err(HandlerError::NotFound),
             },

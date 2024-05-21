@@ -11,7 +11,9 @@
 //! This module contains all the core types representing a service invocation.
 
 use crate::errors::InvocationError;
-use crate::identifiers::{EntryIndex, InvocationId, PartitionKey, ServiceId, WithPartitionKey};
+use crate::identifiers::{
+    EntryIndex, IdempotencyId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
+};
 use crate::time::MillisSinceEpoch;
 use crate::GenerationalNodeId;
 use bytes::Bytes;
@@ -261,13 +263,24 @@ pub struct ServiceInvocation {
     pub invocation_target: InvocationTarget,
     pub argument: Bytes,
     pub source: Source,
-    pub response_sink: Option<ServiceInvocationResponseSink>,
     pub span_context: ServiceInvocationSpanContext,
     pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
     pub completion_retention_time: Option<Duration>,
     pub idempotency_key: Option<ByteString>,
+
+    // Where to send the response, if any
+    pub response_sink: Option<ServiceInvocationResponseSink>,
+    // Where to send the submit notification, if any.
+    //  The submit notification is sent back both when this invocation request attached to an existing invocation,
+    //  or when this request started a fresh invocation.
+    pub submit_notification_sink: Option<SubmitNotificationSink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SubmitNotificationSink {
+    Ingress(GenerationalNodeId),
 }
 
 impl ServiceInvocation {
@@ -287,11 +300,18 @@ impl ServiceInvocation {
             execution_time: None,
             completion_retention_time: None,
             idempotency_key: None,
+            submit_notification_sink: None,
         }
     }
 
     pub fn with_related_span(&mut self, span_relation: SpanRelation) {
         self.span_context = ServiceInvocationSpanContext::start(&self.invocation_id, span_relation);
+    }
+
+    pub fn compute_idempotency_id(&self) -> Option<IdempotencyId> {
+        self.idempotency_key
+            .as_ref()
+            .map(|k| IdempotencyId::combine(self.invocation_id, &self.invocation_target, k.clone()))
     }
 }
 
@@ -732,6 +752,38 @@ impl From<TraceId> for TraceIdDef {
     }
 }
 
+/// Defines how to query the invocation.
+/// This is used in some commands, such as [AttachInvocationRequest], to uniquely address an existing invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum InvocationQuery {
+    Invocation(InvocationId),
+    /// Query a workflow handler invocation.
+    /// There can be at most one running workflow method for the given ServiceId. This uniqueness constraint is guaranteed by the PP state machine.
+    Workflow(ServiceId),
+}
+
+impl WithPartitionKey for InvocationQuery {
+    fn partition_key(&self) -> PartitionKey {
+        match self {
+            InvocationQuery::Invocation(iid) => iid.partition_key(),
+            InvocationQuery::Workflow(sid) => sid.partition_key(),
+        }
+    }
+}
+
+/// Represents an "attach request" to an existing invocation
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AttachInvocationRequest {
+    pub invocation_query: InvocationQuery,
+    pub response_sink: ServiceInvocationResponseSink,
+}
+
+impl WithPartitionKey for AttachInvocationRequest {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_query.partition_key()
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 mod mocks {
     use super::*;
@@ -793,6 +845,7 @@ mod mocks {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
+                submit_notification_sink: None,
             }
         }
     }

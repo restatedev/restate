@@ -109,13 +109,14 @@ pub mod v1 {
         use crate::storage::v1::{
             enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
             invocation_status, invocation_target, outbox_message, promise, response_result, source,
-            span_relation, timer, virtual_object_status, BackgroundCallResolutionResult,
-            DedupSequenceNumber, Duration, EnrichedEntryHeader, EntryResult, EpochSequenceNumber,
-            Header, IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
-            InvocationStatus, InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair,
-            OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation, Timer,
-            VirtualObjectStatus,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
+            BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
+            EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
+            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
+            JournalEntry, JournalEntryId, JournalMeta, KvPair, OutboxMessage, Promise,
+            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
 
@@ -916,6 +917,7 @@ pub mod v1 {
                     execution_time,
                     idempotency_key,
                     completion_retention_time,
+                    submit_notification_sink,
                 } = value;
 
                 let invocation_id = restate_types::identifiers::InvocationId::try_from(
@@ -957,6 +959,10 @@ pub mod v1 {
 
                 let idempotency_key = idempotency_key.map(ByteString::from);
 
+                let submit_notification_sink = submit_notification_sink
+                    .map(TryInto::try_into)
+                    .transpose()?;
+
                 Ok(restate_types::invocation::ServiceInvocation {
                     invocation_id,
                     invocation_target,
@@ -968,6 +974,7 @@ pub mod v1 {
                     execution_time,
                     completion_retention_time,
                     idempotency_key,
+                    submit_notification_sink: submit_notification_sink,
                 })
             }
         }
@@ -991,6 +998,42 @@ pub mod v1 {
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
                     completion_retention_time: value.completion_retention_time.map(Duration::from),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
+                    submit_notification_sink: value.submit_notification_sink.map(Into::into),
+                }
+            }
+        }
+
+        impl TryFrom<SubmitNotificationSink> for restate_types::invocation::SubmitNotificationSink {
+            type Error = ConversionError;
+
+            fn try_from(value: SubmitNotificationSink) -> Result<Self, Self::Error> {
+                let notification_sink = match value
+                    .notification_sink
+                    .ok_or(ConversionError::missing_field("notification_sink"))?
+                {
+                    submit_notification_sink::NotificationSink::IngressNodeId(ingress_node_id) => {
+                        restate_types::invocation::SubmitNotificationSink::Ingress(
+                            ingress_node_id.into(),
+                        )
+                    }
+                };
+
+                Ok(notification_sink)
+            }
+        }
+
+        impl From<restate_types::invocation::SubmitNotificationSink> for SubmitNotificationSink {
+            fn from(value: restate_types::invocation::SubmitNotificationSink) -> Self {
+                let notification_sink = match value {
+                    restate_types::invocation::SubmitNotificationSink::Ingress(node_id) => {
+                        submit_notification_sink::NotificationSink::IngressNodeId(
+                            super::GenerationalNodeId::from(node_id),
+                        )
+                    }
+                };
+
+                SubmitNotificationSink {
+                    notification_sink: Some(notification_sink),
                 }
             }
         }

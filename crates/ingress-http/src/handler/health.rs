@@ -24,7 +24,7 @@ pub(crate) struct HealthResponse {
     services: Vec<String>,
 }
 
-impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
     Schemas: ServiceMetadataResolver + Send + Sync + 'static,
 {

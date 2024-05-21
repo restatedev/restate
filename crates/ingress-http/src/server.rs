@@ -51,49 +51,55 @@ pub enum IngressServerError {
     Running(#[from] hyper::Error),
 }
 
-pub struct HyperServerIngress<Schemas, Dispatcher> {
+pub struct HyperServerIngress<Schemas, Dispatcher, StorageReader> {
     listening_addr: SocketAddr,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     schemas: Schemas,
     dispatcher: Dispatcher,
+    storage_reader: StorageReader,
 
     // Signals
     start_signal_tx: oneshot::Sender<SocketAddr>,
 }
 
-impl<Schemas> HyperServerIngress<Schemas, IngressDispatcher>
+impl<Schemas, StorageReader> HyperServerIngress<Schemas, IngressDispatcher, StorageReader>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
         dispatcher: IngressDispatcher,
         schemas: Schemas,
-    ) -> HyperServerIngress<Schemas, IngressDispatcher> {
+        storage_reader: StorageReader,
+    ) -> HyperServerIngress<Schemas, IngressDispatcher, StorageReader> {
         crate::metric_definitions::describe_metrics();
         let (hyper_ingress_server, _) = HyperServerIngress::new(
             ingress_options.bind_address,
             ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
+            storage_reader,
         );
 
         hyper_ingress_server
     }
 }
 
-impl<Schemas, Dispatcher> HyperServerIngress<Schemas, Dispatcher>
+impl<Schemas, Dispatcher, StorageReader> HyperServerIngress<Schemas, Dispatcher, StorageReader>
 where
     Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
     Dispatcher: DispatchIngressRequest + Clone + Send + Sync + 'static,
+    StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
         schemas: Schemas,
         dispatcher: Dispatcher,
+        storage_reader: StorageReader,
     ) -> (Self, StartSignal) {
         let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
@@ -102,6 +108,7 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
+            storage_reader,
             start_signal_tx,
         };
 
@@ -114,6 +121,7 @@ where
             concurrency_limit,
             schemas,
             dispatcher,
+            storage_reader,
             start_signal_tx,
         } = self;
 
@@ -138,7 +146,7 @@ where
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(CorsLayer::very_permissive())
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
-            .service(Handler::new(schemas, dispatcher));
+            .service(Handler::new(schemas, dispatcher, storage_reader));
 
         info!(
             net.host.addr = %local_addr.ip(),
@@ -239,9 +247,9 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_ingress_dispatcher::mocks::MockDispatcher;
-    use restate_ingress_dispatcher::IngressDispatcherRequest;
+    use restate_ingress_dispatcher::{IngressDispatcherRequest, IngressInvocationResponse};
     use restate_test_util::assert_eq;
-    use restate_types::invocation::ResponseResult;
+    use restate_types::ingress::IngressResponseResult;
     use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
     use tokio::sync::{mpsc, Semaphore};
@@ -277,16 +285,17 @@ mod tests {
             assert_eq!(&greeting_req.person, "Francesco");
 
             response_tx
-                .send(
-                    ResponseResult::Success(
-                        serde_json::to_vec(&GreetingResponse {
+                .send(IngressInvocationResponse {
+                    idempotency_expiry_time: None,
+                    result: IngressResponseResult::Success(
+                        service_invocation.invocation_target,
+                        serde_json::to_vec(&crate::mocks::GreetingResponse {
                             greeting: "Igal".to_string(),
                         })
                         .unwrap()
                         .into(),
-                    )
-                    .into(),
-                )
+                    ),
+                })
                 .unwrap();
         });
 
@@ -337,6 +346,7 @@ mod tests {
             Semaphore::MAX_PERMITS,
             mock_schemas(),
             MockDispatcher::new(ingress_request_tx),
+            MockStorageReader::default(),
         );
         node_env
             .tc

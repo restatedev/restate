@@ -9,11 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::outbox_table::OutboxMessage;
-use restate_types::identifiers::{EntryIndex, IdempotencyId, InvocationId};
-use restate_types::ingress::IngressResponse;
-use restate_types::invocation::{
-    InvocationResponse, InvocationTarget, ResponseResult, ServiceInvocationResponseSink,
-};
+use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::invocation::{InvocationResponse, InvocationTarget, ResponseResult};
 use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_invoker_api::Effect;
@@ -55,35 +52,4 @@ impl OutboxMessageExt for OutboxMessage {
             OutboxMessage::InvocationTermination(it) => Command::TerminateInvocation(it),
         }
     }
-}
-
-pub fn create_response_message(
-    callee: &InvocationId,
-    idempotency_id: Option<IdempotencyId>,
-    response_sink: ServiceInvocationResponseSink,
-    result: ResponseResult,
-) -> ResponseMessage {
-    match response_sink {
-        ServiceInvocationResponseSink::PartitionProcessor {
-            entry_index,
-            caller,
-        } => ResponseMessage::Outbox(OutboxMessage::ServiceResponse(InvocationResponse {
-            id: caller,
-            entry_index,
-            result,
-        })),
-        ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
-            ResponseMessage::Ingress(IngressResponse {
-                target_node: ingress_dispatcher_id,
-                invocation_id: *callee,
-                idempotency_id,
-                response: result,
-            })
-        }
-    }
-}
-
-pub enum ResponseMessage {
-    Outbox(OutboxMessage),
-    Ingress(IngressResponse),
 }

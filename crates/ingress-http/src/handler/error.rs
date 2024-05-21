@@ -29,6 +29,14 @@ pub(crate) enum HandlerError {
         "bad path, expected either /restate/awakeables/:id/resolve or /restate/awakeables/:id/reject"
     )]
     BadAwakeablesPath,
+    #[error(
+        "bad path, expected either /restate/invocation/:id/output or /restate/invocation/:id/attach"
+    )]
+    BadInvocationPath,
+    #[error(
+    "bad path, expected either /restate/workflow/:workflow_name/:workflow_key/output or /restate/workflow/:workflow_name/:workflow_key/attach"
+    )]
+    BadWorkflowPath,
     #[error("not implemented")]
     NotImplemented,
     #[error("bad header {0}: {1:?}")]
@@ -45,6 +53,8 @@ pub(crate) enum HandlerError {
     Body(anyhow::Error),
     #[error("unavailable")]
     Unavailable,
+    #[error("not ready")]
+    NotReady,
     #[error("method not allowed")]
     MethodNotAllowed,
     #[error("invocation error: {0:?}")]
@@ -61,6 +71,8 @@ pub(crate) enum HandlerError {
     UnsupportedIdempotencyKey,
     #[error("bad awakeable id '{0}': {1}")]
     BadAwakeableId(String, IdDecodeError),
+    #[error("bad invocation id '{0}': {1}")]
+    BadInvocationId(String, IdDecodeError),
 }
 
 #[derive(Debug, Serialize)]
@@ -93,6 +105,9 @@ impl HandlerError {
             | HandlerError::UnsupportedDelay
             | HandlerError::BadHeader(_, _)
             | HandlerError::BadAwakeableId(_, _)
+            | HandlerError::BadInvocationPath
+            | HandlerError::BadInvocationId(_, _)
+            | HandlerError::BadWorkflowPath
             | HandlerError::InputValidation(_)
             | HandlerError::UnsupportedIdempotencyKey => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -102,6 +117,7 @@ impl HandlerError {
             HandlerError::Invocation(e) => {
                 StatusCode::from_u16(e.code().into()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             }
+            HandlerError::NotReady => StatusCode::from_u16(470).unwrap(),
         };
 
         let error_response = match self {

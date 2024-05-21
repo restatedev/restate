@@ -446,6 +446,9 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
             Effect::IngressResponse(ingress_response) => {
                 collector.push(Action::IngressResponse(ingress_response));
             }
+            Effect::IngressSubmitNotification(attach_notification) => {
+                collector.push(Action::IngressSubmitNotification(attach_notification))
+            }
             Effect::PutPromise {
                 service_id,
                 key,

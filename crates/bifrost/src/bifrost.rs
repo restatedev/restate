@@ -108,6 +108,20 @@ impl Bifrost {
     pub fn inner(&self) -> Arc<BifrostInner> {
         self.inner.clone()
     }
+
+    /// Read a full log with the given id. To be used only in tests!!!
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn read_all(&self, log_id: LogId) -> Result<Vec<LogRecord>, Error> {
+        self.inner.fail_if_shutting_down()?;
+
+        let mut v = vec![];
+        let mut reader = self.create_reader(log_id, Lsn::INVALID);
+        while let Some(r) = reader.read_next_opt().await? {
+            v.push(r);
+        }
+
+        Ok(v)
+    }
 }
 
 // compile-time check

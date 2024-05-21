@@ -113,7 +113,7 @@ mod tests {
     use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
-    use restate_types::ingress::IngressResponse;
+    use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
     use restate_types::invocation::{
         InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
         ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
@@ -122,7 +122,7 @@ mod tests {
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
     use restate_types::journal::{Entry, EntryType};
     use restate_types::state_mut::ExternalStateMutation;
-    use restate_types::GenerationalNodeId;
+    use restate_types::{ingress, GenerationalNodeId};
     use std::collections::{HashMap, HashSet};
     use test_log::test;
     use tracing::info;
@@ -654,7 +654,7 @@ mod tests {
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 invocation_id,
-                invocation_target,
+                invocation_target: invocation_target.clone(),
                 argument: Default::default(),
                 source: Source::Ingress,
                 response_sink: Some(ServiceInvocationResponseSink::Ingress(
@@ -665,6 +665,7 @@ mod tests {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
+                submit_notification_sink: None,
             }))
             .await;
         assert_that!(
@@ -712,14 +713,28 @@ mod tests {
         assert_that!(
             actions,
             all!(
-                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                    target_node: eq(GenerationalNodeId::new(1, 1)),
-                    response: eq(ResponseResult::Success(response_bytes.clone()))
-                })))),
-                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                    target_node: eq(GenerationalNodeId::new(2, 2)),
-                    response: eq(ResponseResult::Success(response_bytes.clone()))
-                })))),
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        inner: pat!(ingress::InvocationResponse {
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                )))),
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(GenerationalNodeId::new(2, 2)),
+                        inner: pat!(ingress::InvocationResponse {
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                )))),
             )
         );
 
@@ -737,7 +752,9 @@ mod tests {
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::IdempotencyId;
-        use restate_types::invocation::InvocationTarget;
+        use restate_types::invocation::{
+            AttachInvocationRequest, InvocationQuery, InvocationTarget, SubmitNotificationSink,
+        };
         use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
 
@@ -819,11 +836,20 @@ mod tests {
             assert_that!(
                 actions,
                 all!(
-                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                        target_node: eq(GenerationalNodeId::new(1, 1)),
-                        idempotency_id: some(eq(idempotency_id.clone())),
-                        response: eq(ResponseResult::Success(response_bytes.clone()))
-                    })))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
                     contains(pat!(Action::ScheduleInvocationStatusCleanup {
                         invocation_id: eq(invocation_id)
                     }))
@@ -900,11 +926,20 @@ mod tests {
                 .await;
             assert_that!(
                 actions,
-                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                    target_node: eq(ingress_id),
-                    idempotency_id: some(eq(idempotency_id.clone())),
-                    response: eq(ResponseResult::Success(response_bytes.clone()))
-                }))))
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        inner: pat!(ingress::InvocationResponse {
+                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                idempotency_id: some(eq(idempotency_id.clone())),
+                            }),
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                ))))
             );
             assert_that!(
                 state_machine
@@ -962,11 +997,17 @@ mod tests {
                 .await;
             assert_that!(
                 actions,
-                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                    target_node: eq(ingress_id),
-                    idempotency_id: some(eq(idempotency_id.clone())),
-                    response: eq(ResponseResult::from(GONE_INVOCATION_ERROR))
-                }))))
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(ingress_id),
+                        inner: pat!(ingress::InvocationResponse {
+                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                idempotency_id: some(eq(idempotency_id.clone())),
+                            }),
+                            response: eq(IngressResponseResult::Failure(GONE_INVOCATION_ERROR))
+                        })
+                    }
+                ))))
             );
             assert_that!(
                 state_machine
@@ -980,7 +1021,7 @@ mod tests {
         }
 
         #[test(tokio::test)]
-        async fn latch_invocation_while_executing() {
+        async fn attach_with_service_invocation_command_while_executing() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
                 .build()
@@ -1064,16 +1105,269 @@ mod tests {
             assert_that!(
                 actions,
                 all!(
-                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                        target_node: eq(ingress_id_1),
-                        idempotency_id: some(eq(idempotency_id.clone())),
-                        response: eq(ResponseResult::Success(response_bytes.clone()))
-                    })))),
-                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                        target_node: eq(ingress_id_2),
-                        idempotency_id: some(eq(idempotency_id.clone())),
-                        response: eq(ResponseResult::Success(response_bytes.clone()))
-                    })))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_1),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_2),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    ))))
+                )
+            );
+        }
+
+        #[test(tokio::test)]
+        async fn attach_with_send_service_invocation() {
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
+
+            let idempotency_key = ByteString::from_static("my-idempotency-key");
+            let retention = Duration::from_secs(60) * 60 * 24;
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let first_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency_key.clone()),
+            );
+            let idempotency_id = IdempotencyId::combine(
+                first_invocation_id,
+                &invocation_target,
+                idempotency_key.clone(),
+            );
+
+            let ingress_id_1 = GenerationalNodeId::new(1, 1);
+            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+
+            // Send fresh invocation with idempotency key
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id: first_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_time: Some(retention),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::Invoke {
+                    invocation_id: eq(first_invocation_id),
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                }))
+            );
+
+            // Latch to existing invocation, but with a send call
+            let second_invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency_key.clone()),
+            );
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id: second_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    response_sink: None,
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_time: Some(retention),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id_2)),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                all!(
+                    not(contains(pat!(Action::IngressResponse(_)))),
+                    contains(pat!(Action::IngressSubmitNotification(eq(
+                        IngressResponseEnvelope {
+                            target_node: ingress_id_2,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id: second_invocation_id,
+                                attached_invocation_id: first_invocation_id,
+                                idempotency_id: Some(idempotency_id.clone())
+                            },
+                        }
+                    ))))
+                )
+            );
+
+            // Send output
+            let response_bytes = Bytes::from_static(b"123");
+            let actions = state_machine
+                .apply_multiple([
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id: first_invocation_id,
+                        kind: InvokerEffectKind::JournalEntry {
+                            entry_index: 1,
+                            entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                                EntryResult::Success(response_bytes.clone()),
+                            )),
+                        },
+                    }),
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id: first_invocation_id,
+                        kind: InvokerEffectKind::End,
+                    }),
+                ])
+                .await;
+
+            // Assert responses
+            assert_that!(
+                actions,
+                all!(
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_1),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    not(contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_2),
+                        }
+                    ))))),
+                )
+            );
+        }
+
+        #[test(tokio::test)]
+        async fn attach_command() {
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
+
+            let idempotency_key = ByteString::from_static("my-idempotency-key");
+            let completion_retention = Duration::from_secs(60) * 60 * 24;
+            let invocation_target = InvocationTarget::mock_virtual_object();
+            let invocation_id = InvocationId::generate_with_idempotency_key(
+                &invocation_target,
+                Some(idempotency_key.clone()),
+            );
+            let idempotency_id =
+                IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
+
+            let ingress_id_1 = GenerationalNodeId::new(1, 1);
+            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+
+            // Send fresh invocation with idempotency key
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    idempotency_key: Some(idempotency_key.clone()),
+                    completion_retention_time: Some(completion_retention),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::Invoke {
+                    invocation_id: eq(invocation_id),
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                }))
+            );
+
+            // Latch to existing invocation, but with a send call
+            let actions = state_machine
+                .apply(Command::AttachInvocation(AttachInvocationRequest {
+                    invocation_query: InvocationQuery::Invocation(invocation_id),
+                    response_sink: ServiceInvocationResponseSink::Ingress(ingress_id_2),
+                }))
+                .await;
+            assert_that!(
+                actions,
+                all!(not(contains(pat!(Action::IngressResponse(_)))))
+            );
+
+            // Send output
+            let response_bytes = Bytes::from_static(b"123");
+            let actions = state_machine
+                .apply_multiple([
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id,
+                        kind: InvokerEffectKind::JournalEntry {
+                            entry_index: 1,
+                            entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                                EntryResult::Success(response_bytes.clone()),
+                            )),
+                        },
+                    }),
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id,
+                        kind: InvokerEffectKind::End,
+                    }),
+                ])
+                .await;
+
+            // Assert responses
+            assert_that!(
+                actions,
+                all!(
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_1),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(ingress_id_2),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    idempotency_id: some(eq(idempotency_id.clone())),
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    ))))
                 )
             );
         }
@@ -1154,7 +1448,9 @@ mod tests {
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
-        use restate_types::invocation::InvocationTarget;
+        use restate_types::invocation::{
+            AttachInvocationRequest, InvocationQuery, InvocationTarget,
+        };
         use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
 
@@ -1244,16 +1540,34 @@ mod tests {
             assert_that!(
                 actions,
                 all!(
-                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                        target_node: eq(GenerationalNodeId::new(1, 1)),
-                        invocation_id: eq(invocation_id),
-                        response: eq(ResponseResult::Success(response_bytes.clone()))
-                    })))),
-                    contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                        target_node: eq(GenerationalNodeId::new(2, 2)),
-                        invocation_id: eq(invocation_id),
-                        response: eq(ResponseResult::Success(response_bytes.clone()))
-                    })))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    invocation_id: some(eq(invocation_id))
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(GenerationalNodeId::new(2, 2)),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    invocation_id: some(eq(invocation_id))
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
                     contains(pat!(Action::ScheduleInvocationStatusCleanup {
                         invocation_id: eq(invocation_id)
                     }))
@@ -1287,11 +1601,180 @@ mod tests {
                 .await;
             assert_that!(
                 actions,
-                contains(pat!(Action::IngressResponse(pat!(IngressResponse {
-                    target_node: eq(GenerationalNodeId::new(1, 1)),
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        inner: pat!(ingress::InvocationResponse {
+                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                invocation_id: some(eq(invocation_id))
+                            }),
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                ))))
+            );
+        }
+
+        #[test(tokio::test)]
+        async fn attach_by_workflow_key() {
+            let tc = TaskCenterBuilder::default()
+                .default_runtime_handle(tokio::runtime::Handle::current())
+                .build()
+                .expect("task_center builds");
+            let mut state_machine = tc
+                .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+                .await;
+
+            let invocation_target = InvocationTarget::mock_workflow();
+            let invocation_id = InvocationId::mock_random();
+
+            // Send fresh invocation
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    completion_retention_time: Some(Duration::from_secs(60)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
+                        GenerationalNodeId::new(1, 1),
+                    )),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::Invoke {
                     invocation_id: eq(invocation_id),
-                    response: eq(ResponseResult::Success(response_bytes))
-                }))))
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                }))
+            );
+
+            // Sending another invocation won't re-execute
+            let actions = state_machine
+                .apply(Command::AttachInvocation(AttachInvocationRequest {
+                    invocation_query: InvocationQuery::Workflow(
+                        invocation_target.as_keyed_service_id().unwrap(),
+                    ),
+                    response_sink: ServiceInvocationResponseSink::Ingress(GenerationalNodeId::new(
+                        2, 2,
+                    )),
+                }))
+                .await;
+            assert_that!(
+                actions,
+                not(contains(pat!(Action::Invoke {
+                    invocation_id: eq(invocation_id),
+                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                })))
+            );
+
+            // Send output, then end
+            let response_bytes = Bytes::from_static(b"123");
+            let actions = state_machine
+                .apply_multiple([
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id,
+                        kind: InvokerEffectKind::JournalEntry {
+                            entry_index: 1,
+                            entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                                EntryResult::Success(response_bytes.clone()),
+                            )),
+                        },
+                    }),
+                    Command::InvokerEffect(InvokerEffect {
+                        invocation_id,
+                        kind: InvokerEffectKind::End,
+                    }),
+                ])
+                .await;
+
+            // Assert response and cleanup timer
+            assert_that!(
+                actions,
+                all!(
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    invocation_id: some(eq(invocation_id)),
+                                    service_id: some(eq(invocation_target
+                                        .as_keyed_service_id()
+                                        .unwrap()))
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(GenerationalNodeId::new(2, 2)),
+                            inner: pat!(ingress::InvocationResponse {
+                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                    invocation_id: some(eq(invocation_id)),
+                                    service_id: some(eq(invocation_target
+                                        .as_keyed_service_id()
+                                        .unwrap()))
+                                }),
+                                response: eq(IngressResponseResult::Success(
+                                    invocation_target.clone(),
+                                    response_bytes.clone()
+                                ))
+                            })
+                        }
+                    )))),
+                    contains(pat!(Action::ScheduleInvocationStatusCleanup {
+                        invocation_id: eq(invocation_id)
+                    }))
+                )
+            );
+
+            // InvocationStatus contains completed
+            let invocation_status = state_machine
+                .storage()
+                .transaction()
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap();
+            assert_that!(
+                invocation_status,
+                pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
+                    response_result: eq(ResponseResult::Success(response_bytes.clone()))
+                })))
+            );
+
+            // Sending a new request will be completed immediately
+            let actions = state_machine
+                .apply(Command::Invoke(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
+                        GenerationalNodeId::new(1, 1),
+                    )),
+                    ..ServiceInvocation::mock()
+                }))
+                .await;
+            assert_that!(
+                actions,
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        inner: pat!(ingress::InvocationResponse {
+                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
+                                invocation_id: some(eq(invocation_id))
+                            }),
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                ))))
             );
         }
 
@@ -1390,6 +1873,7 @@ mod tests {
                 execution_time: None,
                 completion_retention_time: None,
                 idempotency_key: None,
+                submit_notification_sink: None,
             }))
             .await;
 

@@ -11,9 +11,7 @@
 use super::Error;
 
 use crate::partition::state_machine::effects::Effects;
-use crate::partition::types::{
-    create_response_message, InvokerEffect, InvokerEffectKind, OutboxMessageExt, ResponseMessage,
-};
+use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -32,16 +30,21 @@ use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
     CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
+    NOT_FOUND_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
     WithInvocationId, WithPartitionKey,
 };
-use restate_types::ingress::IngressResponse;
+use restate_types::ingress;
+use restate_types::ingress::{
+    IngressResponseEnvelope, IngressResponseResult, InvocationResponseCorrelationIds,
+};
 use restate_types::invocation::{
-    InvocationResponse, InvocationTarget, InvocationTargetType, InvocationTermination,
-    ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-    Source, SpanRelationCause, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
+    AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
+    InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
+    ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source, SpanRelationCause,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -180,6 +183,10 @@ where
                 );
                 Ok(())
             }
+            Command::AttachInvocation(attach_invocation_request) => {
+                self.handle_attach_invocation_request(effects, state, attach_invocation_request)
+                    .await
+            }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
                 effects.truncate_outbox(index);
@@ -225,33 +232,46 @@ where
         effects.set_related_invocation_target(&service_invocation.invocation_target);
         effects.set_parent_span_context(&service_invocation.span_context);
 
+        let idempotency_id = service_invocation.compute_idempotency_id();
+
         // If an idempotency key is set, handle idempotency
-        if let Some(idempotency_key) = &service_invocation.idempotency_key {
+        if let Some(idempotency_id) = &idempotency_id {
             if service_invocation.invocation_target.invocation_target_ty()
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             {
                 warn!("The idempotency key for workflow methods is ignored!");
             } else {
-                let idempotency_id = IdempotencyId::combine(
-                    service_invocation.invocation_id,
-                    &service_invocation.invocation_target,
-                    idempotency_key.clone(),
-                );
-                if self
+                if let Some(original_invocation_id) = self
                     .try_resolve_idempotent_request(
                         effects,
                         state,
-                        &idempotency_id,
+                        idempotency_id,
                         &service_invocation.invocation_id,
                         service_invocation.response_sink.as_ref(),
                     )
                     .await?
                 {
+                    // Notify the ingress, if needed, of the chosen invocation_id
+                    if let Some(SubmitNotificationSink::Ingress(target_node)) =
+                        service_invocation.submit_notification_sink
+                    {
+                        effects.send_ingress_attach_notification(IngressResponseEnvelope {
+                            target_node,
+                            inner: ingress::SubmittedInvocationNotification {
+                                original_invocation_id: service_invocation.invocation_id,
+                                attached_invocation_id: original_invocation_id,
+                                idempotency_id: Some(idempotency_id.clone()),
+                            },
+                        })
+                    }
+
                     // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
                     return Ok(());
                 }
+
                 // Idempotent invocation needs to be processed for the first time, let's roll!
-                effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
+                effects
+                    .store_idempotency_id(idempotency_id.clone(), service_invocation.invocation_id);
             }
         }
 
@@ -317,10 +337,11 @@ where
                             CompletedInvocation { response_result, .. }) => {
                             self.send_response_to_sinks(
                                 effects,
-                                &service_invocation.invocation_id,
-                                None,
                                 iter::once(response_sink),
                                 response_result,
+                                InvocationResponseCorrelationIds::from_invocation_id(service_invocation.invocation_id)
+                                    .with_service_id(service_invocation.invocation_target.as_keyed_service_id()),
+                                Some(&service_invocation.invocation_target),
                             );
                         }
                         InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
@@ -332,9 +353,35 @@ where
                     }
                 }
 
-                // TODO ADD ATTACH INVOCATION ID NOTIFICATION TO INGRESS!!!!!!
+                // Notify the ingress, if needed, of the chosen invocation_id
+                if let Some(SubmitNotificationSink::Ingress(target_node)) =
+                    service_invocation.submit_notification_sink
+                {
+                    effects.send_ingress_attach_notification(IngressResponseEnvelope {
+                        target_node,
+                        inner: ingress::SubmittedInvocationNotification {
+                            original_invocation_id: service_invocation.invocation_id,
+                            attached_invocation_id: original_invocation_id,
+                            idempotency_id: None,
+                        },
+                    })
+                }
                 return Ok(());
             }
+        }
+
+        // If we reach this point, we have not yet notified the ingress of the fact that we did not attach to any existing invocation
+        if let Some(SubmitNotificationSink::Ingress(target_node)) =
+            service_invocation.submit_notification_sink
+        {
+            effects.send_ingress_attach_notification(IngressResponseEnvelope {
+                target_node,
+                inner: ingress::SubmittedInvocationNotification {
+                    original_invocation_id: service_invocation.invocation_id,
+                    idempotency_id,
+                    attached_invocation_id: service_invocation.invocation_id,
+                },
+            })
         }
 
         // We're ready to invoke the service!
@@ -353,7 +400,7 @@ where
         inbox_seq_number
     }
 
-    /// If true is returned, the request has been resolved and no further processing is needed
+    /// If an invocation id is returned, the request has been resolved and no further processing is needed
     async fn try_resolve_idempotent_request<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         effects: &mut Effects,
@@ -361,7 +408,7 @@ where
         idempotency_id: &IdempotencyId,
         caller_id: &InvocationId,
         response_sink: Option<&ServiceInvocationResponseSink>,
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<InvocationId>, Error> {
         if let Some(idempotency_meta) = state.get_idempotency_metadata(idempotency_id).await? {
             let original_invocation_id = idempotency_meta.invocation_id;
             match state.get_invocation_status(&original_invocation_id).await? {
@@ -396,23 +443,26 @@ where
                 InvocationStatus::Completed(completed) => {
                     self.send_response_to_sinks(
                         effects,
-                        caller_id,
-                        Some(idempotency_id.clone()),
                         response_sink.cloned(),
                         completed.response_result,
+                        InvocationResponseCorrelationIds::from_invocation_id(*caller_id)
+                            .with_service_id(completed.invocation_target.as_keyed_service_id())
+                            .with_idempotency_id(Some(idempotency_id.clone())),
+                        Some(&completed.invocation_target),
                     );
                 }
                 InvocationStatus::Free => self.send_response_to_sinks(
                     effects,
-                    caller_id,
-                    Some(idempotency_id.clone()),
                     response_sink.cloned(),
                     GONE_INVOCATION_ERROR,
+                    InvocationResponseCorrelationIds::from_invocation_id(*caller_id)
+                        .with_idempotency_id(Some(idempotency_id.clone())),
+                    None,
                 ),
             }
-            Ok(true)
+            Ok(Some(original_invocation_id))
         } else {
-            Ok(false)
+            Ok(None)
         }
     }
 
@@ -658,10 +708,12 @@ where
 
         self.send_response_to_sinks(
             effects,
-            &invocation_id,
-            idempotency_id,
             response_sinks,
             &error,
+            InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
+                .with_service_id(invocation_target.as_keyed_service_id())
+                .with_idempotency_id(idempotency_id),
+            Some(&invocation_target),
         );
 
         // Delete inbox entry and invocation status.
@@ -1076,10 +1128,12 @@ where
             // Send responses out
             self.send_response_to_sinks(
                 effects,
-                &invocation_id,
-                idempotency_id,
                 invocation_metadata.response_sinks.clone(),
                 result.clone(),
+                InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
+                    .with_service_id(invocation_metadata.invocation_target.as_keyed_service_id())
+                    .with_idempotency_id(idempotency_id),
+                Some(&invocation_metadata.invocation_target),
             );
 
             // Store the completed status, if needed
@@ -1163,10 +1217,12 @@ where
         // Send responses out
         self.send_response_to_sinks(
             effects,
-            &invocation_id,
-            idempotency_id,
             invocation_metadata.response_sinks.clone(),
             response_result.clone(),
+            InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
+                .with_service_id(invocation_metadata.invocation_target.as_keyed_service_id())
+                .with_idempotency_id(idempotency_id),
+            Some(&invocation_metadata.invocation_target),
         );
 
         // Pop from inbox
@@ -1193,25 +1249,40 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_response_to_sinks(
         &mut self,
         effects: &mut Effects,
-        invocation_id: &InvocationId,
-        idempotency_id: Option<IdempotencyId>,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
+        invocation_response_correlation_ids: InvocationResponseCorrelationIds,
+        invocation_target: Option<&InvocationTarget>,
     ) {
         let result = res.into();
         for response_sink in response_sinks {
-            let response_message = create_response_message(
-                invocation_id,
-                idempotency_id.clone(),
-                response_sink,
-                result.clone(),
-            );
-            match response_message {
-                ResponseMessage::Outbox(outbox) => self.handle_outgoing_message(outbox, effects),
-                ResponseMessage::Ingress(ingress) => self.ingress_response(ingress, effects),
+            match response_sink {
+                ServiceInvocationResponseSink::PartitionProcessor {
+                    entry_index,
+                    caller,
+                } => self.handle_outgoing_message(OutboxMessage::ServiceResponse(InvocationResponse {
+                    id: caller,
+                    entry_index,
+                    result: result.clone(),
+                }), effects),
+                ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
+                    self.ingress_response(IngressResponseEnvelope{ target_node: ingress_dispatcher_id, inner: ingress::InvocationResponse {
+                        correlation_ids: invocation_response_correlation_ids.clone(),
+                        response: match result.clone() {
+                            ResponseResult::Success(res) => {
+                                IngressResponseResult::Success(invocation_target.expect("For success responses, there must be an invocation target!").clone(), res)
+                            }
+                            ResponseResult::Failure(err) => {
+                                IngressResponseResult::Failure(err)
+                            }
+                        },
+                    } }
+                    , effects)
+                }
             }
         }
     }
@@ -1596,6 +1667,7 @@ where
                         execution_time: None,
                         completion_retention_time: *completion_retention_time,
                         idempotency_key: None,
+                        submit_notification_sink: None,
                     };
 
                     self.handle_outgoing_message(
@@ -1644,6 +1716,7 @@ where
                     execution_time: delay,
                     completion_retention_time: *completion_retention_time,
                     idempotency_key: None,
+                    submit_notification_sink: None,
                 };
 
                 let pointer_span_id = match span_context.span_cause() {
@@ -1840,7 +1913,85 @@ where
         self.outbox_seq_number += 1;
     }
 
-    fn ingress_response(&mut self, ingress_response: IngressResponse, effects: &mut Effects) {
+    async fn handle_attach_invocation_request<State: StateReader>(
+        &mut self,
+        effects: &mut Effects,
+        state: &mut State,
+        attach_invocation_request: AttachInvocationRequest,
+    ) -> Result<(), Error> {
+        debug_assert!(
+            self.partition_key_range.contains(&attach_invocation_request.partition_key()),
+            "Attach invocation request with partition key '{}' has been delivered to a partition processor with key range '{:?}'. This indicates a bug.",
+            attach_invocation_request.partition_key(),
+            self.partition_key_range);
+
+        let (invocation_id, service_id) = match attach_invocation_request.invocation_query {
+            InvocationQuery::Invocation(iid) => (iid, None),
+            InvocationQuery::Workflow(sid) => match state.get_virtual_object_status(&sid).await? {
+                VirtualObjectStatus::Locked(iid) => (iid, Some(sid)),
+                VirtualObjectStatus::Unlocked => {
+                    self.send_response_to_sinks(
+                        effects,
+                        vec![attach_invocation_request.response_sink],
+                        NOT_FOUND_INVOCATION_ERROR,
+                        InvocationResponseCorrelationIds::from_service_id(sid),
+                        None,
+                    );
+                    return Ok(());
+                }
+            },
+        };
+        match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
+            is @ InvocationStatus::Invoked(_)
+            | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Inboxed(_) => {
+                effects.append_response_sink(
+                    invocation_id,
+                    is,
+                    attach_invocation_request.response_sink,
+                );
+            }
+            InvocationStatus::Completed(completed) => {
+                let idempotency_id = completed.idempotency_key.map(|k| {
+                    IdempotencyId::new(
+                        completed.invocation_target.service_name().clone(),
+                        completed
+                            .invocation_target
+                            .key()
+                            .map(|b| b.as_bytes())
+                            .cloned(),
+                        completed.invocation_target.handler_name().clone(),
+                        k,
+                    )
+                });
+                self.send_response_to_sinks(
+                    effects,
+                    vec![attach_invocation_request.response_sink],
+                    completed.response_result,
+                    InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
+                        .with_idempotency_id(idempotency_id)
+                        .with_service_id(completed.invocation_target.as_keyed_service_id()),
+                    Some(&completed.invocation_target),
+                );
+            }
+            InvocationStatus::Free => self.send_response_to_sinks(
+                effects,
+                vec![attach_invocation_request.response_sink],
+                NOT_FOUND_INVOCATION_ERROR,
+                InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
+                    .with_service_id(service_id),
+                None,
+            ),
+        }
+
+        Ok(())
+    }
+
+    fn ingress_response(
+        &mut self,
+        ingress_response: IngressResponseEnvelope<ingress::InvocationResponse>,
+        effects: &mut Effects,
+    ) {
         effects.send_ingress_response(ingress_response);
     }
 
