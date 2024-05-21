@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::{
-    c_success,
+    c_error, c_success,
     cli_env::CliEnv,
     clients::cloud::{
         generated::{
@@ -90,9 +90,10 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
     } else {
         match accounts.len() {
             0 => {
-                return Err(anyhow::anyhow!(
+                c_error!(
                     "No accounts set up; use the Restate Cloud UI to create your first account"
-                ))
+                );
+                return Ok(());
             }
             1 => 0,
             _ => account_picker(&accounts)?,
@@ -128,9 +129,8 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
     } else {
         match environments.len() {
             0 => {
-                return Err(anyhow::anyhow!(
-                "No environments set up; use the Restate Cloud UI to create your first environment"
-            ))
+                c_error!("No environments set up; use the Restate Cloud UI to create your first environment");
+                return Ok(());
             }
             1 => 0,
             _ => environment_picker(&environments)?,
