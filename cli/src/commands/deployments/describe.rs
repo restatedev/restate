@@ -13,12 +13,12 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::deployments::ServiceNameRevPair;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::deployments::ServiceNameRevPair;
+use restate_admin_rest_model::services::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{MetaClientInterface, MetasClient};
+use crate::clients::{AdminClient, AdminClientInterface};
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
@@ -47,7 +47,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 }
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
-    let client = MetasClient::new(env)?;
+    let client = AdminClient::new(env)?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.

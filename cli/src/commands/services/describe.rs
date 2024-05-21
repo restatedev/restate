@@ -15,7 +15,7 @@ use indicatif::ProgressBar;
 use crate::c_title;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
-use crate::clients::{MetaClientInterface, MetasClient};
+use crate::clients::{AdminClient, AdminClientInterface};
 use crate::console::c_println;
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{
@@ -43,7 +43,7 @@ pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<
 }
 
 async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
-    let client = MetasClient::new(env)?;
+    let client = AdminClient::new(env)?;
     let service = client.get_service(&opts.name).await?.into_body().await?;
 
     let mut table = Table::new_styled(&env.ui_config);

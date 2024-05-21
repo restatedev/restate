@@ -12,8 +12,8 @@ use super::console::{Icon, StyledTable};
 use crate::app::UiConfig;
 
 use comfy_table::{Cell, Color, Table};
-use restate_meta_rest_model::handlers::HandlerMetadata;
-use restate_meta_rest_model::services::ServiceType;
+use restate_admin_rest_model::handlers::HandlerMetadata;
+use restate_admin_rest_model::services::ServiceType;
 
 pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMetadata]) -> Table {
     let mut table = Table::new_styled(ui_config);

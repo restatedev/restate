@@ -15,7 +15,7 @@ use restate_types::art::render_restate_logo;
 
 use crate::build_info;
 use crate::cli_env::{CliEnv, EnvironmentType};
-use crate::clients::MetaClientInterface;
+use crate::clients::AdminClientInterface;
 use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
@@ -176,7 +176,7 @@ pub async fn run(State(env): State<CliEnv>) {
 
     c_println!();
     // Get admin client, don't fail completely if we can't get one!
-    if let Ok(client) = crate::clients::MetasClient::new(&env) {
+    if let Ok(client) = crate::clients::AdminClient::new(&env) {
         match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
                 c_success!("Admin Service '{}' is healthy!", client.base_url);

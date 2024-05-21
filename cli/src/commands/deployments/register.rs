@@ -13,7 +13,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
+use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::render_deployment_url;
@@ -24,13 +24,13 @@ use crate::ui::stylesheet::Style;
 use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
-use restate_meta_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
+use restate_admin_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
 
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
@@ -127,7 +127,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     });
 
     // Preparing the discovery request
-    let client = crate::clients::MetasClient::new(&env)?;
+    let client = crate::clients::AdminClient::new(&env)?;
 
     let mk_request_body = |force, dry_run| match &discover_opts.deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
@@ -392,7 +392,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 }
 
 async fn resolve_deployment(
-    client: &MetasClient,
+    client: &AdminClient,
     cache: &mut HashMap<String, Deployment>,
     deployment_id: &str,
 ) -> Option<Deployment> {

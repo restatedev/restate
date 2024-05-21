@@ -16,7 +16,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
-use crate::clients::MetasClient;
+use crate::clients::AdminClient;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_handlers::icon_for_service_type;
@@ -28,7 +28,7 @@ use anyhow::Result;
 use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
@@ -51,7 +51,7 @@ pub async fn run_status(State(env): State<CliEnv>, opts: &Status) -> Result<()> 
 }
 
 async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
-    let metas_client = MetasClient::new(env)?;
+    let metas_client = AdminClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
 
     if let Some(svc) = &opts.service {

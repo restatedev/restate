@@ -11,7 +11,7 @@
 use super::error::*;
 use crate::state::AdminServiceState;
 
-use restate_meta_rest_model::subscriptions::*;
+use restate_admin_rest_model::subscriptions::*;
 use restate_schema_api::subscription::SubscriptionValidator;
 
 use crate::rest_api::log_error;

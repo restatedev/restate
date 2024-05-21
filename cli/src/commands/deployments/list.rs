@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::c_error;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
-use crate::clients::MetaClientInterface;
+use crate::clients::AdminClientInterface;
 use crate::console::c_println;
 use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
@@ -23,12 +23,12 @@ use crate::ui::deployments::{
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 
-use restate_meta_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
+use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
 
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::services::ServiceMetadata;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -48,7 +48,7 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 }
 
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
-    let client = crate::clients::MetasClient::new(env)?;
+    let client = crate::clients::AdminClient::new(env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
     // To know the latest version of every service.
     let services = client.get_services().await?.into_body().await?.services;

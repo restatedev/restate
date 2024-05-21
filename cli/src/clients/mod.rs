@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod admin_client;
+mod admin_interface;
 #[cfg(feature = "cloud")]
 pub mod cloud;
 pub mod datafusion_helpers;
 mod datafusion_http_client;
 mod errors;
-mod metas_client;
-mod metas_interface;
 
+pub use self::admin_client::AdminClient;
+pub use self::admin_client::Error as MetasClientError;
+pub use self::admin_interface::AdminClientInterface;
 pub use self::datafusion_http_client::DataFusionHttpClient;
-pub use self::metas_client::Error as MetasClientError;
-pub use self::metas_client::MetasClient;
-pub use self::metas_interface::MetaClientInterface;

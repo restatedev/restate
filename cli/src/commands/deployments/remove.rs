@@ -12,13 +12,13 @@ use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
-use restate_meta_rest_model::deployments::ServiceNameRevPair;
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::deployments::ServiceNameRevPair;
+use restate_admin_rest_model::services::ServiceMetadata;
 use std::collections::HashMap;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{MetaClientInterface, MetasClient};
+use crate::clients::{AdminClient, AdminClientInterface};
 use crate::console::c_println;
 use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::{
@@ -45,7 +45,7 @@ pub struct Remove {
 
 pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
     // First get information about this deployment and inspect if it's drained or not.
-    let client = MetasClient::new(&env)?;
+    let client = AdminClient::new(&env)?;
     let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
 
     let deployment = client

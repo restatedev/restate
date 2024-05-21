@@ -10,7 +10,7 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, MetaClientInterface};
+use crate::clients::{self, AdminClientInterface};
 use crate::ui::console::{confirm_or_exit, Styled};
 use crate::ui::invocations::render_simple_invocation_list;
 use crate::ui::stylesheet::Style;
@@ -41,7 +41,7 @@ pub struct Cancel {
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
-    let client = clients::MetasClient::new(&env)?;
+    let client = clients::AdminClient::new(&env)?;
     let sql_client = clients::DataFusionHttpClient::new(&env)?;
 
     let q = opts.query.trim();

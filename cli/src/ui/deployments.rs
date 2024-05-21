@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use comfy_table::{Cell, Color, Table};
-use restate_meta_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
-use restate_meta_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
+use restate_admin_rest_model::services::ServiceMetadata;
 use restate_types::identifiers::DeploymentId;
 
 use super::console::StyledTable;

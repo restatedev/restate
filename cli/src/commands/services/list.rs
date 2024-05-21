@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::c_error;
 use crate::cli_env::CliEnv;
-use crate::clients::MetaClientInterface;
+use crate::clients::AdminClientInterface;
 use crate::console::c_println;
 use crate::ui::console::StyledTable;
 use crate::ui::deployments::{render_deployment_type, render_deployment_url};
@@ -22,8 +22,8 @@ use crate::ui::watcher::Watch;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::Table;
-use restate_meta_rest_model::deployments::DeploymentResponse;
-use restate_meta_rest_model::services::HandlerMetadata;
+use restate_admin_rest_model::deployments::DeploymentResponse;
+use restate_admin_rest_model::services::HandlerMetadata;
 use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -47,7 +47,7 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 }
 
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
-    let client = crate::clients::MetasClient::new(env)?;
+    let client = crate::clients::AdminClient::new(env)?;
     let defs = client.get_services().await?.into_body().await?;
 
     if defs.services.is_empty() {

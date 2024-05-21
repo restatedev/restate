@@ -14,18 +14,18 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     get_locked_keys_status, get_service_invocations, get_service_status,
 };
-use crate::clients::{DataFusionHttpClient, MetaClientInterface, MetasClient};
+use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
 use crate::ui::invocations::render_invocation_compact;
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use restate_meta_rest_model::services::ServiceType;
+use restate_admin_rest_model::services::ServiceType;
 
 pub async fn run_detailed_status(
     env: &CliEnv,
     service_name: &str,
     opts: &Status,
-    metas_client: MetasClient,
+    metas_client: AdminClient,
     sql_client: DataFusionHttpClient,
 ) -> Result<()> {
     // First, let's get the service metadata

@@ -9,14 +9,14 @@
 // by the Apache License, Version 2.0.
 use std::fmt::Display;
 
-use super::metas_client::Envelope;
-use super::MetasClient;
+use super::admin_client::Envelope;
+use super::AdminClient;
 
-use restate_meta_rest_model::deployments::*;
-use restate_meta_rest_model::services::*;
+use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::services::*;
 
-pub trait MetaClientInterface {
-    /// Check if the meta service is healthy by invoking /health
+pub trait AdminClientInterface {
+    /// Check if the admin service is healthy by invoking /health
     async fn health(&self) -> reqwest::Result<Envelope<()>>;
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
@@ -41,7 +41,7 @@ pub trait MetaClientInterface {
     ) -> reqwest::Result<Envelope<()>>;
 }
 
-impl MetaClientInterface for MetasClient {
+impl AdminClientInterface for AdminClient {
     async fn health(&self) -> reqwest::Result<Envelope<()>> {
         let url = self.base_url.join("/health").expect("Bad url!");
         self.run(reqwest::Method::GET, url).await

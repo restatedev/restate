@@ -14,7 +14,7 @@ use crate::state::AdminServiceState;
 use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
-use restate_meta_rest_model::handlers::*;
+use restate_admin_rest_model::handlers::*;
 
 /// List discovered handlers for service
 #[openapi(

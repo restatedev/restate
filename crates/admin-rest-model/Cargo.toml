@@ -1,5 +1,5 @@
 [package]
-name = "restate-meta-rest-model"
+name = "restate-admin-rest-model"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

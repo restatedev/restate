@@ -18,7 +18,7 @@ use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use okapi_operation::*;
-use restate_meta_rest_model::deployments::*;
+use restate_admin_rest_model::deployments::*;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::InvalidLambdaARN;

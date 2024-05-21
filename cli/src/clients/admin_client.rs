@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A wrapper client for meta HTTP service.
+//! A wrapper client for admin HTTP service.
 
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
@@ -96,9 +96,9 @@ impl<T> From<reqwest::Response> for Envelope<T> {
     }
 }
 
-/// A handy client for the meta HTTP service.
+/// A handy client for the admin HTTP service.
 #[derive(Clone)]
-pub struct MetasClient {
+pub struct AdminClient {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) bearer_token: Option<String>,
@@ -107,7 +107,7 @@ pub struct MetasClient {
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl MetasClient {
+impl AdminClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
@@ -191,8 +191,8 @@ impl MetasClient {
     }
 }
 
-// Ensure that MetaClient is Send + Sync. Compiler will fail if it's not.
+// Ensure that AdminClient is Send + Sync. Compiler will fail if it's not.
 const _: () = {
     const fn assert_send<T: Send + Sync>() {}
-    assert_send::<MetasClient>();
+    assert_send::<AdminClient>();
 };

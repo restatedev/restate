@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::cli_env::CliEnv;
-use crate::clients::{MetaClientInterface, MetasClient};
+use crate::clients::{AdminClient, AdminClientInterface};
 use crate::ui::console::StyledTable;
 use anyhow::{anyhow, bail, Context};
 use arrow_convert::{ArrowDeserialize, ArrowField};
@@ -18,7 +18,7 @@ use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_meta_rest_model::services::{ModifyServiceStateRequest, ServiceType};
+use restate_admin_rest_model::services::{ModifyServiceStateRequest, ServiceType};
 use restate_types::state_mut::StateMutationVersion;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ pub(crate) async fn get_current_state(
     //
     // 0. require that this is a keyed service
     //
-    let client = MetasClient::new(env)?;
+    let client = AdminClient::new(env)?;
     let service_meta = client.get_service(service).await?.into_body().await?;
     if service_meta.ty != ServiceType::VirtualObject {
         bail!("Only virtual objects support state");
@@ -79,7 +79,7 @@ pub(crate) async fn update_state(
         object_key: service_key.to_string(),
     };
 
-    let client = MetasClient::new(env)?;
+    let client = AdminClient::new(env)?;
     let _ = client.patch_state(service, req).await?.success_or_error()?;
 
     Ok(())

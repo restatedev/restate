@@ -5190,10 +5190,12 @@ dependencies = [
  "http 0.2.12",
  "hyper 0.14.28",
  "okapi-operation",
+ "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
  "restate-errors",
- "restate-meta-rest-model",
+ "restate-fs-util",
+ "restate-futures-util",
  "restate-node-services",
  "restate-schema",
  "restate-schema-api",
@@ -5215,6 +5217,22 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "restate-admin-rest-model"
+version = "0.9.1"
+dependencies = [
+ "bytes",
+ "http 0.2.12",
+ "humantime",
+ "restate-schema-api",
+ "restate-serde-util",
+ "restate-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_with",
 ]
 
 [[package]]
@@ -5319,7 +5337,7 @@ dependencies = [
  "once_cell",
  "open",
  "reqwest",
- "restate-meta-rest-model",
+ "restate-admin-rest-model",
  "restate-serde-util",
  "restate-service-protocol",
  "restate-types",
@@ -5608,22 +5626,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "restate-meta-rest-model"
-version = "0.9.1"
-dependencies = [
- "bytes",
- "http 0.2.12",
- "humantime",
- "restate-schema-api",
- "restate-serde-util",
- "restate-types",
- "schemars",
- "serde",
- "serde_json",
- "serde_with",
 ]
 
 [[package]]

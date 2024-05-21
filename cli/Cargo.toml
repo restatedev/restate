@@ -15,7 +15,7 @@ default = ["cloud"]
 cloud = []
 
 [dependencies]
-restate-meta-rest-model = { workspace = true }
+restate-admin-rest-model = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-types = { workspace = true }

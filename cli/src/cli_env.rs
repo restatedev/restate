@@ -485,7 +485,7 @@ mod tests {
             "http://example.com:9070/".to_string()
         );
 
-        // RESTATE_INGRESS_URL/RESTATE_META_URL override the base URLs!
+        // RESTATE_INGRESS_URL/RESTATE_ADMIN_URL override the base URLs!
         os_env.clear();
         os_env.insert(INGRESS_URL_ENV, "https://api.restate.dev:4567".to_string());
         os_env.insert(ADMIN_URL_ENV, "https://admin.restate.dev:4567".to_string());

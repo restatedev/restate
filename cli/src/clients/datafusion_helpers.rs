@@ -20,12 +20,12 @@ use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
 use arrow::datatypes::{ArrowTemporalType, Date64Type};
 use arrow::record_batch::RecordBatch;
 use clap::ValueEnum;
-use restate_meta_rest_model::deployments::DeploymentId;
+use restate_admin_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use chrono::{DateTime, Duration, Local, TimeZone};
-use restate_meta_rest_model::services::ServiceType;
+use restate_admin_rest_model::services::ServiceType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::identifiers::InvocationId;
 

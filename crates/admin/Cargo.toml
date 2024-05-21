@@ -12,10 +12,12 @@ default = []
 options_schema = ["restate-service-client/options_schema"]
 
 [dependencies]
+restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-meta-rest-model = { workspace = true, features = ["schema"] }
+restate-fs-util = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-node-services = { workspace = true, features = ["servers", "clients"] }
 restate-schema = { workspace = true }
 restate-schema-api = { workspace = true, features = ["deployment", "serde", "serde_schema"] }
