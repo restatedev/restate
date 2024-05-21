@@ -9,48 +9,77 @@
 // by the Apache License, Version 2.0.
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::get_invocation;
+use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, MetaClientInterface};
 use crate::ui::console::{confirm_or_exit, Styled};
-use crate::ui::invocations::render_invocation_compact;
+use crate::ui::invocations::render_simple_invocation_list;
 use crate::ui::stylesheet::Style;
 use crate::{c_println, c_success};
 
 use anyhow::{bail, Result};
 use cling::prelude::*;
+use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_cancel")]
 #[clap(visible_alias = "rm")]
 pub struct Cancel {
-    /// The ID of the parent invocation to cancel
-    invocation_id: String,
+    /// Either an invocation id, or a target string exact match or prefix, e.g.:
+    /// * `invocationId`
+    /// * `serviceName`
+    /// * `serviceName/handler`
+    /// * `virtualObjectName`
+    /// * `virtualObjectName/key`
+    /// * `virtualObjectName/key/handler`
+    /// * `workflowName`
+    /// * `workflowName/key`
+    /// * `workflowName/key/handler`
+    query: String,
     /// Ungracefully kill the invocation and its children
     #[clap(long)]
     kill: bool,
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
-    let client = crate::clients::MetasClient::new(&env)?;
+    let client = clients::MetasClient::new(&env)?;
     let sql_client = clients::DataFusionHttpClient::new(&env)?;
-    let Some(inv) = get_invocation(&sql_client, &opts.invocation_id).await? else {
-        bail!("Invocation {} not found!", opts.invocation_id);
+
+    let q = opts.query.trim();
+    let filter = if let Ok(id) = q.parse::<InvocationId>() {
+        format!("id = '{}'", id)
+    } else {
+        match q.find('/').unwrap_or_default() {
+            0 => format!("target LIKE '{}/%'", q),
+            // If there's one slash, let's add the wildcard depending on the service type,
+            // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
+            1 => format!("(target = '{}' AND target_service_ty = 'service') OR (target LIKE '{}/%' AND target_service_ty != 'service'))", q, q),
+            // Can only be exact match here
+            _ => format!("target LIKE '{}'", q),
+        }
     };
 
-    render_invocation_compact(&env, &inv);
+    let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
+    if invocations.is_empty() {
+        bail!("No invocations found for query {}!", opts.query);
+    };
+
+    render_simple_invocation_list(&env, &invocations);
+
     // Get the invocation and confirm
     let prompt = format!(
-        "Are you sure you want to {} this invocation",
+        "Are you sure you want to {} these invocations?",
         if opts.kill {
             Styled(Style::Danger, "kill")
         } else {
             Styled(Style::Warn, "cancel")
-        }
+        },
     );
     confirm_or_exit(&env, &prompt)?;
 
-    let result = client.cancel_invocation(&inv.id, opts.kill).await?;
-    let _ = result.success_or_error()?;
+    for inv in invocations {
+        let result = client.cancel_invocation(&inv.id, opts.kill).await?;
+        let _ = result.success_or_error()?;
+    }
 
     c_println!();
     c_success!("Request was sent successfully");

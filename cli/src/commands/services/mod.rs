@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod cancel;
 mod describe;
 mod list;
 mod status;
@@ -24,6 +23,4 @@ pub enum Services {
     Describe(describe::Describe),
     /// Prints activity information about a given service (and method)
     Status(status::Status),
-    /// Cancel all the invocations to the given service/service instance
-    Cancel(cancel::Cancel),
 }

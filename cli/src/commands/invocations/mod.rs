@@ -20,6 +20,6 @@ pub enum Invocations {
     List(list::List),
     /// Prints detailed information about a given invocation
     Describe(describe::Describe),
-    /// Cancel a given invocation and its children
+    /// Cancel a given invocation, or a set of invocations, and its children
     Cancel(cancel::Cancel),
 }
