@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use crate::loglet::LogletOffset;
-use restate_types::logs::{Lsn, Payload, SequenceNumber};
+use restate_types::logs::{Lsn, SequenceNumber};
 use serde::{Deserialize, Serialize};
 
 pub(crate) trait LsnExt: SequenceNumber {
@@ -50,71 +50,6 @@ pub enum SealReason {
     /// The reader/writer need to figure out where to read/write next.
     Resharding,
     Other(String),
-}
-
-/// A single entry in the log.
-#[derive(Debug, Clone)]
-pub struct LogRecord<S: SequenceNumber = Lsn> {
-    pub offset: S,
-    pub record: Record<S>,
-}
-
-impl<S: SequenceNumber> LogRecord<S> {
-    pub(crate) fn new_data(offset: S, payload: Payload) -> Self {
-        Self {
-            offset,
-            record: Record::Data(payload),
-        }
-    }
-
-    pub(crate) fn new_trim_gap(offset: S, until: S) -> Self {
-        LogRecord {
-            offset,
-            record: Record::TrimGap(TrimGap { until }),
-        }
-    }
-
-    pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogRecord<Lsn> {
-        let record = match self.record {
-            Record::TrimGap(_) => todo!(),
-            Record::Data(payload) => Record::Data(payload),
-            Record::Seal(reason) => Record::Seal(reason),
-        };
-
-        LogRecord {
-            offset: base_lsn.offset_by(self.offset),
-            record,
-        }
-    }
-}
-
-#[derive(Debug, Clone, strum_macros::EnumIs)]
-pub enum Record<S: SequenceNumber = Lsn> {
-    TrimGap(TrimGap<S>),
-    Data(Payload),
-    Seal(SealReason),
-}
-
-impl<S: SequenceNumber> Record<S> {
-    pub fn payload(&self) -> Option<&Payload> {
-        match self {
-            Record::Data(payload) => Some(payload),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn into_payload_unchecked(self) -> Payload {
-        match self {
-            Record::Data(payload) => payload,
-            _ => panic!("not a data record"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TrimGap<S: SequenceNumber> {
-    pub until: S,
 }
 
 #[derive(Debug, Clone, Default)]
