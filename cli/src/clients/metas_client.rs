@@ -109,6 +109,10 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl MetasClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
+        Self::new_with_timeout(env, None)
+    }
+
+    pub fn new_with_timeout(env: &CliEnv, timeout: Option<Duration>) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
@@ -127,7 +131,9 @@ impl MetasClient {
             inner: raw_client,
             base_url,
             bearer_token,
-            request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+            request_timeout: timeout
+                .or(env.request_timeout)
+                .unwrap_or(DEFAULT_REQUEST_TIMEOUT),
         })
     }
 

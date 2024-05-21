@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{MetaClientInterface, MetasClient, MetasClientError};
@@ -127,7 +128,9 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     });
 
     // Preparing the discovery request
-    let client = crate::clients::MetasClient::new(&env)?;
+    // Discovery happens in a retry loop and can take 66 seconds presuming instant failures
+    let client =
+        crate::clients::MetasClient::new_with_timeout(&env, Some(Duration::from_secs(120)))?;
 
     let mk_request_body = |force, dry_run| match &discover_opts.deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
