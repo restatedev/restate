@@ -48,8 +48,8 @@ pub struct Register {
 
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
-    /// Use `-e name=value` format and repeat -e for each additional header.
-    #[clap(long="extra-header", short, value_parser = parse_header, action = clap::ArgAction::Append)]
+    /// Use `--extra-header name=value` format and repeat --extra-header for each additional header.
+    #[clap(long="extra-header", value_parser = parse_header, action = clap::ArgAction::Append)]
     extra_headers: Option<Vec<HeaderKeyValue>>,
 
     /// The URL or ARN that Restate server needs to fetch service information from.
