@@ -160,6 +160,7 @@ impl Worker {
         )?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
+            task_center(),
             updateable_config.clone(),
             metadata.clone(),
             metadata_store_client,

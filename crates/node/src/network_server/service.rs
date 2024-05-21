@@ -82,11 +82,9 @@ impl NetworkServer {
                 .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
         }
 
-        let cluster_controller_service = if self.admin_deps.is_some() {
-            Some(ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new()))
-        } else {
-            None
-        };
+        let cluster_controller_service = self
+            .admin_deps
+            .map(|admin_deps| ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps)));
 
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
@@ -139,7 +137,7 @@ impl WorkerDependencies {
 }
 
 pub struct AdminDependencies {
-    pub _cluster_controller_handle: ClusterControllerHandle,
+    pub cluster_controller_handle: ClusterControllerHandle,
     pub metadata_store_client: MetadataStoreClient,
 }
 
@@ -149,7 +147,7 @@ impl AdminDependencies {
         metadata_store_client: MetadataStoreClient,
     ) -> Self {
         AdminDependencies {
-            _cluster_controller_handle: cluster_controller_handle,
+            cluster_controller_handle,
             metadata_store_client,
         }
     }

@@ -13,6 +13,7 @@ use serde_with::serde_as;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use super::QueryEngineOptions;
@@ -39,6 +40,13 @@ pub struct AdminOptions {
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
     data_dir: std::sync::Arc<tempfile::TempDir>,
+
+    /// # Controller heartbeats
+    ///
+    /// Controls the interval at which cluster controller polls nodes of the cluster.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub heartbeat_interval: humantime::Duration,
 }
 
 impl AdminOptions {
@@ -71,6 +79,7 @@ impl Default for AdminOptions {
             query_engine: Default::default(),
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
+            heartbeat_interval: Duration::from_millis(1500).into(),
         }
     }
 }

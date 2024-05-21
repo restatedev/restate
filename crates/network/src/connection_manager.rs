@@ -448,12 +448,13 @@ where
         "task_id",
         tracing::field::display(current_task_id().unwrap()),
     );
+    let mut cancellation = std::pin::pin!(cancellation_watcher());
     // Receive loop
     loop {
         // read a message from the stream
         let msg = tokio::select! {
             biased;
-            _ = cancellation_watcher() => {
+            _ = &mut cancellation => {
                 connection.send_control_frame(ConnectionControl::shutdown());
                 break;
             },

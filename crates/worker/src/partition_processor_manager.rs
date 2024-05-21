@@ -13,21 +13,27 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use anyhow::Context;
+use futures::stream::BoxStream;
+use futures::stream::StreamExt;
+use restate_core::network::NetworkSender;
+use restate_core::TaskCenter;
 use restate_network::rpc_router::{RpcError, RpcRouter};
+use restate_node_protocol::partition_processor_manager::GetProcessorsState;
+use restate_node_protocol::partition_processor_manager::ProcessorsStateResponse;
+use restate_node_protocol::RpcMessage;
+use restate_types::processors::{PartitionProcessorStatus, RunMode};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
-use restate_core::worker_api::{
-    PartitionProcessorStatus, ProcessorsManagerCommand, ProcessorsManagerHandle,
-};
-use restate_core::{cancellation_watcher, task_center, Metadata, ShutdownError, TaskId, TaskKind};
+use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_network::Networking;
 use restate_node_protocol::cluster_controller::AttachRequest;
-use restate_node_protocol::cluster_controller::{Action, AttachResponse, RunMode};
+use restate_node_protocol::cluster_controller::{Action, AttachResponse};
 use restate_node_protocol::MessageEnvelope;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_types::arc_util::ArcSwapExt;
@@ -46,6 +52,7 @@ use crate::partition::PartitionProcessorControlCommand;
 use crate::PartitionProcessor;
 
 pub struct PartitionProcessorManager {
+    task_center: TaskCenter,
     updateable_config: UpdateableConfiguration,
     running_partition_processors: BTreeMap<PartitionId, State>,
 
@@ -53,6 +60,7 @@ pub struct PartitionProcessorManager {
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
     attach_router: RpcRouter<AttachRequest>,
+    incoming_get_state: BoxStream<'static, MessageEnvelope<GetProcessorsState>>,
     networking: Networking,
     bifrost: Bifrost,
     invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
@@ -73,13 +81,14 @@ struct State {
     _created_at: MillisSinceEpoch,
     _key_range: RangeInclusive<PartitionKey>,
     _control_tx: mpsc::Sender<PartitionProcessorControlCommand>,
-    _watch_rx: watch::Receiver<PartitionProcessorStatus>,
+    watch_rx: watch::Receiver<PartitionProcessorStatus>,
     _task_id: TaskId,
 }
 
 impl PartitionProcessorManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        task_center: TaskCenter,
         updateable_config: UpdateableConfiguration,
         metadata: Metadata,
         metadata_store_client: MetadataStoreClient,
@@ -90,14 +99,17 @@ impl PartitionProcessorManager {
         invoker_handle: InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Self {
         let attach_router = RpcRouter::new(networking.clone(), router_builder);
+        let incoming_get_state = router_builder.subscribe_to_stream(2);
 
         let (tx, rx) = mpsc::channel(updateable_config.load().worker.internal_queue_length());
         Self {
+            task_center,
             updateable_config,
             running_partition_processors: BTreeMap::default(),
             metadata,
             metadata_store_client,
             partition_store_manager,
+            incoming_get_state,
             networking,
             bifrost,
             invoker_handle,
@@ -174,11 +186,40 @@ impl PartitionProcessorManager {
                     self.on_command(command);
                     debug!("PartitionProcessorManager shutting down");
                 }
+                Some(get_state) = self.incoming_get_state.next() => {
+                    self.on_get_state(get_state);
+                }
               _ = &mut shutdown => {
                     return Ok(());
                 }
             }
         }
+    }
+
+    fn on_get_state(&self, get_state_msg: MessageEnvelope<GetProcessorsState>) {
+        let (from, msg) = get_state_msg.split();
+        // For all running partitions, collect state and send it back.
+        let state: BTreeMap<PartitionId, PartitionProcessorStatus> = self
+            .running_partition_processors
+            .iter()
+            .map(|(partition_id, state)| {
+                let status = state.watch_rx.borrow().clone();
+                (*partition_id, status)
+            })
+            .collect();
+
+        let response = ProcessorsStateResponse {
+            request_id: msg.correlation_id(),
+            state,
+        };
+        let networking = self.networking.clone();
+        // ignore shutdown errors.
+        let _ = self.task_center.spawn(
+            restate_core::TaskKind::Disposable,
+            "get-processors-state-response",
+            None,
+            async move { Ok(networking.send(from.into(), &response).await?) },
+        );
     }
 
     fn on_command(&mut self, command: ProcessorsManagerCommand) {
@@ -220,7 +261,7 @@ impl PartitionProcessorManager {
                             _key_range: action.key_range_inclusive.clone().into(),
                             _task_id,
                             _control_tx: control_tx,
-                            _watch_rx: watch_rx,
+                            watch_rx,
                         };
                         self.running_partition_processors
                             .insert(action.partition_id, state);
@@ -261,7 +302,7 @@ impl PartitionProcessorManager {
         let metadata_store_client = self.metadata_store_client.clone();
         let node_id = self.metadata.my_node_id();
 
-        task_center().spawn_child(
+        self.task_center.spawn_child(
             TaskKind::PartitionProcessor,
             "partition-processor",
             Some(processor.partition_id),
