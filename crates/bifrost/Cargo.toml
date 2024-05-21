@@ -24,6 +24,7 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
+futures = { workspace = true }
 humantime = { workspace = true }
 metrics = { workspace = true }
 once_cell = { workspace = true }
@@ -32,7 +33,7 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-smallvec = { version = "1.13.2", features = ["serde"] }
+smallvec = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
@@ -48,7 +49,6 @@ restate-metadata-store = { workspace = true }
 restate-test-util = { workspace = true }
 
 criterion = { workspace = true, features = ["async_tokio"] }
-futures = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

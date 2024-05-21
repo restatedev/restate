@@ -19,6 +19,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+const BATCH_READY_UP_TO: usize = 10;
+
 pub(crate) enum ActionEffectStream {
     Follower,
     Leader {
@@ -51,7 +53,7 @@ pub(crate) enum ActionEffect {
 }
 
 impl Stream for ActionEffectStream {
-    type Item = ActionEffect;
+    type Item = Vec<ActionEffect>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.deref_mut() {
@@ -64,8 +66,9 @@ impl Stream for ActionEffectStream {
                 let invoker_stream = invoker_stream.map(ActionEffect::Invoker);
                 let shuffle_stream = shuffle_stream.map(ActionEffect::Shuffle);
 
-                let mut all_streams =
+                let all_streams =
                     futures::stream_select!(invoker_stream, shuffle_stream, action_effects_stream);
+                let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
                 Pin::new(&mut all_streams).poll_next(cx)
             }
         }

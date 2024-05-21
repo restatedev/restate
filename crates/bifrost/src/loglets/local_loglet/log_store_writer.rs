@@ -11,30 +11,36 @@
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
+use metrics::histogram;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
-use restate_types::arc_util::Updateable;
-use restate_types::config::LocalLogletOptions;
 use rocksdb::{BoundColumnFamily, WriteBatch};
+use smallvec::SmallVec;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, trace, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_types::arc_util::Updateable;
+use restate_types::config::LocalLogletOptions;
+use restate_types::logs::SequenceNumber;
 
 use crate::loglet::LogletOffset;
-use crate::Error;
+use crate::{Error, SMALL_BATCH_THRESHOLD_COUNT};
 
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
 use super::log_store::{DATA_CF, METADATA_CF};
+use super::metric_definitions::{
+    BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
+};
 
 type Ack = oneshot::Sender<Result<(), Error>>;
 type AckRecv = oneshot::Receiver<Result<(), Error>>;
 
 pub struct LogStoreWriteCommand {
     log_id: u64,
-    data_update: Option<DataUpdate>,
+    data_updates: SmallVec<[DataUpdate; SMALL_BATCH_THRESHOLD_COUNT]>,
     log_state_updates: Option<LogStateUpdates>,
     ack: Option<Ack>,
 }
@@ -125,7 +131,7 @@ impl LogStoreWriter {
                 .expect("metadata cf exists");
 
             for command in commands {
-                if let Some(data_command) = command.data_update {
+                for data_command in command.data_updates {
                     match data_command {
                         DataUpdate::PutRecord { offset, data } => Self::put_record(
                             &data_cf,
@@ -153,6 +159,8 @@ impl LogStoreWriter {
             }
         }
 
+        histogram!(BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES).record(write_batch.size_in_bytes() as f64);
+        histogram!(BIFROST_LOCAL_WRITE_BATCH_COUNT).record(write_batch.len() as f64);
         self.commit(opts, write_batch).await;
     }
 
@@ -241,20 +249,34 @@ impl RocksDbLogWriterHandle {
         log_id: u64,
         offset: LogletOffset,
         data: Bytes,
-        release_immediately: bool,
+    ) -> Result<AckRecv, ShutdownError> {
+        self.enqueue_put_records(log_id, offset, &[data]).await
+    }
+
+    pub async fn enqueue_put_records(
+        &self,
+        log_id: u64,
+        mut start_offset: LogletOffset,
+        records: &[Bytes],
     ) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
-        let data_update = Some(DataUpdate::PutRecord { offset, data });
-        let log_state_updates = if release_immediately {
-            Some(LogStateUpdates::default().update_release_pointer(offset))
-        } else {
-            None
-        };
+        let mut data_updates = SmallVec::with_capacity(records.len());
+        for record in records {
+            data_updates.push(DataUpdate::PutRecord {
+                offset: start_offset,
+                data: record.clone(),
+            });
+            start_offset = start_offset.next();
+        }
+
+        let data_updates = data_updates;
+        let log_state_updates =
+            Some(LogStateUpdates::default().update_release_pointer(start_offset.prev()));
         if let Err(e) = self
             .sender
             .send(LogStoreWriteCommand {
                 log_id,
-                data_update,
+                data_updates,
                 log_state_updates,
                 ack: Some(ack),
             })

@@ -17,12 +17,31 @@ pub(crate) const BIFROST_LOCAL_APPEND: &str = "restate.bifrost.localloglet.appen
 pub(crate) const BIFROST_LOCAL_APPEND_DURATION: &str =
     "restate.bifrost.localloglet.append_duration.seconds";
 
+pub(crate) const BIFROST_LOCAL_WRITE_BATCH_COUNT: &str =
+    "restate.bifrost.localloglet.write_batch_count";
+
+pub(crate) const BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES: &str =
+    "restate.bifrost.localloglet.write_batch_size_bytes";
+
 pub(crate) fn describe_metrics() {
     describe_counter!(
         BIFROST_LOCAL_APPEND,
         Unit::Count,
         "Number of append requests to bifrost's local loglet"
     );
+
+    describe_histogram!(
+        BIFROST_LOCAL_WRITE_BATCH_COUNT,
+        Unit::Count,
+        "Histogram of the number of records in each append request to local loglet"
+    );
+
+    describe_histogram!(
+        BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
+        Unit::Bytes,
+        "Histogram of size in bytes of local loglet write batches"
+    );
+
     describe_histogram!(
         BIFROST_LOCAL_APPEND_DURATION,
         Unit::Seconds,

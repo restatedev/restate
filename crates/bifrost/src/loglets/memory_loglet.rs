@@ -219,6 +219,23 @@ impl LogletBase for MemoryLoglet {
         Ok(offset)
     }
 
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, Error> {
+        let mut log = self.log.lock().unwrap();
+        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
+        let first_offset = offset;
+        let num_payloads = payloads.len();
+        for payload in payloads {
+            debug!(
+                "Appending record to in-memory loglet {:?} at offset {}",
+                self.params, offset,
+            );
+            log.push(payload.clone());
+        }
+        // mark as committed immediately.
+        self.advance_commit_offset(first_offset + num_payloads);
+        Ok(first_offset)
+    }
+
     async fn find_tail(&self) -> Result<Option<LogletOffset>, Error> {
         let log = self.log.lock().unwrap();
         if log.is_empty() {
