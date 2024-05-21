@@ -240,14 +240,14 @@ where
                         histogram!(PP_APPLY_ACTIONS_DURATION).record(actions_start.elapsed());
                     }
                 },
-                action_effect = action_effect_stream.next() => {
+                action_effects = action_effect_stream.next() => {
                     counter!(PARTITION_ACTUATOR_HANDLED).increment(1);
-                    let action_effect = action_effect.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
-                    state.handle_action_effect(action_effect).await?;
+                    let action_effects = action_effects.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
+                    state.handle_action_effect(action_effects).await?;
                 },
                 timer = state.run_timer() => {
                     counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
-                    state.handle_action_effect(ActionEffect::Timer(timer)).await?;
+                    state.handle_action_effect([ActionEffect::Timer(timer)]).await?;
                 },
             }
         }

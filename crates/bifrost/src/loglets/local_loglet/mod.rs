@@ -159,18 +159,47 @@ impl LogletBase for LocalLoglet {
         let (receiver, offset) = {
             let mut next_offset_guard = self.next_write_offset.lock().await;
             // lock acquired
-            let offset = next_offset_guard.next();
+            // // asoli: probably next should happen after.
+            let offset = *next_offset_guard;
             let receiver = self
                 .log_writer
-                .enqueue_put_record(
-                    self.log_id,
-                    offset,
-                    payload,
-                    true, /* release_immediately */
-                )
+                .enqueue_put_record(self.log_id, offset, payload)
                 .await?;
-            *next_offset_guard = offset;
+            *next_offset_guard = offset.next();
             (receiver, offset)
+            // lock dropped
+        };
+
+        let _ = receiver.await.unwrap_or_else(|_| {
+            warn!("Unsure if the local loglet record was written, the ack channel was dropped");
+            Err(Error::Shutdown(ShutdownError))
+        })?;
+
+        self.last_committed_offset
+            .fetch_max(offset.into(), Ordering::Relaxed);
+        self.notify_readers();
+        histogram!(BIFROST_LOCAL_APPEND_DURATION).record(start_time.elapsed());
+        Ok(offset)
+    }
+
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, Error> {
+        let num_payloads = payloads.len();
+        counter!(BIFROST_LOCAL_APPEND).increment(num_payloads as u64);
+        let start_time = std::time::Instant::now();
+        // We hold the lock to ensure that offsets are enqueued in the order of
+        // their offsets in the logstore writer. This means that acknowledgements
+        // that an offset N from the writer imply that all previous offsets have
+        // been durably committed, therefore, such offsets can be released to readers.
+        let (receiver, offset) = {
+            let mut next_offset_guard = self.next_write_offset.lock().await;
+            let offset = *next_offset_guard;
+            // lock acquired
+            let receiver = self
+                .log_writer
+                .enqueue_put_records(self.log_id, *next_offset_guard, payloads)
+                .await?;
+            *next_offset_guard = offset + num_payloads;
+            (receiver, next_offset_guard.prev())
             // lock dropped
         };
 

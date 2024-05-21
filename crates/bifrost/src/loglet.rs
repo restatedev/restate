@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::Add;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -43,6 +44,13 @@ pub fn create_provider(kind: ProviderKind) -> Result<Arc<dyn LogletProvider>, Pr
     derive_more::Display,
 )]
 pub struct LogletOffset(pub(crate) u64);
+
+impl Add<usize> for LogletOffset {
+    type Output = Self;
+    fn add(self, rhs: usize) -> Self {
+        Self(self.0 + rhs as u64)
+    }
+}
 
 impl SequenceNumber for LogletOffset {
     const MAX: Self = LogletOffset(u64::MAX);
@@ -107,6 +115,9 @@ pub trait LogletBase: Send + Sync {
     /// Append a record to the loglet.
     async fn append(&self, data: Bytes) -> Result<Self::Offset, Error>;
 
+    //async fn append_batch(&self, payloads: Vec<Bytes>) -> Result<Self::Offset, Error>;
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Self::Offset, Error>;
+
     /// Find the tail of the loglet. If the loglet is empty or have been trimmed, the loglet should
     /// return `None`.
     async fn find_tail(&self) -> Result<Option<Self::Offset>, Error>;
@@ -135,6 +146,12 @@ impl LogletBase for LogletWrapper {
 
     async fn append(&self, data: Bytes) -> Result<Lsn, Error> {
         let offset = self.loglet.append(data).await?;
+        // Return the LSN given the loglet offset.
+        Ok(self.base_lsn.offset_by(offset))
+    }
+
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, Error> {
+        let offset = self.loglet.append_batch(payloads).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
