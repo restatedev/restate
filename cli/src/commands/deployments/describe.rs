@@ -62,7 +62,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .into_body()
         .await?;
 
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client);
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment.id).await?;
     let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
 

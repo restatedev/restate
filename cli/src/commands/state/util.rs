@@ -48,7 +48,7 @@ pub(crate) async fn get_current_state(
     //
     // 1. get the key-value pairs
     //
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client);
     let sql = format!(
         "select key, value from state where service_name = '{}' and service_key = '{}' ;",
         service, key

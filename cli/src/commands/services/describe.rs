@@ -115,7 +115,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         return Ok(());
     }
 
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client);
     // We have older deployments for this service, let's grab
     let mut table = Table::new_styled(&env.ui_config);
     let headers = vec![

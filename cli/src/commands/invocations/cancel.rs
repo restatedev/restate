@@ -42,7 +42,7 @@ pub struct Cancel {
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
     let client = clients::AdminClient::new(&env)?;
-    let sql_client = clients::DataFusionHttpClient::new(&env)?;
+    let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
     let q = opts.query.trim();
     let filter = if let Ok(id) = q.parse::<InvocationId>() {

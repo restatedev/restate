@@ -12,8 +12,8 @@
 
 use super::errors::ApiError;
 
-use crate::build_info;
 use crate::cli_env::CliEnv;
+use crate::clients::AdminClient;
 use arrow::array::{AsArray, StructArray};
 use arrow::datatypes::{ArrowPrimitiveType, Int64Type, SchemaRef};
 use arrow::error::ArrowError;
@@ -23,15 +23,13 @@ use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserial
 use arrow_convert::field::ArrowField;
 use bytes::Buf;
 use serde::Serialize;
-use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
-use url::Url;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum Error {
-    Api(#[from] ApiError),
+    Api(#[from] Box<ApiError>),
     #[error("(Protocol error) {0}")]
     Serialization(#[from] serde_json::Error),
     Network(#[from] reqwest::Error),
@@ -44,57 +42,33 @@ pub enum Error {
 /// A handy client for the datafusion HTTP service.
 #[derive(Clone)]
 pub struct DataFusionHttpClient {
-    pub(crate) inner: reqwest::Client,
-    pub(crate) base_url: Url,
-    pub(crate) bearer_token: Option<String>,
-    pub(crate) request_timeout: Option<Duration>,
+    pub(crate) inner: AdminClient,
+}
+
+impl From<AdminClient> for DataFusionHttpClient {
+    fn from(value: AdminClient) -> Self {
+        DataFusionHttpClient { inner: value }
+    }
 }
 
 impl DataFusionHttpClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
-        let raw_client = reqwest::Client::builder()
-            .user_agent(format!(
-                "{}/{} {}-{}",
-                env!("CARGO_PKG_NAME"),
-                build_info::RESTATE_CLI_VERSION,
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-            ))
-            .connect_timeout(env.connect_timeout)
-            .build()?;
+        let inner = AdminClient::new(env)?;
 
-        let base_url = env.admin_base_url()?.clone();
-        let bearer_token = env.bearer_token()?.map(str::to_string);
-
-        Ok(Self {
-            inner: raw_client,
-            base_url,
-            bearer_token,
-            request_timeout: env.request_timeout,
-        })
+        Ok(Self { inner })
     }
 
     /// Prepare a request builder for a DataFusion request.
-    fn prepare(&self, path: Url) -> reqwest::RequestBuilder {
-        let request_builder = self.inner.request(reqwest::Method::POST, path);
-
-        let request_builder = match self.request_timeout {
-            Some(timeout) => request_builder.timeout(timeout),
-            None => request_builder,
-        };
-
-        match self.bearer_token.as_deref() {
-            Some(token) => request_builder.bearer_auth(token),
-            None => request_builder,
-        }
+    fn prepare(&self) -> Result<reqwest::RequestBuilder, Error> {
+        Ok(self
+            .inner
+            .prepare(reqwest::Method::POST, self.inner.base_url.join("/query")?))
     }
 
     pub async fn run_query(&self, query: String) -> Result<SqlResponse, Error> {
-        let url = self.base_url.join("/query")?;
-
         debug!("Sending request sql query '{}'", query);
         let resp = self
-            .prepare(url)
+            .prepare()?
             .json(&SqlQueryRequest { query })
             .send()
             .await?;
@@ -106,11 +80,11 @@ impl DataFusionHttpClient {
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(ApiError {
+            return Err(Error::Api(Box::new(ApiError {
                 http_status_code,
                 url,
                 body: serde_json::from_str(&body)?,
-            }));
+            })));
         }
 
         // We read the entire payload first in-memory to simplify the logic, however,

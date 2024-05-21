@@ -46,7 +46,7 @@ pub struct Remove {
 pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
     // First get information about this deployment and inspect if it's drained or not.
     let client = AdminClient::new(&env)?;
-    let sql_client = crate::clients::DataFusionHttpClient::new(&env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     let deployment = client
         .get_deployment(&opts.deployment_id)

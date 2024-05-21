@@ -49,7 +49,7 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::AdminClient::new(env)?;
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
     // To know the latest version of every service.
     let services = client.get_services().await?.into_body().await?.services;
 

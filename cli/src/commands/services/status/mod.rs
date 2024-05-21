@@ -51,13 +51,13 @@ pub async fn run_status(State(env): State<CliEnv>, opts: &Status) -> Result<()> 
 }
 
 async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
-    let metas_client = AdminClient::new(env)?;
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let client = AdminClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     if let Some(svc) = &opts.service {
-        detailed_status::run_detailed_status(env, svc, opts, metas_client, sql_client).await
+        detailed_status::run_detailed_status(env, svc, opts, client, sql_client).await
     } else {
-        agg_status::run_aggregated_status(env, opts, metas_client, sql_client).await
+        agg_status::run_aggregated_status(env, opts, client, sql_client).await
     }
 }
 

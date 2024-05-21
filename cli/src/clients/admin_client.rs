@@ -132,7 +132,7 @@ impl AdminClient {
     }
 
     /// Prepare a request builder for the given method and path.
-    fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
+    pub(crate) fn prepare(&self, method: reqwest::Method, path: Url) -> reqwest::RequestBuilder {
         let request_builder = self
             .inner
             .request(method, path)
