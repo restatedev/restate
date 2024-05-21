@@ -422,7 +422,7 @@ where
 
     pub async fn handle_action_effect(
         &mut self,
-        action_effect: ActionEffect,
+        action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
         match self {
             LeadershipState::Follower(_) => {
@@ -431,7 +431,7 @@ where
             LeadershipState::Leader { leader_state, .. } => {
                 leader_state
                     .action_effect_handler
-                    .handle(action_effect)
+                    .handle(action_effects)
                     .await?
             }
         };
