@@ -137,8 +137,9 @@ impl QueryContext {
         crate::idempotency::register_self(
             &ctx,
             partition_selector.clone(),
-            partition_store_manager,
+            partition_store_manager.clone(),
         )?;
+        crate::promise::register_self(&ctx, partition_selector.clone(), partition_store_manager)?;
 
         let ctx = ctx
             .datafusion_context

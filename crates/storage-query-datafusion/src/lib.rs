@@ -19,6 +19,7 @@ mod journal;
 mod keyed_service_status;
 mod partition_store_scanner;
 mod physical_optimizer;
+mod promise;
 mod service;
 mod state;
 mod table_macro;
