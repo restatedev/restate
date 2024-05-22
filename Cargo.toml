@@ -131,6 +131,7 @@ static_assertions = { version = "1.1.0" }
 strum = { version = "0.26.1" }
 strum_macros = { version = "0.26.1" }
 sync_wrapper = "0.1.2"
+smallvec = { version = "1.13.2", features = ["serde"] }
 tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
