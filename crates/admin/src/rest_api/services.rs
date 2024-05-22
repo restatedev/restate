@@ -96,12 +96,12 @@ pub async fn modify_service<V>(
     }
     if let Some(new_idempotency_retention) = idempotency_retention {
         modify_request.push(ModifyServiceChange::IdempotencyRetention(
-            new_idempotency_retention.into(),
+            new_idempotency_retention,
         ));
     }
     if let Some(new_workflow_completion_retention) = workflow_completion_retention {
         modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
-            new_workflow_completion_retention.into(),
+            new_workflow_completion_retention,
         ));
     }
 

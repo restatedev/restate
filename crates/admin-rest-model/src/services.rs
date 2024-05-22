@@ -11,6 +11,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 
 // Export schema types to be used by other crates without exposing the fact
 // that we are using proxying to restate-schema-api or restate-types
@@ -38,19 +39,25 @@ pub struct ModifyServiceRequest {
     ///
     /// Modify the retention of idempotent requests for this service.
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
-    pub idempotency_retention: Option<humantime::Duration>,
+    pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
     ///
     /// Modify the retention of the workflow completion. This can be modified only for workflow services!
     ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde(default, with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format or the ISO8601.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
-    pub workflow_completion_retention: Option<humantime::Duration>,
+    pub workflow_completion_retention: Option<Duration>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

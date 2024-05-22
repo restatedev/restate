@@ -27,7 +27,9 @@ use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
     WorkflowHandlerType,
 };
-use serde::Serialize;
+use serde::de::IntoDeserializer;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, trace, warn, Instrument};
 
@@ -317,6 +319,16 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
         .collect()
 }
 
+#[serde_as]
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct DurationQueryParam(
+    #[serde_as(
+        as = "serde_with::PickFirst<(restate_serde_util::DurationString, serde_with::DurationMilliSeconds)>"
+    )]
+    Duration,
+);
+
 fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     if query.is_none() {
         return Ok(None);
@@ -325,9 +337,11 @@ fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     for (k, v) in url::form_urlencoded::parse(query.unwrap().as_bytes()) {
         if k.eq_ignore_ascii_case(DELAY_QUERY_PARAM) {
             return Ok(Some(
-                iso8601::duration(v.as_ref())
-                    .map_err(HandlerError::BadDelayDuration)?
-                    .into(),
+                DurationQueryParam::deserialize(v.as_ref().into_deserializer())
+                    .map_err(|e: serde::de::value::Error| {
+                        HandlerError::BadDelayDuration(e.to_string())
+                    })?
+                    .0,
             ));
         }
         if k.eq_ignore_ascii_case(DELAYSEC_QUERY_PARAM) {
