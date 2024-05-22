@@ -58,13 +58,8 @@ impl AdminRole {
     ) -> Result<Self, AdminRoleBuildError> {
         let config = updateable_config.pinned();
 
-        // Total duration roughly 66 seconds
-        let retry_policy = RetryPolicy::exponential(
-            Duration::from_millis(100),
-            2.0,
-            Some(10),
-            Some(Duration::from_secs(20)),
-        );
+        // Total duration roughly 1s
+        let retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(4), None);
         let client =
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
         let service_discovery = ServiceDiscovery::new(retry_policy, client);
