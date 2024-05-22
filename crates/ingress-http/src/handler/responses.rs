@@ -20,6 +20,7 @@ use restate_types::invocation::InvocationTarget;
 use tracing::{info, trace};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
+/// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
