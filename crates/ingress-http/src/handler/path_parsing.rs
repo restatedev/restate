@@ -29,10 +29,10 @@ impl WorkflowRequestType {
             .next()
             .ok_or(HandlerError::BadWorkflowPath)?
             .to_owned();
-        let workflow_key = path_parts
-            .next()
-            .ok_or(HandlerError::BadWorkflowPath)?
-            .to_owned();
+        let workflow_key =
+            urlencoding::decode(path_parts.next().ok_or(HandlerError::BadWorkflowPath)?)
+                .map_err(HandlerError::UrlDecodingError)?
+                .into_owned();
 
         // Resolve or reject
         match path_parts.next().ok_or(HandlerError::BadWorkflowPath)? {
