@@ -6,6 +6,7 @@ members = [
     "server",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
+    "tools/bifrost-benchpress",
 ]
 default-members = [
     "cli",

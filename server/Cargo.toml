@@ -32,7 +32,6 @@ restate-errors = { workspace = true, features = ["include_doc"] }
 restate-fs-util = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
-#restate-partition-store = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
 restate-worker = { workspace = true }

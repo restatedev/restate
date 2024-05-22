@@ -196,21 +196,11 @@ impl Default for InvokerOptions {
 pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
-
-    #[cfg(any(test, feature = "test-util"))]
-    #[serde(skip, default = "super::default_arc_tmp")]
-    data_dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl StorageOptions {
-    #[cfg(not(any(test, feature = "test-util")))]
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("db")
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn data_dir(&self) -> PathBuf {
-        self.data_dir.path().join("db")
     }
 }
 
@@ -221,10 +211,6 @@ impl Default for StorageOptions {
             .build()
             .expect("valid RocksDbOptions");
 
-        StorageOptions {
-            rocksdb,
-            #[cfg(any(test, feature = "test-util"))]
-            data_dir: super::default_arc_tmp(),
-        }
+        StorageOptions { rocksdb }
     }
 }

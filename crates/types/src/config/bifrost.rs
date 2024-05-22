@@ -75,21 +75,11 @@ pub struct LocalLogletOptions {
     ///
     /// Default: True.
     pub batch_wal_flushes: bool,
-
-    #[cfg(any(test, feature = "test-util"))]
-    #[serde(skip, default = "super::default_arc_tmp")]
-    data_dir: std::sync::Arc<tempfile::TempDir>,
 }
 
 impl LocalLogletOptions {
-    #[cfg(not(any(test, feature = "test-util")))]
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("local-loglet")
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn data_dir(&self) -> PathBuf {
-        self.data_dir.path().join("local-loglet")
     }
 }
 
@@ -106,8 +96,6 @@ impl Default for LocalLogletOptions {
             sync_wal_before_ack: true,
             writer_batch_commit_count: 500,
             writer_batch_commit_duration: Duration::ZERO.into(),
-            #[cfg(any(test, feature = "test-util"))]
-            data_dir: super::default_arc_tmp(),
         }
     }
 }
