@@ -225,6 +225,12 @@ impl CommonOptions {
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
     }
+
+    #[cfg(feature = "test-util")]
+    pub fn set_base_dir(&mut self, path: PathBuf) {
+        self.base_dir = Some(path);
+    }
+
     pub fn base_dir(&self) -> PathBuf {
         self.base_dir.clone().unwrap_or_else(|| {
             std::env::current_dir()
