@@ -14,15 +14,18 @@ use bytes::Bytes;
 use http::{header, HeaderName, Response};
 use http_body_util::Full;
 use restate_schema_api::invocation_target::InvocationTargetMetadata;
+use restate_types::identifiers::InvocationId;
 use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::InvocationTarget;
 use tracing::{info, trace};
 
-const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
+pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
+pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
     pub(crate) fn reply_with_invocation_response(
         response: IngressResponseResult,
+        invocation_id: Option<InvocationId>,
         idempotency_expiry_time: Option<&str>,
         invocation_target_metadata_retriever: impl FnOnce(
             &InvocationTarget,
@@ -33,6 +36,11 @@ impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageRea
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         // Prepare response metadata
         let mut response_builder = hyper::Response::builder();
+
+        // Add invocation id if any
+        if let Some(id) = invocation_id {
+            response_builder = response_builder.header(X_RESTATE_ID, id.to_string());
+        }
 
         // Add idempotency expiry time if available
         if let Some(expiry_time) = idempotency_expiry_time {

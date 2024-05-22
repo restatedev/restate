@@ -116,6 +116,7 @@ pub struct IngressDispatcherRequest {
 pub struct IngressInvocationResponse {
     pub idempotency_expiry_time: Option<String>,
     pub result: IngressResponseResult,
+    pub invocation_id: Option<InvocationId>,
 }
 
 pub type IngressDeduplicationId = (String, MessageIndex);
