@@ -16,6 +16,7 @@ use super::Handler;
 use restate_ingress_dispatcher::{IngressInvocationResponse, SubmittedInvocationNotification};
 use std::collections::HashMap;
 
+use crate::handler::responses::X_RESTATE_ID;
 use bytes::Bytes;
 use bytestring::ByteString;
 use googletest::prelude::*;
@@ -83,6 +84,7 @@ async fn call_service() {
         response_tx
             .send(IngressInvocationResponse {
                 idempotency_expiry_time: None,
+                invocation_id: Some(InvocationId::mock_random()),
                 result: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -97,7 +99,8 @@ async fn call_service() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let (_, response_body) = response.into_parts();
+    let (parts, response_body) = response.into_parts();
+    assert!(parts.headers.contains_key(X_RESTATE_ID));
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
     assert_eq!(response_value.greeting, "Igal");
@@ -138,6 +141,7 @@ async fn call_service_with_get() {
             response_tx
                 .send(IngressInvocationResponse {
                     idempotency_expiry_time: None,
+                    invocation_id: Some(InvocationId::mock_random()),
                     result: IngressResponseResult::Success(
                         service_invocation.invocation_target,
                         serde_json::to_vec(&GreetingResponse {
@@ -195,6 +199,7 @@ async fn call_virtual_object() {
         response_tx
             .send(IngressInvocationResponse {
                 idempotency_expiry_time: None,
+                invocation_id: Some(InvocationId::mock_random()),
                 result: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -382,6 +387,7 @@ async fn idempotency_key_parsing() {
         response_tx
             .send(IngressInvocationResponse {
                 idempotency_expiry_time: None,
+                invocation_id: Some(InvocationId::mock_random()),
                 result: IngressResponseResult::Success(
                     service_invocation.invocation_target,
                     serde_json::to_vec(&GreetingResponse {
@@ -493,6 +499,7 @@ async fn attach() {
         response_tx
             .send(IngressInvocationResponse {
                 idempotency_expiry_time: None,
+                invocation_id: Some(invocation_id),
                 result: IngressResponseResult::Success(
                     InvocationTarget::service("greeter.Greeter", "greet"),
                     serde_json::to_vec(&GreetingResponse {
@@ -888,6 +895,7 @@ fn expect_invocation_and_reply_with_empty(req: IngressDispatcherRequest) {
     response_tx
         .send(IngressInvocationResponse {
             idempotency_expiry_time: None,
+            invocation_id: Some(InvocationId::mock_random()),
             result: IngressResponseResult::Success(
                 service_invocation.invocation_target,
                 Bytes::new(),
@@ -901,6 +909,7 @@ fn expect_invocation_and_reply_with_non_empty(req: IngressDispatcherRequest) {
     response_tx
         .send(IngressInvocationResponse {
             idempotency_expiry_time: None,
+            invocation_id: Some(InvocationId::mock_random()),
             result: IngressResponseResult::Success(
                 service_invocation.invocation_target,
                 Bytes::from_static(b"123"),

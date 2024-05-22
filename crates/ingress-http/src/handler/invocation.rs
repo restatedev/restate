@@ -98,6 +98,7 @@ where
 
         Self::reply_with_invocation_response(
             response.result,
+            Some(invocation_id),
             response.idempotency_expiry_time.as_deref(),
             move |invocation_target| {
                 self.schemas
@@ -141,13 +142,18 @@ where
             }
         };
 
-        Self::reply_with_invocation_response(response.response, None, move |invocation_target| {
-            self.schemas
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
-        })
+        Self::reply_with_invocation_response(
+            response.response,
+            Some(invocation_id),
+            None,
+            move |invocation_target| {
+                self.schemas
+                    .resolve_latest_invocation_target(
+                        invocation_target.service_name(),
+                        invocation_target.handler_name(),
+                    )
+                    .ok_or(HandlerError::NotFound)
+            },
+        )
     }
 }

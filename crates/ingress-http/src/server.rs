@@ -249,6 +249,7 @@ mod tests {
     use restate_ingress_dispatcher::mocks::MockDispatcher;
     use restate_ingress_dispatcher::{IngressDispatcherRequest, IngressInvocationResponse};
     use restate_test_util::assert_eq;
+    use restate_types::identifiers::InvocationId;
     use restate_types::ingress::IngressResponseResult;
     use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
@@ -287,6 +288,7 @@ mod tests {
             response_tx
                 .send(IngressInvocationResponse {
                     idempotency_expiry_time: None,
+                    invocation_id: Some(InvocationId::mock_random()),
                     result: IngressResponseResult::Success(
                         service_invocation.invocation_target,
                         serde_json::to_vec(&crate::mocks::GreetingResponse {
