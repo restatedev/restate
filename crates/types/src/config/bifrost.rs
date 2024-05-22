@@ -105,7 +105,7 @@ impl Default for LocalLogletOptions {
             batch_wal_flushes: true,
             sync_wal_before_ack: true,
             writer_batch_commit_count: 500,
-            writer_batch_commit_duration: Duration::from_nanos(5).into(),
+            writer_batch_commit_duration: Duration::ZERO.into(),
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
         }
