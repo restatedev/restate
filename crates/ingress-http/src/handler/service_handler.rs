@@ -324,7 +324,7 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
 #[serde(transparent)]
 struct DurationQueryParam(
     #[serde_as(
-        as = "serde_with::PickFirst<(restate_serde_util::DurationString, serde_with::DurationMilliSeconds)>"
+        as = "serde_with::PickFirst<(restate_serde_util::DurationString, serde_with::DurationMilliSeconds<String>)>"
     )]
     Duration,
 );
@@ -366,4 +366,29 @@ fn parse_idempotency(headers: &HeaderMap) -> Result<Option<ByteString>, HandlerE
     };
 
     Ok(Some(idempotency_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delay() {
+        assert_eq!(
+            parse_delay(Some("delay=PT60S")).unwrap().unwrap(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            parse_delay(Some("delay=60+sec")).unwrap().unwrap(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            parse_delay(Some("delay=60sec")).unwrap().unwrap(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            parse_delay(Some("delay=60000")).unwrap().unwrap(),
+            Duration::from_secs(60),
+        )
+    }
 }
