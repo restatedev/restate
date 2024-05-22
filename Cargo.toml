@@ -32,6 +32,7 @@ restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
+restate-bifrost-benchpress = { path = "crates/bifrost-benchpress" }
 restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }

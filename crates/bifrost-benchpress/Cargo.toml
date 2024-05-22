@@ -1,0 +1,50 @@
+[package]
+name = "bifrost-benchpress"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-bifrost = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
+restate-errors = { workspace = true }
+restate-metadata-store = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-server = { workspace = true }
+restate-test-util = { workspace = true }
+restate-tracing-instrumentation = { workspace = true, features = ["console-subscriber"] }
+restate-types = { workspace = true, features = ["test-util"] }
+
+anyhow = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
+codederror = { workspace = true }
+figment = { version = "0.10.8", features = ["env", "toml"] }
+futures = { workspace = true }
+hdrhistogram = { version = "7.5.4" }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { version = "0.14", default-features = false, features = ["async-runtime"] }
+once_cell = { workspace = true }
+quanta = { version = "0.12.3" }
+rocksdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+smallvec = { workspace = true }
+static_assertions = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tokio-stream = { workspace = true }
+toml = { version = "0.8" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }

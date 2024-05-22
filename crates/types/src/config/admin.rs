@@ -37,10 +37,6 @@ pub struct AdminOptions {
     concurrent_api_requests_limit: Option<NonZeroUsize>,
     pub query_engine: QueryEngineOptions,
 
-    #[cfg(any(test, feature = "test-util"))]
-    #[serde(skip, default = "super::default_arc_tmp")]
-    data_dir: std::sync::Arc<tempfile::TempDir>,
-
     /// # Controller heartbeats
     ///
     /// Controls the interval at which cluster controller polls nodes of the cluster.
@@ -50,14 +46,8 @@ pub struct AdminOptions {
 }
 
 impl AdminOptions {
-    #[cfg(not(any(test, feature = "test-util")))]
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("registry")
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn data_dir(&self) -> PathBuf {
-        self.data_dir.path().join("registry")
     }
 
     pub fn concurrent_api_requests_limit(&self) -> usize {
@@ -77,8 +67,6 @@ impl Default for AdminOptions {
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
-            #[cfg(any(test, feature = "test-util"))]
-            data_dir: super::default_arc_tmp(),
             heartbeat_interval: Duration::from_millis(1500).into(),
         }
     }
