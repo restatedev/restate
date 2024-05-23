@@ -24,10 +24,11 @@ use restate_admin_rest_model::deployments::DeploymentId;
 
 use anyhow::Result;
 use arrow_convert::{ArrowDeserialize, ArrowField};
+use bytes::Bytes;
 use chrono::{DateTime, Duration, Local, TimeZone};
 use restate_admin_rest_model::services::ServiceType;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, ServiceId};
 
 static JOURNAL_QUERY_LIMIT: usize = 100;
 
@@ -990,4 +991,44 @@ pub async fn get_invocation_journal(
     // Sort by seq.
     journal.reverse();
     Ok(journal)
+}
+
+#[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
+pub struct StateKeysQueryResult {
+    service_name: Option<String>,
+    service_key: Option<String>,
+    key: Option<String>,
+    value: Option<Vec<u8>>,
+}
+
+pub(crate) async fn get_state_keys(
+    client: &DataFusionHttpClient,
+    service: &str,
+    key: Option<&str>,
+) -> Result<HashMap<ServiceId, HashMap<String, Bytes>>> {
+    let filter = if let Some(k) = key {
+        format!("service_name = '{}' AND service_key = '{}'", service, k)
+    } else {
+        format!("service_name = '{}'", service)
+    };
+    let sql = format!(
+        "SELECT service_name, service_key, key, value FROM state WHERE {}",
+        filter
+    );
+    let query_result_iter = client
+        .run_query_and_map_results::<StateKeysQueryResult>(sql)
+        .await?;
+
+    #[allow(clippy::mutable_key_type)]
+    let mut user_state: HashMap<ServiceId, HashMap<String, Bytes>> = HashMap::new();
+    for row in query_result_iter {
+        user_state
+            .entry(ServiceId::new(
+                row.service_name.expect("service_name"),
+                row.service_key.expect("service_key"),
+            ))
+            .or_default()
+            .insert(row.key.expect("key"), Bytes::from(row.value.expect("key")));
+    }
+    Ok(user_state)
 }

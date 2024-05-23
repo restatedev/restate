@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod clear;
 mod edit;
 mod get;
 mod util;
@@ -20,4 +21,6 @@ pub enum ServiceState {
     Get(get::Get),
     /// Edit the persisted state stored for a service key
     Edit(edit::Edit),
+    /// Clear of the state of a given service
+    Clear(clear::Clear),
 }
