@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::flexbuffers_storage_encode_decode;
 use crate::identifiers::PartitionId;
-use crate::time::MillisSinceEpoch;
+use crate::time::NanosSinceEpoch;
 
 pub mod metadata;
 
@@ -111,17 +111,13 @@ where
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Header {
-    created_at: MillisSinceEpoch,
-    // additional custom headers can be added here. Those should be somewhat
-    // generic and values must be optional.
-    pub custom_data_1: Option<u64>,
+    pub created_at: NanosSinceEpoch,
 }
 
 impl Default for Header {
     fn default() -> Self {
         Self {
-            created_at: MillisSinceEpoch::now(),
-            custom_data_1: None,
+            created_at: NanosSinceEpoch::now(),
         }
     }
 }
@@ -147,12 +143,6 @@ impl Payload {
             header: Header::default(),
             body: body.into(),
         }
-    }
-
-    /// Sets the custom data 1 field on the record header
-    pub fn with_custom_data_1(mut self, value: u64) -> Self {
-        self.header.custom_data_1 = Some(value);
-        self
     }
 
     pub fn body(&self) -> &Bytes {
