@@ -318,6 +318,19 @@ impl RocksDb {
         self.manager.spawn_unchecked(task);
     }
 
+    #[tracing::instrument(skip_all, fields(db = %self.name))]
+    pub async fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
+        let db = Arc::clone(&self.db);
+        let mut owned_cfs = Vec::with_capacity(cfs.len());
+        owned_cfs.extend_from_slice(cfs);
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::FlushMemtables)
+            .op(move || db.flush_memtables(&owned_cfs, wait))
+            .build()
+            .unwrap();
+        self.manager.async_spawn(task).await?
+    }
+
     pub fn get_histogram_data(&self, histogram: Histogram) -> HistogramData {
         self.db_options.get_histogram_data(histogram)
     }
@@ -375,7 +388,7 @@ impl RocksDb {
 
             debug!(
             db = %self.name,
-            "Numbre of column families to flush on shutdown: {}", cfs_to_flush.len());
+            "Number of column families to flush on shutdown: {}", cfs_to_flush.len());
             if let Err(e) = self.db.flush_memtables(cfs_to_flush.as_slice(), true) {
                 warn!(
                     db = %self.name,

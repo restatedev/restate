@@ -38,7 +38,9 @@ impl<S: SequenceNumber, D> LogRecord<S, D> {
 
     pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogRecord<Lsn, D> {
         let record = match self.record {
-            Record::TrimGap(_) => todo!(),
+            Record::TrimGap(TrimGap { until }) => Record::TrimGap(TrimGap {
+                until: base_lsn.offset_by(until),
+            }),
             Record::Data(payload) => Record::Data(payload),
             Record::Seal(reason) => Record::Seal(reason),
         };

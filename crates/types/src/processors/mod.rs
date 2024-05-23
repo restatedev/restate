@@ -39,6 +39,7 @@ pub struct PartitionProcessorStatus {
     pub last_record_applied_at: Option<MillisSinceEpoch>,
     pub skipped_records: u64,
     pub replay_status: ReplayStatus,
+    pub last_persisted_log_lsn: Option<Lsn>,
 }
 
 impl PartitionProcessorStatus {
@@ -53,6 +54,7 @@ impl PartitionProcessorStatus {
             last_record_applied_at: None,
             skipped_records: 0,
             replay_status: ReplayStatus::Starting,
+            last_persisted_log_lsn: None,
         }
     }
 }

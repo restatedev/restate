@@ -23,6 +23,10 @@ pub(crate) const BIFROST_LOCAL_WRITE_BATCH_COUNT: &str =
 pub(crate) const BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES: &str =
     "restate.bifrost.localloglet.write_batch_size_bytes";
 
+pub(crate) const BIFROST_LOCAL_TRIM: &str = "restate.bifrost.localloglet.trim.total";
+
+pub(crate) const BIFROST_LOCAL_TRIM_LENGTH: &str = "restate.bifrost.localloglet.trim.length";
+
 pub(crate) fn describe_metrics() {
     describe_counter!(
         BIFROST_LOCAL_APPEND,
@@ -46,5 +50,15 @@ pub(crate) fn describe_metrics() {
         BIFROST_LOCAL_APPEND_DURATION,
         Unit::Seconds,
         "Total latency of bifrost's local loglet appends"
+    );
+    describe_counter!(
+        BIFROST_LOCAL_TRIM,
+        Unit::Count,
+        "Number of trim requests to bifrost's local loglet"
+    );
+    describe_histogram!(
+        BIFROST_LOCAL_TRIM_LENGTH,
+        Unit::Count,
+        "Lengths of bifrost's local loglet trims"
     );
 }

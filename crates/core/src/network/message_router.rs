@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::Stream;
 
-use futures::stream::BoxStream;
 use restate_node_protocol::codec::{Targeted, WireDecode};
 use restate_node_protocol::common::ProtocolVersion;
 use restate_node_protocol::common::TargetName;
@@ -113,7 +114,7 @@ impl MessageRouterBuilder {
     pub fn subscribe_to_stream<M>(
         &mut self,
         buffer_size: usize,
-    ) -> BoxStream<'static, MessageEnvelope<M>>
+    ) -> Pin<Box<dyn Stream<Item = MessageEnvelope<M>> + Send + Sync + 'static>>
     where
         M: WireDecode + Targeted + Send + Sync + 'static,
     {

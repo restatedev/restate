@@ -10,13 +10,21 @@
 syntax = "proto3";
 
 import "common.proto";
+import "google/protobuf/empty.proto";
 
 package dev.restate.cluster_ctrl;
 
 service ClusterCtrlSvc {
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
+
+  rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 }
 
 message ClusterStateRequest {}
 
 message ClusterStateResponse {}
+
+message TrimLogRequest {
+  uint64 log_id = 1;
+  uint64 trim_point = 2;
+}

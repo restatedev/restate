@@ -247,8 +247,35 @@ impl LogletBase for MemoryLoglet {
     }
 
     /// Find the head (oldest) record in the loglet.
-    async fn get_trim_point(&self) -> Result<LogletOffset, Error> {
-        Ok(LogletOffset(self.trim_point_offset.load(Ordering::Acquire)))
+    async fn get_trim_point(&self) -> Result<Option<LogletOffset>, Error> {
+        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+
+        if current_trim_point == LogletOffset::INVALID {
+            Ok(None)
+        } else {
+            Ok(Some(current_trim_point))
+        }
+    }
+
+    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), Error> {
+        let actual_trim_point = new_trim_point.min(LogletOffset(
+            self.last_committed_offset.load(Ordering::Relaxed),
+        ));
+
+        let mut log = self.log.lock().unwrap();
+
+        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+
+        if current_trim_point >= actual_trim_point {
+            return Ok(());
+        }
+
+        let trim_point_index = self.saturating_offset_to_index(actual_trim_point);
+        self.trim_point_offset
+            .store(actual_trim_point.0, Ordering::Relaxed);
+        log.drain(0..=trim_point_index);
+
+        Ok(())
     }
 
     async fn read_next_single(
@@ -289,31 +316,30 @@ mod tests {
     async fn test_memory_loglet() -> Result<()> {
         let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
 
-        assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
+        assert_eq!(None, loglet.get_trim_point().await?);
         assert_eq!(None, loglet.find_tail().await?);
 
         // Append 1
         let offset = loglet.append(Bytes::from_static(b"record1")).await?;
         assert_eq!(LogletOffset::OLDEST, offset);
-        assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
+        assert_eq!(None, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset::OLDEST), loglet.find_tail().await?);
 
         // Append 2
         let offset = loglet.append(Bytes::from_static(b"record2")).await?;
         assert_eq!(LogletOffset(2), offset);
-        assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
+        assert_eq!(None, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(2)), loglet.find_tail().await?);
 
         // Append 3
         let offset = loglet.append(Bytes::from_static(b"record3")).await?;
         assert_eq!(LogletOffset(3), offset);
-        assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
+        assert_eq!(None, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(3)), loglet.find_tail().await?);
 
         // read record 1 (reading next after INVALID)
         let_assert!(Some(log_record) = loglet.read_next_single_opt(LogletOffset::INVALID).await?);
         let LogRecord { offset, record } = log_record;
-        assert_eq!(offset, loglet.get_trim_point().await?.next());
         assert_eq!(LogletOffset::OLDEST, offset);
         assert!(record.is_data());
         assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
@@ -364,7 +390,7 @@ mod tests {
         // Append 4
         let offset = loglet.append(Bytes::from_static(b"record4")).await?;
         assert_eq!(LogletOffset(4), offset);
-        assert_eq!(LogletOffset::INVALID, loglet.get_trim_point().await?);
+        assert_eq!(None, loglet.get_trim_point().await?);
         assert_eq!(Some(LogletOffset(4)), loglet.find_tail().await?);
 
         assert!(handle1.await.unwrap().is_ok());

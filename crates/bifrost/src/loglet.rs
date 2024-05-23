@@ -126,7 +126,9 @@ pub trait LogletBase: Send + Sync {
 
     /// The offset of the slot **before** the first readable record (if it exists), or the offset
     /// before the next slot that will be written to.
-    async fn get_trim_point(&self) -> Result<Self::Offset, Error>;
+    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, Error>;
+
+    async fn trim(&self, trim_point: Self::Offset) -> Result<(), Error>;
 
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
     /// defined for the loglet.
@@ -162,9 +164,14 @@ impl LogletBase for LogletWrapper {
         Ok(offset.map(|o| self.base_lsn.offset_by(o)))
     }
 
-    async fn get_trim_point(&self) -> Result<Self::Offset, Error> {
+    async fn get_trim_point(&self) -> Result<Option<Lsn>, Error> {
         let offset = self.loglet.get_trim_point().await?;
-        Ok(self.base_lsn.offset_by(offset))
+        Ok(offset.map(|o| self.base_lsn.offset_by(o)))
+    }
+
+    async fn trim(&self, trim_point: Self::Offset) -> Result<(), Error> {
+        let trim_point = trim_point.into_offset(self.base_lsn);
+        self.loglet.trim(trim_point).await
     }
 
     async fn read_next_single(&self, after: Lsn) -> Result<LogRecord<Lsn, Bytes>, Error> {

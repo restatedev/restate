@@ -88,6 +88,10 @@ impl PartitionStoreManager {
         self.lookup.lock().await.live.get(&partition_id).cloned()
     }
 
+    pub async fn get_all_partition_stores(&self) -> Vec<PartitionStore> {
+        self.lookup.lock().await.live.values().cloned().collect()
+    }
+
     pub async fn open_partition_store(
         &self,
         partition_id: PartitionId,

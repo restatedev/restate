@@ -23,7 +23,7 @@ pub enum Error {
     LogSealed(LogId, SealReason),
     #[error("unknown log '{0}")]
     UnknownLogId(LogId),
-    #[error("invalid log sequence number '{0}")]
+    #[error("invalid log sequence number '{0}'")]
     InvalidLsn(Lsn),
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),

@@ -200,6 +200,21 @@ pub struct StorageOptions {
     #[cfg(any(test, feature = "test-util"))]
     #[serde(skip, default = "super::default_arc_tmp")]
     data_dir: std::sync::Arc<tempfile::TempDir>,
+
+    /// # Persist lsn interval
+    ///
+    /// Controls the interval at which worker tries to persist the last applied lsn. Lsn persisting
+    /// can be disabled by setting it to "".
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub persist_lsn_interval: Option<humantime::Duration>,
+
+    /// # Persist lsn threshold
+    ///
+    /// Minimum number of applied log entries before persisting the lsn. The worker will only
+    /// persist a lsn if the partition processor has applied at least #threshold log entries since
+    /// the last persisting. This prevents the worker from flushing the RocksDB memtables too often.
+    pub persist_lsn_threshold: u64,
 }
 
 impl StorageOptions {
@@ -225,6 +240,9 @@ impl Default for StorageOptions {
             rocksdb,
             #[cfg(any(test, feature = "test-util"))]
             data_dir: super::default_arc_tmp(),
+            // persist the lsn every hour
+            persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
+            persist_lsn_threshold: 1000,
         }
     }
 }

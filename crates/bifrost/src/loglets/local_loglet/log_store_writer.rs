@@ -46,7 +46,14 @@ pub struct LogStoreWriteCommand {
 }
 
 enum DataUpdate {
-    PutRecord { offset: LogletOffset, data: Bytes },
+    PutRecord {
+        offset: LogletOffset,
+        data: Bytes,
+    },
+    TrimLog {
+        old_trim_point: LogletOffset,
+        new_trim_point: LogletOffset,
+    },
 }
 
 pub(crate) struct LogStoreWriter {
@@ -80,6 +87,7 @@ impl LogStoreWriter {
             "local-loglet-writer",
             None,
             async move {
+                debug!("Start running LogStoreWriter");
                 let opts = updateable.load();
                 let batch_size = std::cmp::max(1, opts.writer_batch_commit_count);
                 let batch_duration = opts.writer_batch_commit_duration.into();
@@ -140,6 +148,16 @@ impl LogStoreWriter {
                             offset,
                             data,
                         ),
+                        DataUpdate::TrimLog {
+                            old_trim_point,
+                            new_trim_point,
+                        } => Self::trim_log(
+                            &data_cf,
+                            &mut write_batch,
+                            command.log_id,
+                            old_trim_point,
+                            new_trim_point,
+                        ),
                     }
                 }
 
@@ -188,6 +206,24 @@ impl LogStoreWriter {
     ) {
         let key = RecordKey::new(id, offset);
         write_batch.put_cf(data_cf, &key.to_bytes(), data);
+    }
+
+    fn trim_log(
+        data_cf: &Arc<BoundColumnFamily>,
+        write_batch: &mut WriteBatch,
+        id: u64,
+        old_trim_point: LogletOffset,
+        new_trim_point: LogletOffset,
+    ) {
+        // the old trim point has already been removed on the previous trim operation
+        let from = RecordKey::new(id, old_trim_point.next());
+        // the upper bound is exclusive for range deletions, therefore we need to increase it
+        let to = RecordKey::new(id, new_trim_point.next());
+
+        trace!("Trim log range: [{from:?}, {to:?})");
+        // We probably need to measure whether range delete is better than single deletes for
+        // multiple trim operations
+        write_batch.delete_range_cf(data_cf, &from.to_bytes(), &to.to_bytes());
     }
 
     async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
@@ -272,23 +308,46 @@ impl RocksDbLogWriterHandle {
         let data_updates = data_updates;
         let log_state_updates =
             Some(LogStateUpdates::default().update_release_pointer(start_offset.prev()));
-        if let Err(e) = self
-            .sender
-            .send(LogStoreWriteCommand {
-                log_id,
-                data_updates,
-                log_state_updates,
-                ack: Some(ack),
-            })
-            .await
-        {
+        self.send_command(LogStoreWriteCommand {
+            log_id,
+            data_updates,
+            log_state_updates,
+            ack: Some(ack),
+        })
+        .await?;
+        Ok(receiver)
+    }
+
+    pub async fn enqueue_trim(
+        &self,
+        log_id: u64,
+        old_trim_point: LogletOffset,
+        new_trim_point: LogletOffset,
+    ) -> Result<(), ShutdownError> {
+        let mut data_updates = SmallVec::with_capacity(1);
+        data_updates.push(DataUpdate::TrimLog {
+            old_trim_point,
+            new_trim_point,
+        });
+        let log_state_updates = Some(LogStateUpdates::default().update_trim_point(new_trim_point));
+
+        self.send_command(LogStoreWriteCommand {
+            log_id,
+            data_updates,
+            log_state_updates,
+            ack: None,
+        })
+        .await
+    }
+
+    async fn send_command(&self, command: LogStoreWriteCommand) -> Result<(), ShutdownError> {
+        if let Err(e) = self.sender.send(command).await {
             warn!(
                 "Local loglet writer task is gone, not accepting the record: {}",
                 e
             );
             return Err(ShutdownError);
         }
-
-        Ok(receiver)
+        Ok(())
     }
 }

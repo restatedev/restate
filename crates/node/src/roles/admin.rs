@@ -72,6 +72,9 @@ impl AdminRole {
         );
 
         let controller = restate_cluster_controller::Service::new(
+            updateable_config
+                .clone()
+                .map_as_updateable_owned(|c| &c.admin),
             task_center,
             metadata,
             networking,
@@ -100,11 +103,7 @@ impl AdminRole {
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
-            self.controller.run(
-                self.updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|c| &c.admin),
-            ),
+            self.controller.run(bifrost.clone()),
         )?;
 
         // todo: Make address configurable

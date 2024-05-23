@@ -14,6 +14,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt, TryStreamExt};
 use metrics::counter;
+use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, ProducerId, ReadOnlyDeduplicationTable,
 };
@@ -56,6 +57,16 @@ pub(crate) struct PartitionStorage<Storage> {
     storage: Storage,
 }
 
+impl From<PartitionStore> for PartitionStorage<PartitionStore> {
+    fn from(partition_store: PartitionStore) -> Self {
+        PartitionStorage::new(
+            partition_store.partition_id(),
+            partition_store.partition_key_range().clone(),
+            partition_store,
+        )
+    }
+}
+
 impl<Storage> PartitionStorage<Storage> {
     pub(super) fn new(
         partition_id: PartitionId,
@@ -68,13 +79,17 @@ impl<Storage> PartitionStorage<Storage> {
             storage,
         }
     }
+
+    pub fn into_inner(self) -> Storage {
+        self.storage
+    }
 }
 
 impl<Storage> PartitionStorage<Storage>
 where
     Storage: restate_storage_api::Storage,
 {
-    pub(super) fn create_transaction(&mut self) -> Transaction<Storage::TransactionType<'_>> {
+    pub fn create_transaction(&mut self) -> Transaction<Storage::TransactionType<'_>> {
         counter!(PARTITION_STORAGE_TX_CREATED).increment(1);
         Transaction::new(
             self.partition_id,
@@ -190,7 +205,7 @@ where
         }
     }
 
-    pub(super) async fn commit(self) -> Result<(), StorageError> {
+    pub async fn commit(self) -> Result<(), StorageError> {
         let res = self.inner.commit().await;
         counter!(PARTITION_STORAGE_TX_COMMITTED).increment(1);
         res

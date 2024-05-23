@@ -67,6 +67,12 @@ impl From<PartitionId> for LogId {
 )]
 pub struct Lsn(u64);
 
+impl Lsn {
+    pub const fn new(lsn: u64) -> Self {
+        Lsn(lsn)
+    }
+}
+
 impl SequenceNumber for Lsn {
     /// The maximum possible sequence number, this is useful when creating a read stream
     /// with an open ended tail.
