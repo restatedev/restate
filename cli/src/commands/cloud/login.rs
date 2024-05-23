@@ -82,7 +82,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
 
     let (result_send, mut result_recv) = mpsc::channel(1);
 
-    let state = uuid::Uuid::now_v7().simple().to_string();
+    let state = base62::encode(ulid::Ulid::new());
 
     let mut login_uri = env.config.cloud.login_base_url.join("/login")?;
     login_uri

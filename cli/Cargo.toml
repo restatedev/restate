@@ -21,10 +21,12 @@ restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.6.6" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
+base62 = { version = "2.0.2" }
 base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { version = "0.2.3" }
@@ -41,6 +43,10 @@ dotenvy = "0.15"
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 http = { workspace = true }
+http-body = "0.4.6"
+hyper = { workspace = true, features = ["server", "http2"] }
+hyper-rustls = { version = "0.24.1", features = ["http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http2", "server", "client", "tokio"] }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
@@ -55,14 +61,16 @@ termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
+tokio-util = { workspace = true }
 toml_edit = "0.22.12"
+tower = { workspace = true }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
 typify = "0.1.0"
 unicode-width = { version = "0.1.11" }
 url = { version = "2.4.1" }
-uuid = { workspace = true }
+ulid = { workspace = true }
 zip = "0.6"
 
 [build-dependencies]

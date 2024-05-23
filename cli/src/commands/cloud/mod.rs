@@ -10,6 +10,7 @@
 
 mod environments;
 mod login;
+mod tunnel;
 
 use base64::Engine;
 use cling::prelude::*;
@@ -22,6 +23,7 @@ pub struct CloudConfig {
     pub environment_info: Option<EnvironmentInfo>, // Set on a profile on login
     pub api_base_url: Url,
     pub login_base_url: Url,
+    pub tunnel_base_url: Url,
     pub client_id: String,
     pub redirect_ports: Vec<u16>,
     #[serde(flatten)]
@@ -43,9 +45,10 @@ impl Default for CloudConfig {
     fn default() -> Self {
         Self {
             environment_info: None,
-            // TODO; move to production URLs
             api_base_url: Url::parse("https://api.us.restate.cloud").unwrap(),
             login_base_url: Url::parse("https://auth.restate.cloud").unwrap(),
+            // TODO; prod url
+            tunnel_base_url: Url::parse("https://tunnel.dev.restate.cloud:19080").unwrap(),
             client_id: "5q3dsdnrr5r400jvibd8d3k66l".into(),
             redirect_ports: vec![33912, 44643, 47576, 54788, 61844],
             credentials: None,
@@ -97,6 +100,8 @@ struct TokenClaims {
 pub enum Cloud {
     /// Authenticate to Restate Cloud
     Login(login::Login),
+    /// Expose a service running locally to Restate Cloud
+    Tunnel(tunnel::Tunnel),
     /// Manage Restate Cloud Environments
     #[clap(subcommand)]
     Environments(environments::Environments),
