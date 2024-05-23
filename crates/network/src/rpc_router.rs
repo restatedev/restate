@@ -25,8 +25,6 @@ use restate_core::network::{
 use restate_node_protocol::{MessageEnvelope, RpcMessage, RpcRequest};
 use tracing::warn;
 
-use crate::Networking;
-
 /// A router for sending and receiving RPC messages through Networking
 ///
 /// It's responsible for keeping track of in-flight requests, correlating responses, and dropping
@@ -34,11 +32,11 @@ use crate::Networking;
 ///
 /// This type is designed to be used by senders of RpcRequest(s).
 #[derive(Clone)]
-pub struct RpcRouter<T>
+pub struct RpcRouter<T, N>
 where
     T: RpcRequest,
 {
-    networking: Networking,
+    networking: N,
     response_tracker: ResponseTracker<T::Response>,
 }
 
@@ -51,13 +49,14 @@ pub enum RpcError {
     Shutdown(#[from] ShutdownError),
 }
 
-impl<T> RpcRouter<T>
+impl<T, N> RpcRouter<T, N>
 where
     T: RpcRequest + WireEncode + Send + Sync + 'static,
     T::Response: WireDecode + Send + Sync + 'static,
     <T::Response as RpcMessage>::CorrelationId: Send + Sync + From<T::CorrelationId>,
+    N: NetworkSender,
 {
-    pub fn new(networking: Networking, router_builder: &mut MessageRouterBuilder) -> Self {
+    pub fn new(networking: N, router_builder: &mut MessageRouterBuilder) -> Self {
         let response_tracker = ResponseTracker::<T::Response>::default();
         router_builder.add_message_handler(response_tracker.clone());
         Self {

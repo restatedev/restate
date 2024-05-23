@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use restate_core::network::MessageRouterBuilder;
+use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_network::rpc_router::RpcRouter;
 use restate_node_protocol::partition_processor_manager::GetProcessorsState;
 use restate_types::identifiers::PartitionId;
@@ -23,7 +23,6 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use restate_core::{Metadata, ShutdownError, TaskCenter};
-use restate_network::Networking;
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
 /// A container for health information about every node and partition in the
@@ -58,19 +57,22 @@ pub enum NodeState {
     },
 }
 
-pub struct ClusterStateRefresher {
+pub struct ClusterStateRefresher<N> {
     task_center: TaskCenter,
     metadata: Metadata,
-    get_state_router: RpcRouter<GetProcessorsState>,
+    get_state_router: RpcRouter<GetProcessorsState, N>,
     updateable_cluster_state: Arc<ArcSwap<ClusterState>>,
     in_flight_refresh: Option<JoinHandle<()>>,
 }
 
-impl ClusterStateRefresher {
+impl<N> ClusterStateRefresher<N>
+where
+    N: NetworkSender + 'static,
+{
     pub fn new(
         task_center: TaskCenter,
         metadata: Metadata,
-        networking: Networking,
+        networking: N,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         let get_state_router = RpcRouter::new(networking.clone(), router_builder);
@@ -119,7 +121,7 @@ impl ClusterStateRefresher {
 
     fn start_refresh_task(
         tc: TaskCenter,
-        get_state_router: RpcRouter<GetProcessorsState>,
+        get_state_router: RpcRouter<GetProcessorsState, N>,
         updateable_cluster_state: Arc<ArcSwap<ClusterState>>,
         metadata: Metadata,
     ) -> Result<Option<JoinHandle<()>>, ShutdownError> {
