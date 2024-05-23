@@ -11,11 +11,15 @@
 use cling::prelude::*;
 use comfy_table::Table;
 use figment::Profile;
+use itertools::Itertools;
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_types::art::render_restate_logo;
+use strum::IntoEnumIterator;
 
 use crate::build_info;
 use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::AdminClientInterface;
+use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
@@ -120,6 +124,20 @@ pub async fn run(State(env): State<CliEnv>) {
         "Build Features",
         build_info::RESTATE_CLI_BUILD_FEATURES,
     ]);
+    if MIN_ADMIN_API_VERSION == MAX_ADMIN_API_VERSION {
+        table.add_row(vec![
+            "Supported admin API",
+            &format!("{}", MIN_ADMIN_API_VERSION.as_repr()),
+        ]);
+    } else {
+        let versions = AdminApiVersion::iter()
+            .skip_while(|value| *value < MIN_ADMIN_API_VERSION)
+            .take_while(|value| *value <= MAX_ADMIN_API_VERSION)
+            .map(|value| value.as_repr())
+            .join(",");
+        table.add_row(vec!["Supported admin API", &format!("[{}]", versions)]);
+    }
+
     table.add_row(vec!["Git SHA", build_info::RESTATE_CLI_COMMIT_SHA]);
     table.add_row(vec!["Git Commit Date", build_info::RESTATE_CLI_COMMIT_DATE]);
     table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);

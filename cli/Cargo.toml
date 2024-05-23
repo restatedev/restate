@@ -50,6 +50,7 @@ open = "5.1.2"
 reqwest = { version = "0.11.22", default-features = false, features = ["json","rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

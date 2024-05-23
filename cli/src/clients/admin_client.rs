@@ -25,8 +25,8 @@ use crate::{build_info, c_warn};
 use super::errors::ApiError;
 
 /// Min/max supported admin API versions
-const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
-const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
+pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V1;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
