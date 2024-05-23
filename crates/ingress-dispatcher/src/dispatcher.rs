@@ -234,6 +234,7 @@ impl MessageHandler for IngressDispatcher {
                         // TODO we need to add back the expiration time for idempotent results
                         idempotency_expiry_time: None,
                         result: invocation_response.response.clone(),
+                        invocation_id: invocation_response.correlation_ids.invocation_id,
                     };
                     if let Err(response) = sender.send(dispatcher_response) {
                         debug!(
