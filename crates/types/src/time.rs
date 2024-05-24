@@ -70,6 +70,58 @@ impl From<MillisSinceEpoch> for SystemTime {
     }
 }
 
+/// Nanos since the unix epoch. Used internally to get rough latency measurements across nodes.
+/// It's vulnerable to clock skews and sync issues, so use with care. That said, it's fairly
+/// accurate when used on the same node. This roughly maps to std::time::Instant except that the
+/// value is portable across nodes.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct NanosSinceEpoch(u64);
+
+impl NanosSinceEpoch {
+    pub fn now() -> Self {
+        SystemTime::now().into()
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        let now = Self::now();
+        Duration::from_nanos(now.0 - self.0)
+    }
+}
+
+impl Default for NanosSinceEpoch {
+    fn default() -> Self {
+        Self::now()
+    }
+}
+
+impl From<u64> for NanosSinceEpoch {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SystemTime> for NanosSinceEpoch {
+    fn from(value: SystemTime) -> Self {
+        Self(
+            u64::try_from(
+                value
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("duration since Unix epoch should be well-defined")
+                    .as_nanos(),
+            )
+            .expect("nanos since Unix epoch should fit in u64"),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +131,14 @@ mod tests {
     #[test]
     fn millis_should_not_overflow() {
         let t: SystemTime = MillisSinceEpoch::new(u64::MAX).into();
+        println!("{:?}", t);
+    }
+
+    #[test]
+    fn nanos_should_not_overflow() {
+        // it's ~580 years from unix epoch until u64 wouldn't become sufficient to store nanos.
+        let t = NanosSinceEpoch::now().as_u64();
+        assert!(t < u64::MAX);
         println!("{:?}", t);
     }
 }
