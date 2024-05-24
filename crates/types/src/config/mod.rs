@@ -52,8 +52,9 @@ use crate::errors::GenericError;
 use crate::nodes_config::Role;
 
 #[cfg(any(test, feature = "test-util"))]
-pub(crate) fn default_arc_tmp() -> std::sync::Arc<tempfile::TempDir> {
-    std::sync::Arc::new(tempfile::TempDir::new().unwrap())
+enum TempOrPath {
+    Temp(tempfile::TempDir),
+    Path(PathBuf),
 }
 
 static CONFIGURATION: Lazy<Arc<ArcSwap<Configuration>>> = Lazy::new(Arc::default);
@@ -61,8 +62,8 @@ static CONFIGURATION: Lazy<Arc<ArcSwap<Configuration>>> = Lazy::new(Arc::default
 static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 #[cfg(any(test, feature = "test-util"))]
-static NODE_BASE_DIR: Lazy<std::sync::RwLock<tempfile::TempDir>> =
-    Lazy::new(|| std::sync::RwLock::new(tempfile::TempDir::new().unwrap()));
+static NODE_BASE_DIR: Lazy<std::sync::RwLock<TempOrPath>> =
+    Lazy::new(|| std::sync::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
 
 pub type UpdateableConfiguration = Arc<ArcSwap<Configuration>>;
 
@@ -77,7 +78,10 @@ fn data_dir(dir: &str) -> PathBuf {
 #[cfg(any(test, feature = "test-util"))]
 pub fn data_dir(dir: &str) -> PathBuf {
     let guard = NODE_BASE_DIR.read().unwrap();
-    guard.path().join(dir)
+    match &*guard {
+        TempOrPath::Temp(temp) => temp.path().join(dir),
+        TempOrPath::Path(path) => path.join(dir),
+    }
 }
 
 pub fn node_filepath(filename: &str) -> PathBuf {
@@ -88,8 +92,19 @@ pub fn node_filepath(filename: &str) -> PathBuf {
 pub fn reset_base_temp_dir() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write().unwrap();
     let new = tempfile::TempDir::new().unwrap();
-    *guard = new;
-    PathBuf::from(guard.path())
+    let path = PathBuf::from(new.path());
+    *guard = TempOrPath::Temp(new);
+    path
+}
+
+#[cfg(any(test, feature = "test-util"))]
+/// Reset the base temp dir and leaves the temporary directory in place after
+/// the test is done (no automatic deletion)
+pub fn reset_base_temp_dir_and_retain() -> PathBuf {
+    let mut guard = NODE_BASE_DIR.write().unwrap();
+    let path = tempfile::TempDir::new().unwrap().into_path();
+    *guard = TempOrPath::Path(path.clone());
+    path
 }
 
 /// Set the current configuration, this is temporary until we have a dedicated configuration loader

@@ -1,0 +1,170 @@
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use std::time::Duration;
+
+use bifrost_benchpress::util::{print_prometheus_stats, print_rocksdb_stats};
+use clap::Parser;
+use codederror::CodedError;
+use tracing::trace;
+
+use bifrost_benchpress::{append_latency, write_to_read, Arguments, Command};
+use metrics_exporter_prometheus::PrometheusBuilder;
+use restate_bifrost::{Bifrost, BifrostService};
+use restate_core::{
+    spawn_metadata_manager, MetadataManager, MockNetworkSender, TaskCenter, TaskCenterBuilder,
+};
+use restate_errors::fmt::RestateCode;
+use restate_metadata_store::{MetadataStoreClient, Precondition};
+use restate_rocksdb::RocksDbManager;
+use restate_server::config_loader::ConfigLoaderBuilder;
+use restate_tracing_instrumentation::init_tracing_and_logging;
+use restate_types::arc_util::Constant;
+use restate_types::config::{reset_base_temp_dir, reset_base_temp_dir_and_retain, Configuration};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+
+// Configure jemalloc similar to mimic restate server
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
+fn main() -> anyhow::Result<()> {
+    let cli_args = Arguments::parse();
+    let tmp_base = if cli_args.retain_test_dir {
+        reset_base_temp_dir_and_retain()
+    } else {
+        reset_base_temp_dir()
+    };
+
+    // We capture the absolute path of the config file on startup before we change the current
+    // working directory (base-dir arg)
+    let config_path = cli_args
+        .config_file
+        .as_ref()
+        .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
+
+    // Initial configuration loading
+    let config_loader = ConfigLoaderBuilder::default()
+        .load_env(true)
+        .path(config_path.clone())
+        .cli_override(cli_args.opts_overrides.clone())
+        .build()
+        .unwrap();
+
+    let mut config = match config_loader.load_once() {
+        Ok(c) => c,
+        Err(e) => {
+            // We cannot use tracing here as it's not configured yet
+            eprintln!("{}", e.decorate());
+            eprintln!("{:#?}", RestateCode::from(&e));
+            std::process::exit(1);
+        }
+    };
+
+    // just in case anything reads directly the base dir and it's not set correctly for any random
+    // reason.
+    config.common.set_base_dir(tmp_base.clone());
+
+    restate_types::config::set_current_config(config.clone());
+
+    let recorder = PrometheusBuilder::new().install_recorder().unwrap();
+    let (tc, bifrost) = spawn_environment(config.clone(), 1);
+    let task_center = tc.clone();
+    let args = cli_args.clone();
+    tc.block_on("benchpress", None, async move {
+        let tracing_guard = init_tracing_and_logging(&config.common, "Bifrost benchpress")
+            .expect("failed to configure logging and tracing!");
+
+        match args.command {
+            Command::WriteToRead(ref opts) => {
+                write_to_read::run(&args, opts, task_center.clone(), bifrost).await?;
+            }
+            Command::AppendLatency(ref opts) => {
+                append_latency::run(&args, opts, task_center.clone(), bifrost).await?;
+            }
+        }
+        task_center.shutdown_node("completed", 0).await;
+        // print prometheus if asked.
+        if !args.no_prometheus_stats {
+            print_prometheus_stats(&recorder);
+        }
+
+        // print rocksdb stats if asked.
+        if !args.no_rocksdb_stats {
+            print_rocksdb_stats("local-loglet");
+        }
+
+        // We shutdown the database after stats to avoid enclosing the shutdown process in our
+        // metrics.
+        RocksDbManager::get().shutdown().await;
+        // Make sure that all pending spans are flushed
+        let shutdown_tracing_with_timeout =
+            tokio::time::timeout(Duration::from_secs(10), tracing_guard.async_shutdown());
+        let shutdown_result = shutdown_tracing_with_timeout.await;
+
+        if shutdown_result.is_err() {
+            trace!("Failed to fully flush pending spans, terminating now.");
+        }
+        anyhow::Ok(())
+    })?;
+
+    if cli_args.retain_test_dir {
+        println!("Keeping the base_dir in {}", tmp_base.display());
+    } else {
+        println!("Removing test dir at {}", tmp_base.display());
+    }
+
+    Ok(())
+}
+
+fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifrost) {
+    let tc = TaskCenterBuilder::default()
+        .options(config.common.clone())
+        .build()
+        .expect("task_center builds");
+
+    restate_types::config::set_current_config(config.clone());
+    let task_center = tc.clone();
+    let bifrost = tc.block_on("spawn", None, async move {
+        let network_sender = MockNetworkSender::default();
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
+        let metadata_manager =
+            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
+
+        let metadata = metadata_manager.metadata();
+        let metadata_writer = metadata_manager.writer();
+        task_center.try_set_global_metadata(metadata.clone());
+
+        RocksDbManager::init(Constant::new(config.common));
+
+        let logs = restate_types::logs::metadata::create_static_metadata(
+            config.bifrost.default_provider,
+            num_logs,
+        );
+
+        metadata_store_client
+            .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
+            .await
+            .expect("to store bifrost config in metadata store");
+        metadata_writer.submit(logs);
+        spawn_metadata_manager(&task_center, metadata_manager).expect("metadata manager starts");
+
+        let bifrost_svc = BifrostService::new(metadata);
+        let bifrost = bifrost_svc.handle();
+
+        // start bifrost service in the background
+        bifrost_svc.start().await.expect("bifrost starts");
+        bifrost
+    });
+    (tc, bifrost)
+}

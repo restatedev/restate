@@ -1210,6 +1210,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "bifrost-benchpress"
+version = "0.9.1"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "bytestring",
+ "clap",
+ "codederror",
+ "figment",
+ "futures",
+ "hdrhistogram",
+ "metrics",
+ "metrics-exporter-prometheus 0.14.0",
+ "once_cell",
+ "quanta",
+ "restate-bifrost",
+ "restate-core",
+ "restate-errors",
+ "restate-metadata-store",
+ "restate-rocksdb",
+ "restate-server",
+ "restate-test-util",
+ "restate-tracing-instrumentation",
+ "restate-types",
+ "rocksdb",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smallvec",
+ "static_assertions",
+ "strum 0.26.2",
+ "strum_macros 0.26.2",
+ "tempfile",
+ "thiserror",
+ "tikv-jemallocator",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bincode"
 version = "2.0.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2959,6 +3002,7 @@ checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
 dependencies = [
  "base64 0.21.7",
  "byteorder",
+ "crossbeam-channel",
  "flate2",
  "nom",
  "num-traits",
@@ -3776,6 +3820,22 @@ checksum = "9bf4e7146e30ad172c42c39b3246864bd2d3c6396780711a1baf749cfe423e21"
 dependencies = [
  "base64 0.21.7",
  "hyper 0.14.28",
+ "indexmap 2.2.6",
+ "metrics",
+ "metrics-util",
+ "quanta",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "metrics-exporter-prometheus"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d58e362dc7206e9456ddbcdbd53c71ba441020e62104703075a69151e38d85f"
+dependencies = [
+ "base64 0.22.0",
+ "hyper-util",
  "indexmap 2.2.6",
  "metrics",
  "metrics-util",
@@ -4911,9 +4971,9 @@ dependencies = [
 
 [[package]]
 name = "quanta"
-version = "0.12.2"
+version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ca0b7bac0b97248c40bb77288fc52029cf1459c0461ea1b05ee32ccf011de2c"
+checksum = "8e5167a477619228a0b284fac2674e3c388cba90631d7b7de620e6f1fcd08da5"
 dependencies = [
  "crossbeam-utils",
  "libc",
@@ -5726,7 +5786,7 @@ dependencies = [
  "humantime",
  "hyper 0.14.28",
  "metrics",
- "metrics-exporter-prometheus",
+ "metrics-exporter-prometheus 0.13.1",
  "metrics-tracing-context",
  "metrics-util",
  "once_cell",
