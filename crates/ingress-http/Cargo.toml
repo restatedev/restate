@@ -16,6 +16,7 @@ options_schema = ["dep:schemars"]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
+restate-serde-util = { workspace = true }
 restate-schema-api = { workspace = true, features = ["service", "invocation_target"]}
 restate-types = { workspace = true }
 restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
@@ -60,7 +61,6 @@ schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 urlencoding = "2.1"
 pin-project-lite = "0.2.13"
-iso8601 = "0.6.1"
 humantime = { workspace = true }
 
 [dev-dependencies]
