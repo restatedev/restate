@@ -322,12 +322,7 @@ fn parse_headers(headers: HeaderMap) -> Result<Vec<Header>, HandlerError> {
 #[serde_as]
 #[derive(Deserialize)]
 #[serde(transparent)]
-struct DurationQueryParam(
-    #[serde_as(
-        as = "serde_with::PickFirst<(restate_serde_util::DurationString, serde_with::DurationMilliSeconds<String>)>"
-    )]
-    Duration,
-);
+struct DurationQueryParam(#[serde_as(as = "restate_serde_util::DurationString")] Duration);
 
 fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     if query.is_none() {
@@ -387,8 +382,12 @@ mod tests {
             Duration::from_secs(60),
         );
         assert_eq!(
-            parse_delay(Some("delay=60000")).unwrap().unwrap(),
-            Duration::from_secs(60),
-        )
+            parse_delay(Some("delay=60ms")).unwrap().unwrap(),
+            Duration::from_millis(60),
+        );
+        assert_eq!(
+            parse_delay(Some("delay=60000ms")).unwrap().unwrap(),
+            Duration::from_millis(60000),
+        );
     }
 }
