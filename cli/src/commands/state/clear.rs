@@ -41,7 +41,7 @@ pub async fn run_clear(State(env): State<CliEnv>, opts: &Clear) -> Result<()> {
 }
 
 async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
-    let sql_client = crate::clients::DataFusionHttpClient::new(env)?;
+    let sql_client = crate::clients::DataFusionHttpClient::new(env).await?;
 
     let (svc, key) = match opts.query.split_once('/') {
         None => (opts.query.as_str(), None),
