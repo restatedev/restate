@@ -32,6 +32,8 @@ pub trait AdminClientInterface {
         body: RegisterDeploymentRequest,
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
 
+    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
 
     async fn patch_state(
@@ -94,6 +96,17 @@ impl AdminClientInterface for AdminClient {
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
         let url = self.base_url.join("/deployments").expect("Bad url!");
         self.run_with_body(reqwest::Method::POST, url, body).await
+    }
+
+    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        let mut url = self
+            .base_url
+            .join(&format!("/invocations/{}", id))
+            .expect("Bad url!");
+
+        url.set_query(Some("mode=purge"));
+
+        self.run(reqwest::Method::DELETE, url).await
     }
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
