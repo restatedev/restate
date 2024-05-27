@@ -43,8 +43,6 @@ pub(crate) enum HandlerError {
     BadHeader(header::HeaderName, #[source] header::ToStrError),
     #[error("bad delay query parameter, must be a ISO8601 duration: {0}")]
     BadDelayDuration(String),
-    #[error("bad delaySec query parameter, must be a number: {0:?}")]
-    BadDelaySecDuration(std::num::ParseIntError),
     #[error("bad path, cannot decode key: {0:?}")]
     UrlDecodingError(string::FromUtf8Error),
     #[error("the invoked service is not public")]
@@ -100,7 +98,6 @@ impl HandlerError {
             | HandlerError::PrivateService
             | HandlerError::UrlDecodingError(_)
             | HandlerError::BadDelayDuration(_)
-            | HandlerError::BadDelaySecDuration(_)
             | HandlerError::BadAwakeablesPath
             | HandlerError::UnsupportedDelay
             | HandlerError::BadHeader(_, _)

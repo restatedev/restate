@@ -35,7 +35,6 @@ use tracing::{info, trace, warn, Instrument};
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const DELAY_QUERY_PARAM: &str = "delay";
-const DELAYSEC_QUERY_PARAM: &str = "delaysec";
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
@@ -338,11 +337,6 @@ fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
                     })?
                     .0,
             ));
-        }
-        if k.eq_ignore_ascii_case(DELAYSEC_QUERY_PARAM) {
-            return Ok(Some(Duration::from_secs(
-                v.parse().map_err(HandlerError::BadDelaySecDuration)?,
-            )));
         }
     }
 
