@@ -197,6 +197,10 @@ where
                 self.try_terminate_invocation(invocation_termination, state, effects)
                     .await
             }
+            Command::PurgeInvocation(purge_invocation_request) => {
+                self.try_purge_invocation(purge_invocation_request.invocation_id, state, effects)
+                    .await
+            }
             Command::BuiltInInvokerEffect(builtin_service_effects) => {
                 self.try_built_in_invoker_effect(effects, state, builtin_service_effects)
                     .await
@@ -889,6 +893,60 @@ where
         }
     }
 
+    async fn try_purge_invocation<State: StateReader>(
+        &mut self,
+        invocation_id: InvocationId,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(), Error> {
+        match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
+            InvocationStatus::Completed(CompletedInvocation {
+                invocation_target,
+                idempotency_key,
+                ..
+            }) => {
+                effects.free_invocation(invocation_id);
+
+                // Also cleanup the associated idempotency key if any
+                if let Some(idempotency_key) = idempotency_key {
+                    effects.delete_idempotency_id(IdempotencyId::combine(
+                        invocation_id,
+                        &invocation_target,
+                        idempotency_key,
+                    ));
+                }
+
+                // For workflow, we should also clean up the service lock, associated state and promises.
+                if invocation_target.invocation_target_ty()
+                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                {
+                    let service_id = invocation_target
+                        .as_keyed_service_id()
+                        .expect("Workflow methods must have keyed service id");
+
+                    effects.unlock_service_id(service_id.clone());
+                    effects.clear_all_state(
+                        service_id.clone(),
+                        invocation_id,
+                        ServiceInvocationSpanContext::empty(),
+                    );
+                    effects.clear_all_promises(service_id);
+                }
+            }
+            InvocationStatus::Free => {
+                trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
+                // Nothing to do
+            }
+            _ => {
+                trace!(
+                    "Ignoring purge command as the invocation '{invocation_id}' is still ongoing."
+                );
+            }
+        };
+
+        Ok(())
+    }
+
     async fn on_timer<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         timer_value: TimerKeyValue,
@@ -920,49 +978,8 @@ where
                 self.handle_invoke(effects, state, service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
-                    InvocationStatus::Completed(CompletedInvocation {
-                        invocation_target,
-                        idempotency_key,
-                        ..
-                    }) => {
-                        effects.free_invocation(invocation_id);
-
-                        // Also cleanup the associated idempotency key if any
-                        if let Some(idempotency_key) = idempotency_key {
-                            effects.delete_idempotency_id(IdempotencyId::combine(
-                                invocation_id,
-                                &invocation_target,
-                                idempotency_key,
-                            ));
-                        }
-
-                        // For workflow, we should also clean up the service lock, associated state and promises.
-                        if invocation_target.invocation_target_ty()
-                            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                        {
-                            let service_id = invocation_target
-                                .as_keyed_service_id()
-                                .expect("Workflow methods must have keyed service id");
-
-                            effects.unlock_service_id(service_id.clone());
-                            effects.clear_all_state(
-                                service_id.clone(),
-                                invocation_id,
-                                ServiceInvocationSpanContext::empty(),
-                            );
-                            effects.clear_all_promises(service_id);
-                        }
-                    }
-                    InvocationStatus::Free => {
-                        // Nothing to do
-                    }
-                    _ => {
-                        panic!("Unexpected state. Trying to cleanup an invocation that did not complete yet.")
-                    }
-                };
-
-                Ok(())
+                self.try_purge_invocation(invocation_id, state, effects)
+                    .await
             }
         }
     }
