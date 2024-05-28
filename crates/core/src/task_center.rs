@@ -123,13 +123,11 @@ fn tokio_builder(common_opts: &CommonOptions) -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all().thread_name_fn(|| {
         static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-        let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+        let id = ATOMIC_ID.fetch_add(1, Ordering::Relaxed);
         format!("rs:worker-{}", id)
     });
 
-    if let Some(worker_threads) = common_opts.default_thread_pool_size {
-        builder.worker_threads(worker_threads);
-    }
+    builder.worker_threads(common_opts.default_thread_pool_size());
 
     builder
 }
@@ -159,7 +157,7 @@ impl TaskCenter {
 
     /// The exit code that the process should exit with.
     pub fn exit_code(&self) -> i32 {
-        self.inner.current_exit_code.load(Ordering::Acquire)
+        self.inner.current_exit_code.load(Ordering::Relaxed)
     }
 
     /// Triggers a shutdown of the system. All running tasks will be asked gracefully
@@ -170,14 +168,14 @@ impl TaskCenter {
         let inner = self.inner.clone();
         if inner
             .shutdown_requested
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .unwrap_or_else(|e| e)
         {
             // already shutting down....
             return;
         }
         let start = Instant::now();
-        inner.current_exit_code.store(exit_code, Ordering::Release);
+        inner.current_exit_code.store(exit_code, Ordering::Relaxed);
 
         if exit_code != 0 {
             warn!("** Shutdown requested");
@@ -209,7 +207,7 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let inner = self.inner.clone();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst));
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
         let task = Arc::new(Task {
             id,
             name,
@@ -264,7 +262,7 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let inner = self.inner.clone();
-        if inner.shutdown_requested.load(Ordering::Acquire) {
+        if inner.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
         Ok(self.spawn_unchecked(kind, name, partition_id, future))
@@ -302,7 +300,7 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let inner = self.inner.clone();
-        if inner.shutdown_requested.load(Ordering::Acquire) {
+        if inner.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
 
@@ -433,7 +431,7 @@ impl TaskCenter {
         F: Future<Output = O>,
     {
         let cancel_token = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst));
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
         let task = Arc::new(Task {
             id,
             name,
@@ -471,7 +469,7 @@ impl TaskCenter {
         F: FnOnce() -> O,
     {
         let cancel_token = CancellationToken::new();
-        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst));
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
         let task = Arc::new(Task {
             id,
             name,

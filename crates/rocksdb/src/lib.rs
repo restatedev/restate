@@ -164,7 +164,9 @@ impl RocksDb {
         // Auto...
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
-        let result = self.db.write_batch(&write_batch, &write_options);
+
+        let result =
+            tokio::task::block_in_place(|| self.db.write_batch(&write_batch, &write_options));
         match result {
             Ok(_) => {
                 counter!(STORAGE_IO_OP,
@@ -247,7 +249,8 @@ impl RocksDb {
         // Auto...
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
-        let result = self.db.write_tx_batch(&write_batch, &write_options);
+        let result =
+            tokio::task::block_in_place(|| self.db.write_tx_batch(&write_batch, &write_options));
         match result {
             Ok(_) => {
                 counter!(STORAGE_IO_OP,

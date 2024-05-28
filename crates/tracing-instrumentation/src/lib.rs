@@ -16,7 +16,6 @@ mod tracer;
 use crate::pretty::PrettyFields;
 use crate::processor::ResourceModifyingSpanProcessor;
 use crate::tracer::SpanModifyingTracer;
-use metrics_tracing_context::MetricsLayer;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry::KeyValue;
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
@@ -189,11 +188,13 @@ pub fn init_tracing_and_logging(
     let filter = EnvFilter::try_new(&common_opts.log_filter)?;
     let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
     // Logging layer
-    let layers = layers
-        .with(build_logging_layer(common_opts)?.with_filter(filter))
-        // Enables auto extraction of selected span labels in emitted metrics.
-        // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
-        .with(MetricsLayer::new());
+    let layers = layers.with(build_logging_layer(common_opts)?.with_filter(filter));
+    // Enables auto extraction of selected span labels in emitted metrics.
+    // allowed labels are defined in restate_node_ctrl::metrics::ALLOWED_LABELS.
+    //
+    // This is temporarily disabled due to its performance cost. This will be re-enabled when it
+    // gets benchmarked and optimized.
+    //.with(MetricsLayer::new());
 
     // Console subscriber layer
     #[cfg(feature = "console-subscriber")]

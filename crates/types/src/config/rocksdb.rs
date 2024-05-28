@@ -123,6 +123,8 @@ impl RocksDbOptions {
             // Assuming 256MB for bifrost's data cf (2 memtables * 128MB default write buffer size)
             // Assuming 256MB for bifrost's metadata cf (2 memtables * 128MB default write buffer size)
             let buffer_size = (all_memtables - 512_000_000) / (num_partitions * 3) as usize;
+            // reduce the buffer_size by 10% for safety
+            let buffer_size = (buffer_size as f64 * 0.9) as usize;
             NonZeroUsize::new(buffer_size).unwrap()
         })
     }
