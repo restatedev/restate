@@ -15,7 +15,6 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::time::Instant;
 
-use restate_network::Networking;
 use restate_node_protocol::cluster_controller::{
     Action, AttachRequest, AttachResponse, RunPartition,
 };
@@ -41,21 +40,24 @@ pub enum Error {
     Error,
 }
 
-pub struct Service {
+pub struct Service<N> {
     task_center: TaskCenter,
     metadata: Metadata,
-    networking: Networking,
+    networking: N,
     incoming_messages: BoxStream<'static, MessageEnvelope<AttachRequest>>,
-    cluster_state_refresher: ClusterStateRefresher,
+    cluster_state_refresher: ClusterStateRefresher<N>,
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 }
 
-impl Service {
+impl<N> Service<N>
+where
+    N: NetworkSender + 'static,
+{
     pub fn new(
         task_center: TaskCenter,
         metadata: Metadata,
-        networking: Networking,
+        networking: N,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         let incoming_messages = router_builder.subscribe_to_stream(10);
@@ -100,7 +102,10 @@ impl ClusterControllerHandle {
     }
 }
 
-impl Service {
+impl<N> Service<N>
+where
+    N: NetworkSender + 'static,
+{
     pub fn handle(&self) -> ClusterControllerHandle {
         ClusterControllerHandle {
             tx: self.command_tx.clone(),

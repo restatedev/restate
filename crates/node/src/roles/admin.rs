@@ -42,7 +42,7 @@ pub enum AdminRoleBuildError {
 
 pub struct AdminRole {
     updateable_config: UpdateableConfiguration,
-    controller: restate_cluster_controller::Service,
+    controller: restate_cluster_controller::Service<Networking>,
     admin: AdminService<IngressOptions>,
 }
 

@@ -59,7 +59,7 @@ pub struct PartitionProcessorManager {
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
     partition_store_manager: PartitionStoreManager,
-    attach_router: RpcRouter<AttachRequest>,
+    attach_router: RpcRouter<AttachRequest, Networking>,
     incoming_get_state: BoxStream<'static, MessageEnvelope<GetProcessorsState>>,
     networking: Networking,
     bifrost: Bifrost,
