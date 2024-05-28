@@ -87,9 +87,9 @@ pub struct CommonOptions {
     /// # Default async runtime thread pool
     ///
     /// Size of the default thread pool used to perform internal tasks.
-    /// If not set, it defaults to the number of CPU cores.
+    /// If not set, it defaults to twice the number of CPU cores.
     #[builder(setter(strip_option))]
-    pub default_thread_pool_size: Option<usize>,
+    default_thread_pool_size: Option<usize>,
 
     /// # Tracing Endpoint
     ///
@@ -246,19 +246,20 @@ impl CommonOptions {
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
-        self.storage_high_priority_bg_threads.unwrap_or(
+        NonZeroUsize::new(4).unwrap()
+    }
+
+    pub fn default_thread_pool_size(&self) -> usize {
+        2 * self.default_thread_pool_size.unwrap_or(
             std::thread::available_parallelism()
                 // Shouldn't really fail, but just in case.
-                .unwrap_or(NonZeroUsize::new(4).unwrap()),
+                .unwrap_or(NonZeroUsize::new(4).unwrap())
+                .get(),
         )
     }
 
     pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
-        self.storage_low_priority_bg_threads.unwrap_or(
-            std::thread::available_parallelism()
-                // Shouldn't really fail, but just in case.
-                .unwrap_or(NonZeroUsize::new(4).unwrap()),
-        )
+        NonZeroUsize::new(4).unwrap()
     }
 
     pub fn rocksdb_bg_threads(&self) -> NonZeroU32 {
@@ -301,8 +302,8 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
-            rocksdb_total_memory_size: NonZeroUsize::new(4_000_000_000).unwrap(), // 4GB
+            rocksdb_total_memtables_ratio: 0.6, // (60% of rocksdb-total-memory-size)
+            rocksdb_total_memory_size: NonZeroUsize::new(6_000_000_000).unwrap(), // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb_write_stall_threshold: std::time::Duration::from_secs(3).into(),

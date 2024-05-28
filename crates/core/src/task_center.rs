@@ -127,9 +127,7 @@ fn tokio_builder(common_opts: &CommonOptions) -> tokio::runtime::Builder {
         format!("rs:worker-{}", id)
     });
 
-    if let Some(worker_threads) = common_opts.default_thread_pool_size {
-        builder.worker_threads(worker_threads);
-    }
+    builder.worker_threads(common_opts.default_thread_pool_size());
 
     builder
 }
