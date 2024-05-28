@@ -34,6 +34,7 @@ use restate_storage_api::{Storage, StorageError, Transaction};
 
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
+use tokio::task::block_in_place;
 
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
@@ -553,10 +554,12 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
 
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
-        let table = self.table_handle(table);
-        self.txn
-            .get_pinned_cf(table, key)
-            .map_err(|error| StorageError::Generic(error.into()))
+        block_in_place(|| {
+            let table = self.table_handle(table);
+            self.txn
+                .get_pinned_cf(table, key)
+                .map_err(|error| StorageError::Generic(error.into()))
+        })
     }
 
     #[inline]
@@ -656,8 +659,10 @@ pub(crate) trait StorageAccess {
         K: TableKey,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
     {
-        let iterator = self.iterator_from(scan);
-        f(iterator.item())
+        block_in_place(|| {
+            let iterator = self.iterator_from(scan);
+            f(iterator.item())
+        })
     }
 
     #[inline]
@@ -685,30 +690,32 @@ pub(crate) trait StorageAccess {
         K: TableKey,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
     {
-        let mut res = Vec::new();
+        block_in_place(|| {
+            let mut res = Vec::new();
 
-        let mut iterator = self.iterator_from(scan);
+            let mut iterator = self.iterator_from(scan);
 
-        while let Some((k, v)) = iterator.item() {
-            match op(k, v) {
-                TableScanIterationDecision::Emit(result) => {
-                    res.push(result);
-                    iterator.next();
-                }
-                TableScanIterationDecision::BreakWith(result) => {
-                    res.push(result);
-                    break;
-                }
-                TableScanIterationDecision::Continue => {
-                    iterator.next();
-                    continue;
-                }
-                TableScanIterationDecision::Break => {
-                    break;
-                }
-            };
-        }
+            while let Some((k, v)) = iterator.item() {
+                match op(k, v) {
+                    TableScanIterationDecision::Emit(result) => {
+                        res.push(result);
+                        iterator.next();
+                    }
+                    TableScanIterationDecision::BreakWith(result) => {
+                        res.push(result);
+                        break;
+                    }
+                    TableScanIterationDecision::Continue => {
+                        iterator.next();
+                        continue;
+                    }
+                    TableScanIterationDecision::Break => {
+                        break;
+                    }
+                };
+            }
 
-        res
+            res
+        })
     }
 }
