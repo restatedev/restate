@@ -33,7 +33,7 @@ const PROMISE_COMPLETED: Promise = Promise {
     state: PromiseState::Completed(EntryResult::Success(Bytes::from_static(b"{}"))),
 };
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_promise_table() {
     let mut rocksdb = storage_test_environment().await;
 

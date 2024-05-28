@@ -33,7 +33,7 @@ const IDEMPOTENCY_ID_2: IdempotencyId =
 const IDEMPOTENCY_ID_3: IdempotencyId =
     IdempotencyId::unkeyed(10, "my-component", "my-handler-2", "my-key");
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_idempotency_key() {
     let mut rocksdb = storage_test_environment().await;
 

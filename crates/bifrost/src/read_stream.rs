@@ -154,6 +154,8 @@ impl Stream for LogReadStream {
 #[cfg(test)]
 mod tests {
 
+    use std::sync::atomic::AtomicUsize;
+
     use crate::{Bifrost, Record, TrimGap};
 
     use super::*;
@@ -170,7 +172,7 @@ mod tests {
 
     use restate_types::logs::Payload;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_basic_readstream() -> anyhow::Result<()> {
         // Make sure that panics exits the process.
@@ -203,13 +205,15 @@ mod tests {
             assert!(tail.is_none());
             assert_eq!(read_after, reader.current_read_pointer());
 
+            let read_counter = Arc::new(AtomicUsize::new(0));
             // spawn a reader that reads 5 records and exits.
+            let counter_clone = read_counter.clone();
             let id = tc.spawn(TaskKind::TestRunner, "read-records", None, async move {
                 for i in 1..=5 {
                     let record = reader.next().await.expect("to never terminate")?;
                     let expected_lsn = Lsn::from(i) + read_after;
                     assert_eq!(expected_lsn, reader.current_read_pointer());
-                    info!(?record, "read record");
+                    counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     assert_eq!(expected_lsn, record.offset);
                     assert_eq!(
                         Payload::new(format!("record{}", expected_lsn)).body(),
@@ -238,7 +242,7 @@ mod tests {
             // Not finished, we still didn't append records
             tokio::task::yield_now().await;
             assert!(!reader_bg_handle.is_finished());
-            assert!(!logs_contain("read record"));
+            assert!(read_counter.load(std::sync::atomic::Ordering::Relaxed) == 0);
 
             // write 5 more records.
             for i in 6..=10 {
@@ -249,7 +253,7 @@ mod tests {
 
             // reader has finished
             reader_bg_handle.await?;
-            assert!(logs_contain("read record"));
+            assert!(read_counter.load(std::sync::atomic::Ordering::Relaxed) == 5);
 
             anyhow::Ok(())
         })
@@ -257,7 +261,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[traced_test]
     async fn test_read_stream_with_trim() -> anyhow::Result<()> {
         // Make sure that panics exits the process.
         let orig_hook = std::panic::take_hook();

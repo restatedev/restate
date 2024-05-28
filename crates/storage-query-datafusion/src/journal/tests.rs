@@ -29,7 +29,7 @@ use restate_types::journal::enriched::{
 use restate_types::journal::{Entry, EntryType, InputEntry};
 use restate_types::service_protocol;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_entries() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
