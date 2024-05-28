@@ -4,6 +4,7 @@ members = [
     "crates/*",
     "crates/codederror/derive",
     "server",
+    "tools/mock-service-endpoint",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
     "tools/bifrost-benchpress",
