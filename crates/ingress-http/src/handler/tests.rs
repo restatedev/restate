@@ -414,6 +414,64 @@ async fn idempotency_key_and_send() {
         )))
         .unwrap();
 
+    let response = handle(req, move |ingress_req| {
+        // Get the function invocation and assert on it
+        let (service_invocation, notification_tx) =
+            ingress_req.expect_one_way_invocation_with_submit_notification();
+        assert_eq!(
+            service_invocation.invocation_target.service_name(),
+            "greeter.Greeter"
+        );
+        assert_eq!(service_invocation.invocation_target.handler_name(), "greet");
+
+        let greeting_req: GreetingRequest =
+            serde_json::from_slice(&service_invocation.argument).unwrap();
+        assert_eq!(&greeting_req.person, "Francesco");
+
+        assert_eq!(
+            service_invocation.idempotency_key,
+            Some(ByteString::from_static("123456"))
+        );
+        assert_eq!(
+            service_invocation.completion_retention_time,
+            Some(Duration::from_secs(60 * 60 * 24))
+        );
+        assert_that!(
+            service_invocation.submit_notification_sink,
+            some(anything())
+        );
+
+        notification_tx
+            .send(SubmittedInvocationNotification {
+                invocation_id: service_invocation.invocation_id,
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let _: SendResponse = serde_json::from_slice(&response_bytes).unwrap();
+}
+
+#[tokio::test]
+#[traced_test]
+async fn idempotency_key_and_send_with_different_invocation_id() {
+    let greeting_req = GreetingRequest {
+        person: "Francesco".to_string(),
+    };
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet/send")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        .header(IDEMPOTENCY_KEY, "123456")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&greeting_req).unwrap(),
+        )))
+        .unwrap();
+
     let expected_invocation_id = InvocationId::mock_random();
 
     let response = handle(req, move |ingress_req| {

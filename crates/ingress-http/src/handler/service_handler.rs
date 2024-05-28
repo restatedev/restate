@@ -38,6 +38,13 @@ const DELAY_QUERY_PARAM: &str = "delay";
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
+pub(crate) enum SendStatus {
+    Accepted,
+    PreviouslyAccepted,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SendResponse {
     pub(crate) invocation_id: InvocationId,
@@ -47,6 +54,7 @@ pub(crate) struct SendResponse {
         default
     )]
     execution_time: Option<humantime::Timestamp>,
+    status: SendStatus,
 }
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
@@ -280,6 +288,8 @@ where
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
+        let submit_reattached_to_existing_invocation =
+            submit_notification.invocation_id != invocation_id;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()
@@ -290,6 +300,11 @@ where
                 serde_json::to_vec(&SendResponse {
                     invocation_id: submit_notification.invocation_id,
                     execution_time: execution_time.map(SystemTime::from).map(Into::into),
+                    status: if submit_reattached_to_existing_invocation {
+                        SendStatus::PreviouslyAccepted
+                    } else {
+                        SendStatus::Accepted
+                    },
                 })
                 .unwrap()
                 .into(),
