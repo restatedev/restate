@@ -11,6 +11,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::{Buf, BufMut, BytesMut};
+use futures::StreamExt;
 use hdrhistogram::Histogram;
 use tracing::info;
 
@@ -40,7 +41,9 @@ pub async fn run(
         let bifrost = bifrost.clone();
         let clock = clock.clone();
         async move {
-            let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST);
+            let mut read_stream = bifrost
+                .create_reader(log_id, Lsn::INVALID, Lsn::MAX)
+                .await?;
             let mut counter = 0;
             let mut cancel = std::pin::pin!(cancellation_watcher());
             let mut lag_latencies = Histogram::<u64>::new(3)?;
@@ -66,7 +69,8 @@ pub async fn run(
                         info!("Reader stopping");
                         break;
                     }
-                    record = read_stream.read_next() => {
+                    record = read_stream.next() => {
+                        let record = record.expect("stream will not terminate");
                         on_record(record)?;
                     }
                 }
@@ -108,7 +112,7 @@ pub async fn run(
         }
     })?;
 
-    tokio::time::sleep(Duration::from_secs(30)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     tc.cancel_task(reader_task).unwrap().await?;
     info!("Reader stopped");

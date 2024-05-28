@@ -27,7 +27,7 @@ figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 hdrhistogram = { version = "7.5.4" }
 metrics = { workspace = true }
-metrics-exporter-prometheus = { version = "0.14", default-features = false, features = ["async-runtime"] }
+metrics-exporter-prometheus = { workspace = true }
 once_cell = { workspace = true }
 quanta = { version = "0.12.3" }
 rocksdb = { workspace = true }

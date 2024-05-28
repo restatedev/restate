@@ -16,7 +16,7 @@ use crate::partition::leadership::{ActionEffect, LeadershipState};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 use assert2::let_assert;
-use futures::StreamExt;
+use futures::TryStreamExt as _;
 use metrics::{counter, histogram};
 use restate_core::metadata;
 use restate_network::Networking;
@@ -30,6 +30,7 @@ use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
+use tokio_stream::StreamExt;
 use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
@@ -39,7 +40,7 @@ mod state_machine;
 pub mod storage;
 pub mod types;
 
-use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream, LogRecord, Record};
+use restate_bifrost::{Bifrost, FindTailAttributes, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
@@ -144,7 +145,25 @@ where
                 target_tail_lsn: current_tail.unwrap(),
             }
         }
-        let mut log_reader = LogReader::new(&bifrost, LogId::from(partition_id), last_applied_lsn);
+
+        let mut log_reader = bifrost
+            .create_reader(LogId::from(partition_id), last_applied_lsn, Lsn::MAX)
+            .await?
+            .map_ok(|record| {
+                let LogRecord { record, offset } = record;
+                match record {
+                    Record::Data(payload) => {
+                        let envelope = Envelope::from_bytes(payload.into_body())?;
+                        anyhow::Ok((offset, envelope))
+                    }
+                    Record::TrimGap(_) => {
+                        unimplemented!("Currently not supported")
+                    }
+                    Record::Seal(_) => {
+                        unimplemented!("Currently not supported")
+                    }
+                }
+            });
 
         let mut action_collector = ActionCollector::default();
         let mut effects = Effects::default();
@@ -177,9 +196,13 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                record = log_reader.read_next() => {
+                record = log_reader.next() => {
                     let command_start = Instant::now();
-                    let record = record?;
+                    let Some(record) = record else {
+                        // read stream terminated!
+                        anyhow::bail!("Read stream terminated for partition processor");
+                    };
+                    let record = record??;
                     trace!(lsn = %record.0, "Processing bifrost record for '{}': {:?}", record.1.command.name(), record.1.header);
 
                     let mut transaction = partition_storage.create_transaction();
@@ -405,48 +428,4 @@ async fn is_outdated_or_duplicate(
     };
 
     Ok(is_duplicate)
-}
-
-struct LogReader {
-    log_reader: LogReadStream,
-}
-
-impl LogReader {
-    fn new(bifrost: &Bifrost, log_id: LogId, lsn: Lsn) -> Self {
-        Self {
-            log_reader: bifrost.create_reader(log_id, lsn),
-        }
-    }
-
-    async fn read_next(&mut self) -> anyhow::Result<(Lsn, Envelope)> {
-        let LogRecord { record, offset } = self.log_reader.read_next().await?;
-        Self::deserialize_record(record).map(|envelope| (offset, envelope))
-    }
-
-    #[allow(dead_code)]
-    async fn read_next_opt(&mut self) -> anyhow::Result<Option<(Lsn, Envelope)>> {
-        let maybe_log_record = self.log_reader.read_next_opt().await?;
-
-        maybe_log_record
-            .map(|log_record| {
-                Self::deserialize_record(log_record.record)
-                    .map(|envelope| (log_record.offset, envelope))
-            })
-            .transpose()
-    }
-
-    fn deserialize_record(record: Record) -> anyhow::Result<Envelope> {
-        match record {
-            Record::Data(payload) => {
-                let envelope = Envelope::from_bytes(payload.into_body())?;
-                Ok(envelope)
-            }
-            Record::TrimGap(_) => {
-                unimplemented!("Currently not supported")
-            }
-            Record::Seal(_) => {
-                unimplemented!("Currently not supported")
-            }
-        }
-    }
 }
