@@ -28,6 +28,7 @@ futures = { workspace = true }
 humantime = { workspace = true }
 metrics = { workspace = true }
 once_cell = { workspace = true }
+pin-project = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -39,7 +40,8 @@ strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 

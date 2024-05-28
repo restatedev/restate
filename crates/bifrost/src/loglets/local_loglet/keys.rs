@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Write;
 use std::mem::size_of;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -16,6 +15,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use restate_types::logs::SequenceNumber;
 
 use crate::loglet::LogletOffset;
+
+pub(crate) const DATA_KEY_PREFIX_LENGTH: usize = size_of::<u8>() + size_of::<u64>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordKey {
@@ -37,7 +38,7 @@ impl RecordKey {
 
     pub fn to_bytes(self) -> Bytes {
         let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
-        buf.write_char('d').expect("enough key buffer");
+        buf.put_u8(b'd');
         buf.put_u64(self.log_id);
         buf.put_u64(self.offset.into());
         buf.freeze()
@@ -75,7 +76,7 @@ impl MetadataKey {
     pub fn to_bytes(self) -> Bytes {
         let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
         // m for metadata
-        buf.write_char('m').expect("enough key buffer");
+        buf.put_u8(b'm');
         buf.put_u64(self.log_id);
         buf.put_u8(self.kind as u8);
         buf.freeze()
