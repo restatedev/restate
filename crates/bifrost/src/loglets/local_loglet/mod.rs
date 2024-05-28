@@ -14,12 +14,13 @@ mod log_store;
 mod log_store_writer;
 mod metric_definitions;
 mod provider;
+mod read_stream;
 mod utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 pub use log_store::LogStoreError;
-use metrics::{counter, histogram};
+use metrics::{counter, histogram, Histogram};
 pub use provider::LocalLogletProvider;
 use restate_core::ShutdownError;
 use restate_types::logs::SequenceNumber;
@@ -27,20 +28,21 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use crate::loglet::{LogletBase, LogletOffset};
+use crate::loglet::{LogletBase, LogletOffset, SendableLogletReadStream};
 use crate::loglets::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{Error, LogRecord, SealReason};
+use crate::{Error, LogRecord, Result, SealReason};
 
 use self::keys::RecordKey;
 use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
+use self::read_stream::LocalLogletReadStream;
 use self::utils::OffsetWatch;
 
-#[derive(Debug)]
 pub struct LocalLoglet {
     log_id: u64,
     log_store: RocksDbLogStore,
@@ -55,6 +57,19 @@ pub struct LocalLoglet {
     #[allow(dead_code)]
     seal: Option<SealReason>,
     release_watch: OffsetWatch,
+    append_latency: Histogram,
+}
+
+impl std::fmt::Debug for LocalLoglet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalLoglet")
+            .field("log_id", &self.log_id)
+            .field("trim_point_offset", &self.trim_point_offset)
+            .field("last_committed_offset", &self.last_committed_offset)
+            .field("next_write_offset", &self.next_write_offset)
+            .field("seal", &self.seal)
+            .finish()
+    }
 }
 
 impl LocalLoglet {
@@ -62,7 +77,7 @@ impl LocalLoglet {
         log_id: u64,
         log_store: RocksDbLogStore,
         log_writer: RocksDbLogWriterHandle,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         // Fetch the log metadata from the store
         let log_state = log_store.get_log_state(log_id)?;
         let log_state = log_state.unwrap_or_default();
@@ -74,6 +89,7 @@ impl LocalLoglet {
         let next_write_offset = Mutex::new(LogletOffset::from(next_write_offset_raw));
         let release_pointer = LogletOffset::from(log_state.release_pointer);
         let seal = log_state.seal;
+        let append_latency = histogram!(BIFROST_LOCAL_APPEND_DURATION);
         let loglet = Self {
             log_id,
             log_store,
@@ -84,6 +100,7 @@ impl LocalLoglet {
             last_committed_offset,
             seal,
             release_watch: OffsetWatch::new(release_pointer),
+            append_latency,
         };
         debug!(
             log_id = log_id,
@@ -101,10 +118,7 @@ impl LocalLoglet {
         self.release_watch.notify(release_pointer);
     }
 
-    fn read_after(
-        &self,
-        after: LogletOffset,
-    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, Error> {
+    fn read_after(&self, after: LogletOffset) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
         // Are we reading after before the trim point? Note that if `trim_point` == `after`
         // then we don't return a trim gap, because the next record is potentially a data
@@ -162,7 +176,15 @@ impl LocalLoglet {
 #[async_trait]
 impl LogletBase for LocalLoglet {
     type Offset = LogletOffset;
-    async fn append(&self, payload: Bytes) -> Result<LogletOffset, Error> {
+
+    async fn create_read_stream(
+        self: Arc<Self>,
+        after: Self::Offset,
+    ) -> Result<SendableLogletReadStream<Self::Offset>> {
+        Ok(Box::pin(LocalLogletReadStream::create(self, after).await?))
+    }
+
+    async fn append(&self, payload: Bytes) -> Result<LogletOffset> {
         counter!(BIFROST_LOCAL_APPEND).increment(1);
         let start_time = std::time::Instant::now();
         // We hold the lock to ensure that offsets are enqueued in the order of
@@ -193,11 +215,11 @@ impl LogletBase for LocalLoglet {
         self.last_committed_offset
             .fetch_max(offset.into(), Ordering::Relaxed);
         self.notify_readers();
-        histogram!(BIFROST_LOCAL_APPEND_DURATION).record(start_time.elapsed());
+        self.append_latency.record(start_time.elapsed());
         Ok(offset)
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, Error> {
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset> {
         let num_payloads = payloads.len();
         counter!(BIFROST_LOCAL_APPEND).increment(num_payloads as u64);
         let start_time = std::time::Instant::now();
@@ -227,11 +249,11 @@ impl LogletBase for LocalLoglet {
         self.last_committed_offset
             .fetch_max(offset.into(), Ordering::Relaxed);
         self.notify_readers();
-        histogram!(BIFROST_LOCAL_APPEND_DURATION).record(start_time.elapsed());
+        self.append_latency.record(start_time.elapsed());
         Ok(offset)
     }
 
-    async fn find_tail(&self) -> Result<Option<LogletOffset>, Error> {
+    async fn find_tail(&self) -> Result<Option<LogletOffset>> {
         let last_committed = LogletOffset::from(self.last_committed_offset.load(Ordering::Relaxed));
         let current_trim_point = LogletOffset::from(self.trim_point_offset.load(Ordering::Relaxed));
         if last_committed == LogletOffset::INVALID || current_trim_point >= last_committed {
@@ -241,7 +263,7 @@ impl LogletBase for LocalLoglet {
         }
     }
 
-    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, Error> {
+    async fn get_trim_point(&self) -> Result<Option<Self::Offset>> {
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
@@ -290,7 +312,7 @@ impl LogletBase for LocalLoglet {
     async fn read_next_single(
         &self,
         after: Self::Offset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>, Error> {
+    ) -> Result<LogRecord<Self::Offset, Bytes>> {
         loop {
             let next_record = self.read_after(after)?;
             if let Some(next_record) = next_record {
@@ -304,7 +326,7 @@ impl LogletBase for LocalLoglet {
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, Error> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
         self.read_after(after)
     }
 }
