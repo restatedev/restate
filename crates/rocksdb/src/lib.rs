@@ -165,6 +165,9 @@ impl RocksDb {
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
 
+        #[cfg(test)]
+        let result = self.db.write_batch(&write_batch, &write_options);
+        #[cfg(not(test))]
         let result =
             tokio::task::block_in_place(|| self.db.write_batch(&write_batch, &write_options));
         match result {
@@ -249,6 +252,9 @@ impl RocksDb {
         // Auto...
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
+        #[cfg(any(test, feature = "test-util"))]
+        let result = self.db.write_tx_batch(&write_batch, &write_options);
+        #[cfg(not(feature = "test-util"))]
         let result =
             tokio::task::block_in_place(|| self.db.write_tx_batch(&write_batch, &write_options));
         match result {
