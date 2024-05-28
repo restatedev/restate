@@ -10,14 +10,16 @@
 
 use restate_core::{ShutdownError, SyncError};
 use std::sync::Arc;
-use thiserror::Error;
 
 use restate_types::logs::{LogId, Lsn};
 
 use crate::loglets::local_loglet::LogStoreError;
 use crate::types::SealReason;
 
-#[derive(Error, Debug, Clone)]
+/// Result type for bifrost operations.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),

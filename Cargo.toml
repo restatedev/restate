@@ -108,6 +108,7 @@ hyper = { version = "0.14.24", default-features = false }
 hyper-rustls = { version = "0.24.1", features = ["http2"] }
 itertools = "0.11.0"
 metrics = { version = "0.22" }
+metrics-exporter-prometheus = { version = "0.14", default-features = false, features = ["async-runtime"] }
 once_cell = "1.18"
 opentelemetry = { version = "0.22.0" }
 opentelemetry-http = { version = "0.11.1" }

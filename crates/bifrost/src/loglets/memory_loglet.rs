@@ -10,21 +10,26 @@
 
 use std::cmp::Reverse;
 use std::collections::{hash_map, BinaryHeap, HashMap};
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{ready, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::Stream;
 use restate_types::logs::metadata::LogletParams;
 use restate_types::logs::SequenceNumber;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletProvider};
+use crate::loglet::{
+    Loglet, LogletBase, LogletOffset, LogletProvider, LogletReadStream, SendableLogletReadStream,
+};
 use crate::LogRecord;
-use crate::{Error, ProviderError};
+use crate::{ProviderError, Result};
 
 #[derive(Default)]
 pub struct MemoryLogletProvider {
@@ -48,7 +53,7 @@ impl MemoryLogletProvider {
 
 #[async_trait]
 impl LogletProvider for MemoryLogletProvider {
-    async fn get_loglet(&self, params: &LogletParams) -> Result<std::sync::Arc<dyn Loglet>, Error> {
+    async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>> {
         let mut guard = self.store.lock().await;
 
         let loglet = match guard.entry(params.clone()) {
@@ -109,6 +114,7 @@ impl Ord for OffsetWatcher {
     }
 }
 
+#[derive(Debug)]
 pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
@@ -174,10 +180,7 @@ impl MemoryLoglet {
         }
     }
 
-    fn read_after(
-        &self,
-        after: LogletOffset,
-    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, Error> {
+    fn read_after(&self, after: LogletOffset) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Acquire));
         // are we reading after before the trim point? Note that if trim_point == after then we
@@ -201,11 +204,66 @@ impl MemoryLoglet {
     }
 }
 
+struct MemoryReadStream {
+    loglet: Arc<MemoryLoglet>,
+    current_offset: LogletOffset,
+    offset_watcher: Option<Receiver<()>>,
+}
+
+impl MemoryReadStream {
+    fn new(loglet: Arc<MemoryLoglet>, after: LogletOffset) -> Self {
+        Self {
+            loglet,
+            current_offset: after,
+            offset_watcher: None,
+        }
+    }
+}
+
+impl LogletReadStream<LogletOffset> for MemoryReadStream {}
+
+impl Stream for MemoryReadStream {
+    type Item = Result<LogRecord<LogletOffset, Bytes>>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        loop {
+            if let Some(watcher) = &mut self.offset_watcher {
+                let watcher = std::pin::pin!(watcher);
+                if ready!(watcher.poll(cx)).is_err() {
+                    warn!(
+                    "memory loglet: Watcher channel closed unexpectedly, system is probably shutting down"
+                );
+                    return Poll::Ready(None);
+                }
+            }
+            self.offset_watcher = None;
+
+            let next_record = self.loglet.read_after(self.current_offset)?;
+            if let Some(next_record) = next_record {
+                self.current_offset = next_record.offset;
+                return Poll::Ready(Some(Ok(next_record)));
+            }
+            // Wait and respond when available.
+            self.offset_watcher = Some(self.loglet.watch_for_offset(self.current_offset.next()));
+        }
+    }
+}
+
 #[async_trait]
 impl LogletBase for MemoryLoglet {
     type Offset = LogletOffset;
 
-    async fn append(&self, payload: Bytes) -> Result<LogletOffset, Error> {
+    async fn create_read_stream(
+        self: Arc<Self>,
+        after: Self::Offset,
+    ) -> Result<SendableLogletReadStream<Self::Offset>> {
+        Ok(Box::pin(MemoryReadStream::new(self, after)))
+    }
+
+    async fn append(&self, payload: Bytes) -> Result<LogletOffset> {
         let mut log = self.log.lock().unwrap();
         let offset = self.index_to_offset(log.len());
         debug!(
@@ -219,7 +277,7 @@ impl LogletBase for MemoryLoglet {
         Ok(offset)
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, Error> {
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset> {
         let mut log = self.log.lock().unwrap();
         let offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
         let first_offset = offset;
@@ -236,7 +294,7 @@ impl LogletBase for MemoryLoglet {
         Ok(first_offset)
     }
 
-    async fn find_tail(&self) -> Result<Option<LogletOffset>, Error> {
+    async fn find_tail(&self) -> Result<Option<LogletOffset>> {
         let log = self.log.lock().unwrap();
         if log.is_empty() {
             Ok(None)
@@ -247,7 +305,7 @@ impl LogletBase for MemoryLoglet {
     }
 
     /// Find the head (oldest) record in the loglet.
-    async fn get_trim_point(&self) -> Result<Option<LogletOffset>, Error> {
+    async fn get_trim_point(&self) -> Result<Option<LogletOffset>> {
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
@@ -257,7 +315,7 @@ impl LogletBase for MemoryLoglet {
         }
     }
 
-    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), Error> {
+    async fn trim(&self, new_trim_point: Self::Offset) -> Result<()> {
         let actual_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
@@ -281,7 +339,7 @@ impl LogletBase for MemoryLoglet {
     async fn read_next_single(
         &self,
         after: LogletOffset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>, Error> {
+    ) -> Result<LogRecord<Self::Offset, Bytes>> {
         loop {
             let next_record = self.read_after(after)?;
             if let Some(next_record) = next_record {
@@ -297,7 +355,7 @@ impl LogletBase for MemoryLoglet {
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, Error> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
         self.read_after(after)
     }
 }
@@ -306,14 +364,13 @@ impl LogletBase for MemoryLoglet {
 mod tests {
     use super::*;
 
-    use googletest::prelude::*;
     use restate_test_util::let_assert;
     use tokio::task::JoinHandle;
     use tracing_test::traced_test;
 
     #[tokio::test(start_paused = true)]
     #[traced_test]
-    async fn test_memory_loglet() -> Result<()> {
+    async fn test_memory_loglet() -> googletest::Result<()> {
         let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
 
         assert_eq!(None, loglet.get_trim_point().await?);
@@ -360,7 +417,7 @@ mod tests {
             .await?
             .is_none());
 
-        let handle1: JoinHandle<Result<()>> = tokio::spawn({
+        let handle1: JoinHandle<googletest::Result<()>> = tokio::spawn({
             let loglet = loglet.clone();
             async move {
                 // read future record 4
@@ -372,7 +429,7 @@ mod tests {
         });
 
         // Waiting for 10
-        let handle2: JoinHandle<Result<()>> = tokio::spawn({
+        let handle2: JoinHandle<googletest::Result<()>> = tokio::spawn({
             let loglet = loglet.clone();
             async move {
                 // read future record 10
