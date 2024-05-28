@@ -88,6 +88,8 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     http_connector.set_nodelay(true);
     http_connector.set_connect_timeout(Some(env.connect_timeout));
     http_connector.enforce_http(false);
+    // default interval on linux is 75 secs, also use this as the start-after
+    http_connector.set_keepalive(Some(Duration::from_secs(75)));
 
     let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
