@@ -3955,6 +3955,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-service-endpoint"
+version = "0.9.1"
+dependencies = [
+ "assert2",
+ "async-stream",
+ "bytes",
+ "futures",
+ "http 0.2.12",
+ "http-body-util",
+ "hyper 1.2.0",
+ "hyper-util",
+ "prost",
+ "restate-service-protocol",
+ "restate-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "multimap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
