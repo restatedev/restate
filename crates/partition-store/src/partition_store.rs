@@ -182,7 +182,7 @@ pub(crate) fn cf_options(mut cf_options: rocksdb::Options) -> rocksdb::Options {
     // Most of the changes are highly temporal, we try to delay flushing
     // As much as we can to increase the chances to observe a deletion.
     //
-    cf_options.set_max_write_buffer_number(3);
+    cf_options.set_max_write_buffer_number(10);
     cf_options.set_min_write_buffer_number_to_merge(2);
     //
     // Set compactions per level

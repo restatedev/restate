@@ -26,7 +26,7 @@ use crate::loglet::{Loglet, LogletOffset, LogletProvider};
 use crate::Error;
 use crate::ProviderError;
 
-#[derive(Debug)]
+//#[derive(Debug)]
 pub struct LocalLogletProvider {
     log_store: RocksDbLogStore,
     active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,

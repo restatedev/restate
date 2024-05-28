@@ -133,7 +133,7 @@ fn cf_data_options(mut opts: rocksdb::Options) -> rocksdb::Options {
     //
     // Set compactions per level
     //
-    opts.set_max_write_buffer_number(2);
+    opts.set_max_write_buffer_number(10);
     opts.set_num_levels(7);
     opts.set_compression_per_level(&[
         DBCompressionType::None,
@@ -164,7 +164,7 @@ fn cf_metadata_options(mut opts: rocksdb::Options) -> rocksdb::Options {
         DBCompressionType::Snappy,
         DBCompressionType::Zstd,
     ]);
-    opts.set_max_write_buffer_number(2);
+    opts.set_max_write_buffer_number(10);
     opts.set_max_successive_merges(10);
     // Merge operator for log state updates
     opts.set_merge_operator(
