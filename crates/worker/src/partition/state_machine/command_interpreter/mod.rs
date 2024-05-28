@@ -37,9 +37,7 @@ use restate_types::identifiers::{
     WithInvocationId, WithPartitionKey,
 };
 use restate_types::ingress;
-use restate_types::ingress::{
-    IngressResponseEnvelope, IngressResponseResult, InvocationResponseCorrelationIds,
-};
+use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, ResponseResult, ServiceInvocation,
@@ -232,10 +230,8 @@ where
         effects.set_related_invocation_target(&service_invocation.invocation_target);
         effects.set_parent_span_context(&service_invocation.span_context);
 
-        let idempotency_id = service_invocation.compute_idempotency_id();
-
         // If an idempotency key is set, handle idempotency
-        if let Some(idempotency_id) = &idempotency_id {
+        if let Some(idempotency_id) = service_invocation.compute_idempotency_id() {
             if service_invocation.invocation_target.invocation_target_ty()
                 == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             {
@@ -245,7 +241,7 @@ where
                     .try_resolve_idempotent_request(
                         effects,
                         state,
-                        idempotency_id,
+                        &idempotency_id,
                         &service_invocation.invocation_id,
                         service_invocation.response_sink.as_ref(),
                     )
@@ -254,7 +250,6 @@ where
                     Self::send_submit_notification_if_needed(
                         service_invocation.invocation_id,
                         Some(attached_invocation_id),
-                        Some(idempotency_id.clone()),
                         service_invocation.submit_notification_sink,
                         effects,
                     );
@@ -264,8 +259,7 @@ where
                 }
 
                 // Idempotent invocation needs to be processed for the first time, let's roll!
-                effects
-                    .store_idempotency_id(idempotency_id.clone(), service_invocation.invocation_id);
+                effects.store_idempotency_id(idempotency_id, service_invocation.invocation_id);
             }
         }
 
@@ -302,7 +296,6 @@ where
                 Self::send_submit_notification_if_needed(
                     service_invocation.invocation_id,
                     None,
-                    idempotency_id,
                     service_invocation.submit_notification_sink.take(),
                     effects,
                 );
@@ -340,8 +333,7 @@ where
                                 effects,
                                 iter::once(response_sink),
                                 response_result,
-                                InvocationResponseCorrelationIds::from_invocation_id(service_invocation.invocation_id)
-                                    .with_service_id(service_invocation.invocation_target.as_keyed_service_id()),
+                                Some(service_invocation.invocation_id),
                                 Some(&service_invocation.invocation_target),
                             );
                         }
@@ -357,7 +349,6 @@ where
                 Self::send_submit_notification_if_needed(
                     service_invocation.invocation_id,
                     Some(original_invocation_id),
-                    idempotency_id,
                     service_invocation.submit_notification_sink.take(),
                     effects,
                 );
@@ -368,7 +359,6 @@ where
         Self::send_submit_notification_if_needed(
             service_invocation.invocation_id,
             None,
-            idempotency_id,
             service_invocation.submit_notification_sink.take(),
             effects,
         );
@@ -434,9 +424,7 @@ where
                         effects,
                         response_sink.cloned(),
                         completed.response_result,
-                        InvocationResponseCorrelationIds::from_invocation_id(*caller_id)
-                            .with_service_id(completed.invocation_target.as_keyed_service_id())
-                            .with_idempotency_id(Some(idempotency_id.clone())),
+                        Some(*caller_id),
                         Some(&completed.invocation_target),
                     );
                 }
@@ -444,8 +432,7 @@ where
                     effects,
                     response_sink.cloned(),
                     GONE_INVOCATION_ERROR,
-                    InvocationResponseCorrelationIds::from_invocation_id(*caller_id)
-                        .with_idempotency_id(Some(idempotency_id.clone())),
+                    Some(*caller_id),
                     None,
                 ),
             }
@@ -691,17 +678,11 @@ where
         } = inboxed_invocation;
 
         // Reply back to callers with error, and publish end trace
-        let idempotency_id = inboxed_invocation.idempotency_key.map(|idempotency| {
-            IdempotencyId::combine(invocation_id, &invocation_target, idempotency)
-        });
-
         self.send_response_to_sinks(
             effects,
             response_sinks,
             &error,
-            InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
-                .with_service_id(invocation_target.as_keyed_service_id())
-                .with_idempotency_id(idempotency_id),
+            Some(invocation_id),
             Some(&invocation_target),
         );
 
@@ -1102,26 +1083,12 @@ where
                 return Ok(());
             };
 
-            let idempotency_id =
-                invocation_metadata
-                    .idempotency_key
-                    .as_ref()
-                    .map(|idempotency_key| {
-                        IdempotencyId::combine(
-                            invocation_id,
-                            &invocation_metadata.invocation_target,
-                            idempotency_key.clone(),
-                        )
-                    });
-
             // Send responses out
             self.send_response_to_sinks(
                 effects,
                 invocation_metadata.response_sinks.clone(),
                 result.clone(),
-                InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
-                    .with_service_id(invocation_metadata.invocation_target.as_keyed_service_id())
-                    .with_idempotency_id(idempotency_id),
+                Some(invocation_id),
                 Some(&invocation_metadata.invocation_target),
             );
 
@@ -1192,25 +1159,12 @@ where
 
         let response_result = ResponseResult::from(error);
 
-        let idempotency_id = invocation_metadata
-            .idempotency_key
-            .as_ref()
-            .map(|idempotency_key| {
-                IdempotencyId::combine(
-                    invocation_id,
-                    &invocation_metadata.invocation_target,
-                    idempotency_key.clone(),
-                )
-            });
-
         // Send responses out
         self.send_response_to_sinks(
             effects,
             invocation_metadata.response_sinks.clone(),
             response_result.clone(),
-            InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
-                .with_service_id(invocation_metadata.invocation_target.as_keyed_service_id())
-                .with_idempotency_id(idempotency_id),
+            Some(invocation_id),
             Some(&invocation_metadata.invocation_target),
         );
 
@@ -1244,7 +1198,7 @@ where
         effects: &mut Effects,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
-        invocation_response_correlation_ids: InvocationResponseCorrelationIds,
+        invocation_id: Option<InvocationId>,
         invocation_target: Option<&InvocationTarget>,
     ) {
         let result = res.into();
@@ -1258,9 +1212,10 @@ where
                     entry_index,
                     result: result.clone(),
                 }), effects),
-                ServiceInvocationResponseSink::Ingress(ingress_dispatcher_id) => {
-                    self.ingress_response(IngressResponseEnvelope{ target_node: ingress_dispatcher_id, inner: ingress::InvocationResponse {
-                        correlation_ids: invocation_response_correlation_ids.clone(),
+                ServiceInvocationResponseSink::Ingress { node_id, request_id } => {
+                    self.ingress_response(IngressResponseEnvelope{ target_node: node_id, inner: ingress::InvocationResponse {
+                        request_id,
+                        invocation_id,
                         response: match result.clone() {
                             ResponseResult::Success(res) => {
                                 IngressResponseResult::Success(invocation_target.expect("For success responses, there must be an invocation target!").clone(), res)
@@ -1914,16 +1869,16 @@ where
             attach_invocation_request.partition_key(),
             self.partition_key_range);
 
-        let (invocation_id, service_id) = match attach_invocation_request.invocation_query {
-            InvocationQuery::Invocation(iid) => (iid, None),
+        let invocation_id = match attach_invocation_request.invocation_query {
+            InvocationQuery::Invocation(iid) => iid,
             InvocationQuery::Workflow(sid) => match state.get_virtual_object_status(&sid).await? {
-                VirtualObjectStatus::Locked(iid) => (iid, Some(sid)),
+                VirtualObjectStatus::Locked(iid) => iid,
                 VirtualObjectStatus::Unlocked => {
                     self.send_response_to_sinks(
                         effects,
                         vec![attach_invocation_request.response_sink],
                         NOT_FOUND_INVOCATION_ERROR,
-                        InvocationResponseCorrelationIds::from_service_id(sid),
+                        None,
                         None,
                     );
                     return Ok(());
@@ -1941,25 +1896,11 @@ where
                 );
             }
             InvocationStatus::Completed(completed) => {
-                let idempotency_id = completed.idempotency_key.map(|k| {
-                    IdempotencyId::new(
-                        completed.invocation_target.service_name().clone(),
-                        completed
-                            .invocation_target
-                            .key()
-                            .map(|b| b.as_bytes())
-                            .cloned(),
-                        completed.invocation_target.handler_name().clone(),
-                        k,
-                    )
-                });
                 self.send_response_to_sinks(
                     effects,
                     vec![attach_invocation_request.response_sink],
                     completed.response_result,
-                    InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
-                        .with_idempotency_id(idempotency_id)
-                        .with_service_id(completed.invocation_target.as_keyed_service_id()),
+                    Some(invocation_id),
                     Some(&completed.invocation_target),
                 );
             }
@@ -1967,8 +1908,7 @@ where
                 effects,
                 vec![attach_invocation_request.response_sink],
                 NOT_FOUND_INVOCATION_ERROR,
-                InvocationResponseCorrelationIds::from_invocation_id(invocation_id)
-                    .with_service_id(service_id),
+                Some(invocation_id),
                 None,
             ),
         }
@@ -2004,19 +1944,22 @@ where
     fn send_submit_notification_if_needed(
         original_invocation_id: InvocationId,
         attached_invocation_id: Option<InvocationId>,
-        idempotency_id: Option<IdempotencyId>,
         submit_notification_sink: Option<SubmitNotificationSink>,
         effects: &mut Effects,
     ) {
         // Notify the ingress, if needed, of the chosen invocation_id
-        if let Some(SubmitNotificationSink::Ingress(target_node)) = submit_notification_sink {
+        if let Some(SubmitNotificationSink::Ingress {
+            node_id,
+            request_id,
+        }) = submit_notification_sink
+        {
             effects.send_ingress_attach_notification(IngressResponseEnvelope {
-                target_node,
+                target_node: node_id,
                 inner: ingress::SubmittedInvocationNotification {
+                    request_id,
                     original_invocation_id,
                     attached_invocation_id: attached_invocation_id
                         .unwrap_or(original_invocation_id),
-                    idempotency_id,
                 },
             })
         }

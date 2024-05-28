@@ -391,7 +391,7 @@ where
             Action::IngressResponse(ingress_response) => {
                 Self::send_ingress_message(
                     networking,
-                    ingress_response.inner.correlation_ids.invocation_id,
+                    ingress_response.inner.invocation_id,
                     ingress_response.target_node,
                     ingress::IngressMessage::InvocationResponse(ingress_response.inner),
                 )

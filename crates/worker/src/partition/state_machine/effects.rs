@@ -330,27 +330,27 @@ impl Effect {
                 inner:
                     ingress::InvocationResponse {
                         response: IngressResponseResult::Success(_, _),
-                        correlation_ids,
+                        request_id,
                         ..
                     },
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                "Effect: Send response with correlation ids {:?} to ingress: Success",
-                correlation_ids
+                "Effect: Send response with ingress request id {:?} to ingress: Success",
+                request_id
             ),
             Effect::IngressResponse(IngressResponseEnvelope {
                 inner:
                     ingress::InvocationResponse {
                         response: IngressResponseResult::Failure(e),
-                        correlation_ids,
+                        request_id,
                         ..
                     },
                 ..
             }) => debug_if_leader!(
                 is_leader,
-                "Effect: Send response with correlation ids {:?} to ingress: Failure({})",
-                correlation_ids,
+                "Effect: Send response with ingress request id {:?} to ingress: Failure({})",
+                request_id,
                 e
             ),
             Effect::IngressSubmitNotification(attach_notification) => debug_if_leader!(

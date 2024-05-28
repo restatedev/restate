@@ -18,10 +18,8 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
 };
-use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
-use restate_types::ingress::{
-    IngressResponseResult, InvocationResponse, InvocationResponseCorrelationIds,
-};
+use restate_types::identifiers::WithPartitionKey;
+use restate_types::ingress::{IngressResponseResult, InvocationResponse};
 use restate_types::invocation::{InvocationQuery, ResponseResult};
 use restate_types::partition_table::FindPartition;
 
@@ -72,19 +70,14 @@ impl InvocationStorageReader for InvocationStorageReaderImpl {
         match invocation_status {
             InvocationStatus::Completed(completed) => {
                 Ok(GetOutputResult::Ready(InvocationResponse {
-                    correlation_ids: InvocationResponseCorrelationIds::from_invocation_id(
-                        invocation_id,
-                    )
-                    .with_service_id(completed.invocation_target.as_keyed_service_id())
-                    .with_idempotency_id(completed.idempotency_key.map(|k| {
-                        IdempotencyId::combine(invocation_id, &completed.invocation_target, k)
-                    })),
+                    request_id: Default::default(),
                     response: match completed.response_result.clone() {
                         ResponseResult::Success(res) => {
                             IngressResponseResult::Success(completed.invocation_target, res)
                         }
                         ResponseResult::Failure(err) => IngressResponseResult::Failure(err),
                     },
+                    invocation_id: Some(invocation_id),
                 }))
             }
             InvocationStatus::Free => Ok(GetOutputResult::NotFound),

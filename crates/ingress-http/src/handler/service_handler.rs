@@ -38,6 +38,13 @@ const DELAY_QUERY_PARAM: &str = "delay";
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]
+pub(crate) enum SendStatus {
+    Accepted,
+    PreviouslyAccepted,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SendResponse {
     pub(crate) invocation_id: InvocationId,
@@ -47,6 +54,7 @@ pub(crate) struct SendResponse {
         default
     )]
     execution_time: Option<humantime::Timestamp>,
+    status: SendStatus,
 }
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
@@ -246,7 +254,7 @@ where
 
         Self::reply_with_invocation_response(
             response.result,
-            Some(invocation_id),
+            Some(response.invocation_id.unwrap_or(invocation_id)),
             response.idempotency_expiry_time.as_deref(),
             move |_| Ok(invocation_target_metadata),
         )
@@ -260,7 +268,7 @@ where
         let execution_time = service_invocation.execution_time;
 
         // Send the service invocation
-        let (req, submit_notification_rx) =
+        let (req, req_id, submit_notification_rx) =
             IngressDispatcherRequest::one_way_invocation(service_invocation);
 
         if let Err(e) = dispatcher.dispatch_ingress_request(req).await {
@@ -276,10 +284,12 @@ where
         let submit_notification = if let Ok(response) = submit_notification_rx.await {
             response
         } else {
-            dispatcher.evict_pending_submit_notification(invocation_id);
+            dispatcher.evict_pending_submit_notification(req_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };
+        let submit_reattached_to_existing_invocation =
+            submit_notification.invocation_id != invocation_id;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()
@@ -290,6 +300,11 @@ where
                 serde_json::to_vec(&SendResponse {
                     invocation_id: submit_notification.invocation_id,
                     execution_time: execution_time.map(SystemTime::from).map(Into::into),
+                    status: if submit_reattached_to_existing_invocation {
+                        SendStatus::PreviouslyAccepted
+                    } else {
+                        SendStatus::Accepted
+                    },
                 })
                 .unwrap()
                 .into(),
