@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
 
 use restate_core::ShutdownError;
 
@@ -49,5 +50,9 @@ impl OffsetWatch {
             .await
             .map_err(|_| ShutdownError)?;
         Ok(())
+    }
+
+    pub fn to_stream(&self) -> WatchStream<LogletOffset> {
+        WatchStream::new(self.receive.clone())
     }
 }
