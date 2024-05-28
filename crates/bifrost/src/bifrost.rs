@@ -22,7 +22,7 @@ use smallvec::SmallVec;
 use tracing::{error, instrument};
 
 use restate_core::{metadata, Metadata, MetadataKind};
-use restate_types::logs::metadata::ProviderKind;
+use restate_types::logs::metadata::{ProviderKind, Segment};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
@@ -112,6 +112,18 @@ impl Bifrost {
         attributes: FindTailAttributes,
     ) -> Result<Option<Lsn>, Error> {
         self.inner.find_tail(log_id, attributes).await
+    }
+
+    /// The lsn of the slot **before** the first readable record (if it exists), or the offset
+    /// before the next slot that will be written to.
+    pub async fn get_trim_point(&self, log_id: LogId) -> Result<Option<Lsn>, Error> {
+        self.inner.get_trim_point(log_id).await
+    }
+
+    /// Trims the given log to the minimum of the provided trim point or the current tail.
+    #[instrument(level = "debug", skip(self), err)]
+    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+        self.inner.trim(log_id, trim_point).await
     }
 
     /// The version of the currently loaded logs metadata
@@ -228,6 +240,56 @@ impl BifrostInner {
         loglet.find_tail().await
     }
 
+    async fn get_trim_point(&self, log_id: LogId) -> Result<Option<Lsn>, Error> {
+        self.fail_if_shutting_down()?;
+
+        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
+        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+
+        let mut trim_point = None;
+
+        // iterate over the chain until we find the first missing trim point, return value before
+        // todo: maybe update configuration to remember trim point for the whole chain
+        for segment in log_chain.iter() {
+            let loglet = self.get_loglet(&segment).await?;
+            let loglet_specific_trim_point = loglet.get_trim_point().await?;
+
+            // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
+            if loglet_specific_trim_point.is_none() {
+                break;
+            }
+
+            trim_point = loglet_specific_trim_point;
+        }
+
+        Ok(trim_point)
+    }
+
+    async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+        self.fail_if_shutting_down()?;
+
+        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
+        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+
+        for segment in log_chain.iter() {
+            let loglet = self.get_loglet(&segment).await?;
+
+            if loglet.base_lsn > trim_point {
+                break;
+            }
+
+            if let Some(local_trim_point) =
+                loglet.find_tail().await?.map(|tail| tail.min(trim_point))
+            {
+                loglet.trim(local_trim_point).await?;
+            }
+        }
+
+        // todo: Update logs configuration to remove sealed and empty loglets
+
+        Ok(())
+    }
+
     #[inline]
     fn fail_if_shutting_down(&self) -> Result<(), Error> {
         if self.shutting_down.load(Ordering::Relaxed) {
@@ -286,10 +348,7 @@ impl BifrostInner {
             .logs()
             .and_then(|logs| logs.tail_segment(log_id))
             .ok_or(Error::UnknownLogId(log_id))?;
-        let provider = self.provider_for(tail_segment.config.kind);
-        let loglet = provider.get_loglet(&tail_segment.config.params).await?;
-
-        Ok(LogletWrapper::new(tail_segment.base_lsn, loglet))
+        self.get_loglet(&tail_segment).await
     }
 
     async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper, Error> {
@@ -298,9 +357,12 @@ impl BifrostInner {
             .logs()
             .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
             .ok_or(Error::UnknownLogId(log_id))?;
+        self.get_loglet(&segment).await
+    }
+
+    async fn get_loglet(&self, segment: &Segment) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind);
         let loglet = provider.get_loglet(&segment.config.params).await?;
-
         Ok(LogletWrapper::new(segment.base_lsn, loglet))
     }
 }
@@ -314,10 +376,15 @@ mod tests {
     use crate::loglets::memory_loglet::MemoryLogletProvider;
     use googletest::prelude::*;
 
+    use crate::{Record, TrimGap};
     use restate_core::TestCoreEnv;
     use restate_core::{task_center, TestCoreEnvBuilder};
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::arc_util::Constant;
+    use restate_types::config::CommonOptions;
     use restate_types::logs::SequenceNumber;
     use restate_types::partition_table::FixedPartitionTable;
+    use test_log::test;
     use tracing::info;
     use tracing_test::traced_test;
 
@@ -421,5 +488,83 @@ mod tests {
             Ok(())
         })
         .await
+    }
+
+    #[test(tokio::test)]
+    async fn trim_log_smoke_test() -> Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                RocksDbManager::init(Constant::new(CommonOptions::default()));
+
+                let log_id = LogId::from(0);
+                let mut bifrost = Bifrost::init().await;
+
+                assert!(bifrost.get_trim_point(log_id).await?.is_none());
+
+                for _ in 1..=10 {
+                    bifrost.append(log_id, Payload::default()).await?;
+                }
+
+                bifrost.trim(log_id, Lsn::from(5)).await?;
+
+                assert_eq!(
+                    bifrost
+                        .find_tail(log_id, FindTailAttributes::default())
+                        .await?,
+                    Some(Lsn::from(10))
+                );
+                assert_eq!(bifrost.get_trim_point(log_id).await?, Some(Lsn::from(5)));
+
+                for lsn in 0..5 {
+                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    assert_that!(
+                        record,
+                        pat!(Some(pat!(LogRecord {
+                            offset: eq(Lsn::from(lsn + 1)),
+                            record: pat!(Record::TrimGap(pat!(TrimGap {
+                                until: eq(Lsn::from(5)),
+                            })))
+                        })))
+                    )
+                }
+
+                for lsn in 5..10 {
+                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    assert_that!(
+                        record,
+                        pat!(Some(pat!(LogRecord {
+                            offset: eq(Lsn::from(lsn + 1)),
+                            record: pat!(Record::Data(_))
+                        })))
+                    );
+                }
+
+                // trimming beyond the release point will fall back to the release point
+                bifrost.trim(log_id, Lsn::from(u64::MAX)).await?;
+                assert_eq!(bifrost.get_trim_point(log_id).await?, Some(Lsn::from(10)));
+
+                for _ in 0..10 {
+                    bifrost.append(log_id, Payload::default()).await?;
+                }
+
+                for lsn in 10..20 {
+                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    assert_that!(
+                        record,
+                        pat!(Some(pat!(LogRecord {
+                            offset: eq(Lsn::from(lsn + 1)),
+                            record: pat!(Record::Data(_))
+                        })))
+                    );
+                }
+
+                Ok(())
+            })
+            .await
     }
 }

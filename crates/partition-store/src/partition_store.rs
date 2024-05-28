@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::slice;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -225,6 +226,10 @@ impl PartitionStore {
         }
     }
 
+    pub fn partition_id(&self) -> PartitionId {
+        self.partition_id
+    }
+
     pub fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
         &self.key_range
     }
@@ -333,6 +338,14 @@ impl PartitionStore {
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
         }
+    }
+
+    pub async fn flush_memtables(&self, wait: bool) -> Result<()> {
+        self.rocksdb
+            .flush_memtables(slice::from_ref(&self.data_cf_name), wait)
+            .await
+            .map_err(|err| StorageError::Generic(err.into()))?;
+        Ok(())
     }
 }
 

@@ -47,9 +47,11 @@ tracing = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-metadata-store = { workspace = true }
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+test-log = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }

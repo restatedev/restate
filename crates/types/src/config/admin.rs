@@ -43,6 +43,21 @@ pub struct AdminOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub heartbeat_interval: humantime::Duration,
+
+    /// # Log trim interval
+    ///
+    /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
+    /// can be disabled by setting it to "".
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub log_trim_interval: Option<humantime::Duration>,
+
+    /// # Log trim threshold
+    ///
+    /// Minimum number of trimmable log entries. The cluster controller will only trim a log if it
+    /// can remove equal or more entries than this threshold. This prevents too many small trim
+    /// operations.
+    pub log_trim_threshold: u64,
 }
 
 impl AdminOptions {
@@ -68,6 +83,9 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: Duration::from_millis(1500).into(),
+            // try to trim the log every hour
+            log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
+            log_trim_threshold: 1000,
         }
     }
 }

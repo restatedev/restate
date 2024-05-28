@@ -132,6 +132,7 @@ pub struct TestCoreEnvBuilder<N> {
     pub metadata_writer: MetadataWriter,
     pub metadata: Metadata,
     pub nodes_config: NodesConfiguration,
+    pub provider_kind: ProviderKind,
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
     pub partition_table: FixedPartitionTable,
@@ -186,6 +187,7 @@ where
             router_builder,
             partition_table,
             metadata_store_client,
+            provider_kind: ProviderKind::InMemory,
         }
     }
 
@@ -201,6 +203,11 @@ where
 
     pub fn set_my_node_id(mut self, my_node_id: GenerationalNodeId) -> Self {
         self.my_node_id = my_node_id;
+        self
+    }
+
+    pub fn set_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
+        self.provider_kind = provider_kind;
         self
     }
 
@@ -255,11 +262,8 @@ where
             .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
 
-        // todo: Allow client to update logs configuration and remove this bit here.
-        let logs = create_static_metadata(
-            ProviderKind::InMemory,
-            self.partition_table.num_partitions(),
-        );
+        let logs =
+            create_static_metadata(self.provider_kind, self.partition_table.num_partitions());
         self.metadata_store_client
             .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
             .await

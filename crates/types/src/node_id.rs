@@ -37,6 +37,8 @@ pub enum NodeId {
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     Clone,
     Copy,
     Hash,

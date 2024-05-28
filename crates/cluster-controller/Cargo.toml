@@ -12,6 +12,7 @@ default = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
+restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-network = { workspace = true }
 restate-node-protocol = { workspace = true }
@@ -27,3 +28,10 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+restate-bifrost = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
+
+googletest = { workspace = true }
+test-log = { workspace = true }

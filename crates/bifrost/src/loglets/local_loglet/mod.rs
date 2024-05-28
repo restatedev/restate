@@ -29,6 +29,9 @@ use tracing::{debug, warn};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::loglet::{LogletBase, LogletOffset};
+use crate::loglets::local_loglet::metric_definitions::{
+    BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
+};
 use crate::{Error, LogRecord, SealReason};
 
 use self::keys::RecordKey;
@@ -44,6 +47,8 @@ pub struct LocalLoglet {
     log_writer: RocksDbLogWriterHandle,
     // internal offset of the first record (or slot available)
     trim_point_offset: AtomicU64,
+    // used to order concurrent trim operations :-(
+    trim_point_lock: Mutex<()>,
     // In local loglet, the release point == the last committed offset
     last_committed_offset: AtomicU64,
     next_write_offset: Mutex<LogletOffset>,
@@ -74,6 +79,7 @@ impl LocalLoglet {
             log_store,
             log_writer,
             trim_point_offset,
+            trim_point_lock: Mutex::new(()),
             next_write_offset,
             last_committed_offset,
             seal,
@@ -125,7 +131,14 @@ impl LocalLoglet {
             );
             let record = iter.next().transpose().map_err(LogStoreError::Rocksdb)?;
             let Some(record) = record else {
-                return Ok(None);
+                let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+
+                // we might not have been able to read the next record because of a concurrent trim operation
+                return if trim_point > after {
+                    Ok(Some(LogRecord::new_trim_gap(after.next(), trim_point)))
+                } else {
+                    Ok(None)
+                };
             };
 
             let (key, data) = record;
@@ -169,6 +182,8 @@ impl LogletBase for LocalLoglet {
             (receiver, offset)
             // lock dropped
         };
+
+        debug!("Written entry to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
@@ -218,15 +233,58 @@ impl LogletBase for LocalLoglet {
 
     async fn find_tail(&self) -> Result<Option<LogletOffset>, Error> {
         let last_committed = LogletOffset::from(self.last_committed_offset.load(Ordering::Relaxed));
-        if last_committed == LogletOffset::INVALID {
+        let current_trim_point = LogletOffset::from(self.trim_point_offset.load(Ordering::Relaxed));
+        if last_committed == LogletOffset::INVALID || current_trim_point >= last_committed {
             Ok(None)
         } else {
             Ok(Some(last_committed))
         }
     }
 
-    async fn get_trim_point(&self) -> Result<Self::Offset, Error> {
-        Ok(LogletOffset(self.trim_point_offset.load(Ordering::Relaxed)))
+    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, Error> {
+        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+
+        if current_trim_point == LogletOffset::INVALID {
+            Ok(None)
+        } else {
+            Ok(Some(current_trim_point))
+        }
+    }
+
+    /// Trim the log to the minimum of new_trim_point and last_committed_offset
+    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), Error> {
+        let effective_trim_point = new_trim_point.min(LogletOffset(
+            self.last_committed_offset.load(Ordering::Relaxed),
+        ));
+
+        // the lock is needed to prevent concurrent trim operations from over taking each other :-(
+        // The problem is that the LogStoreWriter is not the component holding the ground truth
+        // but the LocalLoglet is. The bad thing that could happen is that we might not trim earlier
+        // parts in case two trim operations get reordered and we crash before applying the second.
+        let _trim_point_lock_guard = self.trim_point_lock.lock().await;
+
+        let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
+
+        if current_trim_point >= effective_trim_point {
+            // nothing to do since we have already trimmed beyond new_trim_point
+            return Ok(());
+        }
+
+        counter!(BIFROST_LOCAL_TRIM).increment(1);
+
+        // no compare & swap operation is needed because we are operating under the trim point lock
+        self.trim_point_offset
+            .store(effective_trim_point.0, Ordering::Relaxed);
+
+        self.log_writer
+            .enqueue_trim(self.log_id, current_trim_point, effective_trim_point)
+            .await?;
+
+        histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(
+            u32::try_from(effective_trim_point.0 - current_trim_point.0).unwrap_or(u32::MAX),
+        );
+
+        Ok(())
     }
 
     async fn read_next_single(

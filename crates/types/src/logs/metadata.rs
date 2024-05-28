@@ -158,6 +158,13 @@ impl Chain {
     pub fn tail(&self) -> Option<(&Lsn, &Arc<LogletConfig>)> {
         self.chain.last_key_value()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = Segment> + '_ {
+        self.chain.iter().map(|(lsn, loglet_config)| Segment {
+            base_lsn: *lsn,
+            config: Arc::clone(loglet_config),
+        })
+    }
 }
 
 /// Initializes the bifrost metadata with static log metadata, it creates a log for every partition

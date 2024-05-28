@@ -14,7 +14,10 @@ use tracing::info;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_metadata_store::MetadataStoreClient;
 use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvc;
-use restate_node_services::cluster_ctrl::{ClusterStateRequest, ClusterStateResponse};
+use restate_node_services::cluster_ctrl::{
+    ClusterStateRequest, ClusterStateResponse, TrimLogRequest,
+};
+use restate_types::logs::{LogId, Lsn};
 
 use crate::network_server::AdminDependencies;
 
@@ -48,5 +51,22 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         info!("Cluster state: {:?}", cluster_state);
 
         Ok(Response::new(ClusterStateResponse::default()))
+    }
+
+    /// Internal operations API to trigger the log truncation
+    async fn trim_log(&self, request: Request<TrimLogRequest>) -> Result<Response<()>, Status> {
+        let request = request.into_inner();
+        let log_id = LogId::from(request.log_id);
+        let trim_point = Lsn::from(request.trim_point);
+        if let Err(err) = self
+            .controller_handle
+            .trim_log(log_id, trim_point)
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+        {
+            info!("Failed trimming the log: {err}");
+            return Err(Status::internal(err.to_string()));
+        }
+        Ok(Response::new(()))
     }
 }
