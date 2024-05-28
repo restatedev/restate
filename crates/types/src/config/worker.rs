@@ -68,7 +68,7 @@ impl WorkerOptions {
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
-            internal_queue_length: NonZeroUsize::new(64).unwrap(),
+            internal_queue_length: NonZeroUsize::new(6400).unwrap(),
             num_timers_in_memory_limit: None,
             storage: StorageOptions::default(),
             invoker: Default::default(),

@@ -16,9 +16,9 @@ use restate_rocksdb::{
 use restate_types::arc_util::Updateable;
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use rocksdb::{BoundColumnFamily, DBCompressionType, DB};
+use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
 
-use super::keys::{MetadataKey, MetadataKind};
+use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
 
@@ -138,12 +138,15 @@ fn cf_data_options(mut opts: rocksdb::Options) -> rocksdb::Options {
     opts.set_compression_per_level(&[
         DBCompressionType::None,
         DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
+        DBCompressionType::Zstd,
+        DBCompressionType::Zstd,
+        DBCompressionType::Zstd,
+        DBCompressionType::Zstd,
         DBCompressionType::Zstd,
     ]);
+
+    opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(DATA_KEY_PREFIX_LENGTH));
+    opts.set_memtable_prefix_bloom_ratio(0.2);
     // most reads are sequential
     opts.set_advise_random_on_open(false);
     //
@@ -158,7 +161,7 @@ fn cf_metadata_options(mut opts: rocksdb::Options) -> rocksdb::Options {
     opts.set_num_levels(3);
     opts.set_compression_per_level(&[
         DBCompressionType::None,
-        DBCompressionType::None,
+        DBCompressionType::Snappy,
         DBCompressionType::Zstd,
     ]);
     opts.set_max_write_buffer_number(2);
