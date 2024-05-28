@@ -68,7 +68,7 @@ impl WorkerOptions {
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
-            internal_queue_length: NonZeroUsize::new(64).unwrap(),
+            internal_queue_length: NonZeroUsize::new(6400).unwrap(),
             num_timers_in_memory_limit: None,
             storage: StorageOptions::default(),
             invoker: Default::default(),
@@ -181,7 +181,7 @@ impl Default for InvokerOptions {
             message_size_warning: NonZeroUsize::new(10_000_000).unwrap(), // 10MB
             message_size_limit: None,
             tmp_dir: None,
-            concurrent_invocations_limit: None,
+            concurrent_invocations_limit: Some(NonZeroUsize::new(10_000).unwrap()),
             disable_eager_state: false,
         }
     }
