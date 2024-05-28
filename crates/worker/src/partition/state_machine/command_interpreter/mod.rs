@@ -424,7 +424,7 @@ where
                         effects,
                         response_sink.cloned(),
                         completed.response_result,
-                        Some(*caller_id),
+                        Some(original_invocation_id),
                         Some(&completed.invocation_target),
                     );
                 }

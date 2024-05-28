@@ -970,7 +970,7 @@ mod tests {
                         target_node: eq(GenerationalNodeId::new(1, 1)),
                         inner: pat!(ingress::InvocationResponse {
                             request_id: eq(request_id),
-                            invocation_id: some(eq(second_invocation_id)),
+                            invocation_id: some(eq(invocation_id)),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()
