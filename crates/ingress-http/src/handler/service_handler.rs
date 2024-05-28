@@ -246,7 +246,7 @@ where
 
         Self::reply_with_invocation_response(
             response.result,
-            Some(invocation_id),
+            Some(response.invocation_id.unwrap_or(invocation_id)),
             response.idempotency_expiry_time.as_deref(),
             move |_| Ok(invocation_target_metadata),
         )
@@ -260,7 +260,7 @@ where
         let execution_time = service_invocation.execution_time;
 
         // Send the service invocation
-        let (req, submit_notification_rx) =
+        let (req, req_id, submit_notification_rx) =
             IngressDispatcherRequest::one_way_invocation(service_invocation);
 
         if let Err(e) = dispatcher.dispatch_ingress_request(req).await {
@@ -276,7 +276,7 @@ where
         let submit_notification = if let Ok(response) = submit_notification_rx.await {
             response
         } else {
-            dispatcher.evict_pending_submit_notification(invocation_id);
+            dispatcher.evict_pending_submit_notification(req_id);
             warn!("Response channel was closed");
             return Err(HandlerError::Unavailable);
         };

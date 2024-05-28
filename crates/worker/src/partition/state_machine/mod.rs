@@ -112,7 +112,9 @@ mod tests {
     use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
-    use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
+    use restate_types::identifiers::{
+        IngressRequestId, InvocationId, PartitionId, PartitionKey, ServiceId,
+    };
     use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
     use restate_types::invocation::{
         InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
@@ -651,15 +653,22 @@ mod tests {
         let (invocation_id, invocation_target) =
             InvocationId::mock_with(InvocationTarget::mock_virtual_object());
 
+        let node_id_1 = GenerationalNodeId::new(1, 1);
+        let node_id_2 = GenerationalNodeId::new(2, 1);
+        let request_id_1 = IngressRequestId::default();
+        let request_id_2 = IngressRequestId::default();
+        let request_id_3 = IngressRequestId::default();
+
         let actions = state_machine
             .apply(Command::Invoke(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 argument: Default::default(),
                 source: Source::Ingress,
-                response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                    GenerationalNodeId::new(1, 1),
-                )),
+                response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                    node_id: node_id_1,
+                    request_id: request_id_1,
+                }),
                 span_context: Default::default(),
                 headers: vec![],
                 execution_time: None,
@@ -680,7 +689,16 @@ mod tests {
         let mut txn = state_machine.rocksdb_storage.transaction();
         let mut invocation_status = txn.get_invocation_status(&invocation_id).await.unwrap();
         invocation_status.get_response_sinks_mut().unwrap().insert(
-            ServiceInvocationResponseSink::Ingress(GenerationalNodeId::new(2, 2)),
+            ServiceInvocationResponseSink::Ingress {
+                node_id: node_id_2,
+                request_id: request_id_2,
+            },
+        );
+        invocation_status.get_response_sinks_mut().unwrap().insert(
+            ServiceInvocationResponseSink::Ingress {
+                node_id: node_id_2,
+                request_id: request_id_3,
+            },
         );
         txn.put_invocation_status(&invocation_id, invocation_status)
             .await;
@@ -715,8 +733,9 @@ mod tests {
             all!(
                 contains(pat!(Action::IngressResponse(pat!(
                     IngressResponseEnvelope {
-                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        target_node: eq(node_id_1),
                         inner: pat!(ingress::InvocationResponse {
+                            request_id: eq(request_id_1),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()
@@ -726,8 +745,21 @@ mod tests {
                 )))),
                 contains(pat!(Action::IngressResponse(pat!(
                     IngressResponseEnvelope {
-                        target_node: eq(GenerationalNodeId::new(2, 2)),
+                        target_node: eq(node_id_2),
                         inner: pat!(ingress::InvocationResponse {
+                            request_id: eq(request_id_2),
+                            response: eq(IngressResponseResult::Success(
+                                invocation_target.clone(),
+                                response_bytes.clone()
+                            ))
+                        })
+                    }
+                )))),
+                contains(pat!(Action::IngressResponse(pat!(
+                    IngressResponseEnvelope {
+                        target_node: eq(node_id_2),
+                        inner: pat!(ingress::InvocationResponse {
+                            request_id: eq(request_id_3),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()
@@ -752,7 +784,7 @@ mod tests {
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
-        use restate_types::identifiers::IdempotencyId;
+        use restate_types::identifiers::{IdempotencyId, IngressRequestId};
         use restate_types::invocation::{
             AttachInvocationRequest, InvocationQuery, InvocationTarget, SubmitNotificationSink,
         };
@@ -778,15 +810,18 @@ mod tests {
             );
             let idempotency_id =
                 IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id = IngressRequestId::default();
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(1, 1),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id,
+                    }),
                     idempotency_key: Some(idempotency_key),
                     completion_retention_time: Some(retention),
                     ..ServiceInvocation::mock()
@@ -839,11 +874,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                request_id: eq(request_id),
+                                invocation_id: some(eq(invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -916,11 +950,15 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
+            let request_id = IngressRequestId::default();
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: second_invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id: ingress_id,
+                        request_id,
+                    }),
                     idempotency_key: Some(idempotency_key),
                     ..ServiceInvocation::mock()
                 }))
@@ -931,9 +969,8 @@ mod tests {
                     IngressResponseEnvelope {
                         target_node: eq(GenerationalNodeId::new(1, 1)),
                         inner: pat!(ingress::InvocationResponse {
-                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                idempotency_id: some(eq(idempotency_id.clone())),
-                            }),
+                            request_id: eq(request_id),
+                            invocation_id: some(eq(second_invocation_id)),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()
@@ -986,11 +1023,15 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
+            let request_id = IngressRequestId::default();
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: second_invocation_id,
                     invocation_target,
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id: ingress_id,
+                        request_id,
+                    }),
                     idempotency_key: Some(idempotency_key),
                     completion_retention_time: Some(retention),
                     ..ServiceInvocation::mock()
@@ -1002,9 +1043,8 @@ mod tests {
                     IngressResponseEnvelope {
                         target_node: eq(ingress_id),
                         inner: pat!(ingress::InvocationResponse {
-                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                idempotency_id: some(eq(idempotency_id.clone())),
-                            }),
+                            request_id: eq(request_id),
+                            invocation_id: some(eq(second_invocation_id)),
                             response: eq(IngressResponseResult::Failure(GONE_INVOCATION_ERROR))
                         })
                     }
@@ -1038,21 +1078,20 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
-            let idempotency_id = IdempotencyId::combine(
-                first_invocation_id,
-                &invocation_target,
-                idempotency_key.clone(),
-            );
 
-            let ingress_id_1 = GenerationalNodeId::new(1, 1);
-            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: first_invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(retention),
                     ..ServiceInvocation::mock()
@@ -1075,7 +1114,10 @@ mod tests {
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: second_invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_2)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    }),
                     idempotency_key: Some(idempotency_key),
                     ..ServiceInvocation::mock()
                 }))
@@ -1108,11 +1150,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_1),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                request_id: eq(request_id_1),
+                                invocation_id: some(eq(first_invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1122,11 +1163,10 @@ mod tests {
                     )))),
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_2),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                request_id: eq(request_id_1),
+                                invocation_id: some(eq(first_invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1155,21 +1195,20 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
-            let idempotency_id = IdempotencyId::combine(
-                first_invocation_id,
-                &invocation_target,
-                idempotency_key.clone(),
-            );
 
-            let ingress_id_1 = GenerationalNodeId::new(1, 1);
-            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: first_invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(retention),
                     ..ServiceInvocation::mock()
@@ -1195,7 +1234,10 @@ mod tests {
                     response_sink: None,
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(retention),
-                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id_2)),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1205,11 +1247,11 @@ mod tests {
                     not(contains(pat!(Action::IngressResponse(_)))),
                     contains(pat!(Action::IngressSubmitNotification(eq(
                         IngressResponseEnvelope {
-                            target_node: ingress_id_2,
+                            target_node: node_id,
                             inner: ingress::SubmittedInvocationNotification {
+                                request_id: request_id_2,
                                 original_invocation_id: second_invocation_id,
-                                attached_invocation_id: first_invocation_id,
-                                idempotency_id: Some(idempotency_id.clone())
+                                attached_invocation_id: first_invocation_id
                             },
                         }
                     ))))
@@ -1242,11 +1284,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_1),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                request_id: eq(request_id_1),
+                                invocation_id: some(eq(first_invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1256,7 +1297,10 @@ mod tests {
                     )))),
                     not(contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_2),
+                            target_node: eq(node_id),
+                            inner: pat!(ingress::InvocationResponse {
+                                request_id: eq(request_id_2)
+                            })
                         }
                     ))))),
                 )
@@ -1274,6 +1318,9 @@ mod tests {
                 .await;
 
             let invocation_target = InvocationTarget::mock_virtual_object();
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
 
             // Initialize locked virtual object state
             async {
@@ -1291,14 +1338,16 @@ mod tests {
             let idempotency_key = ByteString::from_static("my-idempotency-key");
             let attached_invocation_id =
                 InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency_key);
-            let ingress_id = GenerationalNodeId::new(1, 1);
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: attached_invocation_id,
                     invocation_target: invocation_target.clone(),
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
-                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id)),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1310,15 +1359,11 @@ mod tests {
                     }))),
                     contains(pat!(Action::IngressSubmitNotification(eq(
                         IngressResponseEnvelope {
-                            target_node: ingress_id,
+                            target_node: node_id,
                             inner: ingress::SubmittedInvocationNotification {
+                                request_id: request_id_1,
                                 original_invocation_id: attached_invocation_id,
-                                attached_invocation_id,
-                                idempotency_id: Some(IdempotencyId::combine(
-                                    attached_invocation_id,
-                                    &invocation_target,
-                                    idempotency_key.clone(),
-                                ))
+                                attached_invocation_id
                             },
                         }
                     ))))
@@ -1346,18 +1391,16 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
-            let idempotency_id = IdempotencyId::combine(
-                attached_invocation_id,
-                &invocation_target,
-                idempotency_key.clone(),
-            );
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: original_invocation_id,
                     invocation_target: invocation_target.clone(),
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
-                    submit_notification_sink: Some(SubmitNotificationSink::Ingress(ingress_id)),
+                    submit_notification_sink: Some(SubmitNotificationSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1370,11 +1413,11 @@ mod tests {
                     not(contains(pat!(Action::IngressResponse(_)))),
                     contains(pat!(Action::IngressSubmitNotification(eq(
                         IngressResponseEnvelope {
-                            target_node: ingress_id,
+                            target_node: node_id,
                             inner: ingress::SubmittedInvocationNotification {
+                                request_id: request_id_2,
                                 original_invocation_id,
                                 attached_invocation_id,
-                                idempotency_id: Some(idempotency_id.clone())
                             },
                         }
                     ))))
@@ -1399,18 +1442,20 @@ mod tests {
                 &invocation_target,
                 Some(idempotency_key.clone()),
             );
-            let idempotency_id =
-                IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
-            let ingress_id_1 = GenerationalNodeId::new(1, 1);
-            let ingress_id_2 = GenerationalNodeId::new(2, 1);
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
 
             // Send fresh invocation with idempotency key
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(ingress_id_1)),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     idempotency_key: Some(idempotency_key.clone()),
                     completion_retention_time: Some(completion_retention),
                     ..ServiceInvocation::mock()
@@ -1428,7 +1473,10 @@ mod tests {
             let actions = state_machine
                 .apply(Command::AttachInvocation(AttachInvocationRequest {
                     invocation_query: InvocationQuery::Invocation(invocation_id),
-                    response_sink: ServiceInvocationResponseSink::Ingress(ingress_id_2),
+                    response_sink: ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    },
                 }))
                 .await;
             assert_that!(
@@ -1462,11 +1510,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_1),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                invocation_id: some(eq(invocation_id)),
+                                request_id: eq(request_id_1),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1476,11 +1523,10 @@ mod tests {
                     )))),
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(ingress_id_2),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    idempotency_id: some(eq(idempotency_id.clone())),
-                                }),
+                                invocation_id: some(eq(invocation_id)),
+                                request_id: eq(request_id_2),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1586,6 +1632,9 @@ mod tests {
 
             let invocation_target = InvocationTarget::mock_workflow();
             let invocation_id = InvocationId::mock_random();
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
 
             // Send fresh invocation
             let actions = state_machine
@@ -1593,9 +1642,10 @@ mod tests {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_time: Some(Duration::from_secs(60)),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(1, 1),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1622,9 +1672,10 @@ mod tests {
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id: InvocationId::mock_random(),
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(2, 2),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1662,11 +1713,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    invocation_id: some(eq(invocation_id))
-                                }),
+                                request_id: eq(request_id_1),
+                                invocation_id: some(eq(invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1676,11 +1726,10 @@ mod tests {
                     )))),
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(GenerationalNodeId::new(2, 2)),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    invocation_id: some(eq(invocation_id))
-                                }),
+                                request_id: eq(request_id_2),
+                                invocation_id: some(eq(invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1709,13 +1758,15 @@ mod tests {
             );
 
             // Sending a new request will be completed immediately
+            let request_id_3 = IngressRequestId::default();
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(1, 1),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_3,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1723,11 +1774,10 @@ mod tests {
                 actions,
                 contains(pat!(Action::IngressResponse(pat!(
                     IngressResponseEnvelope {
-                        target_node: eq(GenerationalNodeId::new(1, 1)),
+                        target_node: eq(node_id),
                         inner: pat!(ingress::InvocationResponse {
-                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                invocation_id: some(eq(invocation_id))
-                            }),
+                            invocation_id: some(eq(invocation_id)),
+                            request_id: eq(request_id_3),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()
@@ -1750,6 +1800,10 @@ mod tests {
 
             let invocation_target = InvocationTarget::mock_workflow();
             let invocation_id = InvocationId::mock_random();
+            let node_id = GenerationalNodeId::new(1, 1);
+            let request_id_1 = IngressRequestId::default();
+            let request_id_2 = IngressRequestId::default();
+            let request_id_3 = IngressRequestId::default();
 
             // Send fresh invocation
             let actions = state_machine
@@ -1757,9 +1811,10 @@ mod tests {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
                     completion_retention_time: Some(Duration::from_secs(60)),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(1, 1),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_1,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1777,9 +1832,10 @@ mod tests {
                     invocation_query: InvocationQuery::Workflow(
                         invocation_target.as_keyed_service_id().unwrap(),
                     ),
-                    response_sink: ServiceInvocationResponseSink::Ingress(GenerationalNodeId::new(
-                        2, 2,
-                    )),
+                    response_sink: ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_2,
+                    },
                 }))
                 .await;
             assert_that!(
@@ -1816,14 +1872,10 @@ mod tests {
                 all!(
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(GenerationalNodeId::new(1, 1)),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    invocation_id: some(eq(invocation_id)),
-                                    service_id: some(eq(invocation_target
-                                        .as_keyed_service_id()
-                                        .unwrap()))
-                                }),
+                                request_id: eq(request_id_1),
+                                invocation_id: some(eq(invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1833,14 +1885,10 @@ mod tests {
                     )))),
                     contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
-                            target_node: eq(GenerationalNodeId::new(2, 2)),
+                            target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
-                                correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                    invocation_id: some(eq(invocation_id)),
-                                    service_id: some(eq(invocation_target
-                                        .as_keyed_service_id()
-                                        .unwrap()))
-                                }),
+                                request_id: eq(request_id_2),
+                                invocation_id: some(eq(invocation_id)),
                                 response: eq(IngressResponseResult::Success(
                                     invocation_target.clone(),
                                     response_bytes.clone()
@@ -1873,9 +1921,10 @@ mod tests {
                 .apply(Command::Invoke(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress(
-                        GenerationalNodeId::new(1, 1),
-                    )),
+                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                        node_id,
+                        request_id: request_id_3,
+                    }),
                     ..ServiceInvocation::mock()
                 }))
                 .await;
@@ -1885,9 +1934,8 @@ mod tests {
                     IngressResponseEnvelope {
                         target_node: eq(GenerationalNodeId::new(1, 1)),
                         inner: pat!(ingress::InvocationResponse {
-                            correlation_ids: pat!(ingress::InvocationResponseCorrelationIds {
-                                invocation_id: some(eq(invocation_id))
-                            }),
+                            request_id: eq(request_id_3),
+                            invocation_id: some(eq(invocation_id)),
                             response: eq(IngressResponseResult::Success(
                                 invocation_target.clone(),
                                 response_bytes.clone()

@@ -12,13 +12,12 @@
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use ulid::Ulid;
-
 use rand::RngCore;
 use std::fmt;
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
+use ulid::Ulid;
 
 use crate::base62_util::base62_encode_fixed_width;
 use crate::base62_util::base62_max_length_for_type;
@@ -779,6 +778,57 @@ impl FromStr for LambdaARN {
         };
 
         Ok(lambda)
+    }
+}
+
+#[derive(
+    Debug,
+    PartialOrd,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+)]
+pub struct IngressRequestId(Ulid);
+
+impl IngressRequestId {
+    pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
+        let ulid = Ulid::from_bytes(b.try_into().map_err(|_| IdDecodeError::Length)?);
+        debug_assert!(!ulid.is_nil());
+        Ok(Self(ulid))
+    }
+
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        let ulid = Ulid::from_bytes(bytes);
+        debug_assert!(!ulid.is_nil());
+        Self(ulid)
+    }
+
+    pub fn to_bytes(&self) -> [u8; 16] {
+        self.0.to_bytes()
+    }
+}
+
+impl Default for IngressRequestId {
+    fn default() -> Self {
+        Self(Ulid::new())
+    }
+}
+
+impl fmt::Display for IngressRequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for IngressRequestId {
+    type Err = ulid::DecodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Ulid::from_string(s)?))
     }
 }
 

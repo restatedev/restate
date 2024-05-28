@@ -181,6 +181,7 @@ message ServiceInvocationResponseSink {
 
     message Ingress {
         GenerationalNodeId node_id = 1;
+        bytes request_id = 2;
     }
 
     message None {
@@ -505,8 +506,13 @@ message IdempotencyMetadata {
 }
 
 message SubmitNotificationSink {
+    message Ingress {
+        GenerationalNodeId node_id = 1;
+        bytes request_id = 2;
+    }
+
     oneof notification_sink {
-        GenerationalNodeId ingress_node_id = 2;
+        Ingress ingress = 2;
     }
 }
 

@@ -140,7 +140,7 @@ where
 
         Self::reply_with_invocation_response(
             response.response,
-            response.correlation_ids.invocation_id,
+            response.invocation_id,
             None,
             move |invocation_target| {
                 self.schemas
