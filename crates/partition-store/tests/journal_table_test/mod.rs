@@ -127,7 +127,7 @@ async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn journal_tests() {
     let mut rocksdb = storage_test_environment().await;
 

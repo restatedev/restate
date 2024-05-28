@@ -506,7 +506,7 @@ mod tests {
         .await
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn trim_log_smoke_test() -> googletest::Result<()> {
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)

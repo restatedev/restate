@@ -31,7 +31,7 @@ use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use std::time::{Duration, SystemTime};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation() {
     let invocation_id = InvocationId::mock_random();
     let invocation_target = InvocationTarget::service("MySvc", "MyMethod");

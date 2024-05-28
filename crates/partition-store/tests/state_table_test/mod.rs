@@ -110,7 +110,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     verify_prefix_scan_after_delete(&mut txn).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_delete_all() {
     let mut rocksdb = storage_test_environment().await;
 

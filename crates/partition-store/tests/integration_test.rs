@@ -67,7 +67,7 @@ async fn storage_test_environment() -> PartitionStore {
         .expect("DB storage creation succeeds")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_write() {
     let rocksdb = storage_test_environment().await;
 
