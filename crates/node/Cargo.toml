@@ -53,7 +53,7 @@ http = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 metrics = { workspace = true }
-metrics-exporter-prometheus = { version = "0.13", default-features = false, features = ["async-runtime"] }
+metrics-exporter-prometheus = { workspace = true }
 metrics-tracing-context = { version = "0.15.0" }
 metrics-util = { version = "0.16.0" }
 once_cell = { workspace = true }

@@ -1222,7 +1222,7 @@ dependencies = [
  "futures",
  "hdrhistogram",
  "metrics",
- "metrics-exporter-prometheus 0.14.0",
+ "metrics-exporter-prometheus",
  "once_cell",
  "quanta",
  "restate-bifrost",
@@ -3814,22 +3814,6 @@ dependencies = [
 
 [[package]]
 name = "metrics-exporter-prometheus"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bf4e7146e30ad172c42c39b3246864bd2d3c6396780711a1baf749cfe423e21"
-dependencies = [
- "base64 0.21.7",
- "hyper 0.14.28",
- "indexmap 2.2.6",
- "metrics",
- "metrics-util",
- "quanta",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "metrics-exporter-prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d58e362dc7206e9456ddbcdbd53c71ba441020e62104703075a69151e38d85f"
@@ -5370,6 +5354,7 @@ dependencies = [
  "humantime",
  "metrics",
  "once_cell",
+ "pin-project",
  "restate-core",
  "restate-metadata-store",
  "restate-rocksdb",
@@ -5388,6 +5373,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
@@ -5812,7 +5798,7 @@ dependencies = [
  "humantime",
  "hyper 0.14.28",
  "metrics",
- "metrics-exporter-prometheus 0.13.1",
+ "metrics-exporter-prometheus",
  "metrics-tracing-context",
  "metrics-util",
  "once_cell",
@@ -7459,6 +7445,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

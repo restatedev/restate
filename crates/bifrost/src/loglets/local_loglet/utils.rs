@@ -50,4 +50,8 @@ impl OffsetWatch {
             .map_err(|_| ShutdownError)?;
         Ok(())
     }
+
+    pub fn receiver(&self) -> watch::Receiver<LogletOffset> {
+        self.receive.clone()
+    }
 }

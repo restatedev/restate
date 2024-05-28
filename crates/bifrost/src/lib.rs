@@ -19,7 +19,7 @@ mod types;
 mod watchdog;
 
 pub use bifrost::Bifrost;
-pub use error::{Error, ProviderError};
+pub use error::{Error, ProviderError, Result};
 pub use read_stream::LogReadStream;
 pub use record::*;
 pub use service::BifrostService;
