@@ -222,7 +222,7 @@ mod tests {
 
     type TestResult = Result<(), anyhow::Error>;
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn start_invocation() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -243,7 +243,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn shared_invocation_skips_inbox() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -294,7 +294,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn awakeable_completion_received_before_entry() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -384,7 +384,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn kill_inboxed_invocation() -> anyhow::Result<()> {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -479,7 +479,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn mutate_state() -> anyhow::Result<()> {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -553,7 +553,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn clear_all_user_states() -> anyhow::Result<()> {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -595,7 +595,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn get_state_keys() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -641,7 +641,7 @@ mod tests {
         Ok(())
     }
 
-    #[test(tokio::test)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn send_ingress_response_to_multiple_targets() -> TestResult {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -791,7 +791,7 @@ mod tests {
         use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn start_idempotent_invocation() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -906,7 +906,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn complete_already_completed_invocation() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -990,7 +990,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn known_invocation_id_but_missing_completion() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1061,7 +1061,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn attach_with_service_invocation_command_while_executing() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1178,7 +1178,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn attach_with_send_service_invocation() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1307,7 +1307,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn attach_inboxed_with_send_service_invocation() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1425,7 +1425,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn attach_command() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1538,7 +1538,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn timer_cleanup() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1620,7 +1620,7 @@ mod tests {
         use restate_wal_protocol::timer::TimerKeyValue;
         use test_log::test;
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn start_workflow_method() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1788,7 +1788,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn attach_by_workflow_key() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1946,7 +1946,7 @@ mod tests {
             );
         }
 
-        #[test(tokio::test)]
+        #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
         async fn timer_cleanup() {
             let tc = TaskCenterBuilder::default()
                 .default_runtime_handle(tokio::runtime::Handle::current())

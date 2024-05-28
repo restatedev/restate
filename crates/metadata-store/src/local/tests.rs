@@ -52,7 +52,7 @@ impl Versioned for Value {
 flexbuffers_storage_encode_decode!(Value);
 
 /// Tests basic operations of the metadata store.
-#[test(tokio::test)]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn basic_metadata_store_operations() -> anyhow::Result<()> {
     let (client, env) = create_test_environment().await?;
 
@@ -147,7 +147,7 @@ async fn basic_metadata_store_operations() -> anyhow::Result<()> {
 }
 
 /// Tests multiple concurrent operations issued by the same client
-#[test(tokio::test)]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn concurrent_operations() -> anyhow::Result<()> {
     let (client, env) = create_test_environment().await?;
 
@@ -212,7 +212,7 @@ async fn concurrent_operations() -> anyhow::Result<()> {
 }
 
 /// Tests that the metadata store stores values durably so that they can be read after a restart.
-#[test(tokio::test)]
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn durable_storage() -> anyhow::Result<()> {
     let rocksdb_path = tempfile::tempdir()?.into_path();
 

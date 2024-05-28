@@ -21,7 +21,7 @@ use restate_storage_api::idempotency_table::{IdempotencyMetadata, IdempotencyTab
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_idempotency_key() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
