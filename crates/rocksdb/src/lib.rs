@@ -71,6 +71,8 @@ pub enum IoMode {
     AllowBlockingIO,
     /// Fail the operation if operation needs to block on IO
     OnlyIfNonBlocking,
+    /// Always perform the IO operation in the background thread pool
+    AlwaysBackground,
     /// Attempts to perform the operation without blocking IO in worker thread, if it's not
     /// possible, it'll spawn work in the background thread pool.
     #[default]
@@ -147,6 +149,27 @@ impl RocksDb {
                 .increment(1);
                 return Ok(());
             }
+            IoMode::AlwaysBackground => {
+                // Operation will block, dispatch to background.
+                let db = self.db.clone();
+                // In the background thread pool we can block on IO
+                write_options.set_no_slowdown(false);
+                let task = StorageTask::default()
+                    .priority(priority)
+                    .kind(StorageTaskKind::WriteBatch)
+                    .op(move || db.write_batch(&write_batch, &write_options))
+                    .build()
+                    .unwrap();
+
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_BACKGROUND,
+                    OP_TYPE => StorageTaskKind::WriteBatch.as_static_str(),
+                    PRIORITY => priority.as_static_str(),
+                )
+                .increment(1);
+
+                return Ok(race_against_stall_detector(self.manager, task).await??);
+            }
             IoMode::OnlyIfNonBlocking => {
                 write_options.set_no_slowdown(true);
                 self.db.write_batch(&write_batch, &write_options)?;
@@ -165,11 +188,7 @@ impl RocksDb {
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
 
-        #[cfg(test)]
         let result = self.db.write_batch(&write_batch, &write_options);
-        #[cfg(not(test))]
-        let result =
-            tokio::task::block_in_place(|| self.db.write_batch(&write_batch, &write_options));
         match result {
             Ok(_) => {
                 counter!(STORAGE_IO_OP,
@@ -235,6 +254,27 @@ impl RocksDb {
                 .increment(1);
                 return Ok(());
             }
+            IoMode::AlwaysBackground => {
+                // Operation will block, dispatch to background.
+                let db = self.db.clone();
+                // In the background thread pool we can block on IO
+                write_options.set_no_slowdown(false);
+                let task = StorageTask::default()
+                    .priority(priority)
+                    .kind(StorageTaskKind::WriteBatch)
+                    .op(move || db.write_tx_batch(&write_batch, &write_options))
+                    .build()
+                    .unwrap();
+
+                counter!(STORAGE_IO_OP,
+                    DISPOSITION => DISPOSITION_BACKGROUND,
+                    OP_TYPE => StorageTaskKind::WriteBatch.as_static_str(),
+                    PRIORITY => priority.as_static_str(),
+                )
+                .increment(1);
+
+                return Ok(race_against_stall_detector(self.manager, task).await??);
+            }
             IoMode::OnlyIfNonBlocking => {
                 write_options.set_no_slowdown(true);
                 self.db.write_tx_batch(&write_batch, &write_options)?;
@@ -252,11 +292,7 @@ impl RocksDb {
         // Auto...
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
-        #[cfg(any(test, feature = "test-util"))]
         let result = self.db.write_tx_batch(&write_batch, &write_options);
-        #[cfg(not(feature = "test-util"))]
-        let result =
-            tokio::task::block_in_place(|| self.db.write_tx_batch(&write_batch, &write_options));
         match result {
             Ok(_) => {
                 counter!(STORAGE_IO_OP,

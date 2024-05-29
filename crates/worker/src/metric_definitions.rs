@@ -12,22 +12,26 @@
 /// the metrics' sink.
 use metrics::{describe_counter, describe_histogram, Unit};
 
-pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.total";
+pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
 pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handled.total";
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
+pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
 
 pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
-pub const PP_APPLY_ACTIONS_DURATION: &str = "restate.partition.apply_actions_duration.seconds";
+pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
+    "restate.partition.handle_action_batch_duration.seconds";
+pub const PARTITION_HANDLE_INVOKER_EFFECT_COMMAND: &str =
+    "restate.partition.handle_invoker_effect.seconds";
 
 pub const PARTITION_LABEL: &str = "partition";
 
 pub(crate) fn describe_metrics() {
-    describe_counter!(
+    describe_histogram!(
         PARTITION_APPLY_COMMAND,
-        Unit::Count,
-        "Total consensus commands processed by partition processor"
+        Unit::Seconds,
+        "Time spent applying partition processor command"
     );
     describe_counter!(
         PARTITION_ACTUATOR_HANDLED,
@@ -55,8 +59,18 @@ pub(crate) fn describe_metrics() {
         "Time spent processing a single bifrost message"
     );
     describe_histogram!(
-        PP_APPLY_ACTIONS_DURATION,
+        PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
         Unit::Seconds,
         "Time spent applying actions/effects in a single iteration"
+    );
+    describe_histogram!(
+        PARTITION_HANDLE_LEADER_ACTIONS,
+        Unit::Count,
+        "Number of actions the leader has performed"
+    );
+    describe_histogram!(
+        PARTITION_HANDLE_INVOKER_EFFECT_COMMAND,
+        Unit::Seconds,
+        "Time spent handling an invoker effect command"
     );
 }

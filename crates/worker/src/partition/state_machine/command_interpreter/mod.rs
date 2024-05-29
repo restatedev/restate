@@ -10,11 +10,13 @@
 
 use super::Error;
 
+use crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND;
 use crate::partition::state_machine::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use metrics::{histogram, Histogram};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::inbox_table::InboxEntry;
@@ -63,6 +65,7 @@ use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::pin::pin;
+use std::time::Instant;
 use tracing::{debug, instrument, trace, warn};
 
 pub trait StateReader {
@@ -111,6 +114,7 @@ pub(crate) struct CommandInterpreter<Codec> {
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
+    latency: Histogram,
 
     _codec: PhantomData<Codec>,
 }
@@ -130,11 +134,13 @@ impl<Codec> CommandInterpreter<Codec> {
         outbox_seq_number: MessageIndex,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
+        let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
             partition_key_range,
             _codec: PhantomData,
+            latency,
         }
     }
 }
@@ -193,6 +199,10 @@ where
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,
             Command::TerminateInvocation(invocation_termination) => {
                 self.try_terminate_invocation(invocation_termination, state, effects)
+                    .await
+            }
+            Command::PurgeInvocation(purge_invocation_request) => {
+                self.try_purge_invocation(purge_invocation_request.invocation_id, state, effects)
                     .await
             }
             Command::BuiltInInvokerEffect(builtin_service_effects) => {
@@ -424,7 +434,7 @@ where
                         effects,
                         response_sink.cloned(),
                         completed.response_result,
-                        Some(*caller_id),
+                        Some(original_invocation_id),
                         Some(&completed.invocation_target),
                     );
                 }
@@ -870,6 +880,60 @@ where
         }
     }
 
+    async fn try_purge_invocation<State: StateReader>(
+        &mut self,
+        invocation_id: InvocationId,
+        state: &mut State,
+        effects: &mut Effects,
+    ) -> Result<(), Error> {
+        match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
+            InvocationStatus::Completed(CompletedInvocation {
+                invocation_target,
+                idempotency_key,
+                ..
+            }) => {
+                effects.free_invocation(invocation_id);
+
+                // Also cleanup the associated idempotency key if any
+                if let Some(idempotency_key) = idempotency_key {
+                    effects.delete_idempotency_id(IdempotencyId::combine(
+                        invocation_id,
+                        &invocation_target,
+                        idempotency_key,
+                    ));
+                }
+
+                // For workflow, we should also clean up the service lock, associated state and promises.
+                if invocation_target.invocation_target_ty()
+                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                {
+                    let service_id = invocation_target
+                        .as_keyed_service_id()
+                        .expect("Workflow methods must have keyed service id");
+
+                    effects.unlock_service_id(service_id.clone());
+                    effects.clear_all_state(
+                        service_id.clone(),
+                        invocation_id,
+                        ServiceInvocationSpanContext::empty(),
+                    );
+                    effects.clear_all_promises(service_id);
+                }
+            }
+            InvocationStatus::Free => {
+                trace!("Received purge command for unknown invocation with id '{invocation_id}'.");
+                // Nothing to do
+            }
+            _ => {
+                trace!(
+                    "Ignoring purge command as the invocation '{invocation_id}' is still ongoing."
+                );
+            }
+        };
+
+        Ok(())
+    }
+
     async fn on_timer<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         timer_value: TimerKeyValue,
@@ -901,49 +965,8 @@ where
                 self.handle_invoke(effects, state, service_invocation).await
             }
             Timer::CleanInvocationStatus(invocation_id) => {
-                match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
-                    InvocationStatus::Completed(CompletedInvocation {
-                        invocation_target,
-                        idempotency_key,
-                        ..
-                    }) => {
-                        effects.free_invocation(invocation_id);
-
-                        // Also cleanup the associated idempotency key if any
-                        if let Some(idempotency_key) = idempotency_key {
-                            effects.delete_idempotency_id(IdempotencyId::combine(
-                                invocation_id,
-                                &invocation_target,
-                                idempotency_key,
-                            ));
-                        }
-
-                        // For workflow, we should also clean up the service lock, associated state and promises.
-                        if invocation_target.invocation_target_ty()
-                            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                        {
-                            let service_id = invocation_target
-                                .as_keyed_service_id()
-                                .expect("Workflow methods must have keyed service id");
-
-                            effects.unlock_service_id(service_id.clone());
-                            effects.clear_all_state(
-                                service_id.clone(),
-                                invocation_id,
-                                ServiceInvocationSpanContext::empty(),
-                            );
-                            effects.clear_all_promises(service_id);
-                        }
-                    }
-                    InvocationStatus::Free => {
-                        // Nothing to do
-                    }
-                    _ => {
-                        panic!("Unexpected state. Trying to cleanup an invocation that did not complete yet.")
-                    }
-                };
-
-                Ok(())
+                self.try_purge_invocation(invocation_id, state, effects)
+                    .await
             }
         }
     }
@@ -956,6 +979,7 @@ where
         state: &mut State,
         invoker_effect: InvokerEffect,
     ) -> Result<(), Error> {
+        let start = Instant::now();
         let status =
             Self::get_invocation_status_and_trace(state, &invoker_effect.invocation_id, effects)
                 .await?;
@@ -970,6 +994,7 @@ where
                 effects.abort_invocation(invoker_effect.invocation_id);
             }
         };
+        self.latency.record(start.elapsed());
 
         Ok(())
     }
@@ -1857,7 +1882,7 @@ where
         self.outbox_seq_number += 1;
     }
 
-    async fn handle_attach_invocation_request<State: StateReader>(
+    async fn handle_attach_invocation_request<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -1884,6 +1909,21 @@ where
                     return Ok(());
                 }
             },
+            InvocationQuery::IdempotencyId(iid) => {
+                match state.get_idempotency_metadata(&iid).await? {
+                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
+                    None => {
+                        self.send_response_to_sinks(
+                            effects,
+                            vec![attach_invocation_request.response_sink],
+                            NOT_FOUND_INVOCATION_ERROR,
+                            None,
+                            None,
+                        );
+                        return Ok(());
+                    }
+                }
+            }
         };
         match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
             is @ InvocationStatus::Invoked(_)

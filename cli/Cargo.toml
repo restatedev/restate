@@ -21,7 +21,7 @@ restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
-arrow = { version = "51.0.0", features = ["ipc", "prettyprint"] }
+arrow = { version = "51.0.0", features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.6.6" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }

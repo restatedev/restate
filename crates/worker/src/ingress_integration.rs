@@ -12,6 +12,7 @@ use anyhow::{anyhow, Error};
 use restate_core::metadata;
 use restate_ingress_http::{GetOutputResult, InvocationStorageReader};
 use restate_partition_store::PartitionStoreManager;
+use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
@@ -59,6 +60,12 @@ impl InvocationStorageReader for InvocationStorageReaderImpl {
                 match partition_storage.get_virtual_object_status(&sid).await? {
                     VirtualObjectStatus::Locked(iid) => iid,
                     VirtualObjectStatus::Unlocked => return Ok(GetOutputResult::NotFound),
+                }
+            }
+            InvocationQuery::IdempotencyId(iid) => {
+                match partition_storage.get_idempotency_metadata(&iid).await? {
+                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
+                    None => return Ok(GetOutputResult::NotFound),
                 }
             }
         };

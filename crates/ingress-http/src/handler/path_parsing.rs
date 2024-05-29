@@ -43,25 +43,80 @@ impl WorkflowRequestType {
     }
 }
 
+pub(crate) enum InvocationTargetType {
+    InvocationId(String),
+    IdempotencyId {
+        name: String,
+        target: TargetType,
+        handler: String,
+        idempotency_id: String,
+    },
+}
+
 pub(crate) enum InvocationRequestType {
-    Attach(String),
-    GetOutput(String),
+    Attach(InvocationTargetType),
+    GetOutput(InvocationTargetType),
 }
 
 impl InvocationRequestType {
-    fn from_path_chunks<'a>(
+    fn from_path_chunks<'a, Schemas>(
         mut path_parts: impl Iterator<Item = &'a str>,
-    ) -> Result<Self, HandlerError> {
-        // Parse invocation id
-        let invocation_id = path_parts
-            .next()
-            .ok_or(HandlerError::BadInvocationPath)?
-            .to_string();
+        schemas: &Schemas,
+    ) -> Result<Self, HandlerError>
+    where
+        Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
+    {
+        // 🤔 This code could use the experimental api https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.next_chunk
 
-        // Resolve or reject
-        match path_parts.next().ok_or(HandlerError::BadInvocationPath)? {
-            "output" => Ok(InvocationRequestType::GetOutput(invocation_id)),
-            "attach" => Ok(InvocationRequestType::Attach(invocation_id)),
+        let first_chunk = path_parts.next().ok_or(HandlerError::BadInvocationPath)?;
+        let second_chunk = path_parts.next().ok_or(HandlerError::BadInvocationPath)?;
+
+        let (invocation_target, last_chunk) = if let Some(third_chunk) = path_parts.next() {
+            // Idempotency id to either keyed or unkeyed service
+            let service_name = first_chunk.to_owned();
+
+            // We need to query the service type before continuing to parse
+            let service_type = schemas
+                .resolve_latest_service_type(&service_name)
+                .ok_or(HandlerError::NotFound)?;
+
+            let (target, next_chunk, next_next_chunk) = if service_type.is_keyed() {
+                (
+                    TargetType::Keyed {
+                        key: urlencoding::decode(second_chunk)
+                            .map_err(HandlerError::UrlDecodingError)?
+                            .into_owned(),
+                    },
+                    third_chunk,
+                    path_parts.next().ok_or(HandlerError::BadInvocationPath)?,
+                )
+            } else {
+                (TargetType::Unkeyed, second_chunk, third_chunk)
+            };
+
+            let handler = next_chunk.to_owned();
+            let idempotency_id = next_next_chunk.to_owned();
+
+            (
+                InvocationTargetType::IdempotencyId {
+                    name: service_name,
+                    target,
+                    handler,
+                    idempotency_id,
+                },
+                path_parts.next().ok_or(HandlerError::BadInvocationPath)?,
+            )
+        } else {
+            (
+                InvocationTargetType::InvocationId(first_chunk.to_owned()),
+                second_chunk,
+            )
+        };
+
+        // Output or attach
+        match last_chunk {
+            "output" => Ok(InvocationRequestType::GetOutput(invocation_target)),
+            "attach" => Ok(InvocationRequestType::Attach(invocation_target)),
             _ => Err(HandlerError::NotFound),
         }
     }
@@ -185,7 +240,7 @@ where
                     AwakeableRequestType::from_path_chunks(path_parts)?,
                 )),
                 "invocation" => Ok(RequestType::Invocation(
-                    InvocationRequestType::from_path_chunks(path_parts)?,
+                    InvocationRequestType::from_path_chunks(path_parts, &self.schemas)?,
                 )),
                 "workflow" => Ok(RequestType::Workflow(
                     WorkflowRequestType::from_path_chunks(path_parts)?,

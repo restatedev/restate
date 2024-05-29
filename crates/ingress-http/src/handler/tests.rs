@@ -31,10 +31,11 @@ use restate_schema_api::invocation_target::{
     OutputContentTypeRule, OutputRules,
 };
 use restate_test_util::{assert, assert_eq};
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId};
 use restate_types::ingress::{IngressResponseResult, InvocationResponse};
 use restate_types::invocation::{
-    Header, InvocationQuery, InvocationTarget, InvocationTargetType, WorkflowHandlerType,
+    Header, InvocationQuery, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -518,7 +519,7 @@ async fn idempotency_key_and_send_with_different_invocation_id() {
 
 #[tokio::test]
 #[traced_test]
-async fn attach() {
+async fn attach_with_invocation_id() {
     let invocation_id = InvocationId::mock_random();
 
     let mock_schemas = MockSchemas::default().with_service_and_target(
@@ -541,6 +542,112 @@ async fn attach() {
         let (actual_invocation_query, _, response_tx) = ingress_req.expect_attach();
         assert_eq!(
             InvocationQuery::Invocation(invocation_id),
+            actual_invocation_query
+        );
+        response_tx
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                invocation_id: Some(invocation_id),
+                result: IngressResponseResult::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn attach_with_idempotency_id_to_unkeyed_service() {
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata::mock(InvocationTargetType::Service),
+    );
+    let invocation_id = InvocationId::mock_random();
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/invocation/greeter.Greeter/greet/myid/attach")
+        .method(Method::GET)
+        .header("content-type", "application/json")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = handle_with_schemas(req, mock_schemas, move |ingress_req| {
+        let (actual_invocation_query, _, response_tx) = ingress_req.expect_attach();
+        assert_eq!(
+            InvocationQuery::IdempotencyId(IdempotencyId::new(
+                "greeter.Greeter".into(),
+                None,
+                "greet".into(),
+                "myid".into()
+            )),
+            actual_invocation_query
+        );
+        response_tx
+            .send(IngressInvocationResponse {
+                idempotency_expiry_time: None,
+                invocation_id: Some(invocation_id),
+                result: IngressResponseResult::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })
+            .unwrap();
+    })
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let (_, response_body) = response.into_parts();
+    let response_bytes = response_body.collect().await.unwrap().to_bytes();
+    let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(response_value.greeting, "Igal");
+}
+
+#[tokio::test]
+#[traced_test]
+async fn attach_with_idempotency_id_to_keyed_service() {
+    let mock_schemas = MockSchemas::default().with_service_and_target(
+        "greeter.Greeter",
+        "greet",
+        InvocationTargetMetadata::mock(InvocationTargetType::VirtualObject(
+            VirtualObjectHandlerType::Exclusive,
+        )),
+    );
+    let invocation_id = InvocationId::mock_random();
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/restate/invocation/greeter.Greeter/mygreet/greet/myid/attach")
+        .method(Method::GET)
+        .header("content-type", "application/json")
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = handle_with_schemas(req, mock_schemas, move |ingress_req| {
+        let (actual_invocation_query, _, response_tx) = ingress_req.expect_attach();
+        assert_eq!(
+            InvocationQuery::IdempotencyId(IdempotencyId::new(
+                "greeter.Greeter".into(),
+                Some("mygreet".into()),
+                "greet".into(),
+                "myid".into()
+            )),
             actual_invocation_query
         );
         response_tx

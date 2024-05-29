@@ -14,7 +14,8 @@ use restate_core::{metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationResponse, InvocationTermination, ServiceInvocation,
+    AttachInvocationRequest, InvocationResponse, InvocationTermination, PurgeInvocationRequest,
+    ServiceInvocation,
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
@@ -125,6 +126,8 @@ pub enum Command {
     PatchState(ExternalStateMutation),
     /// Terminate an ongoing invocation
     TerminateInvocation(InvocationTermination),
+    /// Purge a completed invocation
+    PurgeInvocation(PurgeInvocationRequest),
     /// Start an invocation on this partition
     Invoke(ServiceInvocation),
     /// Outbox can be truncated up to this index

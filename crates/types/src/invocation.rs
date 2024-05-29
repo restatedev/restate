@@ -700,6 +700,12 @@ pub enum TerminationFlavor {
     Cancel,
 }
 
+/// Message to purge an invocation.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PurgeInvocationRequest {
+    pub invocation_id: InvocationId,
+}
+
 // A hack to allow spancontext to be serialized.
 // Details in https://github.com/open-telemetry/opentelemetry-rust/issues/576#issuecomment-1253396100
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -774,6 +780,8 @@ pub enum InvocationQuery {
     /// Query a workflow handler invocation.
     /// There can be at most one running workflow method for the given ServiceId. This uniqueness constraint is guaranteed by the PP state machine.
     Workflow(ServiceId),
+    /// Query an idempotency id.
+    IdempotencyId(IdempotencyId),
 }
 
 impl WithPartitionKey for InvocationQuery {
@@ -781,6 +789,7 @@ impl WithPartitionKey for InvocationQuery {
         match self {
             InvocationQuery::Invocation(iid) => iid.partition_key(),
             InvocationQuery::Workflow(sid) => sid.partition_key(),
+            InvocationQuery::IdempotencyId(iid) => iid.partition_key(),
         }
     }
 }

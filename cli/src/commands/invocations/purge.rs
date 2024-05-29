@@ -11,9 +11,8 @@
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
-use crate::ui::console::{confirm_or_exit, Styled};
+use crate::ui::console::confirm_or_exit;
 use crate::ui::invocations::render_simple_invocation_list;
-use crate::ui::stylesheet::Style;
 use crate::{c_println, c_success};
 
 use anyhow::{bail, Result};
@@ -21,8 +20,9 @@ use cling::prelude::*;
 use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
-#[cling(run = "run_cancel")]
-pub struct Cancel {
+#[cling(run = "run_purge")]
+#[clap(visible_alias = "rm")]
+pub struct Purge {
     /// Either an invocation id, or a target string exact match or prefix, e.g.:
     /// * `invocationId`
     /// * `serviceName`
@@ -34,12 +34,9 @@ pub struct Cancel {
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
     query: String,
-    /// Ungracefully kill the invocation and its children
-    #[clap(long)]
-    kill: bool,
 }
 
-pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
+pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
@@ -56,27 +53,21 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
             _ => format!("target LIKE '{}'", q),
         }
     };
+    // Filter only by completed, this command has no effect on non-completed invocations
+    let filter = format!("{} AND status = 'completed'", filter);
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
-        bail!("No invocations found for query {}!", opts.query);
+        bail!("No invocations found for query {}! Note that the purge command works only on completed invocations. If you need to cancel/kill an invocation, consider using the cancel command.", opts.query);
     };
 
     render_simple_invocation_list(&env, &invocations);
 
     // Get the invocation and confirm
-    let prompt = format!(
-        "Are you sure you want to {} these invocations?",
-        if opts.kill {
-            Styled(Style::Danger, "kill")
-        } else {
-            Styled(Style::Warn, "cancel")
-        },
-    );
-    confirm_or_exit(&env, &prompt)?;
+    confirm_or_exit(&env, "Are you sure you want to purge these invocations?")?;
 
     for inv in invocations {
-        let result = client.cancel_invocation(&inv.id, opts.kill).await?;
+        let result = client.purge_invocation(&inv.id).await?;
         let _ = result.success_or_error()?;
     }
 

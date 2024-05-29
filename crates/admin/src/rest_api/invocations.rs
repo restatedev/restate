@@ -16,31 +16,34 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::InvocationTermination;
+use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest};
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use serde::Deserialize;
 use tracing::warn;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-pub enum TerminationMode {
+pub enum DeletionMode {
     #[default]
     #[serde(alias = "cancel")]
     Cancel,
     #[serde(alias = "kill")]
     Kill,
+    #[serde(alias = "purge")]
+    Purge,
 }
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DeleteInvocationParams {
-    pub mode: Option<TerminationMode>,
+    pub mode: Option<DeletionMode>,
 }
 
 /// Terminate an invocation
 #[openapi(
-    summary = "Terminate an invocation",
-    description = "Terminate the given invocation. By default, an invocation is terminated by gracefully \
+    summary = "Delete an invocation",
+    description = "Delete the given invocation. By default, an invocation is terminated by gracefully \
     cancelling it. This ensures virtual object state consistency. Alternatively, an invocation can be killed which \
-    does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc.",
-    operation_id = "terminate_invocation",
+    does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc. \
+    A stored completed invocation can also be purged",
+    operation_id = "delete_invocation",
     tags = "invocation",
     parameters(
         path(
@@ -50,11 +53,13 @@ pub struct DeleteInvocationParams {
         ),
         query(
             name = "mode",
-            description = "If cancel, it will gracefully terminate the invocation. If kill, it will terminate the invocation with a hard stop.",
+            description = "If cancel, it will gracefully terminate the invocation. \
+            If kill, it will terminate the invocation with a hard stop. \
+            If purge, it will only cleanup the response for completed invocations, and leave unaffected an in-flight invocation.",
             required = false,
             style = "simple",
             allow_empty_value = false,
-            schema = "TerminationMode",
+            schema = "DeletionMode",
         )
     ),
     responses(
@@ -76,12 +81,17 @@ pub async fn delete_invocation<V>(
         .parse::<InvocationId>()
         .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
 
-    let invocation_termination = match mode.unwrap_or_default() {
-        TerminationMode::Cancel => InvocationTermination::cancel(invocation_id),
-        TerminationMode::Kill => InvocationTermination::kill(invocation_id),
+    let cmd = match mode.unwrap_or_default() {
+        DeletionMode::Cancel => {
+            Command::TerminateInvocation(InvocationTermination::cancel(invocation_id))
+        }
+        DeletionMode::Kill => {
+            Command::TerminateInvocation(InvocationTermination::kill(invocation_id))
+        }
+        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest { invocation_id }),
     };
 
-    let partition_key = invocation_termination.invocation_id.partition_key();
+    let partition_key = invocation_id.partition_key();
 
     let result = state
         .task_center
@@ -90,10 +100,7 @@ pub async fn delete_invocation<V>(
             None,
             append_envelope_to_bifrost(
                 &mut state.bifrost,
-                Envelope::new(
-                    create_envelope_header(partition_key),
-                    Command::TerminateInvocation(invocation_termination),
-                ),
+                Envelope::new(create_envelope_header(partition_key), cmd),
             ),
         )
         .await;

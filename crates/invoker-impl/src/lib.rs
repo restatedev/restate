@@ -357,13 +357,13 @@ where
                         self.handle_completion(partition, invocation_id, completion);
                     },
                     InputCommand::StoredEntryAck { partition, invocation_id, entry_index } => {
-                        self.handle_stored_entry_ack(options, partition, invocation_id, entry_index).await;
+                        self.handle_stored_entry_ack(options, partition, invocation_id, entry_index);
                     }
                 }
             },
 
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal).await;
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
 
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -379,14 +379,14 @@ where
                             invocation_id,
                             deployment_metadata,
                             has_changed,
-                        ).await
+                        )
                     }
                     InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
                         self.handle_server_header_received(
                             partition,
                             invocation_id,
                             x_restate_server_header
-                        ).await
+                        )
                     }
                     InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
                         self.handle_new_entry(
@@ -410,7 +410,7 @@ where
             },
             timer = self.retry_timers.await_timer() => {
                 let (partition, fid) = timer.into_inner();
-                self.handle_retry_timer_fired(options, partition, fid).await;
+                self.handle_retry_timer_fired(options, partition, fid);
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -467,7 +467,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invoke(
+    fn handle_invoke(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
@@ -496,7 +496,6 @@ where
             journal,
             InvocationStateMachine::create(invocation_target, options.retry_policy.clone()),
         )
-        .await
     }
 
     #[instrument(
@@ -507,7 +506,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_retry_timer_fired(
+    fn handle_retry_timer_fired(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
@@ -516,8 +515,7 @@ where
         trace!("Retry timeout fired");
         self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_retry_timer_fired()
-        })
-        .await;
+        });
     }
 
     #[instrument(
@@ -529,7 +527,7 @@ where
             restate.journal.index = entry_index,
         )
     )]
-    async fn handle_stored_entry_ack(
+    fn handle_stored_entry_ack(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
@@ -539,8 +537,7 @@ where
         trace!("Received a new stored journal entry acknowledgement");
         self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_stored_ack(entry_index)
-        })
-        .await;
+        });
     }
 
     #[instrument(
@@ -552,7 +549,7 @@ where
             restate.deployment.id = %pinned_deployment.deployment_id,
         )
     )]
-    async fn handle_pinned_deployment(
+    fn handle_pinned_deployment(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -594,7 +591,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_server_header_received(
+    fn handle_server_header_received(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -930,7 +927,7 @@ where
         }
     }
 
-    async fn start_invocation_task(
+    fn start_invocation_task(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
@@ -966,7 +963,7 @@ where
             .register_invocation(partition, invocation_id, ism);
     }
 
-    async fn handle_retry_event<FN>(
+    fn handle_retry_event<FN>(
         &mut self,
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
@@ -992,8 +989,7 @@ where
                     invocation_id,
                     InvokeInputJournal::NoCachedJournal,
                     ism,
-                )
-                .await;
+                );
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -1346,15 +1342,13 @@ mod tests {
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Invoke the service
-        service_inner
-            .handle_invoke(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                InvocationTarget::mock_virtual_object(),
-                InvokeInputJournal::NoCachedJournal,
-            )
-            .await;
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
 
         // We should receive the new entry here
         let invoker_effect = service_inner.invocation_tasks_rx.recv().await.unwrap();
