@@ -91,7 +91,6 @@ pub enum Command {
     #[clap(subcommand)]
     Invocations(invocations::Invocations),
     /// Runs SQL queries against the data fusion service
-    #[clap(hide = true)]
     Sql(sql::Sql),
     /// Download one of Restate's examples in this directory.
     #[clap(name = "example", alias = "examples")]

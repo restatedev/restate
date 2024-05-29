@@ -9,8 +9,6 @@
 // by the Apache License, Version 2.0.
 //
 
-use std::time::Instant;
-
 use anyhow::Result;
 use arrow::error::ArrowError;
 use arrow::util::display::ArrayFormatter;
@@ -20,6 +18,8 @@ use comfy_table::Cell;
 use comfy_table::Table;
 use serde::Deserialize;
 use serde::Serialize;
+use std::io;
+use std::time::Instant;
 
 use crate::c_eprintln;
 use crate::c_println;
@@ -37,6 +37,14 @@ pub struct Sql {
 
     #[clap(flatten)]
     watch: Watch,
+
+    /// Print result as line delimited json instead of using the tabular format
+    #[arg(long, alias = "ldjson")]
+    pub jsonl: bool,
+
+    /// Print result as json array instead of using the tabular format
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -61,27 +69,41 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
     }
     table.set_styled_header(headers);
 
-    let format_options = FormatOptions::default().with_display_error(true);
-    for batch in resp.batches {
-        let formatters = batch
-            .columns()
-            .iter()
-            .map(|c| ArrayFormatter::try_new(c.as_ref(), &format_options))
-            .collect::<Result<Vec<_>, ArrowError>>()?;
-
-        for row in 0..batch.num_rows() {
-            let mut cells = Vec::new();
-            for formatter in &formatters {
-                cells.push(Cell::new(formatter.value(row)));
-            }
-            table.add_row(cells);
+    if sql_opts.json {
+        let mut writer = arrow::json::ArrayWriter::new(io::stdout());
+        for batch in resp.batches {
+            writer.write_batches(&[&batch])?;
         }
-    }
+        writer.finish()?;
+    } else if sql_opts.jsonl {
+        let mut writer = arrow::json::LineDelimitedWriter::new(io::stdout());
+        for batch in resp.batches {
+            writer.write_batches(&[&batch])?;
+        }
+        writer.finish()?;
+    } else {
+        let format_options = FormatOptions::default().with_display_error(true);
+        for batch in resp.batches {
+            let formatters = batch
+                .columns()
+                .iter()
+                .map(|c| ArrayFormatter::try_new(c.as_ref(), &format_options))
+                .collect::<Result<Vec<_>, ArrowError>>()?;
 
-    // Only print if there are actual results.
-    if table.row_count() > 0 {
-        c_println!("{}", table);
-        c_println!();
+            for row in 0..batch.num_rows() {
+                let mut cells = Vec::new();
+                for formatter in &formatters {
+                    cells.push(Cell::new(formatter.value(row)));
+                }
+                table.add_row(cells);
+            }
+        }
+
+        // Only print if there are actual results.
+        if table.row_count() > 0 {
+            c_println!("{}", table);
+            c_println!();
+        }
     }
 
     c_eprintln!(
