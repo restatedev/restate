@@ -11,6 +11,7 @@
 mod cancel;
 mod describe;
 mod list;
+mod purge;
 
 use cling::prelude::*;
 
@@ -22,4 +23,6 @@ pub enum Invocations {
     Describe(describe::Describe),
     /// Cancel a given invocation, or a set of invocations, and its children
     Cancel(cancel::Cancel),
+    /// Purge a completed invocation, or a set of invocations. This command affects only completed invocations.
+    Purge(purge::Purge),
 }

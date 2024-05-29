@@ -700,6 +700,12 @@ pub enum TerminationFlavor {
     Cancel,
 }
 
+/// Message to purge an invocation.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PurgeInvocationRequest {
+    pub invocation_id: InvocationId,
+}
+
 // A hack to allow spancontext to be serialized.
 // Details in https://github.com/open-telemetry/opentelemetry-rust/issues/576#issuecomment-1253396100
 #[derive(serde::Serialize, serde::Deserialize)]
