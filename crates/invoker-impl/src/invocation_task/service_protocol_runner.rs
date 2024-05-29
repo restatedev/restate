@@ -123,6 +123,7 @@ where
             .attach_to_span(&invocation_task_span);
 
         info!(
+            invocation.id = %self.invocation_task.invocation_id,
             deployment.address = %deployment.metadata.address_display(),
             deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
             path = %path,

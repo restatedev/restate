@@ -40,6 +40,7 @@ pub const DISPOSITION: &str = "disposition";
 
 pub const DISPOSITION_MAYBE_BLOCKING: &str = "maybe-blocking";
 pub const DISPOSITION_NON_BLOCKING: &str = "non-blocking";
+pub const DISPOSITION_BACKGROUND: &str = "background";
 pub const DISPOSITION_MOVED_TO_BG: &str = "moved-to-bg";
 pub const DISPOSITION_FAILED: &str = "failed";
 

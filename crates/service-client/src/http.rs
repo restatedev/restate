@@ -43,6 +43,10 @@ impl HttpClient {
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
 
+        let mut http_connector = HttpConnector::new();
+        http_connector.enforce_http(false);
+        http_connector.set_nodelay(true);
+
         HttpClient::new(
             builder.build::<_, hyper::Body>(ProxyConnector::new(
                 options.http_proxy.clone(),
@@ -50,7 +54,7 @@ impl HttpClient {
                     .with_native_roots()
                     .https_or_http()
                     .enable_http2()
-                    .build(),
+                    .wrap_connector(http_connector),
             )),
         )
     }

@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use crate::metric_definitions::{
-    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_TIMER_DUE_HANDLED,
-    PP_APPLY_ACTIONS_DURATION, PP_APPLY_RECORD_DURATION,
+    PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
+    PARTITION_TIMER_DUE_HANDLED, PP_APPLY_RECORD_DURATION,
 };
 use crate::partition::leadership::{ActionEffect, LeadershipState};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
@@ -184,6 +184,12 @@ where
 
         let mut cancellation = std::pin::pin!(cancellation_watcher());
         let partition_id_str: &'static str = Box::leak(Box::new(self.partition_id.to_string()));
+        // Telemetry setup
+        let apply_record_latency =
+            histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str);
+        let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
+        let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
+        let timer_events_handled = counter!(PARTITION_TIMER_DUE_HANDLED);
         loop {
             tokio::select! {
                 _ = &mut cancellation => break,
@@ -253,23 +259,23 @@ where
                                 debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership lost to {}", announce_leader.node_id);
                             }
                         }
-                        histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str).record(command_start.elapsed());
+                        apply_record_latency.record(command_start.elapsed());
                     } else {
                         // Commit our changes and notify actuators about actions if we are the leader
                         transaction.commit().await?;
-                        histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str).record(command_start.elapsed());
+                        apply_record_latency.record(command_start.elapsed());
                         let actions_start = Instant::now();
                         state.handle_actions(action_collector.drain(..)).await?;
-                        histogram!(PP_APPLY_ACTIONS_DURATION).record(actions_start.elapsed());
+                        record_actions_latency.record(actions_start.elapsed());
                     }
                 },
                 action_effects = action_effect_stream.next() => {
                     let action_effects = action_effects.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
-                    counter!(PARTITION_ACTUATOR_HANDLED).increment(action_effects.len() as u64);
+                    actuator_effects_handled.increment(action_effects.len() as u64);
                     state.handle_action_effect(action_effects).await?;
                 },
                 timer = state.run_timer() => {
-                    counter!(PARTITION_TIMER_DUE_HANDLED).increment(1);
+                    timer_events_handled.increment(1);
                     state.handle_action_effect([ActionEffect::Timer(timer)]).await?;
                 },
             }

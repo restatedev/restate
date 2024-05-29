@@ -64,7 +64,7 @@ pub enum TaskKind {
     RpcServer,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
     /// to shutdown cleanly without waiting indefinitely.
-    #[strum(props(OnCancel = "abort"))]
+    #[strum(props(OnCancel = "abort", runtime = "ingress"))]
     IngressServer,
     RoleRunner,
     SystemService,
@@ -105,8 +105,22 @@ impl TaskKind {
     fn on_error(&self) -> &'static str {
         self.get_str("OnError").unwrap_or("shutdown")
     }
+
+    pub fn runtime(&self) -> AsyncRuntime {
+        match self.get_str("runtime").unwrap_or("default") {
+            "default" => AsyncRuntime::Default,
+            "ingress" => AsyncRuntime::Ingress,
+            _ => panic!("Invalid runtime for task kind: {}", self),
+        }
+    }
 }
 
 pub enum FailureBehaviour {
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::IntoStaticStr, strum_macros::Display)]
+pub enum AsyncRuntime {
+    Default,
+    Ingress,
 }

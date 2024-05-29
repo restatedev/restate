@@ -94,7 +94,7 @@ impl Default for LocalLogletOptions {
             rocksdb,
             batch_wal_flushes: true,
             sync_wal_before_ack: true,
-            writer_batch_commit_count: 500,
+            writer_batch_commit_count: 2000,
             writer_batch_commit_duration: Duration::ZERO.into(),
         }
     }

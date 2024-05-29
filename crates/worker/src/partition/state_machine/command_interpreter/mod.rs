@@ -10,11 +10,13 @@
 
 use super::Error;
 
+use crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND;
 use crate::partition::state_machine::effects::Effects;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 use assert2::let_assert;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use metrics::{histogram, Histogram};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::inbox_table::InboxEntry;
@@ -63,6 +65,7 @@ use std::iter;
 use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::pin::pin;
+use std::time::Instant;
 use tracing::{debug, instrument, trace, warn};
 
 pub trait StateReader {
@@ -111,6 +114,7 @@ pub(crate) struct CommandInterpreter<Codec> {
     inbox_seq_number: MessageIndex,
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
+    latency: Histogram,
 
     _codec: PhantomData<Codec>,
 }
@@ -130,11 +134,13 @@ impl<Codec> CommandInterpreter<Codec> {
         outbox_seq_number: MessageIndex,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
+        let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
             partition_key_range,
             _codec: PhantomData,
+            latency,
         }
     }
 }
@@ -973,6 +979,7 @@ where
         state: &mut State,
         invoker_effect: InvokerEffect,
     ) -> Result<(), Error> {
+        let start = Instant::now();
         let status =
             Self::get_invocation_status_and_trace(state, &invoker_effect.invocation_id, effects)
                 .await?;
@@ -987,6 +994,7 @@ where
                 effects.abort_invocation(invoker_effect.invocation_id);
             }
         };
+        self.latency.record(start.elapsed());
 
         Ok(())
     }

@@ -62,6 +62,7 @@ pub struct PartitionProcessorManager {
     task_center: TaskCenter,
     updateable_config: UpdateableConfiguration,
     running_partition_processors: BTreeMap<PartitionId, State>,
+    name_cache: BTreeMap<PartitionId, &'static str>,
 
     metadata: Metadata,
     metadata_store_client: MetadataStoreClient,
@@ -115,6 +116,7 @@ impl PartitionProcessorManager {
             task_center,
             updateable_config,
             running_partition_processors: BTreeMap::default(),
+            name_cache: Default::default(),
             metadata,
             metadata_store_client,
             partition_store_manager,
@@ -310,7 +312,7 @@ impl PartitionProcessorManager {
     }
 
     fn spawn_partition_processor(
-        &self,
+        &mut self,
         options: &WorkerOptions,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
@@ -334,9 +336,13 @@ impl PartitionProcessorManager {
         let metadata_store_client = self.metadata_store_client.clone();
         let node_id = self.metadata.my_node_id();
 
+        let task_name = self.name_cache.entry(partition_id).or_insert_with(|| {
+            Box::leak(Box::new(format!("partition-processor-{}", partition_id)))
+        });
+
         self.task_center.spawn_child(
             TaskKind::PartitionProcessor,
-            "partition-processor",
+            task_name,
             Some(processor.partition_id),
             {
                 let storage_manager = self.partition_store_manager.clone();
