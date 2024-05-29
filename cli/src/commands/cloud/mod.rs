@@ -47,8 +47,7 @@ impl Default for CloudConfig {
             environment_info: None,
             api_base_url: Url::parse("https://api.us.restate.cloud").unwrap(),
             login_base_url: Url::parse("https://auth.restate.cloud").unwrap(),
-            // TODO; prod url
-            tunnel_base_url: Url::parse("https://tunnel.dev.restate.cloud:19080").unwrap(),
+            tunnel_base_url: Url::parse("https://tunnel.us.restate.cloud:19080").unwrap(),
             client_id: "5q3dsdnrr5r400jvibd8d3k66l".into(),
             redirect_ports: vec![33912, 44643, 47576, 54788, 61844],
             credentials: None,
