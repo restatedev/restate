@@ -72,15 +72,15 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
     if sql_opts.json {
         let mut writer = arrow::json::ArrayWriter::new(io::stdout());
         for batch in resp.batches {
-            writer.write_batches(&[&batch]).unwrap();
+            writer.write_batches(&[&batch])?;
         }
-        writer.finish().unwrap();
+        writer.finish()?;
     } else if sql_opts.jsonl {
         let mut writer = arrow::json::LineDelimitedWriter::new(io::stdout());
         for batch in resp.batches {
-            writer.write_batches(&[&batch]).unwrap();
+            writer.write_batches(&[&batch])?;
         }
-        writer.finish().unwrap();
+        writer.finish()?;
     } else {
         let format_options = FormatOptions::default().with_display_error(true);
         for batch in resp.batches {
