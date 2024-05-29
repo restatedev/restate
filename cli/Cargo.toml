@@ -70,7 +70,7 @@ tracing-subscriber = { workspace = true }
 typify = "0.1.0"
 unicode-width = { version = "0.1.11" }
 url = { version = "2.4.1" }
-ulid = { workspace = true }
+uuid = { workspace = true }
 zip = "0.6"
 
 [build-dependencies]

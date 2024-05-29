@@ -5436,9 +5436,9 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "typify 0.1.0",
- "ulid",
  "unicode-width",
  "url",
+ "uuid",
  "vergen",
  "zip",
 ]
