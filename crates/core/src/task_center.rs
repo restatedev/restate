@@ -847,6 +847,7 @@ mod tests {
         let tc = TaskCenterBuilder::default()
             .options(common_opts)
             .default_runtime_handle(tokio::runtime::Handle::current())
+            .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()?;
         let start = tokio::time::Instant::now();
         tc.spawn(TaskKind::RoleRunner, "worker-role", None, async {
