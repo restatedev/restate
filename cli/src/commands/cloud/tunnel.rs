@@ -124,30 +124,21 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         status: HandlerStatus::AwaitingStart,
         https_connector,
         inner: Arc::new(HandlerInner {
-            tunnel_name: opts.tunnel_name.clone(),
             tunnel_renderer: OnceLock::new(),
             bearer_token,
             client,
             url,
-            port: opts.port,
             ui_config: env.ui_config.clone(),
+            opts: opts.clone(),
         }),
         proxy,
     };
 
-    let default_tunnel_url = opts
-        .tunnel_url
-        .as_deref()
-        .unwrap_or(env.config.cloud.tunnel_base_url.as_str());
-
     let retry_fut = retry_policy.retry_if(
         || {
             let tunnel_url = handler
-                .inner
-                .tunnel_renderer
-                .get()
-                .map(|r: &TunnelRenderer| r.tunnel_url.as_str())
-                .unwrap_or(default_tunnel_url)
+                .tunnel_uri()
+                .unwrap_or(env.config.cloud.tunnel_base_url.as_str())
                 .parse()
                 .unwrap();
 
@@ -229,6 +220,26 @@ impl<Proxy> Handler<Proxy> {
     fn into_inner(self) -> Arc<HandlerInner> {
         self.inner
     }
+
+    fn tunnel_name(&self) -> Option<String> {
+        if let Some(tunnel_renderer) = self.inner.tunnel_renderer.get() {
+            // already had a tunnel at a particular name, continue to use it
+            Some(tunnel_renderer.tunnel_name.clone())
+        } else {
+            // no tunnel yet; return the user-provided tunnel name if any
+            self.inner.opts.tunnel_name.clone()
+        }
+    }
+
+    fn tunnel_uri(&self) -> Option<&str> {
+        if let Some(tunnel_renderer) = self.inner.tunnel_renderer.get() {
+            // already had a tunnel at a particular url, continue to use it
+            Some(&tunnel_renderer.tunnel_url)
+        } else {
+            // no tunnel yet; return the user-provided tunnel url if any
+            self.inner.opts.tunnel_url.as_deref()
+        }
+    }
 }
 
 impl<Proxy: Clone> Clone for Handler<Proxy> {
@@ -243,13 +254,12 @@ impl<Proxy: Clone> Clone for Handler<Proxy> {
 }
 
 struct HandlerInner {
-    tunnel_name: Option<String>,
+    opts: Tunnel,
     ui_config: UiConfig,
     tunnel_renderer: OnceLock<TunnelRenderer>,
     bearer_token: String,
     client: reqwest::Client,
     url: Url,
-    port: u16,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -268,6 +278,8 @@ enum StartError {
     MissingTunnelURL,
     #[error("Missing tunnel name")]
     MissingTunnelName,
+    #[error("Tunnel service provided a different tunnel name to what we requested")]
+    TunnelNameMismatch,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -394,7 +406,8 @@ where
                     "authorization",
                     format!("Bearer {}", self.inner.bearer_token),
                 );
-                let resp = if let Some(tunnel_name) = &self.inner.tunnel_name {
+
+                let resp = if let Some(tunnel_name) = self.tunnel_name() {
                     resp.header("tunnel-name", tunnel_name)
                 } else {
                     resp
@@ -481,10 +494,17 @@ async fn process_start(inner: Arc<HandlerInner>, body: hyper::Body) -> Result<()
             proxy_url.into(),
             tunnel_url.into(),
             tunnel_name.into(),
-            inner.port,
+            inner.opts.port,
         )
         .unwrap()
     });
+
+    if let Some(tunnel_name) = inner.opts.tunnel_name.as_deref() {
+        // the user provided a particular tunnel name; check that the server respected this
+        if tunnel_name != tunnel_renderer.tunnel_name {
+            return Err(StartError::TunnelNameMismatch);
+        }
+    }
 
     tunnel_renderer.last_error.store(None);
     tunnel_renderer.render();
