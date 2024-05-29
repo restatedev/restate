@@ -30,7 +30,7 @@ pub(crate) enum HandlerError {
     )]
     BadAwakeablesPath,
     #[error(
-        "bad path, expected either /restate/invocation/:id/output or /restate/invocation/:id/attach"
+        "bad path, expected either /restate/invocation/:invocation_id/output or /restate/invocation/:invocation_id/attach or /restate/invocation/:invocation_target/:idempotency_key/output or /restate/invocation/:invocation_target/:idempotency_key/attach"
     )]
     BadInvocationPath,
     #[error(

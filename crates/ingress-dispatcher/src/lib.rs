@@ -25,7 +25,6 @@ use std::fmt::Display;
 use std::future::Future;
 use std::hash::Hash;
 use tokio::sync::oneshot;
-use uuid::Uuid;
 
 mod dispatcher;
 pub mod error;
@@ -41,21 +40,6 @@ pub type IngressSubmittedInvocationNotificationSender =
     oneshot::Sender<SubmittedInvocationNotification>;
 pub type IngressSubmittedInvocationNotificationReceiver =
     oneshot::Receiver<SubmittedInvocationNotification>;
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct IngressResponseWaiterId(Uuid);
-
-impl IngressResponseWaiterId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl Default for IngressResponseWaiterId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[derive(Debug)]
 enum IngressDispatcherRequestInner {

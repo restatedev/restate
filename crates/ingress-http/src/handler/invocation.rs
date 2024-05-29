@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::path_parsing::InvocationRequestType;
+use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
 use super::Handler;
 use super::HandlerError;
 
@@ -19,9 +19,9 @@ use http_body_util::Full;
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::invocation_target::InvocationTargetResolver;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::IdempotencyId;
 use restate_types::invocation::InvocationQuery;
-use tracing::{info, warn};
+use tracing::warn;
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where
@@ -38,25 +38,52 @@ where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
     {
         match invocation_request_type {
-            InvocationRequestType::Attach(id) => {
-                let invocation_id = id
-                    .parse()
-                    .map_err(|e| HandlerError::BadInvocationId(id, e))?;
-                self.handle_invocation_attach(req, invocation_id).await
+            InvocationRequestType::Attach(invocation_target_type) => {
+                self.handle_invocation_attach(
+                    req,
+                    Self::convert_to_invocation_query(invocation_target_type)?,
+                )
+                .await
             }
-            InvocationRequestType::GetOutput(id) => {
-                let invocation_id = id
-                    .parse()
-                    .map_err(|e| HandlerError::BadInvocationId(id, e))?;
-                self.handle_invocation_get_output(req, invocation_id).await
+            InvocationRequestType::GetOutput(invocation_target_type) => {
+                self.handle_invocation_get_output(
+                    req,
+                    Self::convert_to_invocation_query(invocation_target_type)?,
+                )
+                .await
             }
+        }
+    }
+
+    pub(crate) fn convert_to_invocation_query(
+        invocation_target_type: InvocationTargetType,
+    ) -> Result<InvocationQuery, HandlerError> {
+        match invocation_target_type {
+            InvocationTargetType::InvocationId(id) => id
+                .parse()
+                .map(InvocationQuery::Invocation)
+                .map_err(|e| HandlerError::BadInvocationId(id, e)),
+            InvocationTargetType::IdempotencyId {
+                name,
+                target,
+                handler,
+                idempotency_id,
+            } => Ok(InvocationQuery::IdempotencyId(IdempotencyId::new(
+                name.into(),
+                match target {
+                    TargetType::Unkeyed => None,
+                    TargetType::Keyed { key } => Some(key.into()),
+                },
+                handler.into(),
+                idempotency_id.into(),
+            ))),
         }
     }
 
     pub(crate) async fn handle_invocation_attach<B: http_body::Body>(
         self,
         req: Request<B>,
-        invocation_id: InvocationId,
+        invocation_query: InvocationQuery,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -67,12 +94,7 @@ where
         }
 
         let (dispatcher_req, correlation_id, response_rx) =
-            IngressDispatcherRequest::attach(InvocationQuery::Invocation(invocation_id));
-
-        info!(
-            restate.invocation.id = %invocation_id,
-            "Processing invocation attach request"
-        );
+            IngressDispatcherRequest::attach(invocation_query.clone());
 
         if let Err(e) = self
             .dispatcher
@@ -80,7 +102,7 @@ where
             .await
         {
             warn!(
-                restate.invocation.id = %invocation_id,
+                restate.invocation.query = ?invocation_query,
                 "Failed to dispatch: {}",
                 e,
             );
@@ -98,7 +120,7 @@ where
 
         Self::reply_with_invocation_response(
             response.result,
-            Some(invocation_id),
+            response.invocation_id,
             response.idempotency_expiry_time.as_deref(),
             move |invocation_target| {
                 self.schemas
@@ -114,7 +136,7 @@ where
     pub(crate) async fn handle_invocation_get_output<B: http_body::Body>(
         self,
         req: Request<B>,
-        invocation_id: InvocationId,
+        invocation_query: InvocationQuery,
     ) -> Result<Response<Full<Bytes>>, HandlerError>
     where
         <B as http_body::Body>::Error: std::error::Error + Send + Sync + 'static,
@@ -126,7 +148,7 @@ where
 
         let response = match self
             .storage_reader
-            .get_output(InvocationQuery::Invocation(invocation_id))
+            .get_output(invocation_query.clone())
             .await
         {
             Ok(GetOutputResult::Ready(out)) => out,
@@ -134,7 +156,7 @@ where
             Ok(GetOutputResult::NotReady) => return Err(HandlerError::NotReady),
             Err(e) => {
                 warn!(
-                    restate.invocation.id = %invocation_id,
+                    restate.invocation.query = ?invocation_query,
                     "Failed to read output: {}",
                     e,
                 );
@@ -144,7 +166,7 @@ where
 
         Self::reply_with_invocation_response(
             response.response,
-            Some(invocation_id),
+            response.invocation_id,
             None,
             move |invocation_target| {
                 self.schemas
