@@ -774,6 +774,8 @@ pub enum InvocationQuery {
     /// Query a workflow handler invocation.
     /// There can be at most one running workflow method for the given ServiceId. This uniqueness constraint is guaranteed by the PP state machine.
     Workflow(ServiceId),
+    /// Query an idempotency id.
+    IdempotencyId(IdempotencyId),
 }
 
 impl WithPartitionKey for InvocationQuery {
@@ -781,6 +783,7 @@ impl WithPartitionKey for InvocationQuery {
         match self {
             InvocationQuery::Invocation(iid) => iid.partition_key(),
             InvocationQuery::Workflow(sid) => sid.partition_key(),
+            InvocationQuery::IdempotencyId(iid) => iid.partition_key(),
         }
     }
 }

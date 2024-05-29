@@ -1857,7 +1857,7 @@ where
         self.outbox_seq_number += 1;
     }
 
-    async fn handle_attach_invocation_request<State: StateReader>(
+    async fn handle_attach_invocation_request<State: StateReader + ReadOnlyIdempotencyTable>(
         &mut self,
         effects: &mut Effects,
         state: &mut State,
@@ -1884,6 +1884,21 @@ where
                     return Ok(());
                 }
             },
+            InvocationQuery::IdempotencyId(iid) => {
+                match state.get_idempotency_metadata(&iid).await? {
+                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
+                    None => {
+                        self.send_response_to_sinks(
+                            effects,
+                            vec![attach_invocation_request.response_sink],
+                            NOT_FOUND_INVOCATION_ERROR,
+                            None,
+                            None,
+                        );
+                        return Ok(());
+                    }
+                }
+            }
         };
         match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
             is @ InvocationStatus::Invoked(_)
