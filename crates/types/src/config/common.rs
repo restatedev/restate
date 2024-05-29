@@ -87,7 +87,7 @@ pub struct CommonOptions {
     /// # Default async runtime thread pool
     ///
     /// Size of the default thread pool used to perform internal tasks.
-    /// If not set, it defaults to twice the number of CPU cores.
+    /// If not set, it defaults to the number of CPU cores.
     #[builder(setter(strip_option))]
     default_thread_pool_size: Option<usize>,
 
@@ -246,11 +246,15 @@ impl CommonOptions {
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
-        NonZeroUsize::new(4).unwrap()
+        self.storage_high_priority_bg_threads.unwrap_or(
+            std::thread::available_parallelism()
+                // Shouldn't really fail, but just in case.
+                .unwrap_or(NonZeroUsize::new(4).unwrap()),
+        )
     }
 
     pub fn default_thread_pool_size(&self) -> usize {
-        2 * self.default_thread_pool_size.unwrap_or(
+        self.default_thread_pool_size.unwrap_or(
             std::thread::available_parallelism()
                 // Shouldn't really fail, but just in case.
                 .unwrap_or(NonZeroUsize::new(4).unwrap())
@@ -259,7 +263,11 @@ impl CommonOptions {
     }
 
     pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
-        NonZeroUsize::new(4).unwrap()
+        self.storage_low_priority_bg_threads.unwrap_or(
+            std::thread::available_parallelism()
+                // Shouldn't really fail, but just in case.
+                .unwrap_or(NonZeroUsize::new(4).unwrap()),
+        )
     }
 
     pub fn rocksdb_bg_threads(&self) -> NonZeroU32 {

@@ -20,7 +20,7 @@ use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
-#[derive(Debug)]
+#[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Action {
     Invoke {
         invocation_id: InvocationId,
@@ -52,4 +52,10 @@ pub enum Action {
         invocation_id: InvocationId,
         retention: Duration,
     },
+}
+
+impl Action {
+    pub fn name(&self) -> &'static str {
+        self.into()
+    }
 }

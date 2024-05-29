@@ -11,9 +11,10 @@
 use crate::metric_definitions::PARTITION_APPLY_COMMAND;
 use crate::partition::storage::Transaction;
 use command_interpreter::CommandInterpreter;
-use metrics::counter;
+use metrics::histogram;
 use restate_types::message::MessageIndex;
 use std::ops::RangeInclusive;
+use std::time::Instant;
 
 mod actions;
 mod command_interpreter;
@@ -63,21 +64,23 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         action_collector: &mut ActionCollector,
         is_leader: bool,
     ) -> Result<(), Error> {
+        let start = Instant::now();
         // Handle the command, returns the span_relation to use to log effects
         let command_type = command.name();
         self.0.on_apply(command, effects, transaction).await?;
-        counter!(PARTITION_APPLY_COMMAND, "command" => command_type).increment(1);
 
         // Log the effects
         effects.log(is_leader);
 
         // Interpret effects
-        effect_interpreter::EffectInterpreter::<Codec>::interpret_effects(
+        let res = effect_interpreter::EffectInterpreter::<Codec>::interpret_effects(
             effects,
             transaction,
             action_collector,
         )
-        .await
+        .await;
+        histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
+        res
     }
 }
 

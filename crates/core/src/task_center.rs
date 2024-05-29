@@ -29,6 +29,7 @@ use restate_types::identifiers::PartitionId;
 use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
 use crate::{metric_definitions, Metadata, TaskId, TaskKind};
 
+static WORKER_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
 const EXIT_CODE_FAILURE: i32 = 1;
 
@@ -62,6 +63,8 @@ pub enum TaskCenterBuildError {
 pub struct TaskCenterBuilder {
     default_runtime_handle: Option<tokio::runtime::Handle>,
     default_runtime: Option<tokio::runtime::Runtime>,
+    ingress_runtime_handle: Option<tokio::runtime::Handle>,
+    ingress_runtime: Option<tokio::runtime::Runtime>,
     options: Option<CommonOptions>,
     #[cfg(any(test, feature = "test-util"))]
     pause_time: bool,
@@ -71,6 +74,12 @@ impl TaskCenterBuilder {
     pub fn default_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
         self.default_runtime_handle = Some(handle);
         self.default_runtime = None;
+        self
+    }
+
+    pub fn ingress_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
+        self.ingress_runtime_handle = Some(handle);
+        self.ingress_runtime = None;
         self
     }
 
@@ -85,6 +94,12 @@ impl TaskCenterBuilder {
         self
     }
 
+    pub fn ingress_runtime(mut self, runtime: tokio::runtime::Runtime) -> Self {
+        self.ingress_runtime_handle = Some(runtime.handle().clone());
+        self.ingress_runtime = Some(runtime);
+        self
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn pause_time(mut self, pause_time: bool) -> Self {
         self.pause_time = pause_time;
@@ -94,7 +109,7 @@ impl TaskCenterBuilder {
     pub fn build(mut self) -> Result<TaskCenter, TaskCenterBuildError> {
         let options = self.options.unwrap_or_default();
         if self.default_runtime_handle.is_none() {
-            let mut default_runtime_builder = tokio_builder(&options);
+            let mut default_runtime_builder = tokio_builder("worker", &options);
             #[cfg(any(test, feature = "test-util"))]
             if self.pause_time {
                 default_runtime_builder.start_paused(self.pause_time);
@@ -104,30 +119,59 @@ impl TaskCenterBuilder {
             self.default_runtime = Some(default_runtime);
         }
 
+        if self.ingress_runtime_handle.is_none() {
+            let mut ingress_runtime_builder = tokio_builder("ingress", &options);
+            #[cfg(any(test, feature = "test-util"))]
+            if self.pause_time {
+                ingress_runtime_builder.start_paused(self.pause_time);
+            }
+            let ingress_runtime = ingress_runtime_builder.build()?;
+            self.ingress_runtime_handle = Some(ingress_runtime.handle().clone());
+            self.ingress_runtime = Some(ingress_runtime);
+        }
+
         metric_definitions::describe_metrics();
         Ok(TaskCenter {
             inner: Arc::new(TaskCenterInner {
                 default_runtime_handle: self.default_runtime_handle.unwrap(),
                 default_runtime: self.default_runtime,
+                ingress_runtime_handle: self.ingress_runtime_handle.unwrap(),
+                ingress_runtime: self.ingress_runtime,
                 global_cancel_token: CancellationToken::new(),
                 shutdown_requested: AtomicBool::new(false),
                 current_exit_code: AtomicI32::new(0),
                 tasks: Mutex::new(HashMap::new()),
                 global_metadata: OnceLock::new(),
+                pp_runtimes: Mutex::new(HashMap::with_capacity(64)),
             }),
         })
     }
 }
 
-fn tokio_builder(common_opts: &CommonOptions) -> tokio::runtime::Builder {
+fn tokio_builder(prefix: &'static str, common_opts: &CommonOptions) -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.enable_all().thread_name_fn(|| {
-        static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-        let id = ATOMIC_ID.fetch_add(1, Ordering::Relaxed);
-        format!("rs:worker-{}", id)
+    builder.enable_all().thread_name_fn(move || {
+        let id = WORKER_ID.fetch_add(1, Ordering::Relaxed);
+        format!("rs:{}-{}", prefix, id)
     });
 
     builder.worker_threads(common_opts.default_thread_pool_size());
+
+    builder
+}
+
+fn tokio_pp_builder(pp_name: &'static str) -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all().thread_name_fn(move || {
+        let id = WORKER_ID.fetch_add(1, Ordering::Relaxed);
+        format!("rs:{}-{}", pp_name, id)
+    });
+
+    builder
+        .worker_threads(2)
+        .max_blocking_threads(2)
+        .event_interval(21)
+        .disable_lifo_slot();
 
     builder
 }
@@ -145,6 +189,15 @@ impl TaskCenter {
         self.inner.default_runtime_handle.metrics()
     }
 
+    pub fn ingress_runtime_metrics(&self) -> RuntimeMetrics {
+        self.inner.ingress_runtime_handle.metrics()
+    }
+
+    pub fn partition_processors_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
+        let guard = self.inner.pp_runtimes.lock().unwrap();
+        guard.iter().map(|(k, v)| (*k, v.metrics())).collect()
+    }
+
     /// Use to monitor an on-going shutdown when requested
     pub fn watch_shutdown(&self) -> WaitForCancellationFutureOwned {
         self.inner.global_cancel_token.clone().cancelled_owned()
@@ -158,6 +211,14 @@ impl TaskCenter {
     /// The exit code that the process should exit with.
     pub fn exit_code(&self) -> i32 {
         self.inner.current_exit_code.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn runtime_for_kind(&self, kind: TaskKind) -> &tokio::runtime::Handle {
+        match kind.runtime() {
+            crate::AsyncRuntime::Default => &self.inner.default_runtime_handle,
+            crate::AsyncRuntime::Ingress => &self.inner.ingress_runtime_handle,
+        }
     }
 
     /// Triggers a shutdown of the system. All running tasks will be asked gracefully
@@ -238,13 +299,31 @@ impl TaskCenter {
             metadata,
             future,
         );
-        let join_handle = tokio_task
-            .spawn_on(fut, &inner.default_runtime_handle)
-            .expect("default runtime can spawn tasks");
+
+        let kind_str: &'static str = kind.into();
+        let join_handle = {
+            if matches!(kind, TaskKind::PartitionProcessor) {
+                let mut guard = self.inner.pp_runtimes.lock().unwrap();
+                // special case.
+                let runtime = guard
+                    .entry(name)
+                    .or_insert_with(|| tokio_pp_builder(name).build().unwrap())
+                    .handle();
+
+                counter!(TC_SPAWN, "kind" => kind_str, "runtime" => name).increment(1);
+                tokio_task
+                    .spawn_on(fut, runtime)
+                    .expect("pp dedicated runtime can be spawned")
+            } else {
+                let runtime_name: &'static str = kind.runtime().into();
+                counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+                tokio_task
+                    .spawn_on(fut, self.runtime_for_kind(kind))
+                    .expect("runtime can spawn tasks")
+            }
+        };
         *handle_mut = Some(join_handle);
         drop(handle_mut);
-        let kind_str: &'static str = kind.into();
-        counter!(TC_SPAWN, "kind" => kind_str).increment(1);
         // Task is ready
         id
     }
@@ -601,11 +680,15 @@ impl TaskCenter {
 
 struct TaskCenterInner {
     default_runtime_handle: tokio::runtime::Handle,
+    ingress_runtime_handle: tokio::runtime::Handle,
+    pp_runtimes: Mutex<HashMap<&'static str, tokio::runtime::Runtime>>,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
     /// tokio's runtime after dropping the task center.
     #[allow(dead_code)]
     default_runtime: Option<tokio::runtime::Runtime>,
+    #[allow(dead_code)]
+    ingress_runtime: Option<tokio::runtime::Runtime>,
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,

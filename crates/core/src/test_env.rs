@@ -162,6 +162,7 @@ where
     ) -> Self {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
+            .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()
             .expect("task_center builds");
 

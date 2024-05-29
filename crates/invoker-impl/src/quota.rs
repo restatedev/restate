@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::gauge;
+
+use crate::metric_definitions::INVOKER_AVAILABLE_SLOTS;
+
 #[derive(Debug)]
 pub(super) enum InvokerConcurrencyQuota {
     Unlimited,
@@ -25,7 +29,10 @@ impl InvokerConcurrencyQuota {
     pub(super) fn is_slot_available(&self) -> bool {
         match self {
             Self::Unlimited => true,
-            Self::Limited { available_slots } => *available_slots > 0,
+            Self::Limited { available_slots } => {
+                gauge!(INVOKER_AVAILABLE_SLOTS).set(*available_slots as f64);
+                *available_slots > 0
+            }
         }
     }
 

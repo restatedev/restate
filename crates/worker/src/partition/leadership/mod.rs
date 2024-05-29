@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::{shuffle, storage};
 use futures::future::OptionFuture;
 use futures::{future, StreamExt};
+use metrics::counter;
 use restate_core::network::NetworkSender;
 use restate_core::{
     current_task_partition_id, metadata, task_center, ShutdownError, TaskId, TaskKind,
@@ -24,7 +26,7 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use tokio::sync::mpsc;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 mod action_collector;
 
@@ -233,6 +235,7 @@ where
             let invoked_invocations = partition_storage.scan_invoked_invocations();
             tokio::pin!(invoked_invocations);
 
+            let mut count = 0;
             while let Some(invocation_id_and_target) = invoked_invocations.next().await {
                 let (invocation_id, invocation_target) = invocation_id_and_target?;
                 invoker_handle
@@ -244,7 +247,9 @@ where
                     )
                     .await
                     .map_err(Error::Invoker)?;
+                count += 1;
             }
+            debug!(partition_id = %partition_leader_epoch.0, "Leader partition resumed {} invocations", count);
         }
 
         Ok(invoker_rx)
@@ -321,6 +326,9 @@ where
             } => {
                 for action in actions {
                     trace!(?action, "Apply action");
+                    counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" =>
+                        action.name())
+                    .increment(1);
                     Self::handle_action(
                         action,
                         (follower_state.partition_id, leader_state.leader_epoch),
