@@ -43,12 +43,14 @@ use crate::ui::console::StyledTable;
 use crate::ui::output::Console;
 use crate::{build_info, c_indent_table, c_println, c_tip, c_warn, cli_env::CliEnv};
 
+const DEFAULT_PORT: u16 = 9080;
+
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_tunnel")]
 #[clap(visible_alias = "expose", visible_alias = "tun")]
 pub struct Tunnel {
     /// The port to forward to the Cloud environment
-    #[clap(default_value_t = 9080)]
+    #[clap(default_value_t = DEFAULT_PORT)]
     port: u16,
 
     /// If reattaching to a previous tunnel session, the tunnel server to connect to
@@ -97,11 +99,6 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         .enable_http2()
         .wrap_connector(http_connector);
 
-    let tunnel_name = opts
-        .tunnel_name
-        .clone()
-        .unwrap_or(base62::encode(ulid::Ulid::new()));
-
     let url = Url::parse(&format!("http://localhost:{}", opts.port)).unwrap();
 
     let cancellation = CancellationToken::new();
@@ -127,7 +124,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         status: HandlerStatus::AwaitingStart,
         https_connector,
         inner: Arc::new(HandlerInner {
-            tunnel_name,
+            tunnel_name: opts.tunnel_name.clone(),
             tunnel_renderer: OnceLock::new(),
             bearer_token,
             client,
@@ -204,7 +201,11 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     {
         // dropping the renderer will exit the alt screen
         let (tunnel_url, tunnel_name) = renderer.into_tunnel_details();
-        eprintln!("To retry with the same endpoint: restate cloud tunnel --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}");
+        if opts.port == DEFAULT_PORT {
+            eprintln!("To retry with the same endpoint: restate cloud tunnel --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}");
+        } else {
+            eprintln!("To retry with the same endpoint: restate cloud tunnel {} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}", opts.port);
+        }
     };
 
     match res {
@@ -242,8 +243,8 @@ impl<Proxy: Clone> Clone for Handler<Proxy> {
 }
 
 struct HandlerInner {
+    tunnel_name: Option<String>,
     ui_config: UiConfig,
-    tunnel_name: String,
     tunnel_renderer: OnceLock<TunnelRenderer>,
     bearer_token: String,
     client: reqwest::Client,
@@ -265,6 +266,8 @@ enum StartError {
     MissingProxyURL,
     #[error("Missing tunnel URL")]
     MissingTunnelURL,
+    #[error("Missing tunnel name")]
+    MissingTunnelName,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -387,15 +390,17 @@ where
                     body,
                 )));
 
-                futures::future::ready(Ok(Response::builder()
-                    .header(
-                        "authorization",
-                        format!("Bearer {}", self.inner.bearer_token),
-                    )
-                    .header("tunnel-name", &self.inner.tunnel_name)
-                    .body(hyper::Body::empty())
-                    .unwrap()))
-                .left_future()
+                let resp = Response::builder().header(
+                    "authorization",
+                    format!("Bearer {}", self.inner.bearer_token),
+                );
+                let resp = if let Some(tunnel_name) = &self.inner.tunnel_name {
+                    resp.header("tunnel-name", tunnel_name)
+                } else {
+                    resp
+                };
+
+                futures::future::ready(Ok(resp.body(hyper::Body::empty()).unwrap())).left_future()
             }
             HandlerStatus::ProcessingStart(_) => {
                 // 'Implementations are permitted to panic if call is invoked without obtaining Poll::Ready(Ok(())) from poll_ready.'
@@ -463,12 +468,19 @@ async fn process_start(inner: Arc<HandlerInner>, body: hyper::Body) -> Result<()
         }
     };
 
+    let tunnel_name = match trailers.get("tunnel-name").and_then(|s| s.to_str().ok()) {
+        Some(name) => name,
+        None => {
+            return Err(StartError::MissingTunnelName);
+        }
+    };
+
     let tunnel_renderer = inner.tunnel_renderer.get_or_init(|| {
         TunnelRenderer::new(
             inner.ui_config.clone(),
             proxy_url.into(),
             tunnel_url.into(),
-            inner.tunnel_name.clone(),
+            tunnel_name.into(),
             inner.port,
         )
         .unwrap()
