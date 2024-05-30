@@ -145,6 +145,7 @@ const ROCKSDB_DB_PROPERTIES: &[(&str, MetricUnit)] = &[
 const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.num-immutable-mem-table", MetricUnit::Count),
     ("rocksdb.mem-table-flush-pending", MetricUnit::Count),
+    ("rocksdb.is-write-stopped", MetricUnit::Count),
     ("rocksdb.compaction-pending", MetricUnit::Count),
     ("rocksdb.background-errors", MetricUnit::Count),
     ("rocksdb.cur-size-active-mem-table", MetricUnit::Bytes),
@@ -171,6 +172,9 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     // Add more as needed.
     ("rocksdb.num-files-at-level2", MetricUnit::Count),
     ("rocksdb.num-files-at-level3", MetricUnit::Count),
+    ("rocksdb.num-files-at-level4", MetricUnit::Count),
+    ("rocksdb.num-files-at-level5", MetricUnit::Count),
+    ("rocksdb.num-files-at-level6", MetricUnit::Count),
 ];
 
 // -- Direct HTTP Handlers --

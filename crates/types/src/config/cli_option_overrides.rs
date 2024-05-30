@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use humantime::Duration;
@@ -68,6 +69,18 @@ pub struct CommonOptionCliOverride {
     /// unset. e.g. `http://127.0.0.1:5122/`
     #[clap(long)]
     advertise_address: Option<AdvertisedAddress>,
+
+    /// # Partitions
+    ///
+    /// Number of partitions that will be provisioned during cluster bootstrap,
+    /// partitions used to process messages.
+    ///
+    /// NOTE: This config entry only impacts the initial number of partitions, the
+    /// value of this entry is ignored for bootstrapped nodes/clusters.
+    ///
+    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
+    #[clap(long)]
+    bootstrap_num_partitions: Option<NonZeroU64>,
 
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]

@@ -59,7 +59,7 @@ impl ConfigLoader {
         }
 
         let config: Configuration = figment.extract()?;
-        Ok(config.apply_rocksdb_common())
+        Ok(config.apply_cascading_values())
     }
 
     fn merge_with_env(figment: Figment) -> Figment {
@@ -147,7 +147,7 @@ impl ConfigLoader {
         let mut should_update = false;
         for event in events.iter().filter(|e| e.kind == DebouncedEventKind::Any) {
             should_update = true;
-            info!("Detected configuration file changes: {:?}", event.path);
+            warn!("Detected configuration file changes: {:?}", event.path);
         }
 
         if should_update {
