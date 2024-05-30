@@ -78,8 +78,8 @@ impl RocksDbManager {
         let opts = base_opts.load();
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
-            opts.rocksdb_total_memtables_size(),
-            true,
+            opts.rocksdb_actual_total_memtables_size(),
+            opts.rocksdb_enable_stall_on_memory_limit,
             cache.clone(),
         );
         // There is no atomic u128 (and it's a ridiculous amount of time anyway), we trim the value
@@ -92,6 +92,7 @@ impl RocksDbManager {
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
         env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
         env.set_high_priority_background_threads(opts.rocksdb_high_priority_bg_threads.get() as i32);
+        env.set_background_threads(opts.rocksdb_bg_threads().get() as i32);
 
         // Create our own storage thread pools
         let high_pri_pool = rayon::ThreadPoolBuilder::new()
@@ -275,7 +276,7 @@ impl RocksDbManager {
         // write buffer is controlled by write buffer manager
         db_options.set_write_buffer_manager(&self.write_buffer_manager);
 
-        // todo: set avoid_unnecessary_blocking_io = true;
+        db_options.set_avoid_unnecessary_blocking_io(true);
 
         if !opts.rocksdb_disable_statistics() {
             db_options.enable_statistics();
@@ -283,15 +284,14 @@ impl RocksDbManager {
                 .set_statistics_level(convert_statistics_level(opts.rocksdb_statistics_level()));
         }
 
+        // no need to retain 1000 log files by default.
+        //
+        db_options.set_keep_log_file_num(1);
         // Disable WAL archiving.
         // the following two options has to be both 0 to disable WAL log archive.
         db_options.set_wal_size_limit_mb(0);
         db_options.set_wal_ttl_seconds(0);
 
-        if !opts.rocksdb_disable_wal() {
-            // Once the WAL logs exceed this size, rocksdb will start flush memtables to disk.
-            db_options.set_max_total_wal_size(opts.rocksdb_max_total_wal_size().get() as u64);
-        }
         //
         // Let rocksdb decide for level sizes.
         //
@@ -304,8 +304,10 @@ impl RocksDbManager {
         db_options.set_table_cache_num_shard_bits(6);
 
         // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
-        db_options.set_use_direct_reads(true);
-        db_options.set_use_direct_io_for_flush_and_compaction(true);
+        db_options.set_use_direct_reads(!opts.rocksdb_disable_direct_io_for_reads());
+        db_options.set_use_direct_io_for_flush_and_compaction(
+            !opts.rocksdb_disable_direct_io_for_flush_and_compaction(),
+        );
     }
 
     pub(crate) fn stall_detection_duration(&self) -> std::time::Duration {
@@ -318,9 +320,11 @@ impl RocksDbManager {
     pub(crate) fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
         let mut cf_options = rocksdb::Options::default();
         // write buffer
-        //
         cf_options.set_write_buffer_manager(&self.write_buffer_manager);
-        cf_options.set_write_buffer_size(opts.rocksdb_write_buffer_size().get());
+        cf_options.set_max_background_jobs(opts.rocksdb_max_background_jobs().get() as i32);
+        cf_options.set_avoid_unnecessary_blocking_io(true);
+
+        cf_options.set_optimize_filters_for_hits(true);
         // bloom filters and block cache.
         //
         let mut block_opts = BlockBasedOptions::default();
@@ -328,8 +332,11 @@ impl RocksDbManager {
         // use the latest Rocksdb table format.
         // https://github.com/facebook/rocksdb/blob/f059c7d9b96300091e07429a60f4ad55dac84859/include/rocksdb/table.h#L275
         block_opts.set_format_version(5);
+        block_opts.set_optimize_filters_for_memory(true);
+        block_opts.set_index_block_restart_interval(4);
         block_opts.set_cache_index_and_filter_blocks(true);
         block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        block_opts.set_block_size(32 * 1024);
 
         block_opts.set_block_cache(&self.cache);
         cf_options.set_block_based_table_factory(&block_opts);
@@ -501,7 +508,7 @@ impl DbWatchdog {
         let new_stall_detection_millis =
             new_common_opts.rocksdb_write_stall_threshold.as_millis() as u64;
         if current_stall_detection_millis != new_stall_detection_millis {
-            info!(
+            warn!(
                 old = current_stall_detection_millis,
                 new = new_stall_detection_millis,
                 "[config update] Stall detection threshold is updated",
@@ -516,7 +523,7 @@ impl DbWatchdog {
         if new_common_opts.rocksdb_total_memory_size
             != self.current_common_opts.rocksdb_total_memory_size
         {
-            info!(
+            warn!(
                 old = self.current_common_opts.rocksdb_total_memory_size,
                 new = new_common_opts.rocksdb_total_memory_size,
                 "[config update] Setting rocksdb total memory limit to {}",
@@ -526,22 +533,44 @@ impl DbWatchdog {
                 .set_capacity(new_common_opts.rocksdb_total_memory_size.get());
             self.manager
                 .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size());
+                .set_buffer_size(new_common_opts.rocksdb_actual_total_memtables_size());
         }
 
         // update memtable total memory
-        if new_common_opts.rocksdb_total_memtables_size()
-            != self.current_common_opts.rocksdb_total_memtables_size()
+        if new_common_opts.rocksdb_actual_total_memtables_size()
+            != self
+                .current_common_opts
+                .rocksdb_actual_total_memtables_size()
         {
-            info!(
-                old = self.current_common_opts.rocksdb_total_memtables_size(),
-                new = new_common_opts.rocksdb_total_memtables_size(),
+            warn!(
+                old = self
+                    .current_common_opts
+                    .rocksdb_actual_total_memtables_size(),
+                new = new_common_opts.rocksdb_actual_total_memtables_size(),
                 "[config update] Setting rocksdb total memtables size limit to {}",
-                ByteCount::from(new_common_opts.rocksdb_total_memtables_size())
+                ByteCount::from(new_common_opts.rocksdb_actual_total_memtables_size())
             );
             self.manager
                 .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size());
+                .set_buffer_size(new_common_opts.rocksdb_actual_total_memtables_size());
+        }
+
+        // Enable/disable WBM stall
+        if new_common_opts.rocksdb_enable_stall_on_memory_limit
+            != self
+                .current_common_opts
+                .rocksdb_enable_stall_on_memory_limit
+        {
+            warn!(
+                old = self
+                    .current_common_opts
+                    .rocksdb_enable_stall_on_memory_limit,
+                new = new_common_opts.rocksdb_enable_stall_on_memory_limit,
+                "[config update] Setting rocksdb-enable-stall-on-memory-limit",
+            );
+            self.manager
+                .write_buffer_manager
+                .set_allow_stall(new_common_opts.rocksdb_enable_stall_on_memory_limit);
         }
 
         // todo: Apply other changes to the databases.

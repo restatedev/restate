@@ -26,7 +26,6 @@ use crate::loglet::{Loglet, LogletOffset, LogletProvider};
 use crate::Error;
 use crate::ProviderError;
 
-//#[derive(Debug)]
 pub struct LocalLogletProvider {
     log_store: RocksDbLogStore,
     active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
@@ -90,13 +89,8 @@ impl LogletProvider for LocalLogletProvider {
     }
 
     fn start(&self) -> Result<(), ProviderError> {
-        let mut updateable = Configuration::mapped_updateable(|c| &c.bifrost.local);
-        let opts = updateable.load();
-        let manual_wal_flush = opts.batch_wal_flushes && !opts.rocksdb.rocksdb_disable_wal();
-        let log_writer = self
-            .log_store
-            .create_writer(manual_wal_flush)
-            .start(updateable)?;
+        let updateable = Configuration::mapped_updateable(|c| &c.bifrost.local);
+        let log_writer = self.log_store.create_writer().start(updateable)?;
         self.log_writer
             .set(log_writer)
             .expect("local loglet started once");

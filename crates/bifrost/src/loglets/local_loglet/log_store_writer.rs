@@ -61,16 +61,14 @@ enum DataUpdate {
 pub(crate) struct LogStoreWriter {
     rocksdb: Arc<RocksDb>,
     batch_acks_buf: Vec<Ack>,
-    manual_wal_flush: bool,
     buffer: BytesMut,
 }
 
 impl LogStoreWriter {
-    pub(crate) fn new(rocksdb: Arc<RocksDb>, manual_wal_flush: bool) -> Self {
+    pub(crate) fn new(rocksdb: Arc<RocksDb>) -> Self {
         Self {
             rocksdb,
             batch_acks_buf: Vec::default(),
-            manual_wal_flush,
             buffer: BytesMut::default(),
         }
     }
@@ -245,12 +243,8 @@ impl LogStoreWriter {
     async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
         let mut write_opts = rocksdb::WriteOptions::new();
         write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
-
-        if !self.manual_wal_flush && !opts.rocksdb.rocksdb_disable_wal() {
-            // if we are not manually flushing the wal, we need to configure the sync behaviour
-            // for the write operation explicitly
-            write_opts.set_sync(opts.sync_wal_before_ack);
-        }
+        // if WAL is enabled, we sync after every write.
+        write_opts.set_sync(!opts.rocksdb.rocksdb_disable_wal());
 
         trace!(
             "Committing local loglet current write batch: {} items",
@@ -258,26 +252,13 @@ impl LogStoreWriter {
         );
         let result = self
             .rocksdb
-            .write_batch(Priority::High, IoMode::Default, write_opts, write_batch)
+            .write_batch(Priority::High, IoMode::default(), write_opts, write_batch)
             .await;
 
         if let Err(e) = result {
             error!("Failed to commit local loglet write batch: {}", e);
             self.send_acks(Err(Error::LogStoreError(e.into())));
             return;
-        }
-
-        if self.manual_wal_flush {
-            // WAL flush is done in the foreground, but sync will happen in the background to avoid
-            // blocking IO.
-            if let Err(e) = self.rocksdb.flush_wal(opts.sync_wal_before_ack).await {
-                warn!("Failed to flush rocksdb WAL in local loglet : {}", e);
-                self.send_acks(Err(Error::LogStoreError(e.into())));
-                return;
-            }
-            if !opts.sync_wal_before_ack {
-                self.rocksdb.run_bg_wal_sync();
-            }
         }
 
         self.send_acks(Ok(()));

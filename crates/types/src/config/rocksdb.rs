@@ -15,8 +15,6 @@ use serde_with::serde_as;
 
 use restate_serde_util::NonZeroByteCount;
 
-use super::{CommonOptions, WorkerOptions};
-
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -25,22 +23,20 @@ use super::{CommonOptions, WorkerOptions};
 #[builder(default)]
 // NOTE: Prefix with rocksdb_
 pub struct RocksDbOptions {
-    /// # Write Buffer size
+    /// # Disable Direct IO for reads
     ///
-    /// The size of a single memtable. Once memtable exceeds this size, it is marked
-    /// immutable and a new one is created. Default is 50MB per memtable.
+    /// Files will be opened in "direct I/O" mode
+    /// which means that data r/w from the disk will not be cached or
+    /// buffered. The hardware buffer of the devices may however still
+    /// be used. Memory mapped files are not impacted by these parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    rocksdb_write_buffer_size: Option<NonZeroUsize>,
+    rocksdb_disable_direct_io_for_reads: Option<bool>,
 
-    /// # Maximum total WAL size
+    /// # Disable Direct IO for flush and compactions
     ///
-    /// Max WAL size, that after this Rocksdb start flushing mem tables to disk.
+    /// Use O_DIRECT for writes in background flush and compactions.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    rocksdb_max_total_wal_size: Option<NonZeroUsize>,
+    rocksdb_disable_direct_io_for_flush_and_compactions: Option<bool>,
 
     /// # Disable WAL
     ///
@@ -84,12 +80,16 @@ pub struct RocksDbOptions {
 
 impl RocksDbOptions {
     pub fn apply_common(&mut self, common: &RocksDbOptions) {
-        // apply memory limits?
-        if self.rocksdb_write_buffer_size.is_none() {
-            self.rocksdb_write_buffer_size = Some(common.rocksdb_write_buffer_size());
+        if self.rocksdb_disable_direct_io_for_reads.is_none() {
+            self.rocksdb_disable_direct_io_for_reads =
+                Some(common.rocksdb_disable_direct_io_for_reads());
         }
-        if self.rocksdb_max_total_wal_size.is_none() {
-            self.rocksdb_max_total_wal_size = Some(common.rocksdb_max_total_wal_size());
+        if self
+            .rocksdb_disable_direct_io_for_flush_and_compactions
+            .is_none()
+        {
+            self.rocksdb_disable_direct_io_for_flush_and_compactions =
+                Some(common.rocksdb_disable_direct_io_for_flush_and_compaction());
         }
         if self.rocksdb_disable_wal.is_none() {
             self.rocksdb_disable_wal = Some(common.rocksdb_disable_wal());
@@ -109,33 +109,16 @@ impl RocksDbOptions {
         }
     }
 
-    pub fn rocksdb_write_buffer_size(&self) -> NonZeroUsize {
-        // Default value is calculated from other defaults of the system
-        self.rocksdb_write_buffer_size.unwrap_or_else(|| {
-            // NOTE: This is a guess, based on the default values of the system, it doesn't reflect
-            // the actual configuration because the number of partitions can change over time. The
-            // goal here is to provide a reasonable default value for the _default_ system
-            // configuration.
-            let common_opts = CommonOptions::default();
-            let all_memtables = common_opts.rocksdb_total_memtables_size();
-            let num_partitions = WorkerOptions::default().bootstrap_num_partitions();
-            // Assuming 1 active and 2 immutable memtables per partition
-            // Assuming 256MB for bifrost's data cf (2 memtables * 128MB default write buffer size)
-            // Assuming 256MB for bifrost's metadata cf (2 memtables * 128MB default write buffer size)
-            let buffer_size = (all_memtables - 512_000_000) / (num_partitions * 3) as usize;
-            // reduce the buffer_size by 10% for safety
-            let buffer_size = (buffer_size as f64 * 0.9) as usize;
-            NonZeroUsize::new(buffer_size).unwrap()
-        })
-    }
-
-    pub fn rocksdb_max_total_wal_size(&self) -> NonZeroUsize {
-        self.rocksdb_max_total_wal_size
-            .unwrap_or(NonZeroUsize::new(2_000_000_000).unwrap())
-    }
-
     pub fn rocksdb_disable_wal(&self) -> bool {
         self.rocksdb_disable_wal.unwrap_or(true)
+    }
+
+    pub fn rocksdb_disable_direct_io_for_reads(&self) -> bool {
+        self.rocksdb_disable_direct_io_for_reads.unwrap_or(false)
+    }
+
+    pub fn rocksdb_disable_direct_io_for_flush_and_compaction(&self) -> bool {
+        self.rocksdb_disable_direct_io_for_reads.unwrap_or(false)
     }
 
     pub fn rocksdb_disable_statistics(&self) -> bool {

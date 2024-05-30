@@ -17,10 +17,11 @@ use serde_with::serde_as;
 
 use restate_serde_util::NonZeroByteCount;
 
-use super::{RocksDbOptions, RocksDbOptionsBuilder};
+use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 use crate::retries::RetryPolicy;
 
 /// # Worker options
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "WorkerOptions", default))]
@@ -38,26 +39,11 @@ pub struct WorkerOptions {
     pub storage: StorageOptions,
 
     pub invoker: InvokerOptions,
-
-    /// # Partitions
-    ///
-    /// Number of partitions that will be provisioned during cluster bootstrap,
-    /// partitions used to process messages.
-    ///
-    /// NOTE: This config entry only impacts the initial number of partitions, the
-    /// value of this entry is ignored for bootstrapped nodes/clusters.
-    ///
-    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
-    bootstrap_num_partitions: NonZeroU64,
 }
 
 impl WorkerOptions {
     pub fn internal_queue_length(&self) -> usize {
         self.internal_queue_length.into()
-    }
-
-    pub fn bootstrap_num_partitions(&self) -> u64 {
-        self.bootstrap_num_partitions.into()
     }
 
     pub fn num_timers_in_memory_limit(&self) -> Option<usize> {
@@ -72,7 +58,6 @@ impl Default for WorkerOptions {
             num_timers_in_memory_limit: None,
             storage: StorageOptions::default(),
             invoker: Default::default(),
-            bootstrap_num_partitions: NonZeroU64::new(64).unwrap(),
         }
     }
 }
@@ -188,6 +173,7 @@ impl Default for InvokerOptions {
 }
 
 /// # Storage options
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "StorageOptions", default))]
@@ -196,6 +182,30 @@ impl Default for InvokerOptions {
 pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
+
+    /// How many partitions to divide memory across?
+    ///
+    /// By default this uses the value defined in `bootstrap-num-partitions` in the common section of
+    /// the config.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_partitions_to_share_memory_budget: Option<NonZeroU64>,
+
+    /// The memory budget for rocksdb memtables in bytes
+    ///
+    /// The total is divided evenly across partitions. The divisor is defined in
+    /// `num-partitions-to-share-memory-budget`. If this value is set, it overrides the ratio
+    /// defined in `rocksdb-memory-ratio`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
+    rocksdb_memory_budget: Option<NonZeroUsize>,
+
+    /// The memory budget for rocksdb memtables as ratio
+    ///
+    /// This defines the total memory for rocksdb as a ratio of all memory available to memtables
+    /// (See `rocksdb-total-memtables-ratio` in common). The budget is then divided evenly across
+    /// partitions. The divisor is defined in `num-partitions-to-share-memory-budget`
+    rocksdb_memory_ratio: f32,
 
     /// # Persist lsn interval
     ///
@@ -214,6 +224,39 @@ pub struct StorageOptions {
 }
 
 impl StorageOptions {
+    pub fn apply_common(&mut self, common: &CommonOptions) {
+        self.rocksdb.apply_common(&common.rocksdb);
+        if self.num_partitions_to_share_memory_budget.is_none() {
+            self.num_partitions_to_share_memory_budget = Some(common.bootstrap_num_partitions);
+        }
+
+        // todo: move to a shared struct and deduplicate
+        if self.rocksdb_memory_budget.is_none() {
+            self.rocksdb_memory_budget = Some(
+                // 1MB minimum
+                NonZeroUsize::new(
+                    (common.rocksdb_safe_total_memtables_size() as f64
+                        * self.rocksdb_memory_ratio as f64)
+                        .floor()
+                        .max(1024.0 * 1024.0) as usize,
+                )
+                .unwrap(),
+            );
+        }
+    }
+
+    pub fn rocksdb_memory_budget(&self) -> usize {
+        self.rocksdb_memory_budget
+            .expect("rocksdb_memory_budget is set from common")
+            .get()
+    }
+
+    pub fn num_partitions_to_share_memory_budget(&self) -> u64 {
+        self.num_partitions_to_share_memory_budget
+            .expect("num-partitions-to-share-memory-budget is set from common")
+            .get()
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("db")
     }
@@ -228,6 +271,10 @@ impl Default for StorageOptions {
 
         StorageOptions {
             rocksdb,
+            num_partitions_to_share_memory_budget: None,
+            // set by apply_common in runtime
+            rocksdb_memory_budget: None,
+            rocksdb_memory_ratio: 0.5,
             // persist the lsn every hour
             persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
             persist_lsn_threshold: 1000,

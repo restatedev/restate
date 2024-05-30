@@ -59,8 +59,14 @@ impl PartitionStoreManager {
     ) -> std::result::Result<Self, RocksError> {
         let options = storage_opts.load();
 
+        let per_partition_memory_budget = options.rocksdb_memory_budget()
+            / options.num_partitions_to_share_memory_budget() as usize;
+
         let db_spec = DbSpecBuilder::new(DbName::new(DB_NAME), options.data_dir(), db_options())
-            .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), cf_options)
+            .add_cf_pattern(
+                CfPrefixPattern::new(PARTITION_CF_PREFIX),
+                cf_options(per_partition_memory_budget),
+            )
             .ensure_column_families(partition_ids_to_cfs(initial_partition_set))
             .build_as_optimistic_db();
 
@@ -142,10 +148,6 @@ fn partition_ids_to_cfs<T>(partition_ids: &[(PartitionId, T)]) -> Vec<CfName> {
 
 fn db_options() -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
-    // no need to retain 1000 log files by default.
-    //
-    db_options.set_keep_log_file_num(1);
-
     // we always enable manual wal flushing in case that the user enables wal at runtime
     db_options.set_manual_wal_flush(true);
 
