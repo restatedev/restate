@@ -345,6 +345,22 @@ impl CliEnv {
             }
         }
     }
+
+    pub fn write_environment(&self, environment: &str) -> std::io::Result<()> {
+        if let Some(parent) = self.environment_file.parent() {
+            std::fs::create_dir_all(parent)?
+        }
+        std::fs::write(self.environment_file.as_path(), environment)?;
+        Ok(())
+    }
+
+    pub fn write_config(&self, config: &str) -> std::io::Result<()> {
+        if let Some(parent) = self.config_file.parent() {
+            std::fs::create_dir_all(parent)?
+        }
+        std::fs::write(self.config_file.as_path(), config)?;
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]

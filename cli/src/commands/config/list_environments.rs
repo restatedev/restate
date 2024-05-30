@@ -23,6 +23,7 @@ use figment::{
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list_environments")]
+#[clap(visible_alias = "list-env")]
 pub struct ListEnvironments {}
 
 pub async fn run_list_environments(

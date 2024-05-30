@@ -102,7 +102,7 @@ pub enum Command {
     State(state::ServiceState),
 
     /// Manage CLI config
-    #[clap(subcommand)]
+    #[clap(subcommand, alias = "conf")]
     Config(config::Config),
 
     #[cfg(feature = "cloud")]
