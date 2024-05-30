@@ -190,18 +190,10 @@ impl Configuration {
         ConfigWatch::new(CONFIG_UPDATE.subscribe())
     }
 
-    pub fn apply_rocksdb_common(mut self) -> Self {
-        self.worker
-            .storage
-            .rocksdb
-            .apply_common(&self.common.rocksdb);
-        self.bifrost
-            .local
-            .rocksdb
-            .apply_common(&self.common.rocksdb);
-        self.metadata_store
-            .rocksdb
-            .apply_common(&self.common.rocksdb);
+    pub fn apply_cascading_values(mut self) -> Self {
+        self.worker.storage.apply_common(&self.common);
+        self.bifrost.local.apply_common(&self.common);
+        self.metadata_store.apply_common(&self.common);
         self
     }
 

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
+
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{info, warn};
 
@@ -30,11 +32,14 @@ pub(super) async fn sigusr_dump_config() {
 
     loop {
         stream.recv().await;
-        info!("Received SIGUSR1, dumping configuration");
+        warn!("Received SIGUSR1, dumping configuration");
         let config = Configuration::pinned().dump();
         match config {
             Err(e) => warn!("Failed to dump configuration: {}", e),
-            Ok(config) => info!("{}", config),
+            Ok(config) => {
+                let mut stderr = std::io::stderr().lock();
+                let _ = writeln!(&mut stderr, "{}", config);
+            }
         }
     }
 }

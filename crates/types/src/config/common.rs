@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -74,6 +74,17 @@ pub struct CommonOptions {
     /// Address that other nodes will use to connect to this node. Default is `http://127.0.0.1:5122/`
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub advertised_address: AdvertisedAddress,
+
+    /// # Partitions
+    ///
+    /// Number of partitions that will be provisioned during cluster bootstrap,
+    /// partitions used to process messages.
+    ///
+    /// NOTE: This config entry only impacts the initial number of partitions, the
+    /// value of this entry is ignored for bootstrapped nodes/clusters.
+    ///
+    /// Cannot be higher than `4611686018427387903` (You should almost never need as many partitions anyway)
+    pub(crate) bootstrap_num_partitions: NonZeroU64,
 
     /// # Shutdown grace timeout
     ///
@@ -200,6 +211,13 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub rocksdb_write_stall_threshold: humantime::Duration,
 
+    /// # Allow rocksdb writes to stall if memory limit is reached
+    ///
+    /// Note if automatic memory budgeting is enabled, it should be safe to allow rocksdb to stall
+    /// if it hits the limit. However, if rocksdb stall kicked in, it's unlikely that the system
+    /// will recover from this without intervention.
+    pub rocksdb_enable_stall_on_memory_limit: bool,
+
     /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
@@ -226,6 +244,10 @@ impl CommonOptions {
         &self.cluster_name
     }
 
+    pub fn bootstrap_num_partitions(&self) -> u64 {
+        self.bootstrap_num_partitions.into()
+    }
+
     #[cfg(feature = "test-util")]
     pub fn set_base_dir(&mut self, path: PathBuf) {
         self.base_dir = Some(path);
@@ -239,10 +261,15 @@ impl CommonOptions {
         })
     }
 
-    pub fn rocksdb_total_memtables_size(&self) -> usize {
+    pub fn rocksdb_actual_total_memtables_size(&self) -> usize {
         let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
         let total_mem = self.rocksdb_total_memory_size.get() as f64;
         (total_mem * sanitized) as usize
+    }
+
+    pub fn rocksdb_safe_total_memtables_size(&self) -> usize {
+        // %5 safety margin
+        (self.rocksdb_actual_total_memtables_size() as f64 * 0.95).floor() as usize
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
@@ -297,6 +324,7 @@ impl Default for CommonOptions {
                 .expect("valid metadata store address"),
             bind_address: "0.0.0.0:5122".parse().unwrap(),
             advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
+            bootstrap_num_partitions: NonZeroU64::new(24).unwrap(),
             histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
@@ -310,11 +338,12 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_ratio: 0.6, // (60% of rocksdb-total-memory-size)
+            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
             rocksdb_total_memory_size: NonZeroUsize::new(6_000_000_000).unwrap(), // 4GB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb_write_stall_threshold: std::time::Duration::from_secs(3).into(),
+            rocksdb_enable_stall_on_memory_limit: false,
             rocksdb: Default::default(),
         }
     }

@@ -126,11 +126,11 @@ pub fn flamegraph_options<'a>() -> Options<'a> {
 pub fn restate_configuration() -> Configuration {
     let common_options = CommonOptionsBuilder::default()
         .base_dir(tempfile::tempdir().expect("tempdir failed").into_path())
+        .bootstrap_num_partitions(NonZeroU64::new(10).unwrap())
         .build()
         .expect("building common options should work");
 
     let worker_options = WorkerOptionsBuilder::default()
-        .bootstrap_num_partitions(NonZeroU64::new(10).unwrap())
         .build()
         .expect("building worker options should work");
 
