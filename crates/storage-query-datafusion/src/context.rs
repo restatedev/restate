@@ -14,7 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::SessionState;
+use datafusion::execution::context::{SQLOptions, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -83,6 +83,7 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
 
 #[derive(Clone)]
 pub struct QueryContext {
+    sql_options: SQLOptions,
     datafusion_context: SessionContext,
 }
 
@@ -186,7 +187,12 @@ impl QueryContext {
 
         let ctx = SessionContext::new_with_state(state);
 
+        let sql_options = SQLOptions::new()
+            .with_allow_ddl(false)
+            .with_allow_dml(false);
+
         Self {
+            sql_options,
             datafusion_context: ctx,
         }
     }
@@ -198,6 +204,7 @@ impl QueryContext {
         let state = self.datafusion_context.state();
         let statement = state.sql_to_statement(sql, "postgres")?;
         let plan = state.statement_to_plan(statement).await?;
+        self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
         df.execute_stream().await
     }
