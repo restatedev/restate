@@ -174,31 +174,49 @@ impl Clone for PartitionStore {
     }
 }
 
-pub(crate) fn cf_options(mut cf_options: rocksdb::Options) -> rocksdb::Options {
-    // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
-    // in the C API nor the rust binding. That's okay and we can change it later.
-    cf_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(DB_PREFIX_LENGTH));
-    cf_options.set_memtable_prefix_bloom_ratio(0.2);
-    // Most of the changes are highly temporal, we try to delay flushing
-    // As much as we can to increase the chances to observe a deletion.
-    //
-    cf_options.set_max_write_buffer_number(10);
-    cf_options.set_min_write_buffer_number_to_merge(2);
-    //
-    // Set compactions per level
-    //
-    cf_options.set_num_levels(7);
-    cf_options.set_compression_per_level(&[
-        DBCompressionType::None,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Snappy,
-        DBCompressionType::Zstd,
-    ]);
+pub(crate) fn cf_options(
+    memory_budget: usize,
+) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
+    move |mut cf_options| {
+        set_memory_related_opts(&mut cf_options, memory_budget);
+        // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
+        // in the C API nor the rust binding. That's okay and we can change it later.
+        cf_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(DB_PREFIX_LENGTH));
+        cf_options.set_memtable_prefix_bloom_ratio(0.2);
+        cf_options.set_memtable_whole_key_filtering(true);
+        // Most of the changes are highly temporal, we try to delay flushing
+        // As much as we can to increase the chances to observe a deletion.
+        //
+        cf_options.set_num_levels(7);
+        cf_options.set_compression_per_level(&[
+            DBCompressionType::None,
+            DBCompressionType::None,
+            DBCompressionType::Lz4,
+            DBCompressionType::Lz4,
+            DBCompressionType::Lz4,
+            DBCompressionType::Lz4,
+            DBCompressionType::Zstd,
+        ]);
 
-    cf_options
+        cf_options
+    }
+}
+
+fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
+    // We set the budget to allow 1 mutable + 3 immutable.
+    opts.set_write_buffer_size(memtables_budget / 4);
+
+    // merge 2 memtables when flushing to L0
+    opts.set_min_write_buffer_number_to_merge(2);
+    opts.set_max_write_buffer_number(4);
+    // start flushing L0->L1 as soon as possible. each file on level0 is
+    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
+    // memtable_memory_budget.
+    opts.set_level_zero_file_num_compaction_trigger(2);
+    // doesn't really matter much, but we don't want to create too many files
+    opts.set_target_file_size_base(memtables_budget as u64 / 8);
+    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
+    opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
 impl PartitionStore {
@@ -444,7 +462,7 @@ impl<'a> RocksDBTransaction<'a> {
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_prefix_same_as_start(true);
-        opts.set_async_io(true);
+        //opts.set_async_io(true);
         opts.set_total_order_seek(false);
 
         let mut it = self.txn.raw_iterator_cf_opt(table, opts);
@@ -466,7 +484,7 @@ impl<'a> RocksDBTransaction<'a> {
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
         opts.set_iterate_range(from.clone()..to);
-        opts.set_async_io(true);
+        //opts.set_async_io(true);
         let mut it = self.txn.raw_iterator_cf_opt(table, opts);
         it.seek(from);
         it
@@ -490,8 +508,9 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
+        opts.set_memtable_insert_hint_per_batch(true);
         self.rocksdb
-            .write_tx_batch(Priority::High, IoMode::default(), opts, write_batch)
+            .write_tx_batch(Priority::High, IoMode::AlwaysBackground, opts, write_batch)
             .await
             .map_err(|error| StorageError::Generic(error.into()))
     }

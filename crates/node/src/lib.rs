@@ -372,7 +372,7 @@ impl Node {
     ) -> Result<FixedPartitionTable, Error> {
         Self::retry_on_network_error(|| {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
-                FixedPartitionTable::new(Version::MIN, config.worker.bootstrap_num_partitions())
+                FixedPartitionTable::new(Version::MIN, config.common.bootstrap_num_partitions())
             })
         })
         .await
