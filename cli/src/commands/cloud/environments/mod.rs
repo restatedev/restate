@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 mod configure;
-mod proxy;
 mod tunnel;
 
 use cling::prelude::*;
@@ -19,8 +18,6 @@ use cling::prelude::*;
 pub enum Environments {
     /// Set up the CLI to talk to this Environment
     Configure(configure::Configure),
-    /// Creates a proxy between localhost and the Environment
-    Proxy(proxy::Proxy),
-    /// Expose a service running locally to your Environment
+    /// Interact with your environment as if it was running on localhost
     Tunnel(tunnel::Tunnel),
 }

@@ -8,54 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
-use std::future::Future;
-use std::io::Write;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::task::{Context, Poll};
-use std::time::Duration;
-
 use anyhow::Result;
-use arc_swap::ArcSwapOption;
 use cling::prelude::*;
-use comfy_table::Table;
-use crossterm::cursor::{MoveTo, MoveToNextLine};
-use crossterm::queue;
-use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType};
-use futures::{FutureExt, StreamExt};
-use http::{Request, StatusCode, Uri};
-use http_body::Body;
-use hyper::client::HttpConnector;
-use hyper::service::Service;
-use hyper::Response;
-use hyper_rustls::HttpsConnector;
+use futures::StreamExt;
+
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
-use url::Url;
 
-use restate_types::retries::RetryPolicy;
-
-use crate::app::UiConfig;
 use crate::cli_env::EnvironmentType;
 use crate::clients::cloud::{CloudClient, CloudClientInterface};
-use crate::ui::console::StyledTable;
-use crate::ui::output::Console;
-use crate::{build_info, c_indent_table, c_println, c_tip, c_warn, cli_env::CliEnv};
+use crate::{build_info, cli_env::CliEnv};
 
+mod local;
+mod remote;
+mod renderer;
 mod request_identity;
-
-const DEFAULT_PORT: u16 = 9080;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_tunnel")]
 #[clap(visible_alias = "expose", visible_alias = "tun")]
 pub struct Tunnel {
-    /// The port to forward to the Cloud environment
-    #[clap(default_value_t = DEFAULT_PORT)]
-    port: u16,
+    /// The port of a local service to expose to the Environment
+    #[clap(short = 'l', long)]
+    local_port: Option<u16>,
+
+    /// Remote port on the Environment to expose on localhost
+    /// This argument can be repeated to specify multiple remote ports
+    #[clap(short = 'r', long, action = clap::ArgAction::Append)]
+    remote_port: Vec<remote::RemotePort>,
 
     /// If reattaching to a previous tunnel session, the tunnel server to connect to
     #[clap(long = "tunnel-url")]
@@ -64,6 +45,16 @@ pub struct Tunnel {
     /// A name for the tunnel; a random name will be generated if not provided
     #[clap(long = "tunnel-name")]
     tunnel_name: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error(transparent)]
+    Local(#[from] local::ServeError),
+    #[error(transparent)]
+    Remote(#[from] remote::ServeError),
+    #[error("Ctrl-C pressed")]
+    ControlC,
 }
 
 pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> {
@@ -94,13 +85,6 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         .into_body()
         .await?;
 
-    let request_identity_key =
-        if let Some(signing_public_key) = environment_info.signing_public_key.as_deref() {
-            Some(request_identity::parse_public_key(signing_public_key)?)
-        } else {
-            None
-        };
-
     let client = reqwest::Client::builder()
         .user_agent(format!(
             "{}/{} {}-{}",
@@ -113,21 +97,6 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         .http2_prior_knowledge()
         .build()?;
 
-    let mut http_connector = HttpConnector::new();
-    http_connector.set_nodelay(true);
-    http_connector.set_connect_timeout(Some(env.connect_timeout));
-    http_connector.enforce_http(false);
-    // default interval on linux is 75 secs, also use this as the start-after
-    http_connector.set_keepalive(Some(Duration::from_secs(75)));
-
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .https_or_http()
-        .enable_http2()
-        .wrap_connector(http_connector);
-
-    let url = Url::parse(&format!("http://localhost:{}", opts.port)).unwrap();
-
     let cancellation = CancellationToken::new();
 
     // prevent ctrl-c from clearing the screen, instead just cancel
@@ -137,659 +106,66 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         *crate::EXIT_HANDLER.lock().unwrap() = Some(boxed);
     }
 
-    let retry_policy = RetryPolicy::exponential(
-        Duration::from_millis(10),
-        2.0,
-        None,
-        Some(Duration::from_secs(12)),
+    let tunnel_renderer = Arc::new(renderer::TunnelRenderer::new(&opts.remote_port).unwrap());
+
+    let local_fut = local::run_local(
+        &env,
+        client.clone(),
+        &bearer_token,
+        environment_info,
+        opts,
+        tunnel_renderer.clone(),
     );
 
-    // use a closure as impl trait associated types are not yet allowed
-    let proxy = |inner, request| async move { proxy(inner, request).await };
+    let remote_futs = futures::stream::FuturesUnordered::new();
+    for remote_port in &opts.remote_port {
+        let base_url = match remote_port {
+            remote::RemotePort::Ingress => env.ingress_base_url()?,
+            remote::RemotePort::Admin => env.admin_base_url()?,
+        };
 
-    let handler = Handler {
-        status: HandlerStatus::AwaitingStart,
-        https_connector,
-        inner: Arc::new(HandlerInner {
-            tunnel_renderer: OnceLock::new(),
-            request_identity_key,
-            environment_id: environment_info.environment_id,
-            bearer_token,
-            client,
-            url,
-            ui_config: env.ui_config.clone(),
-            opts: opts.clone(),
-        }),
-        proxy,
-    };
+        remote_futs.push(remote::run_remote(
+            *remote_port,
+            client.clone(),
+            base_url,
+            &bearer_token,
+            tunnel_renderer.clone(),
+        ));
+    }
 
-    let retry_fut = retry_policy.retry_if(
-        || {
-            let tunnel_url = handler
-                .tunnel_uri()
-                .unwrap_or(env.config.cloud.tunnel_base_url.as_str())
-                .parse()
-                .unwrap();
-
-            let handler = handler.clone();
-
-            async move { handler.serve(tunnel_url).await }
-        },
-        |err: &ServeError| {
-            if !err.is_retryable() {
-                return false;
-            }
-
-            let tunnel_renderer = if let Some(tunnel_renderer) = handler.inner.tunnel_renderer.get()
-            {
-                tunnel_renderer
-            } else {
-                // no point retrying if we've never had a success; leave that up to the user
-                return false;
-            };
-
-            let err = match err.source() {
-                Some(source) => format!("{err}, retrying\n  Caused by: {source}"),
-                None => format!("{err}, retrying"),
-            };
-            tunnel_renderer.last_error.store(Some(Arc::new(err)));
-
-            true
-        },
-    );
-
-    let mut rerender = tokio::time::interval(Duration::from_millis(250));
+    let mut rerender = tokio::time::interval(Duration::from_millis(100));
 
     let res = {
-        tokio::pin!(retry_fut);
+        tokio::pin!(local_fut);
+        let mut remote_futs = remote_futs;
 
         loop {
             tokio::select! {
-                res = &mut retry_fut => break res,
-                _ = cancellation.cancelled() => break Err(ServeError::ControlC),
+                Err(local_err) = &mut local_fut => break Err(Error::Local(local_err)),
+                Some(Err(remote_err)) = remote_futs.next() => break Err(Error::Remote(remote_err)),
+                _ = cancellation.cancelled() => break Err(Error::ControlC),
                 _ = rerender.tick() => {
-                    if let Some(tunnel_renderer) = handler.inner.tunnel_renderer.get() {
-                        tunnel_renderer.render()
-                    }
+                    tunnel_renderer.render();
                 },
             }
         }
     };
 
-    if let Some(renderer) =
-        Arc::into_inner(handler.into_inner()).and_then(|r| r.tunnel_renderer.into_inner())
-    {
-        // dropping the renderer will exit the alt screen
-        let (tunnel_url, tunnel_name) = renderer.into_tunnel_details();
-        if opts.port == DEFAULT_PORT {
-            eprintln!("To retry with the same endpoint: restate cloud tunnel --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}");
-        } else {
-            eprintln!("To retry with the same endpoint: restate cloud tunnel {} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}", opts.port);
+    if let Some(mut renderer) = Arc::into_inner(tunnel_renderer) {
+        if let Some(local) = renderer.local.take() {
+            // dropping the renderer will exit the alt screen
+            let (tunnel_url, tunnel_name, port) = local.into_tunnel_details();
+            drop(renderer);
+            eprintln!("To retry with the same endpoint: restate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}");
         }
     };
 
     match res {
-        Err(ServeError::ControlC) => {
+        Err(Error::ControlC) => {
             eprintln!("Exiting as Ctrl-C pressed");
             Ok(())
         }
         Ok(()) => Ok(()),
         Err(err) => Err(err.into()),
     }
-}
-
-struct Handler<Proxy> {
-    status: HandlerStatus,
-    https_connector: HttpsConnector<HttpConnector>,
-    inner: Arc<HandlerInner>,
-    proxy: Proxy,
-}
-
-impl<Proxy> Handler<Proxy> {
-    fn into_inner(self) -> Arc<HandlerInner> {
-        self.inner
-    }
-
-    fn tunnel_name(&self) -> Option<String> {
-        if let Some(tunnel_renderer) = self.inner.tunnel_renderer.get() {
-            // already had a tunnel at a particular name, continue to use it
-            Some(tunnel_renderer.tunnel_name.clone())
-        } else {
-            // no tunnel yet; return the user-provided tunnel name if any
-            self.inner.opts.tunnel_name.clone()
-        }
-    }
-
-    fn tunnel_uri(&self) -> Option<&str> {
-        if let Some(tunnel_renderer) = self.inner.tunnel_renderer.get() {
-            // already had a tunnel at a particular url, continue to use it
-            Some(&tunnel_renderer.tunnel_url)
-        } else {
-            // no tunnel yet; return the user-provided tunnel url if any
-            self.inner.opts.tunnel_url.as_deref()
-        }
-    }
-}
-
-impl<Proxy: Clone> Clone for Handler<Proxy> {
-    fn clone(&self) -> Self {
-        Self {
-            status: HandlerStatus::AwaitingStart,
-            https_connector: self.https_connector.clone(),
-            inner: self.inner.clone(),
-            proxy: self.proxy.clone(),
-        }
-    }
-}
-
-struct HandlerInner {
-    opts: Tunnel,
-    ui_config: UiConfig,
-    tunnel_renderer: OnceLock<TunnelRenderer>,
-    request_identity_key: Option<jsonwebtoken::DecodingKey>,
-    environment_id: String,
-    bearer_token: String,
-    client: reqwest::Client,
-    url: Url,
-}
-
-#[derive(Clone, Debug, thiserror::Error)]
-enum StartError {
-    #[error("Missing trailers")]
-    MissingTrailers,
-    #[error("Problem reading http2 stream")]
-    Read,
-    #[error("Bad status: {0}")]
-    BadStatus(String),
-    #[error("Missing status")]
-    MissingStatus,
-    #[error("Missing proxy URL")]
-    MissingProxyURL,
-    #[error("Missing tunnel URL")]
-    MissingTunnelURL,
-    #[error("Missing tunnel name")]
-    MissingTunnelName,
-    #[error("Tunnel service provided a different tunnel name to what we requested")]
-    TunnelNameMismatch,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ServeError {
-    #[error("Failed to initialise tunnel")]
-    StartError(#[from] StartError),
-    #[error("Failed to serve over tunnel")]
-    Hyper(#[source] hyper::Error),
-    #[error("Ctrl-C pressed")]
-    ControlC,
-    #[error("Failed to connect to tunnel server")]
-    Connection(#[source] Box<dyn Error + Send + Sync>),
-    #[error("Server closed connection while {0}")]
-    ServerClosed(String),
-}
-
-impl ServeError {
-    fn is_retryable(&self) -> bool {
-        match self {
-            Self::StartError(_) => false,
-            Self::Hyper(_) => false,
-            Self::ControlC => false,
-            Self::Connection(_) => true,
-            Self::ServerClosed(_) => true,
-        }
-    }
-}
-
-impl From<hyper::Error> for ServeError {
-    fn from(err: hyper::Error) -> Self {
-        if let Some(err) = err
-            .source()
-            .and_then(|err| err.downcast_ref::<StartError>())
-        {
-            // this can happen when ProcessingStart future returns an error to poll_ready
-            Self::StartError(err.clone())
-        } else {
-            // generic hyper serving error; not sure how to hit this
-            Self::Hyper(err)
-        }
-    }
-}
-
-enum HandlerStatus {
-    AwaitingStart,
-    ProcessingStart(Pin<Box<dyn Future<Output = Result<(), StartError>> + Send + Sync>>),
-    Proxying,
-}
-
-impl Display for HandlerStatus {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HandlerStatus::AwaitingStart => write!(f, "awaiting start"),
-            HandlerStatus::ProcessingStart(_) => write!(f, "processing start"),
-            HandlerStatus::Proxying => write!(f, "proxying"),
-        }
-    }
-}
-
-impl<Proxy, ProxyFut> Handler<Proxy>
-where
-    Proxy: FnMut(Arc<HandlerInner>, reqwest::Request) -> ProxyFut,
-    ProxyFut: Future<Output = Result<Response<hyper::Body>, StartError>> + Send + 'static,
-{
-    async fn serve(mut self, tunnel_url: Uri) -> Result<(), ServeError> {
-        let io = self
-            .https_connector
-            .call(tunnel_url)
-            .await
-            .map_err(ServeError::Connection)?;
-
-        hyper::server::conn::Http::new()
-            .serve_connection(io, &mut self)
-            .await?;
-
-        // there is a race where the server closes the connection before we process the trailers, leading
-        // us to not observe a permanent StartError error like unauthorized. so, we should here process the future
-        // to completion
-        if let HandlerStatus::ProcessingStart(fut) = &mut self.status {
-            fut.await?;
-        }
-
-        Err(ServeError::ServerClosed(self.status.to_string()))
-    }
-}
-
-impl<Proxy, ProxyFut> Service<Request<hyper::Body>> for Handler<Proxy>
-where
-    Proxy: FnMut(Arc<HandlerInner>, reqwest::Request) -> ProxyFut,
-    ProxyFut: Future<Output = Result<Response<hyper::Body>, StartError>>,
-{
-    type Response = Response<hyper::Body>;
-    type Error = StartError;
-    type Future = futures::future::Either<
-        futures::future::Ready<Result<Self::Response, Self::Error>>,
-        ProxyFut,
-    >;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &mut self.status {
-            HandlerStatus::AwaitingStart | HandlerStatus::Proxying { .. } => Poll::Ready(Ok(())),
-            HandlerStatus::ProcessingStart(fut) => match fut.poll_unpin(cx) {
-                Poll::Ready(Ok(())) => {
-                    self.status = HandlerStatus::Proxying;
-                    Poll::Ready(Ok(()))
-                }
-                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                Poll::Pending => Poll::Pending,
-            },
-        }
-    }
-
-    fn call(&mut self, req: Request<hyper::Body>) -> Self::Future {
-        match &self.status {
-            HandlerStatus::AwaitingStart => {
-                let body: hyper::Body = req.into_body();
-
-                self.status = HandlerStatus::ProcessingStart(Box::pin(process_start(
-                    self.inner.clone(),
-                    body,
-                )));
-
-                let resp = Response::builder()
-                    .header(
-                        "authorization",
-                        format!("Bearer {}", self.inner.bearer_token),
-                    )
-                    .header("environment-id", &self.inner.environment_id);
-
-                let resp = if let Some(tunnel_name) = self.tunnel_name() {
-                    resp.header("tunnel-name", tunnel_name)
-                } else {
-                    resp
-                };
-
-                futures::future::ready(Ok(resp.body(hyper::Body::empty()).unwrap())).left_future()
-            }
-            HandlerStatus::ProcessingStart(_) => {
-                // 'Implementations are permitted to panic if call is invoked without obtaining Poll::Ready(Ok(())) from poll_ready.'
-                panic!("Called when not ready")
-            }
-            HandlerStatus::Proxying => {
-                let url = if let Some(path) = req.uri().path_and_query() {
-                    self.inner.url.join(path.as_str()).unwrap()
-                } else {
-                    self.inner.url.clone()
-                };
-
-                info!("Proxying request to {}", url);
-
-                let (head, body) = req.into_parts();
-
-                let request = self
-                    .inner
-                    .client
-                    .request(head.method, url)
-                    .body(body)
-                    .headers(head.headers)
-                    .build()
-                    .expect("Failed to build request");
-
-                (self.proxy)(self.inner.clone(), request).right_future()
-            }
-        }
-    }
-}
-
-async fn process_start(inner: Arc<HandlerInner>, body: hyper::Body) -> Result<(), StartError> {
-    let collected = Body::collect(body).await;
-    let trailers = match collected {
-        Ok(ref collected) if collected.trailers().is_some() => collected.trailers().unwrap(),
-        Ok(_) => {
-            return Err(StartError::MissingTrailers);
-        }
-        Err(_) => {
-            return Err(StartError::Read);
-        }
-    };
-
-    match trailers.get("tunnel-status").and_then(|s| s.to_str().ok()) {
-        Some("ok") => {}
-        Some(other) => {
-            return Err(StartError::BadStatus(other.into()));
-        }
-        None => {
-            return Err(StartError::MissingStatus);
-        }
-    }
-
-    let proxy_url = match trailers.get("proxy-url").and_then(|s| s.to_str().ok()) {
-        Some(url) => url,
-        None => {
-            return Err(StartError::MissingProxyURL);
-        }
-    };
-
-    let tunnel_url = match trailers.get("tunnel-url").and_then(|s| s.to_str().ok()) {
-        Some(url) => url,
-        None => {
-            return Err(StartError::MissingTunnelURL);
-        }
-    };
-
-    let tunnel_name = match trailers.get("tunnel-name").and_then(|s| s.to_str().ok()) {
-        Some(name) => name,
-        None => {
-            return Err(StartError::MissingTunnelName);
-        }
-    };
-
-    let tunnel_renderer = inner.tunnel_renderer.get_or_init(|| {
-        TunnelRenderer::new(
-            inner.ui_config.clone(),
-            proxy_url.into(),
-            tunnel_url.into(),
-            tunnel_name.into(),
-            inner.opts.port,
-        )
-        .unwrap()
-    });
-
-    if let Some(tunnel_name) = inner.opts.tunnel_name.as_deref() {
-        // the user provided a particular tunnel name; check that the server respected this
-        if tunnel_name != tunnel_renderer.tunnel_name {
-            return Err(StartError::TunnelNameMismatch);
-        }
-    }
-
-    tunnel_renderer.last_error.store(None);
-    tunnel_renderer.render();
-
-    Ok(())
-}
-
-pub struct TunnelRenderer {
-    ui_config: UiConfig,
-    tunnel_url: String,
-    proxy_url: String,
-    tunnel_name: String,
-    port: u16,
-    in_flight_requests: AtomicU16,
-    total_requests: AtomicU16,
-    last_error: ArcSwapOption<String>,
-}
-
-impl TunnelRenderer {
-    fn new(
-        ui_config: UiConfig,
-        proxy_url: String,
-        tunnel_url: String,
-        tunnel_name: String,
-        port: u16,
-    ) -> std::io::Result<Self> {
-        // Redirect console output to in-memory buffer
-        let console = Console::in_memory();
-        crate::ui::output::set_stdout(console.clone());
-        crate::ui::output::set_stderr(console);
-
-        queue!(
-            std::io::stdout(),
-            crossterm::cursor::SavePosition,
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::terminal::DisableLineWrap,
-            crossterm::cursor::Hide
-        )?;
-        Ok(Self {
-            ui_config,
-            proxy_url,
-            tunnel_url,
-            tunnel_name,
-            port,
-            in_flight_requests: AtomicU16::new(0),
-            total_requests: AtomicU16::new(0),
-            last_error: ArcSwapOption::empty(),
-        })
-    }
-
-    fn decrement_requests(&self) {
-        self.in_flight_requests.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    fn into_tunnel_details(mut self) -> (String, String) {
-        (
-            std::mem::take(&mut self.tunnel_url),
-            std::mem::take(&mut self.tunnel_name),
-        )
-    }
-
-    fn render(&self) {
-        let mut stdout = std::io::stdout();
-
-        let (cols, rows) = if let Ok(size) = crossterm::terminal::size() {
-            size
-        } else {
-            return;
-        };
-
-        if rows > 40 {
-            c_println!(
-                "{}",
-                restate_types::art::render_restate_logo(crate::console::colors_enabled())
-            );
-        }
-
-        let mut tunnel_table = Table::new_styled(&self.ui_config);
-        tunnel_table.set_width(cols - 4);
-        tunnel_table.add_kv_row("Endpoint", &self.proxy_url);
-        tunnel_table.add_kv_row("Local Port", self.port);
-        tunnel_table.add_kv_row(
-            "In Flight Requests",
-            self.in_flight_requests.load(Ordering::Relaxed),
-        );
-        tunnel_table.add_kv_row(
-            "Total Requests",
-            self.total_requests.load(Ordering::Relaxed),
-        );
-
-        c_indent_table!(2, tunnel_table);
-        c_println!();
-
-        if let Some(last_error) = self.last_error.load().as_deref() {
-            c_warn!("Error: {last_error}")
-        }
-
-        c_tip!(
-            "To discover:\nrestate dp add {}\nThe endpoint is only reachable from Restate Cloud.",
-            self.proxy_url
-        );
-
-        let mut lock = std::io::stdout().lock();
-
-        let _ = queue!(lock, MoveTo(0, 0), BeginSynchronizedUpdate,);
-
-        let _ = write!(
-            lock,
-            "restate cloud environment tunnel - Press Ctrl-C to exit"
-        );
-        let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
-        let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
-
-        if let Some(b) = crate::ui::output::stdout().take_buffer() {
-            // truncate to fit the screen
-            for line in b.lines() {
-                if let Ok((_, cur_row)) = crossterm::cursor::position() {
-                    if cur_row >= rows - 2 {
-                        // enough printing...
-                        let _ = write!(lock, "(output truncated to fit screen)");
-                        let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
-                        break;
-                    }
-                }
-                let _ = write!(lock, "{}", line);
-                let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
-            }
-        }
-
-        let _ = queue!(
-            stdout,
-            crossterm::terminal::EndSynchronizedUpdate,
-            Clear(ClearType::FromCursorDown)
-        );
-    }
-}
-
-impl Drop for TunnelRenderer {
-    fn drop(&mut self) {
-        queue!(
-            std::io::stdout(),
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::cursor::Show,
-            crossterm::terminal::EnableLineWrap,
-            crossterm::cursor::RestorePosition,
-            crossterm::cursor::MoveToPreviousLine(1),
-        )
-        .unwrap();
-        crate::ui::output::set_stdout(Console::stdout());
-        crate::ui::output::set_stderr(Console::stderr());
-        println!();
-    }
-}
-
-impl HandlerInner {
-    fn increment_requests<E: Error>(self: &Arc<Self>) -> RequestGuard<E> {
-        if let Some(r) = self.tunnel_renderer.get() {
-            r.in_flight_requests.fetch_add(1, Ordering::Relaxed);
-            r.total_requests.fetch_add(1, Ordering::Relaxed);
-            RequestGuard(Some(Arc::downgrade(self)), None)
-        } else {
-            RequestGuard(None, None)
-        }
-    }
-}
-
-#[must_use]
-struct RequestGuard<E: Error>(Option<std::sync::Weak<HandlerInner>>, Option<E>);
-
-impl<E: Error> RequestGuard<E> {
-    fn with_error(mut self, error: E) -> Self {
-        let _ = self.1.insert(error);
-        self
-    }
-}
-
-impl<E: Error> Drop for RequestGuard<E> {
-    fn drop(&mut self) {
-        let RequestGuard(inner, error) = self;
-        if let Some(inner) = &inner {
-            if let Some(inner) = inner.upgrade() {
-                if let Some(r) = inner.tunnel_renderer.get() {
-                    r.decrement_requests();
-                    r.last_error
-                        .store(error.take().map(|error| error.to_string()).map(Arc::new))
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ProxyError {
-    #[error(transparent)]
-    Reqwest(#[from] reqwest::Error),
-    #[error("Failed to validate request identity.\nCould a different environment be trying to use your tunnel?\n{0}")]
-    RequestIdentity(#[from] request_identity::Error),
-}
-
-async fn proxy(
-    inner: Arc<HandlerInner>,
-    request: reqwest::Request,
-) -> Result<Response<hyper::Body>, StartError> {
-    let guard = inner.increment_requests();
-
-    if let Some(request_identity_key) = &inner.request_identity_key {
-        if let Err(err) = request_identity::validate_request_identity(
-            request_identity_key,
-            request.headers(),
-            request.url().path(),
-        ) {
-            error!("Failed to validate request identity: {}", err);
-
-            let _guard = guard.with_error(ProxyError::RequestIdentity(err));
-
-            return Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(hyper::Body::empty())
-                .unwrap());
-        }
-    }
-
-    let mut result = match inner.client.execute(request).await {
-        Ok(result) => result,
-        Err(err) => {
-            error!("Failed to proxy request: {}", err);
-
-            let _guard = guard.with_error(ProxyError::Reqwest(err));
-
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .body(hyper::Body::empty())
-                .unwrap());
-        }
-    };
-    info!("Request proxied with status {}", result.status());
-
-    let mut response = Response::builder().status(result.status());
-    if let Some(headers) = response.headers_mut() {
-        std::mem::swap(headers, result.headers_mut())
-    };
-
-    Ok(response
-        .body(hyper::Body::wrap_stream(
-            result.bytes_stream().chain(
-                futures::stream::once(async move {
-                    // decrement once the response body is fully read
-                    drop(guard);
-                    futures::stream::empty()
-                })
-                .flatten(),
-            ),
-        ))
-        .unwrap())
 }
