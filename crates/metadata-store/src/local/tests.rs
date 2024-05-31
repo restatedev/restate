@@ -18,13 +18,14 @@ use futures::StreamExt;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_rocksdb::RocksDbManager;
-use restate_types::arc_util::Constant;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::arc_util::{Constant, Updateable};
+use restate_types::config::{
+    reset_base_temp_dir_and_retain, CommonOptions, MetadataStoreOptions, RocksDbOptions,
+};
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::time::Duration;
 use test_log::test;
 use tonic_health::pb::health_client::HealthClient;
@@ -54,7 +55,7 @@ flexbuffers_storage_encode_decode!(Value);
 /// Tests basic operations of the metadata store.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn basic_metadata_store_operations() -> anyhow::Result<()> {
-    let (client, env) = create_test_environment().await?;
+    let (client, env) = create_test_environment(&MetadataStoreOptions::default()).await?;
 
     env.tc
         .run_in_scope("test", None, async move {
@@ -149,7 +150,7 @@ async fn basic_metadata_store_operations() -> anyhow::Result<()> {
 /// Tests multiple concurrent operations issued by the same client
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn concurrent_operations() -> anyhow::Result<()> {
-    let (client, env) = create_test_environment().await?;
+    let (client, env) = create_test_environment(&MetadataStoreOptions::default()).await?;
 
     env.tc
         .run_in_scope("test", None, async move {
@@ -214,9 +215,14 @@ async fn concurrent_operations() -> anyhow::Result<()> {
 /// Tests that the metadata store stores values durably so that they can be read after a restart.
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn durable_storage() -> anyhow::Result<()> {
-    let rocksdb_path = tempfile::tempdir()?.into_path();
+    // get current base dir and use this for subsequent tests.
+    let base_path = reset_base_temp_dir_and_retain();
+    let tmp = std::env::temp_dir();
+    let opts = MetadataStoreOptions::default();
+    assert!(base_path.starts_with(tmp));
+    assert_eq!(base_path.join("local-metadata-store"), opts.data_dir());
 
-    let (client, env) = create_test_environment_with_path(rocksdb_path.clone()).await?;
+    let (client, env) = create_test_environment(&opts).await?;
 
     // write data
     env.tc
@@ -246,7 +252,7 @@ async fn durable_storage() -> anyhow::Result<()> {
         .await;
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
-    let client = start_metadata_store(rocksdb_path, &env.tc).await?;
+    let client = start_metadata_store(&opts, Constant::new(opts.rocksdb.clone()), &env.tc).await?;
 
     // validate data
     env.tc
@@ -269,18 +275,14 @@ async fn durable_storage() -> anyhow::Result<()> {
         .await?;
 
     env.tc.shutdown_node("shutdown", 0).await;
+    std::fs::remove_dir_all(base_path)?;
     Ok(())
-}
-
-async fn create_test_environment(
-) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<MockNetworkSender>)> {
-    create_test_environment_with_path(tempfile::tempdir()?.into_path()).await
 }
 
 /// Creates a test environment with the [`RocksDBMetadataStore`] and a [`MetadataStoreClient`]
 /// connected to it.
-async fn create_test_environment_with_path(
-    rocksdb_path: impl AsRef<Path>,
+async fn create_test_environment(
+    opts: &MetadataStoreOptions,
 ) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<MockNetworkSender>)> {
     let env = TestCoreEnvBuilder::new_with_mock_network().build().await;
 
@@ -290,18 +292,18 @@ async fn create_test_environment_with_path(
         RocksDbManager::init(Constant::new(CommonOptions::default()))
     });
 
-    let client = start_metadata_store(rocksdb_path, task_center).await?;
+    let client =
+        start_metadata_store(opts, Constant::new(opts.rocksdb.clone()), task_center).await?;
 
     Ok((client, env))
 }
 
 async fn start_metadata_store(
-    rocksdb_path: impl AsRef<Path> + Sized,
+    opts: &MetadataStoreOptions,
+    updateables_rocksdb_options: impl Updateable<RocksDbOptions> + Send + Sync + Clone + 'static,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let store = LocalMetadataStore::new(rocksdb_path, 32, || {
-        Configuration::mapped_updateable(|config| &config.metadata_store.rocksdb)
-    })?;
+    let store = LocalMetadataStore::new(opts, updateables_rocksdb_options)?;
 
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
