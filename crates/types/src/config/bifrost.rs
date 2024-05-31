@@ -15,11 +15,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_serde_util::NonZeroByteCount;
+
 use crate::logs::metadata::ProviderKind;
 
-use super::{RocksDbOptions, RocksDbOptionsBuilder};
+use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Bifrost options
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "BifrostOptions", default))]
@@ -52,6 +55,20 @@ pub struct LocalLogletOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
+    /// The memory budget for rocksdb memtables in bytes
+    ///
+    /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
+    rocksdb_memory_budget: Option<NonZeroUsize>,
+
+    /// The memory budget for rocksdb memtables as ratio
+    ///
+    /// This defines the total memory for rocksdb as a ratio of all memory available to the loglet
+    /// (See `rocksdb-total-memtables-ratio` in common).
+    rocksdb_memory_ratio: f32,
+
     /// Trigger a commit when the batch size exceeds this threshold.
     ///
     /// Set to 0 or 1 to commit the write batch on every command.
@@ -60,24 +77,31 @@ pub struct LocalLogletOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub writer_batch_commit_duration: humantime::Duration,
-
-    /// Whether to sync the WAL before acknowledging a write. Restate will always attempt to sync
-    /// the WAL after the write, but this option prevents append acknowledgments from being sent
-    /// unless the WAL was synced to durable storage. Note that even if it's set to false, restate
-    /// will flush the WAL to the OS filesystem page cache before ack, so even if Restate crashed
-    /// prior to the background sync, the write is still durable if the OS didn't crash.
-    pub sync_wal_before_ack: bool,
-
-    /// # Flush WAL in batches
-    ///
-    /// when WAL is enabled, this allows Restate server to control WAL flushes in batches.
-    /// This trades off latency for IO throughput.
-    ///
-    /// Default: True.
-    pub batch_wal_flushes: bool,
 }
 
 impl LocalLogletOptions {
+    pub fn apply_common(&mut self, common: &CommonOptions) {
+        self.rocksdb.apply_common(&common.rocksdb);
+        if self.rocksdb_memory_budget.is_none() {
+            self.rocksdb_memory_budget = Some(
+                // 1MB minimum
+                NonZeroUsize::new(
+                    (common.rocksdb_safe_total_memtables_size() as f64
+                        * self.rocksdb_memory_ratio as f64)
+                        .floor()
+                        .max(1024.0 * 1024.0) as usize,
+                )
+                .unwrap(),
+            );
+        }
+    }
+
+    pub fn rocksdb_memory_budget(&self) -> usize {
+        self.rocksdb_memory_budget
+            .expect("rocksdb_memory_budget is set from common")
+            .get()
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("local-loglet")
     }
@@ -86,14 +110,14 @@ impl LocalLogletOptions {
 impl Default for LocalLogletOptions {
     fn default() -> Self {
         let rocksdb = RocksDbOptionsBuilder::default()
-            .rocksdb_write_buffer_size(Some(NonZeroUsize::new(128_000_000).unwrap()))
             .rocksdb_disable_wal(Some(false))
             .build()
             .unwrap();
         Self {
             rocksdb,
-            batch_wal_flushes: true,
-            sync_wal_before_ack: true,
+            // set by apply_common in runtime
+            rocksdb_memory_budget: None,
+            rocksdb_memory_ratio: 0.5,
             writer_batch_commit_count: 2000,
             writer_batch_commit_duration: Duration::ZERO.into(),
         }
