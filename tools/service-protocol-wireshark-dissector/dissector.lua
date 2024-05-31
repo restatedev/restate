@@ -16,7 +16,6 @@ local p_service_protocol = Proto("restate_service_protocol", "Restate Service En
 
 -- Define the fields
 local f_ty = ProtoField.uint16("restate_service_protocol.message_type", "Message Type", base.HEX)
-local f_protocol_version = ProtoField.uint16("restate_service_protocol.protocol_version", "Protocol version")
 local f_completed = ProtoField.bool("restate_service_protocol.completed", "COMPLETED", base.NONE, {
     "Completed",
     "Not completed"
@@ -30,7 +29,6 @@ local f_message = ProtoField.string("restate_service_protocol.message", "Message
 
 p_service_protocol.fields = {
     f_ty,
-    f_protocol_version,
     f_completed,
     f_requires_ack,
     f_len,
@@ -68,5 +66,5 @@ end
 local media_types = DissectorTable.get("media_type")
 local streaming_media_types = DissectorTable.get("streaming_content_type")
 
-media_types:add("application/restate", p_service_protocol)
-streaming_media_types:add("application/restate", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v1", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v1", p_service_protocol)
