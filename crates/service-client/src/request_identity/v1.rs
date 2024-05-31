@@ -52,7 +52,11 @@ impl SigningKey {
         );
         let key = jsonwebtoken::EncodingKey::from_ed_der(pem_bytes.as_slice());
 
-        info!(kid, path = ?request_identity_private_key_pem_file, "Loaded request identity key");
+        info!(
+            kid,
+            path = %request_identity_private_key_pem_file.display(),
+            "Loaded request identity key"
+        );
 
         Ok(Self {
             header: jsonwebtoken::Header {
