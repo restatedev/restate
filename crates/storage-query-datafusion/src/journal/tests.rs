@@ -11,7 +11,7 @@
 use crate::mocks::*;
 use crate::row;
 use bytes::Bytes;
-use datafusion::arrow::array::{LargeStringArray, UInt32Array};
+use datafusion::arrow::array::{Int64Array, LargeStringArray, UInt32Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
@@ -128,5 +128,80 @@ async fn get_entries() {
                 }
             )
         )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn select_count_star() {
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    let mut engine = tc
+        .run_in_scope("mock-query-engine", None, MockQueryEngine::create())
+        .await;
+
+    let mut tx = engine.partition_store().transaction();
+    let journal_invocation_id = InvocationId::mock_random();
+    tx.put_journal_entry(
+        &journal_invocation_id,
+        0,
+        JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
+            InputEntry {
+                value: Default::default(),
+            },
+        ))),
+    )
+    .await;
+    tx.put_journal_entry(
+        &journal_invocation_id,
+        1,
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::Call {
+                is_completed: false,
+                enrichment_result: Some(CallEnrichmentResult {
+                    invocation_id: InvocationId::mock_random(),
+                    invocation_target: InvocationTarget::mock_virtual_object(),
+                    completion_retention_time: None,
+                    span_context: Default::default(),
+                }),
+            },
+            Bytes::new(),
+        )),
+    )
+    .await;
+    tx.put_journal_entry(
+        &journal_invocation_id,
+        2,
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::Run {},
+            service_protocol::RunEntryMessage {
+                name: "my-side-effect".to_string(),
+                result: None,
+            }
+            .encode_to_vec()
+            .into(),
+        )),
+    )
+    .await;
+    tx.commit().await.unwrap();
+
+    let records = engine
+        .execute("SELECT COUNT(*) AS count FROM sys_journal")
+        .await
+        .unwrap()
+        .collect::<Vec<Result<RecordBatch, _>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "count" => Int64Array: eq(3)
+            }
+        ),)
     );
 }
