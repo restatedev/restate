@@ -10,7 +10,7 @@
 
 use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Inbox;
-use crate::{RocksDBTransaction, StorageAccess};
+use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use bytestring::ByteString;
 use futures::Stream;
@@ -113,8 +113,20 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             },
         ))
     }
+}
 
-    fn all_inboxes(
+fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
+    let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
+    let sequence_number = *key.sequence_number_ok_or()?;
+
+    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
+        .map_err(|error| StorageError::Generic(error.into()))?;
+
+    Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
+}
+
+impl PartitionStore {
+    pub fn all_inboxes(
         &mut self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
@@ -126,16 +138,6 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             },
         ))
     }
-}
-
-fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
-    let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
-    let sequence_number = *key.sequence_number_ok_or()?;
-
-    let inbox_entry = StorageCodec::decode::<InboxEntry, _>(&mut v)
-        .map_err(|error| StorageError::Generic(error.into()))?;
-
-    Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
 }
 
 #[cfg(test)]
