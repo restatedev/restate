@@ -18,13 +18,12 @@ use restate_rocksdb::{
     RocksError,
 };
 use restate_types::arc_util::Updateable;
-use restate_types::config::RocksDbOptions;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
 use restate_types::Version;
-use rocksdb::{BoundColumnFamily, Options, WriteBatch, WriteOptions, DB};
-use std::path::Path;
+use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace};
@@ -103,7 +102,7 @@ pub enum BuildError {
 pub struct LocalMetadataStore {
     db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
-    opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
+    rocksdb_options: Box<dyn Updateable<RocksDbOptions> + Send + Sync>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
@@ -112,30 +111,24 @@ pub struct LocalMetadataStore {
 }
 
 impl LocalMetadataStore {
-    pub fn new<F, V>(
-        data_dir: impl AsRef<Path>,
-        request_queue_length: usize,
-        rocksdb_options: F,
-    ) -> std::result::Result<Self, BuildError>
-    where
-        F: Fn() -> V,
-        V: Updateable<RocksDbOptions> + Send + 'static,
-    {
-        let (request_tx, request_rx) = mpsc::channel(request_queue_length);
+    pub fn new(
+        options: &MetadataStoreOptions,
+        updateable_rocksdb_options: impl Updateable<RocksDbOptions> + Clone + Send + Sync + 'static,
+    ) -> std::result::Result<Self, BuildError> {
+        let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(KV_PAIRS)];
-        let db_spec = DbSpecBuilder::new(
-            db_name.clone(),
-            data_dir.as_ref().to_path_buf(),
-            Options::default(),
-        )
-        .add_cf_pattern(CfPrefixPattern::ANY, |opts| opts)
-        .ensure_column_families(cfs)
-        .build_as_db();
+        let db_spec = DbSpecBuilder::new(db_name.clone(), options.data_dir(), db_options(options))
+            .add_cf_pattern(
+                CfPrefixPattern::ANY,
+                cf_options(options.rocksdb_memory_budget()),
+            )
+            .ensure_column_families(cfs)
+            .build_as_db();
 
-        let db = db_manager.open_db(rocksdb_options(), db_spec)?;
+        let db = db_manager.open_db(updateable_rocksdb_options.clone(), db_spec)?;
         let rocksdb = db_manager
             .get_db(db_name)
             .expect("metadata store db is open");
@@ -143,7 +136,7 @@ impl LocalMetadataStore {
         Ok(Self {
             db,
             rocksdb,
-            opts: Box::new(rocksdb_options()),
+            rocksdb_options: Box::new(updateable_rocksdb_options),
             buffer: BytesMut::default(),
             request_rx,
             request_tx,
@@ -151,12 +144,12 @@ impl LocalMetadataStore {
     }
 
     fn write_options(&mut self) -> WriteOptions {
-        let rocks_db_options = self.opts.load();
+        let opts = self.rocksdb_options.load();
         let mut write_opts = WriteOptions::default();
 
-        write_opts.disable_wal(rocks_db_options.rocksdb_disable_wal());
+        write_opts.disable_wal(opts.rocksdb_disable_wal());
 
-        if !rocks_db_options.rocksdb_disable_wal() {
+        if !opts.rocksdb_disable_wal() {
             // always sync if we have wal enabled
             write_opts.set_sync(true);
         }
@@ -345,4 +338,44 @@ impl LocalMetadataStore {
             debug!("failed to process request '{}': '{}'", request, err)
         }
     }
+}
+
+fn db_options(_options: &MetadataStoreOptions) -> rocksdb::Options {
+    rocksdb::Options::default()
+}
+
+fn cf_options(
+    memory_budget: usize,
+) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
+    move |mut opts| {
+        set_memory_related_opts(&mut opts, memory_budget);
+        opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
+        opts.set_num_levels(3);
+
+        opts.set_compression_per_level(&[
+            DBCompressionType::None,
+            DBCompressionType::None,
+            DBCompressionType::Zstd,
+        ]);
+
+        //
+        opts
+    }
+}
+
+fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
+    // We set the budget to allow 1 mutable + 3 immutable.
+    opts.set_write_buffer_size(memtables_budget / 4);
+
+    // merge 2 memtables when flushing to L0
+    opts.set_min_write_buffer_number_to_merge(2);
+    opts.set_max_write_buffer_number(4);
+    // start flushing L0->L1 as soon as possible. each file on level0 is
+    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
+    // memtable_memory_budget.
+    opts.set_level_zero_file_num_compaction_trigger(2);
+    // doesn't really matter much, but we don't want to create too many files
+    opts.set_target_file_size_base(memtables_budget as u64 / 8);
+    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
+    opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }

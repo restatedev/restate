@@ -42,19 +42,11 @@ impl LocalMetadataStoreService {
             bind_address,
         }
     }
-    pub fn from_options<F, V>(
+    pub fn from_options(
         opts: &MetadataStoreOptions,
-        rocksdb_options: F,
-    ) -> Result<Self, BuildError>
-    where
-        F: Fn() -> V,
-        V: Updateable<RocksDbOptions> + Send + 'static,
-    {
-        let store = LocalMetadataStore::new(
-            opts.data_dir(),
-            opts.request_queue_length(),
-            rocksdb_options,
-        )?;
+        rocksdb_options: impl Updateable<RocksDbOptions> + Send + Sync + Clone + 'static,
+    ) -> Result<Self, BuildError> {
+        let store = LocalMetadataStore::new(opts, rocksdb_options)?;
         Ok(LocalMetadataStoreService::new(
             store,
             opts.bind_address.clone(),

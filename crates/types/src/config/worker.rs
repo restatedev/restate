@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
 
@@ -247,13 +248,20 @@ impl StorageOptions {
 
     pub fn rocksdb_memory_budget(&self) -> usize {
         self.rocksdb_memory_budget
-            .expect("rocksdb_memory_budget is set from common")
+            .unwrap_or_else(|| {
+                warn!("PartitionStore rocksdb_memory_budget is not set, defaulting to 1MB");
+                // 1MB minimum
+                NonZeroUsize::new(1024 * 1024).unwrap()
+            })
             .get()
     }
 
     pub fn num_partitions_to_share_memory_budget(&self) -> u64 {
         self.num_partitions_to_share_memory_budget
-            .expect("num-partitions-to-share-memory-budget is set from common")
+            .unwrap_or_else(|| {
+                warn!("num-partitions-to-share-memory-budget is not set, defaulting to 10");
+                NonZeroU64::new(10).unwrap()
+            })
             .get()
     }
 
@@ -274,7 +282,7 @@ impl Default for StorageOptions {
             num_partitions_to_share_memory_budget: None,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
-            rocksdb_memory_ratio: 0.5,
+            rocksdb_memory_ratio: 0.49,
             // persist the lsn every hour
             persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
             persist_lsn_threshold: 1000,
