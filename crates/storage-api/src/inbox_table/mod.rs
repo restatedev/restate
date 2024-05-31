@@ -14,7 +14,6 @@ use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPart
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
-use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
@@ -105,10 +104,5 @@ pub trait InboxTable {
     fn inbox(
         &mut self,
         service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
-
-    fn all_inboxes(
-        &mut self,
-        range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
 }
