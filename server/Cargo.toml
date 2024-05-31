@@ -47,6 +47,7 @@ humantime = { workspace = true }
 notify = { version = "6.0.1" }
 notify-debouncer-mini = { version = "0.4.1" }
 pin-project = { workspace = true }
+rlimit = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }

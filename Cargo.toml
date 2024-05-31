@@ -121,6 +121,7 @@ prost-build = "0.12.1"
 prost-types = "0.12.1"
 rand = "0.8.5"
 rayon = { version = "1.10" }
+rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev="64a3c698910380e4fcbd8e56ce459779932cf1ff" }
 rustls = "0.21.6"
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
