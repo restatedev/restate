@@ -169,12 +169,12 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
         String::new()
     };
     if profile != current_environment.trim() {
-        std::fs::write(env.environment_file.as_path(), &profile)?;
+        env.write_environment(&profile)?;
         c_success!("Updated {} to {}", env.environment_file.display(), profile);
     }
 
     // write out config
-    std::fs::write(env.config_file.as_path(), doc.to_string())?;
+    env.write_config(&doc.to_string())?;
     c_success!(
         "Updated {} with environment details",
         env.config_file.display()
