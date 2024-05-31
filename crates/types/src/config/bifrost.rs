@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use restate_serde_util::NonZeroByteCount;
+use tracing::warn;
 
 use crate::logs::metadata::ProviderKind;
 
@@ -98,7 +99,11 @@ impl LocalLogletOptions {
 
     pub fn rocksdb_memory_budget(&self) -> usize {
         self.rocksdb_memory_budget
-            .expect("rocksdb_memory_budget is set from common")
+            .unwrap_or_else(|| {
+                warn!("LocalLoglet rocksdb_memory_budget is not set, defaulting to 1MB");
+                // 1MB minimum
+                NonZeroUsize::new(1024 * 1024).unwrap()
+            })
             .get()
     }
 

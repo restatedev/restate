@@ -77,6 +77,7 @@ where
 }
 
 /// Make it possible to create an Updateable of a fixed arc value.
+#[derive(Clone)]
 pub struct Constant<T>(Arc<T>);
 
 impl<T> Constant<T> {
@@ -128,14 +129,14 @@ pub trait ArcSwapExt<T> {
     where
         F: FnMut(&Arc<T>) -> &U;
 
-    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U>
+    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U> + Clone
     where
-        F: FnMut(&Arc<T>) -> &U;
+        F: FnMut(&Arc<T>) -> &U + Clone;
 }
 
 impl<K, T> ArcSwapExt<T> for K
 where
-    K: Deref<Target = ArcSwapAny<Arc<T>>>,
+    K: Deref<Target = ArcSwapAny<Arc<T>>> + Clone,
     T: 'static,
 {
     fn pinned(&self) -> Pinned<T> {
@@ -158,9 +159,9 @@ where
         cached.map(f)
     }
 
-    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U>
+    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U> + Clone
     where
-        F: FnMut(&Arc<T>) -> &U,
+        F: FnMut(&Arc<T>) -> &U + Clone,
     {
         let cached = Cache::new(self);
         cached.map(f)
