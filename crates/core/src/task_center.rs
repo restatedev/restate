@@ -394,7 +394,7 @@ impl TaskCenter {
         let cancel = cancellation_token().child_token();
         let result = self.spawn_inner(kind, name, partition_id, cancel, future);
 
-        debug!(
+        trace!(
             kind = ?parent_kind,
             name = ?parent_name,
             child_kind = ?kind,
@@ -462,7 +462,7 @@ impl TaskCenter {
                     join_handle.abort();
                 } else if task_kind.should_wait_on_cancel() {
                     // Give the task a chance to finish before logging.
-                    if tokio::time::timeout(Duration::from_secs(1), &mut join_handle)
+                    if tokio::time::timeout(Duration::from_secs(2), &mut join_handle)
                         .await
                         .is_err()
                     {
@@ -737,7 +737,7 @@ async fn wrapper<F>(
 ) where
     F: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
-    debug!(kind = ?kind, name = ?task.name, "Starting task {}", task_id);
+    trace!(kind = ?kind, name = ?task.name, "Starting task {}", task_id);
 
     let result = CURRENT_TASK_CENTER
         .scope(
