@@ -80,7 +80,7 @@ async fn for_each_state(
         );
         if builder.full() {
             let batch = builder.finish();
-            if tx.send(Ok(batch)).await.is_err() {
+            if tx.send(batch).await.is_err() {
                 // not sure what to do here?
                 // the other side has hung up on us.
                 // we probably don't want to panic, is it will cause the entire process to exit
@@ -91,6 +91,6 @@ async fn for_each_state(
     }
     if !builder.empty() {
         let result = builder.finish();
-        let _ = tx.send(Ok(result)).await;
+        let _ = tx.send(result).await;
     }
 }

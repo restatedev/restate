@@ -428,9 +428,12 @@ macro_rules! define_table {
                 self.rows_inserted_so_far == 0
             }
 
-            pub fn finish(self) -> ::datafusion::arrow::record_batch::RecordBatch {
+            pub fn finish(self) -> ::datafusion::common::Result<::datafusion::arrow::record_batch::RecordBatch> {
                 let arrays = self.arrays.finish();
-                ::datafusion::arrow::record_batch::RecordBatch::try_new(self.projected_schema, arrays).unwrap()
+                // We add the row count as it wouldn't otherwise work with queries that
+                // just run aggregate functions (e.g. COUNT(*)) without selecting fields.
+                let options = ::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(self.rows_inserted_so_far));
+                Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema, arrays, &options)?)
             }
 
         }
