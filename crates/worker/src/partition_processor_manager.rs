@@ -213,7 +213,6 @@ impl PartitionProcessorManager {
             tokio::select! {
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
-                    debug!("PartitionProcessorManager shutting down");
                 }
                 Some(get_state) = self.incoming_get_state.next() => {
                     self.on_get_state(get_state);
