@@ -61,6 +61,11 @@ impl LocalLogletReadStream {
         let key = RecordKey::new(loglet.log_id, after.next());
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_tailing(true);
+        // In some cases, the underlying ForwardIterator will fail it hits a RangeDelete tombstone.
+        // For our puroses, we can ignore these tombstones. TL;DR if loglet reader started before a
+        // trim point and data is readable, we should continue reading them. It's the
+        // responsibility of the upper layer to decide on a sane value of _after_.
+        read_opts.set_ignore_range_deletions(true);
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
         read_opts.set_iterate_lower_bound(key.to_bytes());
