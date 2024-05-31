@@ -10,7 +10,6 @@
 
 mod environments;
 mod login;
-mod tunnel;
 
 use base64::Engine;
 use cling::prelude::*;
@@ -99,8 +98,6 @@ struct TokenClaims {
 pub enum Cloud {
     /// Authenticate to Restate Cloud
     Login(login::Login),
-    /// Expose a service running locally to Restate Cloud
-    Tunnel(tunnel::Tunnel),
     /// Manage Restate Cloud Environments
     #[clap(subcommand)]
     Environments(environments::Environments),

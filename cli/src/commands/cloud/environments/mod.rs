@@ -10,6 +10,7 @@
 
 mod configure;
 mod proxy;
+mod tunnel;
 
 use cling::prelude::*;
 
@@ -20,4 +21,6 @@ pub enum Environments {
     Configure(configure::Configure),
     /// Creates a proxy between localhost and the Environment
     Proxy(proxy::Proxy),
+    /// Expose a service running locally to your Environment
+    Tunnel(tunnel::Tunnel),
 }

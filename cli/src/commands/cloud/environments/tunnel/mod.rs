@@ -39,9 +39,13 @@ use url::Url;
 use restate_types::retries::RetryPolicy;
 
 use crate::app::UiConfig;
+use crate::cli_env::EnvironmentType;
+use crate::clients::cloud::{CloudClient, CloudClientInterface};
 use crate::ui::console::StyledTable;
 use crate::ui::output::Console;
 use crate::{build_info, c_indent_table, c_println, c_tip, c_warn, cli_env::CliEnv};
+
+mod request_identity;
 
 const DEFAULT_PORT: u16 = 9080;
 
@@ -63,6 +67,11 @@ pub struct Tunnel {
 }
 
 pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> {
+    let environment_info = match (&env.config.environment_type, &env.config.cloud.environment_info) {
+        (EnvironmentType::Cloud, Some(environment_info)) => environment_info,
+        _ => return Err(anyhow::anyhow!("First switch to a Cloud environment using `restate config use-environment` or configure one with `restate cloud environment configure`"))
+    };
+
     let bearer_token = if let Some(bearer_token) = &env.config.bearer_token {
         // the user may have specifically set an api token
         bearer_token.clone()
@@ -73,6 +82,24 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
             "Restate Cloud credentials have not been provided; first run `restate cloud login`"
         ));
     };
+
+    let client = CloudClient::new(&env)?;
+
+    let environment_info = client
+        .describe_environment(
+            &environment_info.account_id,
+            &environment_info.environment_id,
+        )
+        .await?
+        .into_body()
+        .await?;
+
+    let request_identity_key =
+        if let Some(signing_public_key) = environment_info.signing_public_key.as_deref() {
+            Some(request_identity::parse_public_key(signing_public_key)?)
+        } else {
+            None
+        };
 
     let client = reqwest::Client::builder()
         .user_agent(format!(
@@ -125,6 +152,8 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         https_connector,
         inner: Arc::new(HandlerInner {
             tunnel_renderer: OnceLock::new(),
+            request_identity_key,
+            environment_id: environment_info.environment_id,
             bearer_token,
             client,
             url,
@@ -257,6 +286,8 @@ struct HandlerInner {
     opts: Tunnel,
     ui_config: UiConfig,
     tunnel_renderer: OnceLock<TunnelRenderer>,
+    request_identity_key: Option<jsonwebtoken::DecodingKey>,
+    environment_id: String,
     bearer_token: String,
     client: reqwest::Client,
     url: Url,
@@ -402,10 +433,12 @@ where
                     body,
                 )));
 
-                let resp = Response::builder().header(
-                    "authorization",
-                    format!("Bearer {}", self.inner.bearer_token),
-                );
+                let resp = Response::builder()
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", self.inner.bearer_token),
+                    )
+                    .header("environment-id", &self.inner.environment_id);
 
                 let resp = if let Some(tunnel_name) = self.tunnel_name() {
                     resp.header("tunnel-name", tunnel_name)
@@ -575,7 +608,7 @@ impl TunnelRenderer {
             return;
         };
 
-        if rows > 37 {
+        if rows > 40 {
             c_println!(
                 "{}",
                 restate_types::art::render_restate_logo(crate::console::colors_enabled())
@@ -611,7 +644,10 @@ impl TunnelRenderer {
 
         let _ = queue!(lock, MoveTo(0, 0), BeginSynchronizedUpdate,);
 
-        let _ = write!(lock, "restate cloud tunnel - Press Ctrl-C to exit");
+        let _ = write!(
+            lock,
+            "restate cloud environment tunnel - Press Ctrl-C to exit"
+        );
         let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
         let _ = queue!(lock, Clear(ClearType::UntilNewLine), MoveToNextLine(1));
 
@@ -693,17 +729,43 @@ impl<E: Error> Drop for RequestGuard<E> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ProxyError {
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
+    #[error("Failed to validate request identity.\nCould a different environment be trying to use your tunnel?\n{0}")]
+    RequestIdentity(#[from] request_identity::Error),
+}
+
 async fn proxy(
     inner: Arc<HandlerInner>,
     request: reqwest::Request,
 ) -> Result<Response<hyper::Body>, StartError> {
     let guard = inner.increment_requests();
+
+    if let Some(request_identity_key) = &inner.request_identity_key {
+        if let Err(err) = request_identity::validate_request_identity(
+            request_identity_key,
+            request.headers(),
+            request.url().path(),
+        ) {
+            error!("Failed to validate request identity: {}", err);
+
+            let _guard = guard.with_error(ProxyError::RequestIdentity(err));
+
+            return Ok(Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(hyper::Body::empty())
+                .unwrap());
+        }
+    }
+
     let mut result = match inner.client.execute(request).await {
         Ok(result) => result,
         Err(err) => {
             error!("Failed to proxy request: {}", err);
 
-            let _guard = guard.with_error(err);
+            let _guard = guard.with_error(ProxyError::Reqwest(err));
 
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)

@@ -28,6 +28,7 @@ axum = { workspace = true, default-features = false, features = ["http1", "http2
 bytes = { workspace = true }
 base62 = { version = "2.0.2" }
 base64 = { workspace = true }
+bs58 = { version = "0.5.0" }
 chrono = { workspace = true }
 chrono-humanize = { version = "0.2.3" }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
@@ -50,10 +51,12 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http2", "server", 
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
+jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
 open = "5.1.2"
 reqwest = { version = "0.11.22", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = { version = "0.17.8" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
