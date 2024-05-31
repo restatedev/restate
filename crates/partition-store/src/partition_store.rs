@@ -547,7 +547,7 @@ impl<'a> StorageAccess for RocksDBTransaction<'a> {
                 self.range_iterator(
                     table,
                     key_kind,
-                    ScanMode::WithinPrefix,
+                    ScanMode::TotalOrder,
                     start.freeze(),
                     end.freeze(),
                 )
