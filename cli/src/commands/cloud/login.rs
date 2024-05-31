@@ -40,7 +40,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
     write_access_token(&mut doc, &access_token)?;
 
     // write out config
-    std::fs::write(env.config_file.as_path(), doc.to_string())
+    env.write_config(&doc.to_string())
         .context("Failed to write to config file")?;
     c_success!(
         "Updated {} with Restate Cloud credentials",
