@@ -158,7 +158,9 @@ fn main() {
 
     // Setting initial configuration as global current
     restate_types::config::set_current_config(config);
-
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        warn!("Failed to increase the number of open file descriptors limit.");
+    }
     let tc = TaskCenterBuilder::default()
         .options(Configuration::pinned().common.clone())
         .build()
