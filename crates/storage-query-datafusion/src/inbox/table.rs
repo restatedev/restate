@@ -18,7 +18,7 @@ use futures::{Stream, StreamExt};
 use tokio::sync::mpsc::Sender;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::inbox_table::{InboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
 use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionKey;
 
@@ -54,8 +54,7 @@ impl ScanLocalPartition for InboxScanner {
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
     ) {
-        let mut transaction = partition_store.transaction();
-        let rows = transaction.all_inboxes(range);
+        let rows = partition_store.all_inboxes(range);
         for_each_state(projection, tx, rows).await;
     }
 }
