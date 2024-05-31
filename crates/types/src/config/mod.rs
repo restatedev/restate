@@ -89,6 +89,12 @@ pub fn node_filepath(filename: &str) -> PathBuf {
 }
 
 #[cfg(any(test, feature = "test-util"))]
+pub fn set_base_temp_dir(path: PathBuf) {
+    let mut guard = NODE_BASE_DIR.write().unwrap();
+    *guard = TempOrPath::Path(path);
+}
+
+#[cfg(any(test, feature = "test-util"))]
 pub fn reset_base_temp_dir() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write().unwrap();
     let new = tempfile::TempDir::new().unwrap();
