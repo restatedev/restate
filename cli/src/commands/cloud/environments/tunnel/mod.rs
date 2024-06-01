@@ -11,6 +11,7 @@
 use anyhow::Result;
 use cling::prelude::*;
 use futures::StreamExt;
+use remote::RemotePort;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +75,12 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         ));
     };
 
+    let mut opts = opts.clone();
+    if opts.local_port.is_none() && opts.remote_port.is_empty() {
+        opts.local_port = Some(9080);
+        opts.remote_port = vec![RemotePort::Ingress, RemotePort::Admin];
+    }
+
     let client = CloudClient::new(&env)?;
 
     let environment_info = client
@@ -113,7 +120,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         client.clone(),
         &bearer_token,
         environment_info,
-        opts,
+        &opts,
         tunnel_renderer.clone(),
     );
 

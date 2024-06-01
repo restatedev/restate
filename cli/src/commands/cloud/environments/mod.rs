@@ -19,5 +19,9 @@ pub enum Environments {
     /// Set up the CLI to talk to this Environment
     Configure(configure::Configure),
     /// Interact with your environment as if it was running on localhost
+    ///
+    /// Provide a local port to expose to your environment with --local-port,
+    /// or remote ports to expose locally with --remote-port.
+    /// If no ports are provided, localhost:9080 and all remote ports will be tunneled.
     Tunnel(tunnel::Tunnel),
 }
