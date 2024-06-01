@@ -129,7 +129,49 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // Preparing the discovery request
     let client = AdminClient::new(&env).await?;
 
-    let mk_request_body = |force, dry_run| match &discover_opts.deployment {
+    let deployment = match &discover_opts.deployment {
+        #[cfg(feature = "cloud")]
+        DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
+            let environment_info = match (&env.config.environment_type, &env.config.cloud.environment_info) {
+                 (crate::cli_env::EnvironmentType::Cloud, Some(environment_info)) => environment_info,
+                 _ => return Err(anyhow::anyhow!("To register tunnel:// URLs, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"))
+             };
+
+            let unprefixed_environment_id = environment_info
+                .environment_id
+                .strip_prefix("env_")
+                .ok_or(anyhow::anyhow!(
+                    "Unexpected environment ID format: {}",
+                    environment_info.environment_id
+                ))?;
+
+            let authority = uri
+                .authority()
+                .ok_or(anyhow::anyhow!("tunnel:// URLs must have an authority"))?;
+
+            let port = authority
+                .port_u16()
+                .ok_or(anyhow::anyhow!("tunnel:// URLs must have a port"))?;
+
+            let proxy_host = &env
+                .config
+                .cloud
+                .proxy_base_url
+                .host_str()
+                .expect("proxy_base_url must have a host");
+
+            let uri = Uri::builder()
+                .scheme(env.config.cloud.proxy_base_url.scheme())
+                .authority(format!("{proxy_host}:{port}"))
+                .path_and_query(format!("/{unprefixed_environment_id}/{}", authority.host()))
+                .build()?;
+
+            DeploymentEndpoint::Uri(uri)
+        }
+        other => other.clone(),
+    };
+
+    let mk_request_body = |force, dry_run| match &deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
             uri: uri.clone(),
             additional_headers: headers.clone().map(Into::into),
