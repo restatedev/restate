@@ -11,6 +11,7 @@
 use anyhow::Result;
 use cling::prelude::*;
 use futures::StreamExt;
+use itertools::Itertools;
 use remote::RemotePort;
 
 use std::sync::Arc;
@@ -163,7 +164,18 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
             // dropping the renderer will exit the alt screen
             let (tunnel_url, tunnel_name, port) = local.into_tunnel_details();
             drop(renderer);
-            eprintln!("To retry with the same endpoint: restate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}");
+            let remote_ports = if opts.remote_port.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " --remote-port {}",
+                    opts.remote_port
+                        .iter()
+                        .map(|port| u16::from(*port))
+                        .join(" --remote-port ")
+                )
+            };
+            eprintln!("To retry with the same endpoint: restate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}");
         }
     };
 
