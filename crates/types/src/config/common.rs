@@ -24,7 +24,7 @@ use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 use crate::PlainNodeId;
 
-use super::{AwsOptions, HttpOptions, RocksDbOptions};
+use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 
@@ -218,6 +218,13 @@ pub struct CommonOptions {
     /// will recover from this without intervention.
     pub rocksdb_enable_stall_on_memory_limit: bool,
 
+    /// # Rocksdb performance statistics level
+    ///
+    /// Defines the level of PerfContext used internally by rocksdb. Default is `enable-count`
+    /// which should be sufficient for most users. Note that higher levels incur a CPU cost and
+    /// might slow down the critical path.
+    pub rocksdb_perf_level: PerfStatsLevel,
+
     /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
@@ -344,6 +351,7 @@ impl Default for CommonOptions {
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb_write_stall_threshold: std::time::Duration::from_secs(3).into(),
             rocksdb_enable_stall_on_memory_limit: false,
+            rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
         }
     }

@@ -11,7 +11,8 @@
 use std::cell::RefCell;
 
 use metrics::{counter, histogram};
-use rocksdb::{PerfContext, PerfMetric, PerfStatsLevel};
+use restate_types::config::{Configuration, PerfStatsLevel};
+use rocksdb::{PerfContext, PerfMetric};
 
 use crate::background::StorageTaskKind;
 use crate::{
@@ -21,6 +22,19 @@ use crate::{
 
 thread_local! {
     static ROCKSDB_PERF_CONTEXT: RefCell<PerfContext>  = RefCell::new(PerfContext::default());
+}
+
+fn convert_perf_level(input: PerfStatsLevel) -> rocksdb::perf::PerfStatsLevel {
+    use rocksdb::perf::PerfStatsLevel as RocksLevel;
+    match input {
+        PerfStatsLevel::Disable => RocksLevel::Disable,
+        PerfStatsLevel::EnableCount => RocksLevel::EnableCount,
+        PerfStatsLevel::EnableTimeExceptForMutex => RocksLevel::EnableTimeExceptForMutex,
+        PerfStatsLevel::EnableTimeAndCPUTimeExceptForMutex => {
+            RocksLevel::EnableTimeAndCPUTimeExceptForMutex
+        }
+        PerfStatsLevel::EnableTime => RocksLevel::EnableTime,
+    }
 }
 
 /// This guard must be created and dropped in the same thread, you should never use the same
@@ -37,7 +51,8 @@ impl RocksDbPerfGuard {
     /// mechanism to enforce this at the moment.
     #[must_use]
     pub fn new(kind: StorageTaskKind) -> Self {
-        rocksdb::perf::set_perf_stats(PerfStatsLevel::EnableTimeExceptForMutex);
+        let rocks_level = convert_perf_level(Configuration::pinned().common.rocksdb_perf_level);
+        rocksdb::perf::set_perf_stats(rocks_level);
         ROCKSDB_PERF_CONTEXT.with(|context| {
             context.borrow_mut().reset();
         });
@@ -53,52 +68,52 @@ impl Drop for RocksDbPerfGuard {
             // Note to future visitors of this code. RocksDb reports times in nanoseconds in this
             // API compared to microseconds in Statistics/Properties. Use n_to_s() to convert to
             // standard prometheus unit (second).
-            let context = context.borrow();
-            let v = context.metric(PerfMetric::BlockReadCount);
-            if v != 0 {
-                counter!(BLOCK_READ_COUNT,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .increment(v);
-            }
-            let v = context.metric(PerfMetric::BlockReadByte);
-            if v != 0 {
-                counter!(BLOCK_READ_BYTES,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .increment(v)
-            };
-
-            let v = context.metric(PerfMetric::WriteWalTime);
-            if v != 0 {
-                histogram!(WRITE_WAL_DURATION,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .record(n_to_s(v));
-            }
-            let v = context.metric(PerfMetric::WriteMemtableTime);
-            if v != 0 {
-                histogram!(WRITE_MEMTABLE_DURATION,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .record(n_to_s(v));
-            }
-
-            let v = context.metric(PerfMetric::WritePreAndPostProcessTime);
-            if v != 0 {
-                histogram!(WRITE_PRE_AND_POST_DURATION,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .record(n_to_s(v));
-            }
-
-            let v = context.metric(PerfMetric::WriteDelayTime);
-            if v != 0 {
-                histogram!(WRITE_ARTIFICIAL_DELAY_DURATION,
-                     OP_TYPE => self.kind.as_static_str(),
-                )
-                .record(n_to_s(v));
-            }
+            // let context = context.borrow();
+            // let v = context.metric(PerfMetric::BlockReadCount);
+            // if v != 0 {
+            //     counter!(BLOCK_READ_COUNT,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .increment(v);
+            // }
+            // let v = context.metric(PerfMetric::BlockReadByte);
+            // if v != 0 {
+            //     counter!(BLOCK_READ_BYTES,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .increment(v)
+            // };
+            //
+            // let v = context.metric(PerfMetric::WriteWalTime);
+            // if v != 0 {
+            //     histogram!(WRITE_WAL_DURATION,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .record(n_to_s(v));
+            // }
+            // let v = context.metric(PerfMetric::WriteMemtableTime);
+            // if v != 0 {
+            //     histogram!(WRITE_MEMTABLE_DURATION,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .record(n_to_s(v));
+            // }
+            //
+            // let v = context.metric(PerfMetric::WritePreAndPostProcessTime);
+            // if v != 0 {
+            //     histogram!(WRITE_PRE_AND_POST_DURATION,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .record(n_to_s(v));
+            // }
+            //
+            // let v = context.metric(PerfMetric::WriteDelayTime);
+            // if v != 0 {
+            //     histogram!(WRITE_ARTIFICIAL_DELAY_DURATION,
+            //          OP_TYPE => self.kind.as_static_str(),
+            //     )
+            //     .record(n_to_s(v));
+            // }
         });
     }
 }
