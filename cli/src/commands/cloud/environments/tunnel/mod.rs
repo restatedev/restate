@@ -175,7 +175,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
                         .join(" --remote-port ")
                 )
             };
-            eprintln!("To retry with the same endpoint: restate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}");
+            eprintln!("To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}");
         }
     };
 
