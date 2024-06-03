@@ -19,7 +19,7 @@ use serde_with::serde_as;
 
 /// # HTTP client options
 #[serde_as]
-#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "HttpClientOptions", default))]
 #[builder(default)]
@@ -37,6 +37,30 @@ pub struct HttpOptions {
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub http_proxy: Option<ProxyUri>,
+    /// # Connect timeout
+    ///
+    /// How long to wait for a TCP connection to be established before considering
+    /// it a failed attempt.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub connect_timeout: humantime::Duration,
+}
+
+impl Default for HttpOptions {
+    fn default() -> Self {
+        Self {
+            http_keep_alive_options: Http2KeepAliveOptions::default(),
+            http_proxy: None,
+            connect_timeout: HttpOptions::default_connect_timeout(),
+        }
+    }
+}
+
+impl HttpOptions {
+    #[inline]
+    fn default_connect_timeout() -> humantime::Duration {
+        (Duration::from_secs(10)).into()
+    }
 }
 
 /// # HTTP/2 Keep alive options
