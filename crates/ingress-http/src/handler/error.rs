@@ -55,6 +55,10 @@ pub(crate) enum HandlerError {
     NotReady,
     #[error("method not allowed")]
     MethodNotAllowed,
+    #[error(
+        "cannot get output for the given invocation. You can get output only for invocations created with an idempotency key, or for workflow methods."
+    )]
+    UnsupportedGetOutput,
     #[error("invocation error: {0:?}")]
     Invocation(InvocationError),
     #[error("input validation error: {0}")]
@@ -106,7 +110,8 @@ impl HandlerError {
             | HandlerError::BadInvocationId(_, _)
             | HandlerError::BadWorkflowPath
             | HandlerError::InputValidation(_)
-            | HandlerError::UnsupportedIdempotencyKey => StatusCode::BAD_REQUEST,
+            | HandlerError::UnsupportedIdempotencyKey
+            | HandlerError::UnsupportedGetOutput => StatusCode::BAD_REQUEST,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HandlerError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,

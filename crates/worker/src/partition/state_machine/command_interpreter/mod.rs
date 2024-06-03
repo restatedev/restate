@@ -31,8 +31,8 @@ use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR,
+    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
+    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
@@ -1815,6 +1815,29 @@ where
             }
         };
         match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
+            InvocationStatus::Free => self.send_response_to_sinks(
+                effects,
+                vec![attach_invocation_request.response_sink],
+                NOT_FOUND_INVOCATION_ERROR,
+                Some(invocation_id),
+                None,
+            ),
+            is if is.idempotency_key().is_none()
+                && is
+                    .invocation_target()
+                    .map(InvocationTarget::invocation_target_ty)
+                    != Some(InvocationTargetType::Workflow(
+                        WorkflowHandlerType::Workflow,
+                    )) =>
+            {
+                self.send_response_to_sinks(
+                    effects,
+                    vec![attach_invocation_request.response_sink],
+                    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
+                    Some(invocation_id),
+                    None,
+                )
+            }
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_) => {
@@ -1833,13 +1856,6 @@ where
                     Some(&completed.invocation_target),
                 );
             }
-            InvocationStatus::Free => self.send_response_to_sinks(
-                effects,
-                vec![attach_invocation_request.response_sink],
-                NOT_FOUND_INVOCATION_ERROR,
-                Some(invocation_id),
-                None,
-            ),
         }
 
         Ok(())
