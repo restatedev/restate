@@ -17,6 +17,7 @@ use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
@@ -69,6 +70,7 @@ fn get_journal<S: StorageAccess>(
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
 ) -> Vec<Result<(EntryIndex, JournalEntry)>> {
+    let _x = RocksDbPerfGuard::new("get-journal");
     let key = JournalKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
@@ -116,6 +118,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
+        let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
 
@@ -134,6 +137,7 @@ impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
         invocation_id: &InvocationId,
         journal_index: u32,
     ) -> Result<Option<JournalEntry>> {
+        let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
     }
 
@@ -157,6 +161,7 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
     }
 
     async fn delete_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
+        let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
     }
 }

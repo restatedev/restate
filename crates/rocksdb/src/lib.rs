@@ -40,6 +40,7 @@ use self::background::ReadyStorageTask;
 pub use self::db_manager::RocksDbManager;
 pub use self::db_spec::*;
 pub use self::error::*;
+pub use self::perf::RocksDbPerfGuard;
 pub use self::rock_access::RocksAccess;
 
 use self::background::StorageTask;
@@ -130,6 +131,7 @@ impl RocksDb {
     #[tracing::instrument(skip_all, fields(db = %self.name))]
     pub async fn write_batch(
         &self,
+        name: &'static str,
         priority: Priority,
         io_mode: IoMode,
         mut write_options: rocksdb::WriteOptions,
@@ -138,6 +140,7 @@ impl RocksDb {
         //  depending on the IoMode, we decide how to do the write.
         match io_mode {
             IoMode::AllowBlockingIO => {
+                let _x = RocksDbPerfGuard::new(name);
                 debug!("Blocking IO is allowed for write_batch, stall detection will not be used in this operation!");
                 write_options.set_no_slowdown(false);
                 self.db.write_batch(&write_batch, &write_options)?;
@@ -157,7 +160,10 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || db.write_batch(&write_batch, &write_options))
+                    .op(move || {
+                        let _x = RocksDbPerfGuard::new(name);
+                        db.write_batch(&write_batch, &write_options)
+                    })
                     .build()
                     .unwrap();
 
@@ -171,6 +177,7 @@ impl RocksDb {
                 return Ok(race_against_stall_detector(self.manager, task).await??);
             }
             IoMode::OnlyIfNonBlocking => {
+                let _x = RocksDbPerfGuard::new(name);
                 write_options.set_no_slowdown(true);
                 self.db.write_batch(&write_batch, &write_options)?;
                 counter!(STORAGE_IO_OP,
@@ -188,6 +195,7 @@ impl RocksDb {
         // First, attempt to write without blocking
         write_options.set_no_slowdown(true);
 
+        let perf_guard = RocksDbPerfGuard::new(name);
         let result = self.db.write_batch(&write_batch, &write_options);
         match result {
             Ok(_) => {
@@ -206,6 +214,10 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
+                // We chose to not measure perf for this operation since it might skew telemetry.
+                // We might change this in the future, but in that case, we need to use a different
+                // StorageOpKind to differentiate the two.
+                perf_guard.forget();
                 // Operation will block, dispatch to background.
                 let db = self.db.clone();
                 // In the background thread pool we can block on IO
@@ -213,7 +225,10 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || db.write_batch(&write_batch, &write_options))
+                    .op(move || {
+                        let _x = RocksDbPerfGuard::new(name);
+                        db.write_batch(&write_batch, &write_options)
+                    })
                     .build()
                     .unwrap();
 
@@ -240,9 +255,14 @@ impl RocksDb {
         mut write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatchWithTransaction<true>,
     ) -> Result<(), RocksError> {
+        // Write tx batch is only used by partition store, we are hard coding the operation name
+        // here to reduce the number of interface changes that need to be made to plumb this
+        // through.
+        let op_name = "txn-write-batch";
         //  depending on the IoMode, we decide how to do the write.
         match io_mode {
             IoMode::AllowBlockingIO => {
+                let _x = RocksDbPerfGuard::new(op_name);
                 debug!("Blocking IO is allowed for write_batch, stall detection will not be used in this operation!");
                 write_options.set_no_slowdown(false);
                 self.db.write_tx_batch(&write_batch, &write_options)?;
@@ -262,7 +282,10 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || db.write_tx_batch(&write_batch, &write_options))
+                    .op(move || {
+                        let _x = RocksDbPerfGuard::new("txn-write-batch-bg");
+                        db.write_tx_batch(&write_batch, &write_options)
+                    })
                     .build()
                     .unwrap();
 
@@ -276,6 +299,7 @@ impl RocksDb {
                 return Ok(race_against_stall_detector(self.manager, task).await??);
             }
             IoMode::OnlyIfNonBlocking => {
+                let _x = RocksDbPerfGuard::new(op_name);
                 write_options.set_no_slowdown(true);
                 self.db.write_tx_batch(&write_batch, &write_options)?;
                 counter!(STORAGE_IO_OP,
@@ -291,6 +315,7 @@ impl RocksDb {
 
         // Auto...
         // First, attempt to write without blocking
+        let perf_guard = RocksDbPerfGuard::new(op_name);
         write_options.set_no_slowdown(true);
         let result = self.db.write_tx_batch(&write_batch, &write_options);
         match result {
@@ -310,6 +335,10 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
+                // We chose to not measure perf for this operation since it might skew telemetry.
+                // We might change this in the future, but in that case, we need to use a different
+                // StorageOpKind to differentiate the two.
+                perf_guard.forget();
                 // Operation will block, dispatch to background.
                 let db = self.db.clone();
                 // In the background thread pool we can block on IO
@@ -317,7 +346,10 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || db.write_tx_batch(&write_batch, &write_options))
+                    .op(move || {
+                        let _x = RocksDbPerfGuard::new("txn-write-batch-bg");
+                        db.write_tx_batch(&write_batch, &write_options)
+                    })
                     .build()
                     .unwrap();
 
@@ -340,7 +372,10 @@ impl RocksDb {
         let db = self.db.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
-            .op(move || db.flush_wal(sync))
+            .op(move || {
+                let _x = RocksDbPerfGuard::new("flush-wal");
+                db.flush_wal(sync)
+            })
             .build()
             .unwrap();
 
@@ -353,6 +388,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::FlushWal)
             .op(move || {
+                let _x = RocksDbPerfGuard::new("bg-wal-sync");
                 if let Err(e) = db.flush_wal(true) {
                     error!("Failed to flush rocksdb WAL: {}", e);
                 }
@@ -406,6 +442,7 @@ impl RocksDb {
     pub async fn shutdown(self: Arc<Self>) {
         let manager = self.manager;
         let op = move || {
+            let _x = RocksDbPerfGuard::new("shutdown");
             if let Err(e) = self.db.flush_wal(true) {
                 warn!(
                     db = %self.name,

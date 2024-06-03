@@ -17,6 +17,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
@@ -96,6 +97,7 @@ fn get_user_state<S: StorageAccess>(
     service_id: &ServiceId,
     state_key: impl AsRef<[u8]>,
 ) -> Result<Option<Bytes>> {
+    let _x = RocksDbPerfGuard::new("get-user-state");
     let key = write_state_entry_key(service_id, state_key);
     storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
 }
@@ -104,6 +106,7 @@ fn get_all_user_states<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Vec<Result<(Bytes, Bytes)>> {
+    let _x = RocksDbPerfGuard::new("get-all-user-state");
     let key = StateKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())

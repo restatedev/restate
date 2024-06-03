@@ -15,6 +15,7 @@ use crate::{
 };
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
@@ -35,6 +36,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
     partition_id: PartitionId,
     producer_id: &ProducerId,
 ) -> Result<Option<DedupSequenceNumber>> {
+    let _x = RocksDbPerfGuard::new("get-dedup-seq");
     let key = DeduplicationKey::default()
         .partition_id(partition_id)
         .producer_id(producer_id.clone());
