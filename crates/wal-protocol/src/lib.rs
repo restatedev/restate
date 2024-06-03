@@ -22,7 +22,6 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_types::{flexbuffers_storage_encode_decode, Version};
 
 use crate::control::AnnounceLeader;
-use crate::effects::BuiltinServiceEffects;
 use crate::timer::TimerKeyValue;
 use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
@@ -30,7 +29,6 @@ use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeErro
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub mod control;
-pub mod effects;
 pub mod timer;
 
 /// The primary envelope for all messages in the system.
@@ -146,8 +144,6 @@ pub enum Command {
     ScheduleTimer(TimerKeyValue),
     /// Another partition processor is reporting a response of an invocation we requested.
     InvocationResponse(InvocationResponse),
-    /// A built-in invoker reporting effects from an invocation.
-    BuiltInInvokerEffect(BuiltinServiceEffects),
 }
 
 impl Command {
