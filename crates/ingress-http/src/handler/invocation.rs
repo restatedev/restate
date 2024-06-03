@@ -154,6 +154,7 @@ where
             Ok(GetOutputResult::Ready(out)) => out,
             Ok(GetOutputResult::NotFound) => return Err(HandlerError::NotFound),
             Ok(GetOutputResult::NotReady) => return Err(HandlerError::NotReady),
+            Ok(GetOutputResult::NotSupported) => return Err(HandlerError::UnsupportedGetOutput),
             Err(e) => {
                 warn!(
                     restate.invocation.query = ?invocation_query,
