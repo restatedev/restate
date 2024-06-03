@@ -41,6 +41,7 @@ impl ConnectInfo {
 pub enum GetOutputResult {
     NotFound,
     NotReady,
+    NotSupported,
     Ready(InvocationResponse),
 }
 

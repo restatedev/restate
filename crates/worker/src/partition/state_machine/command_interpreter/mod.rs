@@ -31,8 +31,8 @@ use restate_storage_api::timer_table::Timer;
 use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
-    CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR,
+    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
+    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
@@ -55,7 +55,6 @@ use restate_types::journal::*;
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::effects::{BuiltinServiceEffect, BuiltinServiceEffects};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::Command;
 use std::collections::HashSet;
@@ -203,10 +202,6 @@ where
             }
             Command::PurgeInvocation(purge_invocation_request) => {
                 self.try_purge_invocation(purge_invocation_request.invocation_id, state, effects)
-                    .await
-            }
-            Command::BuiltInInvokerEffect(builtin_service_effects) => {
-                self.try_built_in_invoker_effect(effects, state, builtin_service_effects)
                     .await
             }
             Command::PatchState(mutation) => {
@@ -467,89 +462,6 @@ where
                 self.enqueue_into_inbox(effects, InboxEntry::StateMutation(mutation));
             }
             VirtualObjectStatus::Unlocked => effects.apply_state_mutation(mutation),
-        }
-
-        Ok(())
-    }
-
-    async fn try_built_in_invoker_effect<State: StateReader>(
-        &mut self,
-        effects: &mut Effects,
-        state: &mut State,
-        nbis_effects: BuiltinServiceEffects,
-    ) -> Result<(), Error> {
-        let (invocation_id, nbis_effects) = nbis_effects.into_inner();
-        let invocation_status =
-            Self::get_invocation_status_and_trace(state, &invocation_id, effects).await?;
-
-        match invocation_status {
-            InvocationStatus::Invoked(invocation_metadata) => {
-                for nbis_effect in nbis_effects {
-                    self.on_built_in_invoker_effect(
-                        effects,
-                        &invocation_id,
-                        &invocation_metadata,
-                        nbis_effect,
-                    )
-                    .await?
-                }
-                Ok(())
-            }
-            _ => {
-                trace!(
-                    "Received built in invoker effect for unknown invocation {}. Ignoring it.",
-                    invocation_id
-                );
-                Ok(())
-            }
-        }
-    }
-
-    async fn on_built_in_invoker_effect(
-        &mut self,
-        effects: &mut Effects,
-        invocation_id: &InvocationId,
-        invocation_metadata: &InFlightInvocationMetadata,
-        nbis_effect: BuiltinServiceEffect,
-    ) -> Result<(), Error> {
-        match nbis_effect {
-            BuiltinServiceEffect::SetState { key, value } => {
-                effects.set_state(
-                    invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .expect("Non deterministic built in services clearing state MUST be keyed"),
-                    *invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    Bytes::from(key.into_owned()),
-                    value,
-                );
-            }
-            BuiltinServiceEffect::ClearState(key) => {
-                effects.clear_state(
-                    invocation_metadata
-                        .invocation_target
-                        .as_keyed_service_id()
-                        .expect("Non deterministic built in services clearing state MUST be keyed"),
-                    *invocation_id,
-                    invocation_metadata.journal_metadata.span_context.clone(),
-                    Bytes::from(key.into_owned()),
-                );
-            }
-            BuiltinServiceEffect::OutboxMessage(msg) => {
-                self.handle_outgoing_message(msg, effects);
-            }
-            BuiltinServiceEffect::End(None) => {
-                self.end_built_in_invocation(effects, *invocation_id, invocation_metadata.clone())
-                    .await?
-            }
-            BuiltinServiceEffect::End(Some(e)) => {
-                self.fail_invocation(effects, *invocation_id, invocation_metadata.clone(), e)
-                    .await?
-            }
-            BuiltinServiceEffect::IngressResponse(ingress_response) => {
-                self.ingress_response(ingress_response, effects);
-            }
         }
 
         Ok(())
@@ -1137,29 +1049,6 @@ where
             effects.free_invocation(invocation_id);
         }
         effects.drop_journal(invocation_id, journal_length);
-
-        Ok(())
-    }
-
-    // This needs a different method because for built-in invocations we send back the output as soon as we have it.
-    async fn end_built_in_invocation(
-        &mut self,
-        effects: &mut Effects,
-        invocation_id: InvocationId,
-        invocation_metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error> {
-        self.notify_invocation_result(
-            invocation_id,
-            invocation_metadata.invocation_target.clone(),
-            invocation_metadata.journal_metadata.span_context,
-            invocation_metadata.timestamps.creation_time(),
-            Ok(()),
-            effects,
-        );
-
-        effects.free_invocation(invocation_id);
-        effects.drop_journal(invocation_id, invocation_metadata.journal_metadata.length);
-        Self::try_pop_inbox(effects, &invocation_metadata.invocation_target);
 
         Ok(())
     }
@@ -1926,6 +1815,29 @@ where
             }
         };
         match Self::get_invocation_status_and_trace(state, &invocation_id, effects).await? {
+            InvocationStatus::Free => self.send_response_to_sinks(
+                effects,
+                vec![attach_invocation_request.response_sink],
+                NOT_FOUND_INVOCATION_ERROR,
+                Some(invocation_id),
+                None,
+            ),
+            is if is.idempotency_key().is_none()
+                && is
+                    .invocation_target()
+                    .map(InvocationTarget::invocation_target_ty)
+                    != Some(InvocationTargetType::Workflow(
+                        WorkflowHandlerType::Workflow,
+                    )) =>
+            {
+                self.send_response_to_sinks(
+                    effects,
+                    vec![attach_invocation_request.response_sink],
+                    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
+                    Some(invocation_id),
+                    None,
+                )
+            }
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_) => {
@@ -1944,13 +1856,6 @@ where
                     Some(&completed.invocation_target),
                 );
             }
-            InvocationStatus::Free => self.send_response_to_sinks(
-                effects,
-                vec![attach_invocation_request.response_sink],
-                NOT_FOUND_INVOCATION_ERROR,
-                Some(invocation_id),
-                None,
-            ),
         }
 
         Ok(())

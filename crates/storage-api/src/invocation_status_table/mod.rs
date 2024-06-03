@@ -93,6 +93,17 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn idempotency_key(&self) -> Option<&ByteString> {
+        match self {
+            InvocationStatus::Inboxed(metadata) => metadata.idempotency_key.as_ref(),
+            InvocationStatus::Invoked(metadata) => metadata.idempotency_key.as_ref(),
+            InvocationStatus::Suspended { metadata, .. } => metadata.idempotency_key.as_ref(),
+            InvocationStatus::Completed(completed) => completed.idempotency_key.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn into_journal_metadata(self) -> Option<JournalMetadata> {
         match self {
             InvocationStatus::Invoked(metadata) => Some(metadata.journal_metadata),

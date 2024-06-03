@@ -14,6 +14,7 @@ use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytestring::ByteString;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
@@ -60,6 +61,7 @@ fn get_virtual_object_status<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Result<VirtualObjectStatus> {
+    let _x = RocksDbPerfGuard::new("get-virtual-obj-status");
     let key = ServiceStatusKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())

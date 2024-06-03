@@ -12,6 +12,7 @@ use crate::keys::{define_table_key, KeyKind, TableKey};
 use crate::TableKind::Outbox;
 use crate::{PartitionStore, RocksDBTransaction, StorageAccess, TableScan};
 
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
@@ -43,6 +44,7 @@ fn get_next_outbox_message<S: StorageAccess>(
     partition_id: PartitionId,
     next_sequence_number: u64,
 ) -> Result<Option<(u64, OutboxMessage)>> {
+    let _x = RocksDbPerfGuard::new("get-next-outbox");
     let start = OutboxKey::default()
         .partition_id(partition_id)
         .message_index(next_sequence_number);
@@ -69,6 +71,7 @@ fn get_outbox_message<S: StorageAccess>(
     partition_id: PartitionId,
     sequence_number: u64,
 ) -> Result<Option<OutboxMessage>> {
+    let _x = RocksDbPerfGuard::new("get-outbox");
     let outbox_key = OutboxKey::default()
         .partition_id(partition_id)
         .message_index(sequence_number);

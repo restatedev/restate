@@ -155,6 +155,16 @@ pub async fn modify_service_state<V>(
         new_state,
     }): Json<ModifyServiceStateRequest>,
 ) -> Result<StatusCode, MetaApiError> {
+    let svc = state
+        .task_center
+        .run_in_scope_sync("get-service", None, || {
+            state.schema_registry.get_service(&service_name)
+        })
+        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name.clone()))?;
+    if !svc.ty.has_state() {
+        return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
+    }
+
     let service_id = ServiceId::new(service_name, object_key);
 
     let new_state = new_state

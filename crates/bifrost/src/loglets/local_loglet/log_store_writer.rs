@@ -252,7 +252,13 @@ impl LogStoreWriter {
         );
         let result = self
             .rocksdb
-            .write_batch(Priority::High, IoMode::default(), write_opts, write_batch)
+            .write_batch(
+                "local-loglet-write-batch",
+                Priority::High,
+                IoMode::default(),
+                write_opts,
+                write_batch,
+            )
             .await;
 
         if let Err(e) = result {

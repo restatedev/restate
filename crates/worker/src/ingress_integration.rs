@@ -21,7 +21,9 @@ use restate_storage_api::service_status_table::{
 };
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::ingress::{IngressResponseResult, InvocationResponse};
-use restate_types::invocation::{InvocationQuery, ResponseResult};
+use restate_types::invocation::{
+    InvocationQuery, InvocationTarget, InvocationTargetType, ResponseResult, WorkflowHandlerType,
+};
 use restate_types::partition_table::FindPartition;
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,17 @@ impl InvocationStorageReader for InvocationStorageReaderImpl {
             .await?;
 
         match invocation_status {
+            InvocationStatus::Free => Ok(GetOutputResult::NotFound),
+            is if is.idempotency_key().is_none()
+                && is
+                    .invocation_target()
+                    .map(InvocationTarget::invocation_target_ty)
+                    != Some(InvocationTargetType::Workflow(
+                        WorkflowHandlerType::Workflow,
+                    )) =>
+            {
+                Ok(GetOutputResult::NotSupported)
+            }
             InvocationStatus::Completed(completed) => {
                 Ok(GetOutputResult::Ready(InvocationResponse {
                     request_id: Default::default(),
@@ -87,7 +100,6 @@ impl InvocationStorageReader for InvocationStorageReaderImpl {
                     invocation_id: Some(invocation_id),
                 }))
             }
-            InvocationStatus::Free => Ok(GetOutputResult::NotFound),
             _ => Ok(GetOutputResult::NotReady),
         }
     }

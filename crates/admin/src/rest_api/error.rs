@@ -21,6 +21,7 @@ use okapi_operation::okapi::openapi3::Responses;
 use okapi_operation::{okapi, Components, ToMediaTypes, ToResponses};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
+use restate_types::invocation::ServiceType;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -41,6 +42,8 @@ pub enum MetaApiError {
     },
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
+    #[error("Cannot {0} for service type {1}")]
+    UnsupportedOperation(&'static str, ServiceType),
     #[error(transparent)]
     Schema(#[from] SchemaError),
     #[error(transparent)]
@@ -68,7 +71,9 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::InvalidField(_, _) => StatusCode::BAD_REQUEST,
+            MetaApiError::InvalidField(_, _) | MetaApiError::UnsupportedOperation(_, _) => {
+                StatusCode::BAD_REQUEST
+            }
             MetaApiError::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Override(_)
