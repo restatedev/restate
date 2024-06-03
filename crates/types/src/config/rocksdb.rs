@@ -141,7 +141,7 @@ impl RocksDbOptions {
 
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {
         self.rocksdb_statistics_level
-            .unwrap_or(StatisticsLevel::ExceptDetailedTimers)
+            .unwrap_or(StatisticsLevel::ExceptTimers)
     }
 }
 
