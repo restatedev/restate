@@ -15,6 +15,7 @@ use crate::{PartitionStore, RocksDBTransaction, StorageAccess};
 use crate::{TableScan, TableScanIterationDecision};
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
@@ -144,6 +145,7 @@ fn next_timers_greater_than<S: StorageAccess>(
     exclusive_start: Option<&TimerKey>,
     limit: usize,
 ) -> Vec<Result<(TimerKey, Timer)>> {
+    let _x = RocksDbPerfGuard::new("get-next-timers");
     let scan = exclusive_start_key_range(partition_id, exclusive_start);
     let mut produced = 0;
     storage.for_each_key_value_in_place(scan, move |k, v| {

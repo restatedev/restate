@@ -15,6 +15,7 @@ use crate::{PartitionStore, TableKind, TableScanIterationDecision};
 use crate::{RocksDBTransaction, StorageAccess};
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, InvocationStatusTable, ReadOnlyInvocationStatusTable,
 };
@@ -70,6 +71,7 @@ fn get_invocation_status<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<InvocationStatus> {
+    let _x = RocksDbPerfGuard::new("get-invocation-status");
     let key = write_invocation_status_key(invocation_id);
 
     storage
@@ -86,6 +88,7 @@ fn invoked_invocations<S: StorageAccess>(
     storage: &mut S,
     partition_key_range: RangeInclusive<PartitionKey>,
 ) -> Vec<Result<(InvocationId, InvocationTarget)>> {
+    let _x = RocksDbPerfGuard::new("invoked-invocations");
     storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
