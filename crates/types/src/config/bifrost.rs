@@ -136,7 +136,7 @@ impl Default for LocalLogletOptions {
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
-            writer_batch_commit_count: 2000,
+            writer_batch_commit_count: 5000,
             writer_batch_commit_duration: Duration::ZERO.into(),
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,

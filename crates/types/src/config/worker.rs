@@ -55,7 +55,7 @@ impl WorkerOptions {
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
-            internal_queue_length: NonZeroUsize::new(6400).unwrap(),
+            internal_queue_length: NonZeroUsize::new(10000).unwrap(),
             num_timers_in_memory_limit: None,
             storage: StorageOptions::default(),
             invoker: Default::default(),
@@ -291,7 +291,7 @@ impl Default for StorageOptions {
             // persist the lsn every hour
             persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
             persist_lsn_threshold: 1000,
-            always_commit_in_background: true,
+            always_commit_in_background: false,
         }
     }
 }
