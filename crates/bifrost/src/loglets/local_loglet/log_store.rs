@@ -130,6 +130,13 @@ fn db_options(options: &LocalLogletOptions) -> rocksdb::Options {
         opts.set_atomic_flush(true);
     }
 
+    // This is Rocksdb's default, it's added here for clarity.
+    //
+    // Rationale: If WAL tail is corrupted, it's likely that it has failed during write, that said,
+    // we can use absolute consistency but on a single-node setup, we don't have a way to recover
+    // from it, so it's not useful for us.
+    opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
+
     opts
 }
 

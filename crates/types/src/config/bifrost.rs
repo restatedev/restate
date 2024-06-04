@@ -70,10 +70,14 @@ pub struct LocalLogletOptions {
     /// (See `rocksdb-total-memtables-ratio` in common).
     rocksdb_memory_ratio: f32,
 
+    /// Disable fsync of WAL on every batch
+    rocksdb_disable_wal_fsync: bool,
+
     /// Trigger a commit when the batch size exceeds this threshold.
     ///
     /// Set to 0 or 1 to commit the write batch on every command.
     pub writer_batch_commit_count: usize,
+
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -95,6 +99,10 @@ impl LocalLogletOptions {
                 .unwrap(),
             );
         }
+    }
+
+    pub fn rocksdb_disable_wal_fsync(&self) -> bool {
+        self.rocksdb_disable_wal_fsync
     }
 
     pub fn rocksdb_memory_budget(&self) -> usize {
@@ -125,6 +133,7 @@ impl Default for LocalLogletOptions {
             rocksdb_memory_ratio: 0.5,
             writer_batch_commit_count: 2000,
             writer_batch_commit_duration: Duration::ZERO.into(),
+            rocksdb_disable_wal_fsync: false,
         }
     }
 }
