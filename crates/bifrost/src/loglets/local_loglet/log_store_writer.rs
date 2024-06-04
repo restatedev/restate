@@ -249,12 +249,17 @@ impl LogStoreWriter {
             "Committing local loglet current write batch: {} items",
             write_batch.len(),
         );
+        let io_mode = if opts.always_commit_in_background {
+            IoMode::AlwaysBackground
+        } else {
+            IoMode::Default
+        };
         let result = self
             .rocksdb
             .write_batch(
                 "local-loglet-write-batch",
                 Priority::High,
-                IoMode::default(),
+                io_mode,
                 write_opts,
                 write_batch,
             )

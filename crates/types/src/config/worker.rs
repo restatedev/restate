@@ -222,6 +222,11 @@ pub struct StorageOptions {
     /// persist a lsn if the partition processor has applied at least #threshold log entries since
     /// the last persisting. This prevents the worker from flushing the RocksDB memtables too often.
     pub persist_lsn_threshold: u64,
+
+    /// Whether to perform commits in background IO thread pools eagerly or not
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub always_commit_in_background: bool,
 }
 
 impl StorageOptions {
@@ -286,6 +291,7 @@ impl Default for StorageOptions {
             // persist the lsn every hour
             persist_lsn_interval: Some(Duration::from_secs(60 * 60).into()),
             persist_lsn_threshold: 1000,
+            always_commit_in_background: true,
         }
     }
 }
