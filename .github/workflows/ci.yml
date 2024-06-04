@@ -43,6 +43,9 @@ jobs:
     env:
       RUST_BACKTRACE: full
     steps:
+      - name: Install liburing
+        run: sudo apt-get install -y liburing-dev
+
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/clean-runner
