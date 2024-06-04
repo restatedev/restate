@@ -10,11 +10,12 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_gauge, Unit};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASK: &str = "restate.invoker.invocation_task.total";
 pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
+pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -39,4 +40,10 @@ pub(crate) fn describe_metrics() {
         Unit::Count,
         "Number of available slots to create new tasks"
     );
+
+    describe_histogram!(
+        INVOKER_TASK_DURATION,
+        Unit::Seconds,
+        "Time taken to complete an invoker task"
+    )
 }
