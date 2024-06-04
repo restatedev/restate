@@ -49,8 +49,8 @@ pub struct RocksDbManager {
     dbs: RwLock<HashMap<DbName, Arc<RocksDb>>>,
     watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     shutting_down: AtomicBool,
-    high_pri_pool: rayon::ThreadPool,
-    low_pri_pool: rayon::ThreadPool,
+    high_pri_pool: threadpool::ThreadPool,
+    low_pri_pool: threadpool::ThreadPool,
 }
 
 impl Debug for RocksDbManager {
@@ -95,17 +95,15 @@ impl RocksDbManager {
         env.set_background_threads(opts.rocksdb_bg_threads().get() as i32);
 
         // Create our own storage thread pools
-        let high_pri_pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("rs:io-hi-{}", i))
+        let high_pri_pool = threadpool::Builder::new()
+            .thread_name("rs:io-hi".to_owned())
             .num_threads(opts.storage_high_priority_bg_threads().into())
-            .build()
-            .expect("storage high priority thread pool to be created");
+            .build();
 
-        let low_pri_pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("rs:io-lo-{}", i))
+        let low_pri_pool = threadpool::Builder::new()
+            .thread_name("rs:io-lo".to_owned())
             .num_threads(opts.storage_low_priority_bg_threads().into())
-            .build()
-            .expect("storage low priority thread pool to be created");
+            .build();
 
         let dbs = RwLock::default();
 
@@ -377,8 +375,8 @@ impl RocksDbManager {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let priority = task.priority;
         match priority {
-            Priority::High => self.high_pri_pool.spawn(task.into_async_runner(tx)),
-            Priority::Low => self.low_pri_pool.spawn(task.into_async_runner(tx)),
+            Priority::High => self.high_pri_pool.execute(task.into_async_runner(tx)),
+            Priority::Low => self.low_pri_pool.execute(task.into_async_runner(tx)),
         }
         rx.await.map_err(|_| ShutdownError)
     }
@@ -403,8 +401,8 @@ impl RocksDbManager {
         OP: FnOnce() + Send + 'static,
     {
         match task.priority {
-            Priority::High => self.high_pri_pool.spawn(task.into_runner()),
-            Priority::Low => self.low_pri_pool.spawn(task.into_runner()),
+            Priority::High => self.high_pri_pool.execute(task.into_runner()),
+            Priority::Low => self.low_pri_pool.execute(task.into_runner()),
         }
     }
 }
