@@ -462,7 +462,6 @@ impl<'a> RocksDBTransaction<'a> {
         let mut opts = ReadOptions::default();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
         opts.set_prefix_same_as_start(true);
-        //opts.set_async_io(true);
         opts.set_total_order_seek(false);
 
         let mut it = self.txn.raw_iterator_cf_opt(table, opts);
@@ -484,7 +483,6 @@ impl<'a> RocksDBTransaction<'a> {
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
         opts.set_iterate_range(from.clone()..to);
-        //opts.set_async_io(true);
         let mut it = self.txn.raw_iterator_cf_opt(table, opts);
         it.seek(from);
         it

@@ -286,7 +286,13 @@ impl LocalMetadataStore {
         wb.put_cf(&cf_handle, key, self.buffer.as_ref());
         Ok(self
             .rocksdb
-            .write_batch(Priority::High, IoMode::default(), write_options, wb)
+            .write_batch(
+                "local-metadata-write-batch",
+                Priority::High,
+                IoMode::default(),
+                write_options,
+                wb,
+            )
             .await?)
     }
 

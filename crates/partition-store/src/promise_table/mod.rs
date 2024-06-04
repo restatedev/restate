@@ -18,6 +18,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable,
 };
@@ -50,6 +51,7 @@ fn get_promise<S: StorageAccess>(
     service_id: &ServiceId,
     key: &ByteString,
 ) -> Result<Option<Promise>> {
+    let _x = RocksDbPerfGuard::new("get-promise");
     storage.get_value(create_key(service_id, key))
 }
 

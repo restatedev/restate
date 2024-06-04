@@ -21,10 +21,19 @@ pub const STORAGE_BG_TASK_RUN_DURATION: &str =
 pub const STORAGE_BG_TASK_TOTAL_DURATION: &str =
     "restate.rocksdb_manager.bg_task_total_duration.seconds";
 
-pub const BLOCK_READ_COUNT: &str = "restate.rocksdb.perf.num_block_read.total";
+// Perf guard metrics
 pub const BLOCK_READ_BYTES: &str = "restate.rocksdb.perf.block_read_bytes.total";
+pub const BLOCK_READ_DURATION: &str = "restate.rocksdb.perf.block_read_duration.seconds";
+pub const BLOCK_DECOMPRESS_DURATION: &str =
+    "restate.rocksdb.perf.block_decompress_duration.seconds";
+pub const GET_FROM_MEMTABLE_DURATION: &str =
+    "restate.rocksdb.perf.get_from_memtable_duration.seconds";
 pub const WRITE_WAL_DURATION: &str = "restate.rocksdb.perf.write_wal_duration.seconds";
 pub const WRITE_MEMTABLE_DURATION: &str = "restate.rocksdb.perf.write_memtable_duration.seconds";
+pub const TOTAL_DURATION: &str = "restate.rocksdb.perf.total_duration.seconds";
+pub const SEEK_ON_MEMTABLE: &str = "restate.rocksdb.perf.seek_on_memtable.seconds";
+pub const NEXT_ON_MEMTABLE: &str = "restate.rocksdb.perf.next_on_memtable.total";
+pub const FIND_NEXT_USER_ENTRY: &str = "restate.rocksdb.perf.find_next_user_entry.seconds";
 pub const WRITE_PRE_AND_POST_DURATION: &str =
     "restate.rocksdb.perf.write_pre_and_post_duration.seconds";
 pub const WRITE_ARTIFICIAL_DELAY_DURATION: &str =
@@ -34,6 +43,7 @@ pub const ROCKSDB_STALL_FLARE: &str = "restate.rocksdb_stall_flare";
 pub const ROCKSDB_STALL_DURATION: &str = "restate.rocksdb_stall_duration.seconds";
 
 pub const OP_TYPE: &str = "operation";
+pub const OP_NAME: &str = "name";
 pub const PRIORITY: &str = "priority";
 
 pub const DISPOSITION: &str = "disposition";
@@ -64,15 +74,15 @@ pub fn describe_metrics() {
     );
 
     describe_counter!(
-        BLOCK_READ_COUNT,
-        Unit::Count,
-        "Number of rocksdb blocks read from disk"
-    );
-
-    describe_counter!(
         BLOCK_READ_BYTES,
         Unit::Bytes,
         "Total number of bytes read from disk during this operation"
+    );
+
+    describe_counter!(
+        NEXT_ON_MEMTABLE,
+        Unit::Count,
+        "Number of next() issued on memtables"
     );
 
     describe_histogram!(
@@ -121,5 +131,34 @@ pub fn describe_metrics() {
         WRITE_ARTIFICIAL_DELAY_DURATION,
         Unit::Seconds,
         "Extra write delay introduced by rocksdb to meet target write rates"
+    );
+
+    describe_histogram!(
+        SEEK_ON_MEMTABLE,
+        Unit::Seconds,
+        "Total time spent seeking on memtable"
+    );
+    describe_histogram!(
+        BLOCK_READ_DURATION,
+        Unit::Seconds,
+        "Total time spent reading blocks"
+    );
+
+    describe_histogram!(
+        BLOCK_DECOMPRESS_DURATION,
+        Unit::Seconds,
+        "Total time spent block decompression"
+    );
+
+    describe_histogram!(
+        GET_FROM_MEMTABLE_DURATION,
+        Unit::Seconds,
+        "Total time spent on querying memtables"
+    );
+
+    describe_histogram!(
+        FIND_NEXT_USER_ENTRY,
+        Unit::Seconds,
+        "Total time spent on iterating internal entries to find the next user entry"
     );
 }

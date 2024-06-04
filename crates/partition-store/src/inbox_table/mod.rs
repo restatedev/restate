@@ -15,6 +15,7 @@ use crate::{TableScan, TableScanIterationDecision};
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
@@ -86,6 +87,8 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
+        // safe since delete_inbox_entry is not really async.
+        let _x = RocksDbPerfGuard::new("pop-inbox");
         let result = self.peek_inbox(service_id).await;
 
         if let Ok(Some(inbox_entry)) = &result {

@@ -11,12 +11,13 @@
 use std::pin::pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::task::{ready, Poll};
+use std::task::Poll;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 use restate_core::ShutdownError;
+use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::SequenceNumber;
 use rocksdb::{DBRawIteratorWithThreadMode, DB};
 use tokio_stream::wrappers::WatchStream;
@@ -118,13 +119,20 @@ impl Stream for LocalLogletReadStream {
 
         let next_offset = self.read_pointer.next();
 
+        let perf_guard = RocksDbPerfGuard::new("local-loglet-next");
         loop {
             let mut this = self.as_mut().project();
 
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
             if next_offset > *this.release_pointer {
-                let updated_release_pointer = ready!(this.release_watch.poll_next(cx));
+                let updated_release_pointer = match this.release_watch.poll_next(cx) {
+                    Poll::Ready(t) => t,
+                    Poll::Pending => {
+                        perf_guard.forget();
+                        return Poll::Pending;
+                    }
+                };
 
                 match updated_release_pointer {
                     Some(updated_release_pointer) => {

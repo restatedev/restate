@@ -167,3 +167,21 @@ pub enum StatisticsLevel {
     /// reduce scalability to more threads, especially for writes.
     All,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "RocksbPerfStatisticsLevel"))]
+#[serde(rename_all = "kebab-case")]
+pub enum PerfStatsLevel {
+    /// Disable perf stats
+    Disable,
+    /// Enables only count stats
+    EnableCount,
+    /// Count stats and enable time stats except for mutexes
+    EnableTimeExceptForMutex,
+    /// Other than time, also measure CPU time counters. Still don't measure
+    /// time (neither wall time nor CPU time) for mutexes
+    EnableTimeAndCPUTimeExceptForMutex,
+    /// Enables count and time stats
+    EnableTime,
+}
