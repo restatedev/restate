@@ -46,6 +46,7 @@ impl HttpClient {
         let mut http_connector = HttpConnector::new();
         http_connector.enforce_http(false);
         http_connector.set_nodelay(true);
+        http_connector.set_connect_timeout(Some(options.connect_timeout.into()));
 
         HttpClient::new(
             builder.build::<_, hyper::Body>(ProxyConnector::new(
