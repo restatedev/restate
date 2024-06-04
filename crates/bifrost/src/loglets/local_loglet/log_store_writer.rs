@@ -243,8 +243,7 @@ impl LogStoreWriter {
     async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
         let mut write_opts = rocksdb::WriteOptions::new();
         write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
-        // if WAL is enabled, we sync after every write.
-        write_opts.set_sync(!opts.rocksdb.rocksdb_disable_wal());
+        write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
 
         trace!(
             "Committing local loglet current write batch: {} items",

@@ -129,6 +129,7 @@ fn db_options(options: &LocalLogletOptions) -> rocksdb::Options {
     if options.rocksdb.rocksdb_disable_wal() {
         opts.set_atomic_flush(true);
     }
+    opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::AbsoluteConsistency);
 
     opts
 }
