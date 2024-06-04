@@ -18,6 +18,7 @@ use codederror::CodedError;
 use restate_rocksdb::CfName;
 use restate_rocksdb::IoMode;
 use restate_rocksdb::Priority;
+use restate_types::config::Configuration;
 use rocksdb::DBCompressionType;
 use rocksdb::DBPinnableSlice;
 use rocksdb::DBRawIteratorWithThreadMode;
@@ -503,11 +504,20 @@ impl<'a> Transaction for RocksDBTransaction<'a> {
         if write_batch.is_empty() {
             return Ok(());
         }
+        let io_mode = if Configuration::pinned()
+            .worker
+            .storage
+            .always_commit_in_background
+        {
+            IoMode::AlwaysBackground
+        } else {
+            IoMode::Default
+        };
         let mut opts = rocksdb::WriteOptions::default();
         // We disable WAL since bifrost is our durable distributed log.
         opts.disable_wal(true);
         self.rocksdb
-            .write_tx_batch(Priority::High, IoMode::AlwaysBackground, opts, write_batch)
+            .write_tx_batch(Priority::High, io_mode, opts, write_batch)
             .await
             .map_err(|error| StorageError::Generic(error.into()))
     }

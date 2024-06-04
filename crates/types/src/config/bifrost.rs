@@ -73,6 +73,11 @@ pub struct LocalLogletOptions {
     /// Disable fsync of WAL on every batch
     rocksdb_disable_wal_fsync: bool,
 
+    /// Whether to perform commits in background IO thread pools eagerly or not
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub always_commit_in_background: bool,
+
     /// Trigger a commit when the batch size exceeds this threshold.
     ///
     /// Set to 0 or 1 to commit the write batch on every command.
@@ -134,6 +139,7 @@ impl Default for LocalLogletOptions {
             writer_batch_commit_count: 2000,
             writer_batch_commit_duration: Duration::ZERO.into(),
             rocksdb_disable_wal_fsync: false,
+            always_commit_in_background: false,
         }
     }
 }
