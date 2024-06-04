@@ -335,8 +335,10 @@ impl PartitionProcessorManager {
         let metadata_store_client = self.metadata_store_client.clone();
         let node_id = self.metadata.my_node_id();
 
+        // the name is also used as thread names for the corresponding tokio runtimes, let's keep
+        // it short.
         let task_name = self.name_cache.entry(partition_id).or_insert_with(|| {
-            Box::leak(Box::new(format!("partition-processor-{}", partition_id)))
+            Box::leak(Box::new(format!("pp-{}", partition_id)))
         });
 
         self.task_center.spawn_child(
