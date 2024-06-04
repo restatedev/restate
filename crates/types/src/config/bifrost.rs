@@ -77,6 +77,7 @@ pub struct LocalLogletOptions {
     ///
     /// Set to 0 or 1 to commit the write batch on every command.
     pub writer_batch_commit_count: usize,
+
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
