@@ -96,13 +96,13 @@ impl RocksDbManager {
 
         // Create our own storage thread pools
         let high_pri_pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("rs:storage-hi-{}", i))
+            .thread_name(|i| format!("rs:io-hi-{}", i))
             .num_threads(opts.storage_high_priority_bg_threads().into())
             .build()
             .expect("storage high priority thread pool to be created");
 
         let low_pri_pool = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("rs:storage-lo-{}", i))
+            .thread_name(|i| format!("rs:io-lo-{}", i))
             .num_threads(opts.storage_low_priority_bg_threads().into())
             .build()
             .expect("storage low priority thread pool to be created");
