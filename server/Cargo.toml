@@ -16,6 +16,9 @@ console = [
     "tokio/tracing",
     "restate-tracing-instrumentation/console-subscriber",
 ]
+io-uring = [
+    "rocksdb/io-uring"
+]
 options_schema = [
     "dep:schemars",
     "restate-core/options_schema",
@@ -48,6 +51,7 @@ notify = { version = "6.0.1" }
 notify-debouncer-mini = { version = "0.4.1" }
 pin-project = { workspace = true }
 rlimit = { workspace = true }
+rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }

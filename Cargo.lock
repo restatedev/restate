@@ -3664,6 +3664,7 @@ dependencies = [
  "libc",
  "libz-sys",
  "lz4-sys",
+ "pkg-config",
  "zstd-sys",
 ]
 
@@ -6057,6 +6058,7 @@ dependencies = [
  "restate-types",
  "restate-worker",
  "rlimit",
+ "rocksdb",
  "schemars",
  "serde",
  "serde_with",
