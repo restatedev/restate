@@ -13,11 +13,13 @@ mod service_protocol_runner;
 use super::Notification;
 
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
+use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
 use futures::{future, stream, FutureExt, StreamExt};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::{HeaderName, HeaderValue};
 use hyper::{http, Body, Response};
+use metrics::histogram;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
     StateReader,
@@ -40,7 +42,7 @@ use std::iter;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -343,6 +345,7 @@ where
     /// Loop opening the request to deployment and consuming the stream
     #[instrument(level = "debug", name = "invoker_invocation_task", fields(rpc.system = "restate", rpc.service = %self.invocation_target.service_name(), restate.invocation.id = %self.invocation_id, restate.invocation.target = %self.invocation_target), skip_all)]
     pub async fn run(mut self, input_journal: InvokeInputJournal) {
+        let start = Instant::now();
         // Execute the task
         let terminal_state = self.select_protocol_version_and_run(input_journal).await;
 
@@ -357,6 +360,7 @@ where
         };
 
         self.send_invoker_tx(inner);
+        histogram!(INVOKER_TASK_DURATION).record(start.elapsed());
     }
 
     async fn select_protocol_version_and_run(
