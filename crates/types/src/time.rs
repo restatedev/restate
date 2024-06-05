@@ -36,6 +36,11 @@ impl MillisSinceEpoch {
     pub fn as_u64(&self) -> u64 {
         self.0
     }
+
+    pub fn elapsed(&self) -> Duration {
+        let now = Self::now();
+        Duration::from_millis(now.0 - self.0)
+    }
 }
 
 impl From<u64> for MillisSinceEpoch {
