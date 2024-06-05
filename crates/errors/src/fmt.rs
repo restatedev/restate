@@ -97,11 +97,9 @@ impl RestateCode {
 
 #[cfg(not(feature = "include_doc"))]
 impl RestateCode {
-    fn fmt_alternate(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            None => write!(f, "No error description"),
-            Some(code) => write!(f, "{}", code.code()),
-        }
+    fn fmt_alternate(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The error code is already included in the error message
+        Ok(())
     }
 }
 

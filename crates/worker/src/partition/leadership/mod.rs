@@ -478,10 +478,14 @@ where
                 let networking = networking.clone();
                 async move {
                     if let Err(e) = networking.send(target_node.into(), &ingress_message).await {
+                        let invocation_id_str = invocation_id
+                            .as_ref()
+                            .map(|i| i.to_string())
+                            .unwrap_or_default();
                         warn!(
                             ?e,
-                            ingress_node_id = ?target_node,
-                            restate.invocation.id = ?invocation_id,
+                            ingress.node_id = %target_node,
+                            restate.invocation.id = %invocation_id_str,
                             "Failed to send ingress message, will drop the message on the floor"
                         );
                     }
@@ -491,8 +495,12 @@ where
         );
 
         if maybe_task.is_err() {
+            let invocation_id_str = invocation_id
+                .as_ref()
+                .map(|i| i.to_string())
+                .unwrap_or_default();
             trace!(
-                restate.invocation.id = ?invocation_id,
+                restate.invocation.id = %invocation_id_str,
                 "Partition processor is shutting down, we are not sending the message to ingress",
             );
         }

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use codederror::CodedError;
 use tokio::time::Instant;
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::{spawn_metadata_manager, MetadataManager};
@@ -104,7 +104,7 @@ impl Node {
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
-            info!("allow-bootstrap is set to `true`, bootstrapping is allowed!");
+            debug!("allow-bootstrap is set to `true`, bootstrapping is allowed!");
             if !config.has_role(Role::Admin) {
                 return Err(BuildError::Bootstrap(format!(
                     "Node must include the 'admin' role when starting in bootstrap mode. Currently it has roles {}", config.roles()

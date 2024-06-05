@@ -18,7 +18,6 @@ use std::time::Duration;
 use clap::Parser;
 use codederror::CodedError;
 use tokio::io;
-use tracing::debug;
 use tracing::error;
 use tracing::{info, trace, warn};
 
@@ -152,8 +151,13 @@ fn main() {
             "{}",
             render_restate_logo(!config.common.log_disable_ansi_codes)
         );
-        let _ = writeln!(&mut stdout, "            Restate");
-        let _ = writeln!(&mut stdout, "       https://restate.dev/");
+        let _ = writeln!(
+            &mut stdout,
+            "{:^40}",
+            format!("Restate {}", build_info::RESTATE_SERVER_VERSION)
+        );
+        let _ = writeln!(&mut stdout, "{:^40}", "https://restate.dev/");
+        let _ = writeln!(&mut stdout);
     }
 
     // Setting initial configuration as global current
@@ -182,23 +186,17 @@ fn main() {
                 prev_hook(panic_info);
             }));
 
+            let config_source = if let Some(config_file) = cli_args.config_file {
+                config_file.display().to_string()
+            } else {
+                "[default]".to_owned()
+            };
             info!(
                 node_name = Configuration::pinned().node_name(),
+                config_source = %config_source,
+                base_dir = %restate_types::config::node_filepath("").display(),
                 "Starting Restate Server {}",
                 build_info::build_info()
-            );
-            if cli_args.config_file.is_some() {
-                info!(
-                    config_file = %cli_args.config_file.as_ref().unwrap().display(),
-                    "Loaded configuration file",
-                );
-            } else {
-                info!("Loaded default configuration");
-            }
-
-            debug!(
-                "Configuration dump (MAY CONTAIN SENSITIVE DATA!):\n{}",
-                Configuration::pinned().dump().unwrap()
             );
 
             // Initialize rocksdb manager
@@ -239,7 +237,6 @@ fn main() {
             while !shutdown {
                 tokio::select! {
                     signal_name = signal::shutdown() => {
-                        info!("Received shutdown signal.");
                         shutdown = true;
                         let signal_reason = format!("received signal {}", signal_name);
 
@@ -286,8 +283,6 @@ fn main() {
     let exit_code = tc.exit_code();
     if exit_code != 0 {
         error!("Restate terminated with exit code {}!", exit_code);
-    } else {
-        info!("Restate terminated");
     }
     // The process terminates with the task center requested exit code
     std::process::exit(exit_code);
