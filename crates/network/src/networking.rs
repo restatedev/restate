@@ -56,7 +56,7 @@ impl Networking {
 }
 
 impl NetworkSender for Networking {
-    #[instrument(level = "debug", skip(self, message), fields(message = ?message.target()))]
+    #[instrument(level = "info", skip(self, to, message), fields(to = %to, msg = ?message.target()))]
     async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
     where
         M: WireEncode + Targeted + Send + Sync,

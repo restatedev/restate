@@ -31,7 +31,7 @@ options_schema = [
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
-restate-errors = { workspace = true, features = ["include_doc"] }
+restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }

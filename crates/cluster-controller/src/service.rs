@@ -105,8 +105,10 @@ where
     }
 
     fn create_heartbeat_interval(options: &AdminOptions) -> Interval {
-        let mut heartbeat_interval =
-            time::interval_at(Instant::now(), options.heartbeat_interval.into());
+        let mut heartbeat_interval = time::interval_at(
+            Instant::now() + options.heartbeat_interval.into(),
+            options.heartbeat_interval.into(),
+        );
         heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         heartbeat_interval
