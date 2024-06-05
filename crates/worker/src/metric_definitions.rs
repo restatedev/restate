@@ -19,10 +19,14 @@ pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_cre
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
 
-pub const NUM_PARTITIONS: &str = "restate.partitions_configured";
-pub const PARTITION_STATUS: &str = "restate.partition.status";
-// labels for PARTITION_STATUS
-pub const EFFECTIVE_LEADERSHIP: &str = "effective_leadership";
+pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
+pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
+    "restate.partition.time_since_last_status_update";
+pub const PARTITION_TIME_SINCE_LAST_RECORD: &str = "restate.partition.time_since_last_record";
+pub const PARTITION_LAST_APPLIED_LOG_LSN: &str = "restate.partition.last_applied_lsn";
+pub const PARTITION_LAST_PERSISTED_LOG_LSN: &str = "restate.partition.last_persisted_lsn";
+pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
+pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
 pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
 pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
@@ -80,13 +84,44 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_gauge!(
-        NUM_PARTITIONS,
+        NUM_ACTIVE_PARTITIONS,
         Unit::Count,
-        "Number of partitions planned to run on this node"
+        "Number of partitions started by partition processor manager on this node"
     );
+
     describe_gauge!(
-        PARTITION_STATUS,
+        PARTITION_IS_EFFECTIVE_LEADER,
         Unit::Count,
-        "Number of partitions in various states"
+        "Set to 1 if the partition is an effective leader"
+    );
+
+    describe_gauge!(
+        PARTITION_IS_ACTIVE,
+        Unit::Count,
+        "Set to 1 if the partition is an active replay (not catching up or starting)"
+    );
+
+    describe_gauge!(
+        PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+        Unit::Seconds,
+        "Number of seconds since the last partition status update"
+    );
+
+    describe_gauge!(
+        PARTITION_LAST_APPLIED_LOG_LSN,
+        Unit::Count,
+        "Raw value of the last applied log LSN"
+    );
+
+    describe_gauge!(
+        PARTITION_LAST_PERSISTED_LOG_LSN,
+        Unit::Count,
+        "Raw value of the LSN that can be trimmed"
+    );
+
+    describe_gauge!(
+        PARTITION_TIME_SINCE_LAST_RECORD,
+        Unit::Seconds,
+        "Number of seconds since the last record was applied"
     );
 }
