@@ -146,7 +146,7 @@ impl PartitionProcessorManager {
                 .ok_or(AttachError::NoClusterController)?
                 .current_generation;
 
-            info!(
+            debug!(
                 "Attempting to attach to cluster controller '{}'",
                 admin_node
             );
@@ -155,7 +155,7 @@ impl PartitionProcessorManager {
                 // controller time to start up. This is only done to reduce the chances of observing
                 // connection errors in log. Such logs are benign since we retry, but it's still not nice
                 // to print, specially in a single-node setup.
-                info!( "This node is the cluster controller, giving cluster controller service 500ms to start");
+                trace!("This node is the cluster controller, giving cluster controller service time to start");
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
 

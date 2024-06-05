@@ -20,7 +20,7 @@ use restate_node_protocol::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
-use tracing::{debug, info, warn, Instrument, Span};
+use tracing::{debug, info, trace, warn, Instrument, Span};
 
 use restate_core::metadata;
 use restate_core::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
@@ -258,7 +258,7 @@ impl ConnectionManager {
             .address
             .clone();
 
-        info!("Attempting to connect to node {} at {}", node_id, address);
+        trace!("Attempting to connect to node {} at {}", node_id, address);
         // Do we have a channel in cache for this address?
         let channel = {
             let mut guard = self.inner.lock().unwrap();
@@ -416,7 +416,7 @@ impl ConnectionManager {
             None,
             run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
         )?;
-        info!(
+        debug!(
             peer_node_id = %peer_node_id,
             task_id = %task_id,
             "Incoming connection accepted from node {}", peer_node_id);
@@ -543,7 +543,7 @@ where
     drop(connection);
 
     let drain_start = std::time::Instant::now();
-    info!("Draining connection");
+    trace!("Draining connection");
     let mut drain_counter = 0;
     // Draining of incoming queue
     while let Some(Ok(msg)) = incoming.next().await {
@@ -569,7 +569,7 @@ where
     on_connection_terminated(&connection_manager);
     ONGOING_DRAIN.decrement(1.0);
     CONNECTION_DROPPED.increment(1);
-    info!(
+    debug!(
         "Connection terminated, drained {} messages in {:?}, total connection age is {:?}",
         drain_counter,
         drain_start.elapsed(),

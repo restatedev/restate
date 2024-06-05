@@ -18,3 +18,6 @@ mod ui;
 
 pub use app::CliApp;
 pub(crate) use ui::console;
+
+pub static EXIT_HANDLER: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =
+    std::sync::Mutex::new(None);

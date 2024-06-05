@@ -15,7 +15,7 @@ use enum_map::Enum;
 use restate_core::cancellation_watcher;
 use restate_types::logs::metadata::ProviderKind;
 use tokio::task::JoinSet;
-use tracing::{debug, info, warn};
+use tracing::{debug, trace, warn};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::LogletProvider;
@@ -64,7 +64,7 @@ impl Watchdog {
     pub async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
-        debug!("Bifrost watchdog started");
+        trace!("Bifrost watchdog started");
 
         loop {
             tokio::select! {
@@ -83,11 +83,11 @@ impl Watchdog {
 
     async fn shutdown(mut self) {
         let shutdown_timeout = Duration::from_secs(5);
-        debug!("Bifrost watchdog shutdown started");
+        trace!("Bifrost watchdog shutdown started");
         // Stop accepting new commands
         self.inner.set_shutdown();
         self.inbound.close();
-        debug!("Draining bifrost tasks");
+        trace!("Draining bifrost tasks");
 
         // Consume buffered commands
         let mut i = 0;
@@ -95,16 +95,16 @@ impl Watchdog {
             i += 1;
             self.handle_command(cmd)
         }
-        debug!("Bifrost drained {i} commands due to an on-going shutdown");
+        trace!("Bifrost drained {i} commands due to an on-going shutdown");
         // Ask all tasks to shutdown
         // Stop all live providers.
-        info!("Shutting down live bifrost providers");
+        trace!("Shutting down live bifrost providers");
         let mut providers = JoinSet::new();
         for provider in self.live_providers {
             providers.spawn(async move { provider.shutdown().await });
         }
 
-        info!(
+        debug!(
             "Waiting {:?} for bifrost providers to shutdown cleanly...",
             shutdown_timeout
         );
@@ -124,7 +124,7 @@ impl Watchdog {
             );
             providers.shutdown().await;
         }
-        info!("Bifrost watchdog shutdown complete");
+        debug!("Bifrost watchdog shutdown complete");
     }
 }
 
