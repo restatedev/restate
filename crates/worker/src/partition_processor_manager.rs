@@ -16,12 +16,14 @@ use anyhow::Context;
 use futures::future::OptionFuture;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
+use metrics::gauge;
 use restate_core::network::NetworkSender;
 use restate_core::TaskCenter;
 use restate_network::rpc_router::{RpcError, RpcRouter};
 use restate_node_protocol::partition_processor_manager::GetProcessorsState;
 use restate_node_protocol::partition_processor_manager::ProcessorsStateResponse;
 use restate_node_protocol::RpcMessage;
+use restate_types::processors::ReplayStatus;
 use restate_types::processors::{PartitionProcessorStatus, RunMode};
 use tokio::sync::{mpsc, watch};
 use tokio::time;
@@ -53,6 +55,14 @@ use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command as WalCommand, Destination, Envelope, Header, Source};
 
+use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
+use crate::metric_definitions::PARTITION_IS_ACTIVE;
+use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
+use crate::metric_definitions::PARTITION_LABEL;
+use crate::metric_definitions::PARTITION_LAST_APPLIED_LOG_LSN;
+use crate::metric_definitions::PARTITION_LAST_PERSISTED_LOG_LSN;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_RECORD;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::PartitionProcessorControlCommand;
@@ -234,6 +244,44 @@ impl PartitionProcessorManager {
             .iter()
             .map(|(partition_id, state)| {
                 let mut status = state.watch_rx.borrow().clone();
+                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+                    PARTITION_LABEL => partition_id.to_string())
+                .set(status.updated_at.elapsed());
+
+                gauge!(PARTITION_IS_EFFECTIVE_LEADER,
+                    PARTITION_LABEL => partition_id.to_string())
+                .set(if status.is_effective_leader() {
+                    1.0
+                } else {
+                    0.0
+                });
+
+                gauge!(PARTITION_IS_ACTIVE,
+                    PARTITION_LABEL => partition_id.to_string())
+                .set(if status.replay_status == ReplayStatus::Active {
+                    1.0
+                } else {
+                    0.0
+                });
+
+                if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
+                    gauge!(PARTITION_LAST_APPLIED_LOG_LSN,
+                    PARTITION_LABEL => partition_id.to_string())
+                    .set(last_applied_log_lsn.as_u64() as f64);
+                }
+
+                if let Some(last_persisted_log_lsn) = status.last_persisted_log_lsn {
+                    gauge!(PARTITION_LAST_PERSISTED_LOG_LSN,
+                    PARTITION_LABEL => partition_id.to_string())
+                    .set(last_persisted_log_lsn.as_u64() as f64);
+                }
+
+                if let Some(last_record_applied_at) = status.last_record_applied_at {
+                    gauge!(PARTITION_TIME_SINCE_LAST_RECORD,
+                    PARTITION_LABEL => partition_id.to_string())
+                    .set(last_record_applied_at.elapsed());
+                }
+
                 status.last_persisted_log_lsn = persisted_lsns
                     .as_ref()
                     .and_then(|lsns| lsns.get(partition_id).cloned());
@@ -307,6 +355,8 @@ impl PartitionProcessorManager {
                 }
             }
         }
+
+        gauge!(NUM_ACTIVE_PARTITIONS).set(self.running_partition_processors.len() as f64);
         Ok(())
     }
 
