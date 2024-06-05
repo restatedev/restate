@@ -71,6 +71,10 @@ impl Lsn {
     pub const fn new(lsn: u64) -> Self {
         Lsn(lsn)
     }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
 }
 
 impl SequenceNumber for Lsn {

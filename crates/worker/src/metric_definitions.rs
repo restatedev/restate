@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
@@ -18,6 +18,15 @@ pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handl
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
+
+pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
+pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
+    "restate.partition.time_since_last_status_update";
+pub const PARTITION_TIME_SINCE_LAST_RECORD: &str = "restate.partition.time_since_last_record";
+pub const PARTITION_LAST_APPLIED_LOG_LSN: &str = "restate.partition.last_applied_lsn";
+pub const PARTITION_LAST_PERSISTED_LOG_LSN: &str = "restate.partition.last_persisted_lsn";
+pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
+pub const PARTITION_IS_ACTIVE: &str = "restate.partition.is_active";
 
 pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
 pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
@@ -72,5 +81,47 @@ pub(crate) fn describe_metrics() {
         PARTITION_HANDLE_INVOKER_EFFECT_COMMAND,
         Unit::Seconds,
         "Time spent handling an invoker effect command"
+    );
+
+    describe_gauge!(
+        NUM_ACTIVE_PARTITIONS,
+        Unit::Count,
+        "Number of partitions started by partition processor manager on this node"
+    );
+
+    describe_gauge!(
+        PARTITION_IS_EFFECTIVE_LEADER,
+        Unit::Count,
+        "Set to 1 if the partition is an effective leader"
+    );
+
+    describe_gauge!(
+        PARTITION_IS_ACTIVE,
+        Unit::Count,
+        "Set to 1 if the partition is an active replay (not catching up or starting)"
+    );
+
+    describe_gauge!(
+        PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
+        Unit::Seconds,
+        "Number of seconds since the last partition status update"
+    );
+
+    describe_gauge!(
+        PARTITION_LAST_APPLIED_LOG_LSN,
+        Unit::Count,
+        "Raw value of the last applied log LSN"
+    );
+
+    describe_gauge!(
+        PARTITION_LAST_PERSISTED_LOG_LSN,
+        Unit::Count,
+        "Raw value of the LSN that can be trimmed"
+    );
+
+    describe_gauge!(
+        PARTITION_TIME_SINCE_LAST_RECORD,
+        Unit::Seconds,
+        "Number of seconds since the last record was applied"
     );
 }

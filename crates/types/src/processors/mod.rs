@@ -43,6 +43,12 @@ pub struct PartitionProcessorStatus {
 }
 
 impl PartitionProcessorStatus {
+    pub fn is_effective_leader(&self) -> bool {
+        self.effective_mode
+            .map(|m| m == RunMode::Leader)
+            .unwrap_or(false)
+    }
+
     pub fn new(planned_mode: RunMode) -> Self {
         Self {
             updated_at: MillisSinceEpoch::now(),
