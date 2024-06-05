@@ -16,6 +16,7 @@ use anyhow::Context;
 use futures::future::OptionFuture;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
+use metrics::gauge;
 use restate_core::network::NetworkSender;
 use restate_core::TaskCenter;
 use restate_network::rpc_router::{RpcError, RpcRouter};
@@ -53,6 +54,10 @@ use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command as WalCommand, Destination, Envelope, Header, Source};
 
+use crate::metric_definitions::EFFECTIVE_LEADERSHIP;
+use crate::metric_definitions::NUM_PARTITIONS;
+use crate::metric_definitions::PARTITION_LABEL;
+use crate::metric_definitions::PARTITION_STATUS;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::PartitionProcessorControlCommand;
@@ -234,6 +239,15 @@ impl PartitionProcessorManager {
             .iter()
             .map(|(partition_id, state)| {
                 let mut status = state.watch_rx.borrow().clone();
+                let is_leader = if status.is_effective_leader() {
+                    "leader"
+                } else {
+                    "follower"
+                };
+                gauge!(PARTITION_STATUS,
+                    PARTITION_LABEL => partition_id.to_string(),
+                    EFFECTIVE_LEADERSHIP => is_leader)
+                .set(1.0);
                 status.last_persisted_log_lsn = persisted_lsns
                     .as_ref()
                     .and_then(|lsns| lsns.get(partition_id).cloned());
@@ -307,6 +321,8 @@ impl PartitionProcessorManager {
                 }
             }
         }
+
+        gauge!(NUM_PARTITIONS).set(self.running_partition_processors.len() as f64);
         Ok(())
     }
 

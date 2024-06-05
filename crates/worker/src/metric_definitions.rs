@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{describe_counter, describe_histogram, Unit};
+use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
@@ -18,6 +18,11 @@ pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handl
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
+
+pub const NUM_PARTITIONS: &str = "restate.partitions_configured";
+pub const PARTITION_STATUS: &str = "restate.partition.status";
+// labels for PARTITION_STATUS
+pub const EFFECTIVE_LEADERSHIP: &str = "effective_leadership";
 
 pub const PP_APPLY_RECORD_DURATION: &str = "restate.partition.apply_record_duration.seconds";
 pub const PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION: &str =
@@ -72,5 +77,16 @@ pub(crate) fn describe_metrics() {
         PARTITION_HANDLE_INVOKER_EFFECT_COMMAND,
         Unit::Seconds,
         "Time spent handling an invoker effect command"
+    );
+
+    describe_gauge!(
+        NUM_PARTITIONS,
+        Unit::Count,
+        "Number of partitions planned to run on this node"
+    );
+    describe_gauge!(
+        PARTITION_STATUS,
+        Unit::Count,
+        "Number of partitions in various states"
     );
 }
