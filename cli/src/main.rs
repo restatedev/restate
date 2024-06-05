@@ -17,20 +17,24 @@ use restate_cli::CliApp;
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ClingFinished<CliApp> {
     let _ = ctrlc::set_handler(move || {
-        // Showning cursor again if it was hidden by dialoguer.
-        let mut stdout = std::io::stdout();
-        let _ = execute!(
-            stdout,
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::cursor::Show,
-            crossterm::style::ResetColor
-        );
+        if let Some(exit) = restate_cli::EXIT_HANDLER.lock().unwrap().as_ref() {
+            (exit)()
+        } else {
+            // Showing cursor again if it was hidden by dialoguer.
+            let mut stdout = std::io::stdout();
+            let _ = execute!(
+                stdout,
+                crossterm::terminal::LeaveAlternateScreen,
+                crossterm::cursor::Show,
+                crossterm::style::ResetColor
+            );
 
-        let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr);
-        let _ = writeln!(stderr, "Ctrl-C pressed, aborting...");
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr);
+            let _ = writeln!(stderr, "Ctrl-C pressed, aborting...");
 
-        std::process::exit(1);
+            std::process::exit(1);
+        }
     });
 
     Cling::parse_and_run().await

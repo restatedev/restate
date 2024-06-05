@@ -21,11 +21,14 @@ restate-service-protocol = { workspace = true, features = ["awakeable-id"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.6.6" }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
+base62 = { version = "2.0.2" }
 base64 = { workspace = true }
+bs58 = { version = "0.5.0" }
 chrono = { workspace = true }
 chrono-humanize = { version = "0.2.3" }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
@@ -41,13 +44,19 @@ dotenvy = "0.15"
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 http = { workspace = true }
+http-body = "0.4.6"
+hyper = { workspace = true, features = ["server", "http2"] }
+hyper-rustls = { version = "0.24.1", features = ["http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http2", "server", "client", "tokio"] }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
+jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.32.0", features = ["stream"] }
 once_cell = { workspace = true }
 open = "5.1.2"
 reqwest = { version = "0.11.22", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = { version = "0.17.8" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
@@ -55,7 +64,9 @@ termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
+tokio-util = { workspace = true }
 toml_edit = "0.22.12"
+tower = { workspace = true }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }

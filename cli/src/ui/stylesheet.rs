@@ -16,6 +16,10 @@ pub const SUCCESS_ICON: Icon = Icon("✅", "[OK]:");
 pub const ERR_ICON: Icon = Icon("❌", "[ERR]:");
 pub const WARN_ICON: Icon = Icon("⚠️", "[WARNING]:");
 pub const TIP_ICON: Icon = Icon("💡", "[TIP]:");
+pub const HOME_ICON: Icon = Icon("🏠", "[HOME]:");
+pub const HANDSHAKE_ICON: Icon = Icon("🤝", "[HANDSHAKE]:");
+pub const GLOBE_ICON: Icon = Icon("🌎", "[GLOBE]:");
+pub const LOCK_ICON: Icon = Icon("🔒", "[LOCK]:");
 
 #[derive(Copy, Clone)]
 pub enum Style {
