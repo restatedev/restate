@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use remote::RemotePort;
 
@@ -144,6 +144,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     let mut rerender = tokio::time::interval(Duration::from_millis(100));
 
     let res = {
+        let local_fut = local_fut.fuse();
         tokio::pin!(local_fut);
         let mut remote_futs = remote_futs;
 
