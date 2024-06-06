@@ -32,7 +32,7 @@ use restate_storage_api::Result as StorageResult;
 use restate_types::errors::{
     InvocationError, InvocationErrorCode, ALREADY_COMPLETED_INVOCATION_ERROR,
     ATTACH_NOT_SUPPORTED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
-    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionKey, ServiceId,
@@ -328,27 +328,38 @@ where
             // If locked, then we check the original invocation
             if let VirtualObjectStatus::Locked(original_invocation_id) = service_status {
                 if let Some(response_sink) = service_invocation.response_sink {
-                    let invocation_status =
-                        state.get_invocation_status(&original_invocation_id).await?;
+                    // --- ATTACH business logic below, this is currently disabled due to the pending discussion about equality check.
+                    //     We instead simply fail the invocation with CONFLICT status code
+                    //
+                    // let invocation_status =
+                    //     state.get_invocation_status(&original_invocation_id).await?;
+                    //
+                    // match invocation_status {
+                    //     InvocationStatus::Completed(
+                    //         CompletedInvocation { response_result, .. }) => {
+                    //         self.send_response_to_sinks(
+                    //             effects,
+                    //             iter::once(response_sink),
+                    //             response_result,
+                    //             Some(service_invocation.invocation_id),
+                    //             Some(&service_invocation.invocation_target),
+                    //         );
+                    //     }
+                    //     InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
+                    //     is => effects.append_response_sink(
+                    //         original_invocation_id,
+                    //         is,
+                    //         response_sink
+                    //     )
+                    // }
 
-                    match invocation_status {
-                        InvocationStatus::Completed(
-                            CompletedInvocation { response_result, .. }) => {
-                            self.send_response_to_sinks(
-                                effects,
-                                iter::once(response_sink),
-                                response_result,
-                                Some(service_invocation.invocation_id),
-                                Some(&service_invocation.invocation_target),
-                            );
-                        }
-                        InvocationStatus::Free => panic!("Unexpected state, the InvocationStatus cannot be Free for invocation {} given it's in locked status", original_invocation_id),
-                        is => effects.append_response_sink(
-                            original_invocation_id,
-                            is,
-                            response_sink
-                        )
-                    }
+                    self.send_response_to_sinks(
+                        effects,
+                        iter::once(response_sink),
+                        ResponseResult::Failure(WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR),
+                        Some(original_invocation_id),
+                        Some(&service_invocation.invocation_target),
+                    );
                 }
 
                 Self::send_submit_notification_if_needed(
