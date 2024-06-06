@@ -86,6 +86,7 @@ pub mod codes {
 pub struct InvocationError {
     code: InvocationErrorCode,
     message: Cow<'static, str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<Cow<'static, str>>,
 }
 
@@ -213,6 +214,9 @@ pub const ATTACH_NOT_SUPPORTED_INVOCATION_ERROR: InvocationError =
 
 pub const ALREADY_COMPLETED_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::CONFLICT, "promise was already completed");
+
+pub const WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::CONFLICT, "the workflow method was already invoked");
 
 /// Error parsing/decoding a resource ID.
 #[derive(Debug, thiserror::Error, Clone, Eq, PartialEq)]
