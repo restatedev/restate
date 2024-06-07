@@ -53,47 +53,25 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
     }
 
     async fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) {
-        let key = InboxKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone())
-            .sequence_number(sequence_number);
-
-        self.delete_key(&key);
+        delete_inbox_entry(self, service_id, sequence_number);
     }
 
     async fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
-        let key = InboxKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
-
-        self.get_first_blocking(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
-            |kv| match kv {
-                Some((k, v)) => {
-                    let entry = decode_inbox_key_value(k, v)?;
-                    Ok(Some(entry))
-                }
-                None => Ok(None),
-            },
-        )
+        peek_inbox(self, service_id)
     }
 
     async fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
     ) -> Result<Option<SequenceNumberInboxEntry>> {
-        // safe since delete_inbox_entry is not really async.
         let _x = RocksDbPerfGuard::new("pop-inbox");
-        let result = self.peek_inbox(service_id).await;
+        let result = peek_inbox(self, service_id);
 
-        if let Ok(Some(inbox_entry)) = &result {
-            self.delete_inbox_entry(service_id, inbox_entry.inbox_sequence_number)
-                .await
+        if let Ok(Some(ref inbox_entry)) = result {
+            delete_inbox_entry(self, service_id, inbox_entry.inbox_sequence_number)
         }
 
         result
@@ -116,6 +94,37 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
             },
         ))
     }
+}
+
+fn peek_inbox(
+    txn: &mut RocksDBTransaction,
+    service_id: &ServiceId,
+) -> Result<Option<SequenceNumberInboxEntry>> {
+    let key = InboxKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    txn.get_first_blocking(
+        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+        |kv| match kv {
+            Some((k, v)) => {
+                let entry = decode_inbox_key_value(k, v)?;
+                Ok(Some(entry))
+            }
+            None => Ok(None),
+        },
+    )
+}
+
+fn delete_inbox_entry(txn: &mut RocksDBTransaction, service_id: &ServiceId, sequence_number: u64) {
+    let key = InboxKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone())
+        .sequence_number(sequence_number);
+
+    txn.delete_key(&key);
 }
 
 fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {

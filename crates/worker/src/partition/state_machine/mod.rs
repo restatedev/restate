@@ -1617,6 +1617,7 @@ mod tests {
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
+        use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
         use restate_types::invocation::{
             AttachInvocationRequest, InvocationQuery, InvocationTarget,
         };
@@ -1684,10 +1685,25 @@ mod tests {
                 .await;
             assert_that!(
                 actions,
-                not(contains(pat!(Action::Invoke {
-                    invocation_id: eq(invocation_id),
-                    invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
-                })))
+                all!(
+                    not(contains(pat!(Action::Invoke {
+                        invocation_id: eq(invocation_id),
+                        invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+                    }))),
+                    // We get back this error due to the fact that we disabled the attach semantics
+                    contains(pat!(Action::IngressResponse(pat!(
+                        IngressResponseEnvelope {
+                            target_node: eq(node_id),
+                            inner: pat!(ingress::InvocationResponse {
+                                request_id: eq(request_id_2),
+                                invocation_id: some(eq(invocation_id)),
+                                response: eq(IngressResponseResult::Failure(
+                                    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+                                ))
+                            })
+                        }
+                    ))))
+                )
             );
 
             // Send output, then end
@@ -1727,7 +1743,8 @@ mod tests {
                             })
                         }
                     )))),
-                    contains(pat!(Action::IngressResponse(pat!(
+                    // This is a not() because we currently disabled the attach semantics on request/response
+                    not(contains(pat!(Action::IngressResponse(pat!(
                         IngressResponseEnvelope {
                             target_node: eq(node_id),
                             inner: pat!(ingress::InvocationResponse {
@@ -1739,7 +1756,7 @@ mod tests {
                                 ))
                             })
                         }
-                    )))),
+                    ))))),
                     contains(pat!(Action::ScheduleInvocationStatusCleanup {
                         invocation_id: eq(invocation_id)
                     }))
@@ -1760,7 +1777,7 @@ mod tests {
                 })))
             );
 
-            // Sending a new request will be completed immediately
+            // Sending a new request will not be completed because we don't support attach semantics
             let request_id_3 = IngressRequestId::default();
             let actions = state_machine
                 .apply(Command::Invoke(ServiceInvocation {
@@ -1779,11 +1796,10 @@ mod tests {
                     IngressResponseEnvelope {
                         target_node: eq(node_id),
                         inner: pat!(ingress::InvocationResponse {
-                            invocation_id: some(eq(invocation_id)),
                             request_id: eq(request_id_3),
-                            response: eq(IngressResponseResult::Success(
-                                invocation_target.clone(),
-                                response_bytes.clone()
+                            invocation_id: some(eq(invocation_id)),
+                            response: eq(IngressResponseResult::Failure(
+                                WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
                             ))
                         })
                     }
@@ -1919,16 +1935,16 @@ mod tests {
                 })))
             );
 
-            // Sending a new request will be completed immediately
+            // Sending another attach will be completed immediately
             let actions = state_machine
-                .apply(Command::Invoke(ServiceInvocation {
-                    invocation_id,
-                    invocation_target: invocation_target.clone(),
-                    response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                .apply(Command::AttachInvocation(AttachInvocationRequest {
+                    invocation_query: InvocationQuery::Workflow(
+                        invocation_target.as_keyed_service_id().unwrap(),
+                    ),
+                    response_sink: ServiceInvocationResponseSink::Ingress {
                         node_id,
                         request_id: request_id_3,
-                    }),
-                    ..ServiceInvocation::mock()
+                    },
                 }))
                 .await;
             assert_that!(

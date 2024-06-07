@@ -1,57 +1,43 @@
 # Releasing Restate
 
-Restate artifacts:
+Restate artifacts to release:
 
 * Runtime (this repo)
-* [SDK-Typescript](https://github.com/restatedev/sdk-typescript) and [Node template](https://github.com/restatedev/node-template-generator)
-* [Documentation](https://github.com/restatedev/documentation/) and [Tour of Restate - Typescript](https://github.com/restatedev/tour-of-restate-typescript)
+* [SDK-Typescript](https://github.com/restatedev/sdk-typescript/?tab=readme-ov-file#releasing-the-package) and [Node template](https://github.com/restatedev/node-template-generator)
+* [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
+* [Documentation](https://github.com/restatedev/documentation/)
 * [Examples](https://github.com/restatedev/examples)
-* [Service protocol](https://github.com/restatedev/service-protocol) (follows a different versioning scheme)
+* [Service protocol](https://github.com/restatedev/service-protocol)
+* [CDK](https://github.com/restatedev/cdk)
+* [Operator](https://github.com/restatedev/restate-operator)
+
+Check the respective documentation of the single artifacts to perform a release.
 
 ## Versioning policy
 
-In order to keep the versioning of our artifacts simple, we're currently following this release policy:
+We follow [SemVer](https://semver.org/):
 
-* We treat minor as major: every minor can break in a non-backward compatible way. E.g. 0.5.x doesn't have to be compatible with 0.4.x. Neverthless, we should clearly state it in the breaking changes section of the release notes.
-* We keep in sync minor releases between artifacts. E.g. when releasing runtime 0.5.0, we release also 0.5.0 for every SDK, documentation, examples and proto.
-* Patch releases of the same minor release must be compatible with each other. E.g. every SDK 0.5.x must be compatible with every runtime 0.5.x release, and viceversa.
+> Given a version number MAJOR.MINOR.PATCH, increment the:
 
-This release policy applies to all the aforementioned artifacts.
+> * MAJOR version when you make incompatible API changes
+> * MINOR version when you add functionality in a backward compatible manner
+> * PATCH version when you make backward compatible bug fixes
+
+Runtime and SDKs follow independent versioning. SDKs should declare their compatibility matrix with respective runtime versions.
 
 ## Pre-release
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
 https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 
-## Release order
-
-When performing a full release of all the artifacts, this order should be followed:
-
-1. [Runtime](#releasing-the-restate-runtime)
-1. [Java SDK](https://github.com/restatedev/sdk-java/blob/main/development/release.md)
-1. [Typescript SDK](https://github.com/restatedev/sdk-typescript#releasing-the-package) and [Node template generator](https://github.com/restatedev/node-template-generator#releasing)
-1. Execute a manual run of the [e2e tests](https://github.com/restatedev/e2e/actions/workflows/e2e.yaml) to check everything works fine.
-1. [CDK](https://github.com/restatedev/cdk) (might require a release if the server's API changed)
-1. [Operator](https://github.com/restatedev/restate-operator) (might require a release if the server's API changed)
-1. [Examples](https://github.com/restatedev/examples#releasing-for-restate-developers)
-1. [Documentation](https://github.com/restatedev/documentation#releasing-the-documentation)
-
-## Post release
-
-1. Update the sdk-java version the e2e tests is using to the new snapshot: https://github.com/restatedev/e2e/blob/main/gradle/libs.versions.toml
-
 ## Releasing the Restate runtime
 
-In order to release the Restate runtime, you first have to make sure that the version field in the [Cargo.toml](/Cargo.toml) and [Chart.yaml](/charts/restate-helm/Chart.yaml) is set to the new release version `X.Y.Z`. 
-Then you have to create a tag of the form `vX.Y.Z` and push it to the repository.
-The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which does the following:
+1. Make sure that the version field in the [Cargo.toml](/Cargo.toml) and [Chart.yaml](/charts/restate-helm/Chart.yaml) is set to the new release version `X.Y.Z`. 
+1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
+1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
+1. In case you're creating a MAJOR or MINOR release, create the branch with the name `release-MAJOR.MINOR` as well.
+1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
 
-* Running the local tests
-* Creating and pushing the Docker image with the runtime
-* Creating a draft release
-
-In order to finish the release, you have to publish it [here](https://github.com/restatedev/restate/releases).
-
-Please also bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
+## Post-release
 
 If you are releasing a new major/minor version of the runtime, please also create a new release of the [documentation](https://github.com/restatedev/restate).

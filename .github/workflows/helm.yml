@@ -38,7 +38,7 @@ jobs:
         run: |
           grep -qF 'version: "${{ steps.version.outputs.VERSION }}"' charts/restate-helm/Chart.yaml
       - name: Push helm chart
-        uses: appany/helm-oci-chart-releaser@v0.4
+        uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: restate-helm
           repository: restatedev
