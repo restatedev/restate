@@ -59,7 +59,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 
     match accounts {
         Ok(accounts) if accounts.accounts.is_empty() => {
-            c_tip!("It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to make one.")
+            c_tip!("It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to create one.")
         }
         // ignore error at this point; login was still a success
         _ => {}
