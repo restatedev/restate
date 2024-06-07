@@ -222,13 +222,16 @@ fn list_profiles(doc: &DocumentMut) -> Result<Vec<String>> {
 }
 
 fn profile_input(profiles: &[String], environment_name: &str) -> Result<String> {
-    input(
-        &format!(
-            "Choose a friendly name for the Environment for use with the CLI.\n  Current names: [{}]\n",
+    let prompt: std::borrow::Cow<str> = if profiles.is_empty() {
+        "Choose a friendly name for the Environment for use with the CLI.".into()
+    } else {
+        format!(
+            "Choose a local friendly name for the Environment for use with the CLI.\n  Current local names: [{}]\n",
             profiles.join(", ")
-        ),
-        environment_name.into(),
-    )
+        ).into()
+    };
+
+    input(&prompt, environment_name.into())
 }
 
 fn write_environment(
