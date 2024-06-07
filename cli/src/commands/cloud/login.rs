@@ -10,7 +10,11 @@
 
 use std::net::SocketAddr;
 
-use crate::{build_info, c_println, c_success, cli_env::CliEnv};
+use crate::{
+    build_info, c_println, c_success, c_tip,
+    cli_env::CliEnv,
+    clients::cloud::{CloudClient, CloudClientInterface},
+};
 use anyhow::{anyhow, Context, Result};
 use axum::{extract, response::Html};
 use cling::prelude::*;
@@ -39,6 +43,12 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 
     write_access_token(&mut doc, &access_token)?;
 
+    let mut env = env;
+    env.config.cloud.credentials = Some(super::Credentials { access_token });
+
+    let client = CloudClient::new(&env)?;
+    let accounts = client.list_accounts().await?.into_body().await;
+
     // write out config
     env.write_config(&doc.to_string())
         .context("Failed to write to config file")?;
@@ -46,6 +56,14 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
         "Updated {} with Restate Cloud credentials",
         env.config_file.display()
     );
+
+    match accounts {
+        Ok(accounts) if accounts.accounts.is_empty() => {
+            c_tip!("It looks like you don't have an account yet.\nLog in to the UI at https://cloud.restate.dev to create one.")
+        }
+        // ignore error at this point; login was still a success
+        _ => {}
+    }
 
     Ok(())
 }
