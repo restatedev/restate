@@ -19,7 +19,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013};
 use restate_schema_api::deployment::ProtocolType;
-use restate_service_client::{Endpoint, Parts, Request, ServiceClient, ServiceClientError};
+use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::service_discovery::{
@@ -96,7 +96,10 @@ impl DiscoverEndpoint {
         )]);
         headers.extend(self.1.clone());
         let path = PathAndQuery::from_static(DISCOVER_PATH);
-        Request::new(Parts::new(self.0.clone(), path, headers), Body::empty())
+        Request::new(
+            Parts::new(Method::GET, self.0.clone(), path, headers),
+            Body::empty(),
+        )
     }
 }
 

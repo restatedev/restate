@@ -107,12 +107,11 @@ impl HttpClient {
         &self,
         uri: Uri,
         version: Version,
+        method: Method,
         body: Body,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
     ) -> impl Future<Output = Result<Response<Body>, HttpError>> + Send + 'static {
-        let method = Method::POST;
-
         let request = match Self::build_request(uri, version, body, method, path, headers) {
             Ok(request) => request,
             Err(err) => return future::ready(Err(err.into())).right_future(),

@@ -173,6 +173,7 @@ impl LambdaClient {
     pub fn invoke(
         &self,
         arn: LambdaARN,
+        method: Method,
         assume_role_arn: Option<ByteString>,
         body: Body,
         path: PathAndQuery,
@@ -189,7 +190,7 @@ impl LambdaClient {
 
             let payload = ApiGatewayProxyRequest {
                 path: Some(path.path().to_string()),
-                http_method: Method::POST,
+                http_method: method,
                 headers,
                 body: body?,
                 is_base64_encoded: true,
