@@ -29,10 +29,16 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// This map needs to be updated whenever we release a version that is no longer compatible with
 /// previous versions.
 static COMPATIBILITY_MAP: Lazy<BTreeMap<Version, CompatibilityInformation>> = Lazy::new(|| {
-    BTreeMap::from([(
-        Version::new(0, 9, 0),
-        CompatibilityInformation::new(Version::new(0, 9, 0)),
-    )])
+    BTreeMap::from([
+        (
+            Version::new(0, 9, 0),
+            CompatibilityInformation::new(Version::new(0, 9, 0)),
+        ),
+        (
+            Version::new(1, 0, 0),
+            CompatibilityInformation::new(Version::new(1, 0, 0)),
+        ),
+    ])
 });
 
 /// Compatibility information define the minimum supported Restate version that is compatible with
