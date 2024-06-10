@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt;
-use std::fmt::{Display, Formatter};
 use std::mem::size_of;
 use std::str::FromStr;
 
@@ -85,17 +84,6 @@ impl schemars::JsonSchema for DeploymentId {
 pub struct PinnedDeployment {
     pub deployment_id: DeploymentId,
     pub service_protocol_version: ServiceProtocolVersion,
-}
-
-impl Display for PinnedDeployment {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "id: {}, service protocol version: {}",
-            self.deployment_id,
-            self.service_protocol_version.as_repr()
-        )
-    }
 }
 
 impl PinnedDeployment {

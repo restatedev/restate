@@ -562,7 +562,7 @@ where
         {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
-                "Pinned deployment '{}'. Invocation state: {:?}",
+                "Pinned deployment '{:?}'. Invocation state: {:?}",
                 pinned_deployment,
                 ism.invocation_state_debug()
             );
