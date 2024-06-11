@@ -36,7 +36,8 @@ use restate_storage_api::Result as StorageResult;
 use restate_storage_api::StorageError;
 use restate_timer::TimerReader;
 use restate_types::identifiers::{
-    EntryIndex, IdempotencyId, InvocationId, PartitionId, PartitionKey, ServiceId, WithPartitionKey,
+    EntryIndex, IdempotencyId, InvocationId, JournalEntryId, PartitionId, PartitionKey, ServiceId,
+    WithPartitionKey,
 };
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -506,7 +507,7 @@ where
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = StorageResult<(Bytes, Bytes)>> + Send {
-        self.inner.get_all_user_states(service_id)
+        self.inner.get_all_user_states_for_service(service_id)
     }
 
     async fn store_state(
@@ -575,6 +576,13 @@ where
     ) -> impl Stream<Item = StorageResult<(EntryIndex, JournalEntry)>> + Send {
         self.inner.get_journal(invocation_id, journal_length)
     }
+
+    fn all_journals(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(JournalEntryId, JournalEntry)>> + Send {
+        self.inner.all_journals(range)
+    }
 }
 
 // Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
@@ -595,6 +603,13 @@ where
     ) -> impl Stream<Item = StorageResult<(InvocationId, InvocationTarget)>> + Send {
         self.inner.invoked_invocations(partition_key_range)
     }
+
+    fn all_invocation_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(InvocationId, InvocationStatus)>> + Send {
+        self.inner.all_invocation_statuses(range)
+    }
 }
 
 // Workaround until https://github.com/restatedev/restate/issues/276 is sorted out
@@ -611,7 +626,7 @@ where
     }
 
     fn all_idempotency_metadata(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
         self.inner.all_idempotency_metadata(range)
@@ -656,7 +671,7 @@ where
     }
 
     fn all_promises(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = StorageResult<OwnedPromiseRow>> + Send {
         self.inner.all_promises(range)
