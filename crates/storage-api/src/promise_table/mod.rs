@@ -54,7 +54,7 @@ pub trait ReadOnlyPromiseTable {
     ) -> impl Future<Output = Result<Option<Promise>>> + Send;
 
     fn all_promises(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<OwnedPromiseRow>> + Send;
 }

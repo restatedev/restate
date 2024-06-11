@@ -95,7 +95,7 @@ where
     ) -> Result<EagerState<Self::StateIter>, Self::Error> {
         let user_states = self
             .0
-            .get_all_user_states(service_id)
+            .get_all_user_states_for_service(service_id)
             .try_collect::<Vec<_>>()
             .await?;
 

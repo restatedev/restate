@@ -12,9 +12,8 @@ use crate::journal::schema::JournalBuilder;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
-use restate_partition_store::journal_table::OwnedJournalRow;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_types::identifiers::WithPartitionKey;
+use restate_types::identifiers::{JournalEntryId, WithInvocationId, WithPartitionKey};
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 
 use crate::table_util::format_using;
@@ -24,18 +23,19 @@ use restate_types::journal::{Entry, SleepEntry};
 pub(crate) fn append_journal_row(
     builder: &mut JournalBuilder,
     output: &mut String,
-    journal_row: OwnedJournalRow,
+    journal_entry_id: JournalEntryId,
+    journal_entry: JournalEntry,
 ) {
     let mut row = builder.row();
 
-    row.partition_key(journal_row.invocation_id.partition_key());
+    row.partition_key(journal_entry_id.partition_key());
     if row.is_id_defined() {
-        row.id(format_using(output, &journal_row.invocation_id));
+        row.id(format_using(output, &journal_entry_id.invocation_id()));
     }
 
-    row.index(journal_row.journal_index);
+    row.index(journal_entry_id.journal_index());
 
-    match journal_row.journal_entry {
+    match journal_entry {
         JournalEntry::Entry(entry) => {
             row.entry_type(format_using(output, &entry.header().as_entry_type()));
 

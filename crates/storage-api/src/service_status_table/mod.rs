@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use crate::{protobuf_storage_encode_decode, Result};
-use restate_types::identifiers::{InvocationId, ServiceId};
+use futures_util::Stream;
+use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
 use std::future::Future;
+use std::ops::RangeInclusive;
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum VirtualObjectStatus {
@@ -26,6 +28,11 @@ pub trait ReadOnlyVirtualObjectStatusTable {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<VirtualObjectStatus>> + Send;
+
+    fn all_virtual_object_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send;
 }
 
 pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {

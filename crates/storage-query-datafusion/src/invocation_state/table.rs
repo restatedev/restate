@@ -25,6 +25,7 @@ use crate::context::QueryContext;
 use crate::invocation_state::row::append_state_row;
 use crate::invocation_state::schema::StateBuilder;
 use crate::table_providers::{GenericTableProvider, Scan};
+use crate::table_util::Builder;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

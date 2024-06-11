@@ -249,6 +249,17 @@ impl ReadOnlyJournalTable for StateReaderMock {
                 }),
         )
     }
+
+    fn all_journals(
+        &self,
+        _range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = StorageResult<(JournalEntryId, JournalEntry)>> + Send {
+        unimplemented!();
+
+        // I need this for type inference to work
+        #[allow(unreachable_code)]
+        futures::stream::iter(vec![])
+    }
 }
 
 impl ReadOnlyIdempotencyTable for StateReaderMock {
@@ -260,7 +271,7 @@ impl ReadOnlyIdempotencyTable for StateReaderMock {
     }
 
     fn all_idempotency_metadata(
-        &mut self,
+        &self,
         _range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = StorageResult<(IdempotencyId, IdempotencyMetadata)>> + Send {
         unimplemented!();
@@ -281,7 +292,7 @@ impl ReadOnlyPromiseTable for StateReaderMock {
     }
 
     fn all_promises(
-        &mut self,
+        &self,
         _range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = StorageResult<OwnedPromiseRow>> + Send {
         unimplemented!();

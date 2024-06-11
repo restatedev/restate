@@ -12,13 +12,13 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use tokio::sync::mpsc::Sender;
+use futures::Stream;
 
-use restate_partition_store::service_status_table::OwnedVirtualObjectStatusRow;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_types::identifiers::PartitionKey;
+use restate_storage_api::service_status_table::{
+    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
+};
+use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::keyed_service_status::row::append_virtual_object_status_row;
@@ -46,41 +46,17 @@ pub(crate) fn register_self(
 struct VirtualObjectStatusScanner;
 
 impl ScanLocalPartition for VirtualObjectStatusScanner {
-    async fn scan_partition_store(
-        partition_store: PartitionStore,
-        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
-        range: RangeInclusive<PartitionKey>,
-        projection: SchemaRef,
-    ) {
-        let rows = partition_store.all_virtual_object_status(range);
-        for_each_status(projection, tx, rows).await;
-    }
-}
+    type Builder = KeyedServiceStatusBuilder;
+    type Item = (ServiceId, VirtualObjectStatus);
 
-async fn for_each_status<'a, I>(
-    schema: SchemaRef,
-    tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: I,
-) where
-    I: Iterator<Item = OwnedVirtualObjectStatusRow> + 'a,
-{
-    let mut builder = KeyedServiceStatusBuilder::new(schema.clone());
-    let mut temp = String::new();
-    for row in rows {
-        append_virtual_object_status_row(&mut builder, &mut temp, row);
-        if builder.full() {
-            let batch = builder.finish();
-            if tx.send(batch).await.is_err() {
-                // not sure what to do here?
-                // the other side has hung up on us.
-                // we probably don't want to panic, is it will cause the entire process to exit
-                return;
-            }
-            builder = KeyedServiceStatusBuilder::new(schema.clone());
-        }
+    fn scan_partition_store(
+        partition_store: &PartitionStore,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+        partition_store.all_virtual_object_statuses(range)
     }
-    if !builder.empty() {
-        let result = builder.finish();
-        let _ = tx.send(result).await;
+
+    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
+        append_virtual_object_status_row(row_builder, string_buffer, value.0, value.1)
     }
 }

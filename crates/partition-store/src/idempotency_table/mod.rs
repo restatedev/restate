@@ -60,7 +60,7 @@ fn get_idempotency_metadata<S: StorageAccess>(
 }
 
 fn all_idempotency_metadata<S: StorageAccess>(
-    storage: &mut S,
+    storage: &S,
     range: RangeInclusive<PartitionKey>,
 ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send + '_ {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(
@@ -105,7 +105,7 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
     }
 
     fn all_idempotency_metadata(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
         all_idempotency_metadata(self, range)
@@ -121,7 +121,7 @@ impl<'a> ReadOnlyIdempotencyTable for RocksDBTransaction<'a> {
     }
 
     fn all_idempotency_metadata(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send {
         all_idempotency_metadata(self, range)

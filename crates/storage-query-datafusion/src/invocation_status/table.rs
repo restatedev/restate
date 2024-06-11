@@ -12,13 +12,13 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use tokio::sync::mpsc::Sender;
+use futures::Stream;
 
-use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_types::identifiers::PartitionKey;
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadOnlyInvocationStatusTable,
+};
+use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_status::row::append_invocation_status_row;
@@ -46,41 +46,21 @@ pub(crate) fn register_self(
 struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
-    async fn scan_partition_store(
-        partition_store: PartitionStore,
-        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
-        range: RangeInclusive<PartitionKey>,
-        projection: SchemaRef,
-    ) {
-        let rows = partition_store.all_invocation_status(range);
-        for_each_status(projection, tx, rows).await;
-    }
-}
+    type Builder = InvocationStatusBuilder;
+    type Item = (InvocationId, InvocationStatus);
 
-async fn for_each_status<'a, I>(
-    schema: SchemaRef,
-    tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: I,
-) where
-    I: Iterator<Item = OwnedInvocationStatusRow> + 'a,
-{
-    let mut builder = InvocationStatusBuilder::new(schema.clone());
-    let mut temp = String::new();
-    for row in rows {
-        append_invocation_status_row(&mut builder, &mut temp, row);
-        if builder.full() {
-            let batch = builder.finish();
-            if tx.send(batch).await.is_err() {
-                // not sure what to do here?
-                // the other side has hung up on us.
-                // we probably don't want to panic, is it will cause the entire process to exit
-                return;
-            }
-            builder = InvocationStatusBuilder::new(schema.clone());
-        }
+    fn scan_partition_store(
+        partition_store: &PartitionStore,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+        partition_store.all_invocation_statuses(range)
     }
-    if !builder.empty() {
-        let result = builder.finish();
-        let _ = tx.send(result).await;
+
+    fn append_row(
+        row_builder: &mut Self::Builder,
+        string_buffer: &mut String,
+        (invocation_id, invocation_status): Self::Item,
+    ) {
+        append_invocation_status_row(row_builder, string_buffer, invocation_id, invocation_status)
     }
 }

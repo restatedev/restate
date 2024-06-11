@@ -55,7 +55,7 @@ async fn point_lookup<T: StateTable>(table: &mut T) {
 
 async fn prefix_scans<T: StateTable>(table: &mut T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
-    let result = table.get_all_user_states(service_id);
+    let result = table.get_all_user_states_for_service(service_id);
 
     let expected = vec![
         (Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
@@ -88,7 +88,7 @@ async fn verify_delete<T: StateTable>(table: &mut T) {
 
 async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
-    let result = table.get_all_user_states(service_id);
+    let result = table.get_all_user_states_for_service(service_id);
 
     let expected = vec![(Bytes::from_static(b"k1"), Bytes::from_static(b"v1"))];
 
@@ -129,7 +129,7 @@ async fn test_delete_all() {
     // No more state for key-1
     let mut txn = rocksdb.transaction();
     assert_stream_eq(
-        txn.get_all_user_states(&ServiceId::with_partition_key(1337, "svc-1", "key-1")),
+        txn.get_all_user_states_for_service(&ServiceId::with_partition_key(1337, "svc-1", "key-1")),
         vec![],
     )
     .await;
