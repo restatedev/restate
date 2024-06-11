@@ -248,6 +248,10 @@ where
 
         Ok(())
     }
+
+    pub fn inner(&mut self) -> &mut TransactionType {
+        &mut self.inner
+    }
 }
 
 // Avoid adding methods here, but rather use directly the storage_api traits!!!

@@ -110,9 +110,9 @@ pub trait StateReader {
 
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
-    inbox_seq_number: MessageIndex,
-    outbox_seq_number: MessageIndex,
-    partition_key_range: RangeInclusive<PartitionKey>,
+    pub(super) inbox_seq_number: MessageIndex,
+    pub(super) outbox_seq_number: MessageIndex,
+    pub(super) partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
 
     _codec: PhantomData<Codec>,
