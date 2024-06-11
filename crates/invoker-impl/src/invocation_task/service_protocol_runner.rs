@@ -28,7 +28,7 @@ use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
 use restate_schema_api::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
-use restate_service_client::{Endpoint, Parts, Request, ServiceClientError};
+use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClientError};
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -234,7 +234,7 @@ where
 
         (
             http_stream_tx,
-            Request::new(Parts::new(address, path, headers), req_body),
+            Request::new(Parts::new(Method::POST, address, path, headers), req_body),
         )
     }
 

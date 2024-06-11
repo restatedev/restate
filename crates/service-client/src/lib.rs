@@ -114,15 +114,25 @@ impl ServiceClient {
 
         match parts.address {
             Endpoint::Http(uri, version) => {
-                let fut = self
-                    .http
-                    .request(uri, version, body, parts.path, parts.headers);
+                let fut = self.http.request(
+                    uri,
+                    version,
+                    parts.method.into(),
+                    body,
+                    parts.path,
+                    parts.headers,
+                );
                 async move { Ok(fut.await?) }.left_future()
             }
             Endpoint::Lambda(arn, assume_role_arn) => {
-                let fut = self
-                    .lambda
-                    .invoke(arn, assume_role_arn, body, parts.path, parts.headers);
+                let fut = self.lambda.invoke(
+                    arn,
+                    parts.method.into(),
+                    assume_role_arn,
+                    body,
+                    parts.path,
+                    parts.headers,
+                );
                 async move { Ok(fut.await?) }.right_future()
             }
         }
@@ -175,8 +185,26 @@ impl<B> Request<B> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Method {
+    POST,
+    GET,
+}
+
+impl From<Method> for hyper::http::Method {
+    fn from(value: Method) -> Self {
+        match value {
+            Method::POST => hyper::http::Method::POST,
+            Method::GET => hyper::http::Method::GET,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Parts {
+    /// The method to use
+    method: Method,
+
     /// The request's target address
     address: Endpoint,
 
@@ -188,8 +216,14 @@ pub struct Parts {
 }
 
 impl Parts {
-    pub fn new(address: Endpoint, path: PathAndQuery, headers: HeaderMap<HeaderValue>) -> Self {
+    pub fn new(
+        method: Method,
+        address: Endpoint,
+        path: PathAndQuery,
+        headers: HeaderMap<HeaderValue>,
+    ) -> Self {
         Self {
+            method,
             address,
             path,
             headers,
