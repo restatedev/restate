@@ -24,6 +24,7 @@ use super::schema::ServiceBuilder;
 use crate::context::QueryContext;
 use crate::service::row::append_service_row;
 use crate::table_providers::{GenericTableProvider, Scan};
+use crate::table_util::Builder;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

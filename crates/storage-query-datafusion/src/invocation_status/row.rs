@@ -10,23 +10,23 @@
 
 use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
 use crate::table_util::format_using;
-use restate_partition_store::invocation_status_table::OwnedInvocationStatusRow;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
     builder: &mut InvocationStatusBuilder,
     output: &mut String,
-    status_row: OwnedInvocationStatusRow,
+    invocation_id: InvocationId,
+    invocation_status: InvocationStatus,
 ) {
     let mut row = builder.row();
 
-    row.partition_key(status_row.partition_key);
-    if let Some(invocation_target) = status_row.invocation_status.invocation_target() {
+    row.partition_key(invocation_id.partition_key());
+    if let Some(invocation_target) = invocation_status.invocation_target() {
         row.target_service_name(invocation_target.service_name());
         if let Some(key) = invocation_target.key() {
             row.target_service_key(key);
@@ -44,24 +44,21 @@ pub(crate) fn append_invocation_status_row(
 
     // Invocation id
     if row.is_id_defined() {
-        row.id(format_using(
-            output,
-            &InvocationId::from_parts(status_row.partition_key, status_row.invocation_uuid),
-        ));
+        row.id(format_using(output, &invocation_id));
     }
 
     // Journal metadata
-    if let Some(journal_metadata) = status_row.invocation_status.get_journal_metadata() {
+    if let Some(journal_metadata) = invocation_status.get_journal_metadata() {
         fill_journal_metadata(&mut row, output, journal_metadata)
     }
 
     // Stat
-    if let Some(timestamps) = status_row.invocation_status.get_timestamps() {
+    if let Some(timestamps) = invocation_status.get_timestamps() {
         fill_timestamps(&mut row, timestamps);
     }
 
     // Additional invocation metadata
-    match status_row.invocation_status {
+    match invocation_status {
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
             fill_invoked_by(&mut row, output, inboxed.source);
