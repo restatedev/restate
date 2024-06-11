@@ -56,7 +56,7 @@ fn get_promise<S: StorageAccess>(
 }
 
 fn all_promise<S: StorageAccess>(
-    storage: &mut S,
+    storage: &S,
     range: RangeInclusive<PartitionKey>,
 ) -> impl Stream<Item = Result<OwnedPromiseRow>> + Send + '_ {
     let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<PromiseKey>(range));
@@ -115,7 +115,7 @@ impl ReadOnlyPromiseTable for PartitionStore {
     }
 
     fn all_promises(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<OwnedPromiseRow>> + Send {
         all_promise(self, range)
@@ -132,7 +132,7 @@ impl<'a> ReadOnlyPromiseTable for RocksDBTransaction<'a> {
     }
 
     fn all_promises(
-        &mut self,
+        &self,
         range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<OwnedPromiseRow>> + Send {
         all_promise(self, range)

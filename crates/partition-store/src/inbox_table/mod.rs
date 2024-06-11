@@ -16,10 +16,13 @@ use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{
+    InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
+};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::storage::StorageCodec;
+use std::future::Future;
 use std::io::Cursor;
 use std::ops::RangeInclusive;
 
@@ -33,6 +36,104 @@ define_table_key!(
         sequence_number: u64
     )
 );
+
+fn peek_inbox<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+) -> Result<Option<SequenceNumberInboxEntry>> {
+    let key = InboxKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    storage.get_first_blocking(
+        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+        |kv| match kv {
+            Some((k, v)) => {
+                let entry = decode_inbox_key_value(k, v)?;
+                Ok(Some(entry))
+            }
+            None => Ok(None),
+        },
+    )
+}
+
+fn inbox<S: StorageAccess>(
+    storage: &mut S,
+    service_id: &ServiceId,
+) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+    let key = InboxKey::default()
+        .partition_key(service_id.partition_key())
+        .service_name(service_id.service_name.clone())
+        .service_key(service_id.key.clone());
+
+    stream::iter(storage.for_each_key_value_in_place(
+        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
+        |k, v| {
+            let inbox_entry = decode_inbox_key_value(k, v);
+            TableScanIterationDecision::Emit(inbox_entry)
+        },
+    ))
+}
+
+fn all_inboxes<S: StorageAccess>(
+    storage: &S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+    stream::iter(storage.for_each_key_value_in_place(
+        TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+        |k, v| {
+            let inbox_entry = decode_inbox_key_value(k, v);
+            TableScanIterationDecision::Emit(inbox_entry)
+        },
+    ))
+}
+
+impl ReadOnlyInboxTable for PartitionStore {
+    fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
+        futures::future::ready(peek_inbox(self, service_id))
+    }
+
+    fn inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        inbox(self, service_id)
+    }
+
+    fn all_inboxes(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        all_inboxes(self, range)
+    }
+}
+
+impl<'a> ReadOnlyInboxTable for RocksDBTransaction<'a> {
+    fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send {
+        futures::future::ready(peek_inbox(self, service_id))
+    }
+
+    fn inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        inbox(self, service_id)
+    }
+
+    fn all_inboxes(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
+        all_inboxes(self, range)
+    }
+}
 
 impl<'a> InboxTable for RocksDBTransaction<'a> {
     async fn put_inbox_entry(
@@ -56,13 +157,6 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
         delete_inbox_entry(self, service_id, sequence_number);
     }
 
-    async fn peek_inbox(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> Result<Option<SequenceNumberInboxEntry>> {
-        peek_inbox(self, service_id)
-    }
-
     async fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
@@ -76,45 +170,6 @@ impl<'a> InboxTable for RocksDBTransaction<'a> {
 
         result
     }
-
-    fn inbox(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
-        let key = InboxKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone());
-
-        stream::iter(self.for_each_key_value_in_place(
-            TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
-            |k, v| {
-                let inbox_entry = decode_inbox_key_value(k, v);
-                TableScanIterationDecision::Emit(inbox_entry)
-            },
-        ))
-    }
-}
-
-fn peek_inbox(
-    txn: &mut RocksDBTransaction,
-    service_id: &ServiceId,
-) -> Result<Option<SequenceNumberInboxEntry>> {
-    let key = InboxKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
-
-    txn.get_first_blocking(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
-        |kv| match kv {
-            Some((k, v)) => {
-                let entry = decode_inbox_key_value(k, v)?;
-                Ok(Some(entry))
-            }
-            None => Ok(None),
-        },
-    )
 }
 
 fn delete_inbox_entry(txn: &mut RocksDBTransaction, service_id: &ServiceId, sequence_number: u64) {
@@ -135,21 +190,6 @@ fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxE
         .map_err(|error| StorageError::Generic(error.into()))?;
 
     Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
-}
-
-impl PartitionStore {
-    pub fn all_inboxes(
-        &mut self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send {
-        stream::iter(self.for_each_key_value_in_place(
-            TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
-            |k, v| {
-                let inbox_entry = decode_inbox_key_value(k, v);
-                TableScanIterationDecision::Emit(inbox_entry)
-            },
-        ))
-    }
 }
 
 #[cfg(test)]

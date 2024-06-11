@@ -14,11 +14,13 @@ use crate::TableScan::FullScanPartitionKeyRange;
 use crate::{PartitionStore, TableKind};
 use crate::{RocksDBTransaction, StorageAccess};
 use bytestring::ByteString;
+use futures::Stream;
+use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };
-use restate_storage_api::Result;
+use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::storage::StorageCodec;
@@ -72,6 +74,25 @@ fn get_virtual_object_status<S: StorageAccess>(
         .map(|value| value.unwrap_or(VirtualObjectStatus::Unlocked))
 }
 
+fn all_virtual_object_status<S: StorageAccess>(
+    storage: &S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send + '_ {
+    let iter = storage.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
+        let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
+        let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value)
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+
+        let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
+
+        Ok((
+            ServiceId::from_parts(partition_key, service_name, service_key),
+            state_value,
+        ))
+    }))
+}
+
 fn delete_virtual_object_status<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) {
     let key = write_status_key(service_id);
     storage.delete_key(&key);
@@ -84,6 +105,13 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
     ) -> Result<VirtualObjectStatus> {
         get_virtual_object_status(self, service_id)
     }
+
+    fn all_virtual_object_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send {
+        all_virtual_object_status(self, range)
+    }
 }
 
 impl<'a> ReadOnlyVirtualObjectStatusTable for RocksDBTransaction<'a> {
@@ -92,6 +120,13 @@ impl<'a> ReadOnlyVirtualObjectStatusTable for RocksDBTransaction<'a> {
         service_id: &ServiceId,
     ) -> Result<VirtualObjectStatus> {
         get_virtual_object_status(self, service_id)
+    }
+
+    fn all_virtual_object_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send {
+        all_virtual_object_status(self, range)
     }
 }
 
@@ -106,32 +141,5 @@ impl<'a> VirtualObjectStatusTable for RocksDBTransaction<'a> {
 
     async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) {
         delete_virtual_object_status(self, service_id)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct OwnedVirtualObjectStatusRow {
-    pub partition_key: PartitionKey,
-    pub name: ByteString,
-    pub key: ByteString,
-    pub status: VirtualObjectStatus,
-}
-
-impl PartitionStore {
-    pub fn all_virtual_object_status(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Iterator<Item = OwnedVirtualObjectStatusRow> + '_ {
-        let iter = self.iterator_from(FullScanPartitionKeyRange::<ServiceStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, mut value)| {
-            let state_key = ServiceStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = StorageCodec::decode::<VirtualObjectStatus, _>(&mut value).unwrap();
-            OwnedVirtualObjectStatusRow {
-                partition_key: state_key.partition_key.unwrap(),
-                name: state_key.service_name.unwrap(),
-                key: state_key.service_key.unwrap(),
-                status: state_value,
-            }
-        })
     }
 }

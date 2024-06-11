@@ -102,7 +102,7 @@ fn get_user_state<S: StorageAccess>(
     storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
 }
 
-fn get_all_user_states<S: StorageAccess>(
+fn get_all_user_states_for_service<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Vec<Result<(Bytes, Bytes)>> {
@@ -118,6 +118,24 @@ fn get_all_user_states<S: StorageAccess>(
     )
 }
 
+fn get_all_user_states<S: StorageAccess>(
+    storage: &S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send + '_ {
+    let _x = RocksDbPerfGuard::new("get-all-user-state");
+    let iter = storage.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut key, value)| {
+        let row_key = StateKey::deserialize_from(&mut key)?;
+        let (partition_key, service_name, service_key, state_key) = row_key.into_inner_ok_or()?;
+
+        Ok((
+            ServiceId::from_parts(partition_key, service_name, service_key),
+            state_key,
+            value,
+        ))
+    }))
+}
+
 impl ReadOnlyStateTable for PartitionStore {
     fn get_user_state(
         &mut self,
@@ -127,11 +145,18 @@ impl ReadOnlyStateTable for PartitionStore {
         future::ready(get_user_state(self, service_id, state_key))
     }
 
-    fn get_all_user_states(
+    fn get_all_user_states_for_service(
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        stream::iter(get_all_user_states(self, service_id))
+        stream::iter(get_all_user_states_for_service(self, service_id))
+    }
+
+    fn get_all_user_states(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+        get_all_user_states(self, range)
     }
 }
 
@@ -144,11 +169,18 @@ impl<'a> ReadOnlyStateTable for RocksDBTransaction<'a> {
         future::ready(get_user_state(self, service_id, state_key))
     }
 
-    fn get_all_user_states(
+    fn get_all_user_states_for_service(
         &mut self,
         service_id: &ServiceId,
     ) -> impl Stream<Item = Result<(Bytes, Bytes)>> + Send {
-        stream::iter(get_all_user_states(self, service_id))
+        stream::iter(get_all_user_states_for_service(self, service_id))
+    }
+
+    fn get_all_user_states(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send {
+        get_all_user_states(self, range)
     }
 }
 
@@ -184,34 +216,6 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
     let user_key = user_state_key_from_slice(k)?;
     let user_value = Bytes::copy_from_slice(v);
     Ok((user_key, user_value))
-}
-
-#[derive(Clone, Debug)]
-pub struct OwnedStateRow {
-    pub partition_key: PartitionKey,
-    pub service: ByteString,
-    pub service_key: ByteString,
-    pub state_key: Bytes,
-    pub state_value: Bytes,
-}
-
-impl PartitionStore {
-    pub fn all_states(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Iterator<Item = OwnedStateRow> + '_ {
-        let iter = self.iterator_from(TableScan::FullScanPartitionKeyRange::<StateKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, value)| {
-            let row_key = StateKey::deserialize_from(&mut key).unwrap();
-            OwnedStateRow {
-                partition_key: row_key.partition_key.unwrap(),
-                service: row_key.service_name.unwrap(),
-                service_key: row_key.service_key.unwrap(),
-                state_key: row_key.state_key.unwrap(),
-                state_value: value,
-            }
-        })
-    }
 }
 
 #[cfg(test)]
