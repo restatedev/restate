@@ -1,4 +1,12 @@
-mod pinned_deployment;
+// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
 
 use crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND;
 use crate::partition::state_machine::actions::ActionCollector;
@@ -17,6 +25,8 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal::raw::RawEntryCodec;
 use std::time::Instant;
 use tracing::trace;
+
+mod pinned_deployment;
 
 struct InvokerEffectCommand {
     invocation_id: InvocationId,
