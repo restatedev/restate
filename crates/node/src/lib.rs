@@ -12,7 +12,6 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
-use anyhow::Context;
 use restate_bifrost::BifrostService;
 use restate_core::network::MessageRouterBuilder;
 use restate_network::Networking;
@@ -39,6 +38,7 @@ use restate_types::partition_table::FixedPartitionTable;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 
+use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
 use restate_node_protocol::metadata::MetadataKind;
@@ -87,6 +87,9 @@ pub enum BuildError {
     #[error("cluster bootstrap failed: {0}")]
     #[code(unknown)]
     Bootstrap(String),
+    #[error("failed validating and updating cluster marker: {0}")]
+    #[code(unknown)]
+    ClusterValidation(#[from] ClusterValidationError),
 }
 
 pub struct Node {
@@ -115,6 +118,8 @@ impl Node {
                 return Err(BuildError::Bootstrap(format!("Node must include the 'metadata-store' role when starting in bootstrap mode. Currently it has roles {}", config.roles())));
             }
         }
+
+        cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
@@ -211,9 +216,6 @@ impl Node {
         let tc = task_center();
 
         let config = self.updateable_config.pinned();
-
-        cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())
-            .context("failed validating and updating cluster marker")?;
 
         if let Some(metadata_store) = self.metadata_store_role {
             tc.spawn(
