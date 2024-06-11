@@ -344,9 +344,19 @@ impl ServiceId {
         service_name: impl Into<ByteString>,
         key: impl Into<ByteString>,
     ) -> Self {
+        Self::from_parts(partition_key, service_name.into(), key.into())
+    }
+
+    /// # Important
+    /// The `partition_key` must be hash of the `key` computed via [`HashPartitioner`].
+    pub const fn from_parts(
+        partition_key: PartitionKey,
+        service_name: ByteString,
+        key: ByteString,
+    ) -> Self {
         Self {
-            service_name: service_name.into(),
-            key: key.into(),
+            service_name,
+            key,
             partition_key,
         }
     }

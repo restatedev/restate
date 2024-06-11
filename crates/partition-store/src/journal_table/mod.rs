@@ -21,7 +21,7 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable, ReadOnlyJournalTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 use restate_types::storage::StorageCodec;
 use std::io::Cursor;
@@ -99,6 +99,28 @@ fn get_journal<S: StorageAccess>(
     )
 }
 
+fn all_journals<S: StorageAccess>(
+    storage: &S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send + '_ {
+    let iter = storage.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
+        let journal_key = JournalKey::deserialize_from(&mut key)?;
+        let journal_entry = StorageCodec::decode::<JournalEntry, _>(&mut value)
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+
+        let (partition_key, invocation_uuid, entry_index) = journal_key.into_inner_ok_or()?;
+
+        Ok((
+            JournalEntryId::from_parts(
+                InvocationId::from_parts(partition_key, invocation_uuid),
+                entry_index,
+            ),
+            journal_entry,
+        ))
+    }))
+}
+
 fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
@@ -129,6 +151,13 @@ impl ReadOnlyJournalTable for PartitionStore {
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
         stream::iter(get_journal(self, invocation_id, journal_length))
     }
+
+    fn all_journals(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send {
+        all_journals(self, range)
+    }
 }
 
 impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
@@ -148,6 +177,13 @@ impl<'a> ReadOnlyJournalTable for RocksDBTransaction<'a> {
     ) -> impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send {
         stream::iter(get_journal(self, invocation_id, journal_length))
     }
+
+    fn all_journals(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send {
+        all_journals(self, range)
+    }
 }
 
 impl<'a> JournalTable for RocksDBTransaction<'a> {
@@ -163,42 +199,6 @@ impl<'a> JournalTable for RocksDBTransaction<'a> {
     async fn delete_journal(&mut self, invocation_id: &InvocationId, journal_length: EntryIndex) {
         let _x = RocksDbPerfGuard::new("delete-journal");
         delete_journal(self, invocation_id, journal_length)
-    }
-}
-
-#[derive(Debug)]
-pub struct OwnedJournalRow {
-    pub invocation_id: InvocationId,
-    pub journal_index: u32,
-    pub journal_entry: JournalEntry,
-}
-
-impl PartitionStore {
-    pub fn all_journal(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Iterator<Item = OwnedJournalRow> + '_ {
-        let iter = self.iterator_from(FullScanPartitionKeyRange::<JournalKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, mut value)| {
-            let journal_key = JournalKey::deserialize_from(&mut key)
-                .expect("journal key must deserialize into JournalKey");
-            let journal_entry = StorageCodec::decode::<JournalEntry, _>(&mut value)
-                .expect("journal entry must deserialize into JournalEntry");
-            OwnedJournalRow {
-                invocation_id: InvocationId::from_parts(
-                    journal_key
-                        .partition_key
-                        .expect("journal key must have a partition key"),
-                    journal_key
-                        .invocation_uuid
-                        .expect("journal key must have an invocation uuid"),
-                ),
-                journal_index: journal_key
-                    .journal_index
-                    .expect("journal key must have an index"),
-                journal_entry,
-            }
-        })
     }
 }
 

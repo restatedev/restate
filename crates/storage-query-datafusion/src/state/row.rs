@@ -9,22 +9,20 @@
 // by the Apache License, Version 2.0.
 
 use crate::state::schema::StateBuilder;
-use restate_partition_store::state_table::OwnedStateRow;
+use bytes::Bytes;
+use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
 #[inline]
-pub(crate) fn append_state_row(builder: &mut StateBuilder, state_row: OwnedStateRow) {
-    let OwnedStateRow {
-        partition_key,
-        service,
-        service_key,
-        state_key,
-        state_value,
-    } = state_row;
-
+pub(crate) fn append_state_row(
+    builder: &mut StateBuilder,
+    service_id: ServiceId,
+    state_key: Bytes,
+    state_value: Bytes,
+) {
     let mut row = builder.row();
-    row.partition_key(partition_key);
-    row.service_name(&service);
-    row.service_key(&service_key);
+    row.partition_key(service_id.partition_key());
+    row.service_name(&service_id.service_name);
+    row.service_key(&service_id.key);
     if row.is_key_defined() {
         if let Ok(str) = std::str::from_utf8(&state_key) {
             row.key(str);

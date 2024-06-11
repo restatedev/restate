@@ -102,6 +102,24 @@ fn invoked_invocations<S: StorageAccess>(
     )
 }
 
+fn all_invocation_status<S: StorageAccess>(
+    storage: &S,
+    range: RangeInclusive<PartitionKey>,
+) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send + '_ {
+    let iter = storage.iterator_from(FullScanPartitionKeyRange::<InvocationStatusKey>(range));
+    stream::iter(OwnedIterator::new(iter).map(|(mut key, mut value)| {
+        let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
+        let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value)
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+
+        let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+        Ok((
+            InvocationId::from_parts(partition_key, invocation_uuid),
+            state_value,
+        ))
+    }))
+}
+
 fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
@@ -130,6 +148,13 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
+
+    fn all_invocation_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send {
+        all_invocation_status(self, range)
+    }
 }
 
 impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
@@ -147,6 +172,13 @@ impl<'a> ReadOnlyInvocationStatusTable for RocksDBTransaction<'a> {
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send {
         stream::iter(invoked_invocations(self, partition_key_range))
     }
+
+    fn all_invocation_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send {
+        all_invocation_status(self, range)
+    }
 }
 
 impl<'a> InvocationStatusTable for RocksDBTransaction<'a> {
@@ -160,31 +192,6 @@ impl<'a> InvocationStatusTable for RocksDBTransaction<'a> {
 
     async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) {
         delete_invocation_status(self, invocation_id)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct OwnedInvocationStatusRow {
-    pub partition_key: PartitionKey,
-    pub invocation_uuid: InvocationUuid,
-    pub invocation_status: InvocationStatus,
-}
-
-impl PartitionStore {
-    pub fn all_invocation_status(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> impl Iterator<Item = OwnedInvocationStatusRow> + '_ {
-        let iter = self.iterator_from(FullScanPartitionKeyRange::<InvocationStatusKey>(range));
-        OwnedIterator::new(iter).map(|(mut key, mut value)| {
-            let state_key = InvocationStatusKey::deserialize_from(&mut key).unwrap();
-            let state_value = StorageCodec::decode::<InvocationStatus, _>(&mut value).unwrap();
-            OwnedInvocationStatusRow {
-                partition_key: state_key.partition_key.unwrap(),
-                invocation_uuid: state_key.invocation_uuid.unwrap(),
-                invocation_status: state_value,
-            }
-        })
     }
 }
 

@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::promise_table::ReadOnlyPromiseTable;
 use crate::{protobuf_storage_encode_decode, Result};
 use futures_util::Stream;
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 use std::future::Future;
+use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxEntry {
@@ -78,7 +80,24 @@ impl SequenceNumberInboxEntry {
     }
 }
 
-pub trait InboxTable {
+pub trait ReadOnlyInboxTable {
+    fn peek_inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send;
+
+    fn inbox(
+        &mut self,
+        service_id: &ServiceId,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
+
+    fn all_inboxes(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
+}
+
+pub trait InboxTable: ReadOnlyPromiseTable {
     fn put_inbox_entry(
         &mut self,
         service_id: &ServiceId,
@@ -91,18 +110,8 @@ pub trait InboxTable {
         sequence_number: u64,
     ) -> impl Future<Output = ()> + Send;
 
-    fn peek_inbox(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send;
-
     fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<Option<SequenceNumberInboxEntry>>> + Send;
-
-    fn inbox(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send;
 }

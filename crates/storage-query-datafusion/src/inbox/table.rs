@@ -12,14 +12,10 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use futures::{Stream, StreamExt};
-use tokio::sync::mpsc::Sender;
+use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_storage_api::inbox_table::SequenceNumberInboxEntry;
-use restate_storage_api::StorageError;
+use restate_storage_api::inbox_table::{ReadOnlyInboxTable, SequenceNumberInboxEntry};
 use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -48,41 +44,17 @@ pub(crate) fn register_self(
 struct InboxScanner;
 
 impl ScanLocalPartition for InboxScanner {
-    async fn scan_partition_store(
-        mut partition_store: PartitionStore,
-        tx: Sender<Result<RecordBatch, datafusion::error::DataFusionError>>,
+    type Builder = InboxBuilder;
+    type Item = SequenceNumberInboxEntry;
+
+    fn scan_partition_store(
+        partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        projection: SchemaRef,
-    ) {
-        let rows = partition_store.all_inboxes(range);
-        for_each_state(projection, tx, rows).await;
+    ) -> impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send {
+        partition_store.all_inboxes(range)
     }
-}
 
-async fn for_each_state(
-    schema: SchemaRef,
-    tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: impl Stream<Item = Result<SequenceNumberInboxEntry, StorageError>>,
-) {
-    let mut builder = InboxBuilder::new(schema.clone());
-    let mut temp = String::new();
-
-    tokio::pin!(rows);
-    while let Some(Ok(row)) = rows.next().await {
-        append_inbox_row(&mut builder, &mut temp, row);
-        if builder.full() {
-            let batch = builder.finish();
-            if tx.send(batch).await.is_err() {
-                // not sure what to do here?
-                // the other side has hung up on us.
-                // we probably don't want to panic, is it will cause the entire process to exit
-                return;
-            }
-            builder = InboxBuilder::new(schema.clone());
-        }
-    }
-    if !builder.empty() {
-        let result = builder.finish();
-        let _ = tx.send(result).await;
+    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
+        append_inbox_row(row_builder, string_buffer, value);
     }
 }

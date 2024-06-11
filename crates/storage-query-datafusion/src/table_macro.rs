@@ -387,15 +387,6 @@ macro_rules! define_table {
         // --------------------------------------------------------------------------
 
         impl [< $table_name:camel Builder >] {
-
-            pub fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
-                Self {
-                    rows_inserted_so_far: 0,
-                    arrays:  [< $table_name:camel ArrayBuilder >]::new(&projected_schema),
-                    projected_schema,
-                }
-            }
-
             #[inline]
             pub fn row(&mut self) -> [< $table_name:camel RowBuilder >] {
                  self.rows_inserted_so_far += 1;
@@ -418,24 +409,33 @@ macro_rules! define_table {
             pub fn default_capacity() -> usize {
                 1024
             }
+        }
+
+        impl $crate::table_util::Builder for [< $table_name:camel Builder >] {
+            fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
+                Self {
+                    rows_inserted_so_far: 0,
+                    arrays:  [< $table_name:camel ArrayBuilder >]::new(&projected_schema),
+                    projected_schema,
+                }
+            }
 
             #[inline]
-            pub fn full(&self) -> bool {
+            fn full(&self) -> bool {
                 self.rows_inserted_so_far >= Self::default_capacity()
             }
 
-            pub fn empty(&self) -> bool {
+            fn empty(&self) -> bool {
                 self.rows_inserted_so_far == 0
             }
 
-            pub fn finish(self) -> ::datafusion::common::Result<::datafusion::arrow::record_batch::RecordBatch> {
+            fn finish(self) -> ::datafusion::common::Result<::datafusion::arrow::record_batch::RecordBatch> {
                 let arrays = self.arrays.finish();
                 // We add the row count as it wouldn't otherwise work with queries that
                 // just run aggregate functions (e.g. COUNT(*)) without selecting fields.
                 let options = ::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(self.rows_inserted_so_far));
                 Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema, arrays, &options)?)
             }
-
         }
 
     })

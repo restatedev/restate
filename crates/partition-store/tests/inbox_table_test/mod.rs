@@ -11,7 +11,9 @@
 use crate::{assert_stream_eq, mock_state_mutation};
 use once_cell::sync::Lazy;
 use restate_partition_store::PartitionStore;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{
+    InboxEntry, InboxTable, ReadOnlyInboxTable, SequenceNumberInboxEntry,
+};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::{InvocationId, ServiceId};
 
@@ -53,13 +55,13 @@ async fn populate_data<T: InboxTable>(table: &mut T) {
     }
 }
 
-async fn find_the_next_message_in_an_inbox<T: InboxTable>(table: &mut T) {
+async fn find_the_next_message_in_an_inbox<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     let result = table.peek_inbox(INBOX_ENTRIES[0].service_id()).await;
 
     assert_eq!(result.unwrap(), Some(INBOX_ENTRIES[0].clone()));
 }
 
-async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
+async fn get_svc_inbox<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     let stream = table.inbox(INBOX_ENTRIES[0].service_id());
 
     let vec = vec![
@@ -71,13 +73,13 @@ async fn get_svc_inbox<T: InboxTable>(table: &mut T) {
     assert_stream_eq(stream, vec).await;
 }
 
-async fn delete_entry<T: InboxTable>(table: &mut T) {
+async fn delete_entry<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     table
         .delete_inbox_entry(INBOX_ENTRIES[0].service_id(), 7)
         .await;
 }
 
-async fn peek_after_delete<T: InboxTable>(table: &mut T) {
+async fn peek_after_delete<T: InboxTable + ReadOnlyInboxTable>(table: &mut T) {
     let result = table.peek_inbox(INBOX_ENTRIES[0].service_id()).await;
 
     assert_eq!(result.unwrap(), Some(INBOX_ENTRIES[1].clone()));

@@ -25,6 +25,7 @@ use super::schema::DeploymentBuilder;
 use crate::context::QueryContext;
 use crate::deployment::row::append_deployment_row;
 use crate::table_providers::{GenericTableProvider, Scan};
+use crate::table_util::Builder;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,

@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(
             state_machine
                 .rocksdb_storage
-                .get_all_user_states(&keyed_service_id)
+                .get_all_user_states_for_service(&keyed_service_id)
                 .count()
                 .await,
             0
@@ -547,7 +547,7 @@ mod tests {
 
         let all_states: HashMap<_, _> = state_machine
             .rocksdb_storage
-            .get_all_user_states(&keyed_service_id)
+            .get_all_user_states_for_service(&keyed_service_id)
             .try_collect()
             .await?;
 
@@ -590,7 +590,7 @@ mod tests {
 
         let states: Vec<restate_storage_api::Result<(Bytes, Bytes)>> = state_machine
             .rocksdb_storage
-            .get_all_user_states(&service_id)
+            .get_all_user_states_for_service(&service_id)
             .collect()
             .await;
         assert_that!(states, empty());
@@ -783,7 +783,9 @@ mod tests {
         use restate_storage_api::idempotency_table::{
             IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
         };
-        use restate_storage_api::inbox_table::{InboxEntry, InboxTable, SequenceNumberInboxEntry};
+        use restate_storage_api::inbox_table::{
+            InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry,
+        };
         use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;

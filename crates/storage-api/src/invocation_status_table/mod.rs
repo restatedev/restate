@@ -367,6 +367,11 @@ pub trait ReadOnlyInvocationStatusTable {
         &mut self,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> impl Stream<Item = Result<(InvocationId, InvocationTarget)>> + Send;
+
+    fn all_invocation_statuses(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
