@@ -15,19 +15,37 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(journal(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
+
+    /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// The index of this journal entry.
     index: DataType::UInt32,
+
+    /// The entry type. You can check all the available entry types in [`entries.rs`](https://github.com/restatedev/restate/blob/main/crates/types/src/journal/entries.rs).
     entry_type: DataType::LargeUtf8,
+
+    /// The name of the entry supplied by the user, if any.
     name: DataType::LargeUtf8,
 
+    /// Indicates whether this journal entry has been completed; this is only valid for some entry
+    /// types.
     completed: DataType::Boolean,
 
+    /// If this entry represents an outbound invocation, indicates the ID of that invocation.
     invoked_id: DataType::LargeUtf8,
+
+    /// If this entry represents an outbound invocation, indicates the invocation Target. Format
+    /// for plain services: `ServiceName/HandlerName`, e.g. `Greeter/greet`. Format for
+    /// Virtual Objects/Workflows: `VirtualObjectName/Key/HandlerName`, e.g. `Greeter/Francesco/greet`.
     invoked_target: DataType::LargeUtf8,
 
+    /// If this entry represents a sleep, indicates wakeup time.
     sleep_wakeup_at: DataType::Date64,
 
+    /// Raw binary representation of the entry. Check the [service protocol](https://github.com/restatedev/service-protocol)
+    /// for more details to decode it.
     raw: DataType::LargeBinary,
 ));

@@ -28,8 +28,9 @@ use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
 use restate_worker::WorkerHandleError;
 use schemars::gen::SchemaSettings;
-use std::env;
+use std::io::Write;
 use std::time::Duration;
+use std::{env, io};
 use tonic::transport::{Channel, Uri};
 
 fn generate_config_schema() -> anyhow::Result<()> {
@@ -148,6 +149,46 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn render_table_docs(table: &str, mut w: impl io::Write) -> io::Result<()> {
+    let columns = restate_storage_query_datafusion::table_docs(table);
+
+    writeln!(&mut w, "## Table: `{table}`\n")?;
+    writeln!(&mut w, "| Column name | Type | Description |")?;
+    writeln!(&mut w, "|-------------|------|-------------|")?;
+    for (name, ty, desc) in columns {
+        writeln!(&mut w, "| `{name}` | `{ty}` | {} |", desc.trim())?;
+    }
+    writeln!(&mut w)?;
+
+    Ok(())
+}
+
+fn generate_table_docs() -> anyhow::Result<()> {
+    let mut dest = io::stdout();
+
+    // File header
+    writeln!(
+        &mut dest,
+        r"# SQL Introspection API
+
+This page contains the reference of the introspection tables.
+To learn how to access the instrospection interface, check out the [instrospection documentation](/operate/introspection).
+"
+    )?;
+
+    render_table_docs("state", &mut dest)?;
+    render_table_docs("sys_invocation", &mut dest)?;
+    render_table_docs("sys_journal", &mut dest)?;
+    render_table_docs("sys_keyed_service_status", &mut dest)?;
+    render_table_docs("sys_inbox", &mut dest)?;
+    render_table_docs("sys_idempotency", &mut dest)?;
+    render_table_docs("sys_promise", &mut dest)?;
+    render_table_docs("sys_service", &mut dest)?;
+    render_table_docs("sys_deployment", &mut dest)?;
+
+    Ok(())
+}
+
 fn print_help() {
     println!(
         "
@@ -156,6 +197,7 @@ Tasks:
     generate-config-schema: Generate config schema for restate configuration.
     generate-default-config: Generate default configuration.
     generate-rest-api-doc: Generate Rest API documentation. Make sure to have the port 8081 open.
+    generate-table-docs: Generate default configuration.
 "
     );
 }
@@ -169,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
             "generate-config-schema" => generate_config_schema()?,
             "generate-default-config" => generate_default_config(),
             "generate-rest-api-doc" => generate_rest_api_doc().await?,
+            "generate-table-docs" => generate_table_docs()?,
             invalid => {
                 print_help();
                 bail!("Invalid task name: {}", invalid)

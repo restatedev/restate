@@ -15,10 +15,15 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(keyed_service_status(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
+    /// The name for the invoked virtual object/workflow.
     service_name: DataType::LargeUtf8,
+
+    /// The key of the virtual object/workflow.
     service_key: DataType::LargeUtf8,
 
+    /// [Invocation ID](/operate/invocation#invocation-identifier).
     invocation_id: DataType::LargeUtf8,
 ));

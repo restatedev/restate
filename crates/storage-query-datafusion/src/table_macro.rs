@@ -68,6 +68,36 @@ macro_rules! define_primitive_trait {
     };
 }
 
+macro_rules! document_type {
+    (DataType::Utf8) => {
+        "Utf8"
+    };
+    (DataType::LargeUtf8) => {
+        "Utf8"
+    };
+    (DataType::Binary) => {
+        "Binary"
+    };
+    (DataType::LargeBinary) => {
+        "Binary"
+    };
+    (DataType::UInt32) => {
+        "UInt32"
+    };
+    (DataType::UInt64) => {
+        "UInt64"
+    };
+    (DataType::Int32) => {
+        "Int32"
+    };
+    (DataType::Date64) => {
+        "Date64"
+    };
+    (DataType::Boolean) => {
+        "Boolean"
+    };
+}
+
 ///
 /// Given the following table definition:
 ///
@@ -284,7 +314,12 @@ macro_rules! define_primitive_trait {
 /// And it can be used to create RecordBatches from rows.
 macro_rules! define_table {
 
-    ($table_name: ident ($($element: ident : $ty: expr),+ $(,)? ) ) => (paste::paste! {
+    ($table_name: ident (
+        $(
+            $(#[doc = $doc:expr])*
+            $element:ident: $ty:expr
+        ),+ $(,)?)
+    ) => (paste::paste! {
 
         pub struct [< $table_name:camel Builder >] {
             rows_inserted_so_far: usize,
@@ -293,7 +328,10 @@ macro_rules! define_table {
         }
 
         struct [< $table_name:camel ArrayBuilder >] {
-            $($element : Option< define_builder!($ty) > ,)+
+            $(
+                $(#[doc = $doc])*
+                $element : Option< define_builder!($ty) > ,
+            )+
         }
 
         pub struct [< $table_name:camel RowBuilder >]<'a> {
@@ -438,9 +476,20 @@ macro_rules! define_table {
             }
         }
 
+        // --------------------------------------------------------------------------
+        // Docs function
+        // --------------------------------------------------------------------------
+
+        #[cfg(feature = "table_docs")]
+        pub const TABLE_DOCS: &'static [(&'static str, &'static str, &'static str)] = &[
+            $(
+                (stringify!($element), document_type!($ty), concat!($($doc),*)),
+            )+
+        ];
     })
 }
 
 pub(crate) use define_builder;
 pub(crate) use define_primitive_trait;
 pub(crate) use define_table;
+pub(crate) use document_type;

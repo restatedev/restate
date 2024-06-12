@@ -24,3 +24,6 @@ futures = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+restate-types = { workspace = true, features = ["test-util"] }

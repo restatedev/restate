@@ -15,11 +15,18 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(service(
+    /// The name of the registered user service.
     name: DataType::LargeUtf8,
+
+    /// The latest deployed revision.
     revision: DataType::UInt64,
 
+    /// Whether the service is accessible through the ingress endpoint or not.
     public: DataType::Boolean,
 
+    /// The service type. Either `service` or `virtual_object` or `workflow`.
     ty: DataType::LargeUtf8,
+
+    /// The ID of the latest deployment
     deployment_id: DataType::LargeUtf8,
 ));

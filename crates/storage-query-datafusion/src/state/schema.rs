@@ -15,12 +15,23 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(state(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
+    /// The name of the invoked service.
     service_name: DataType::LargeUtf8,
+
+    /// The key of the Virtual Object.
     service_key: DataType::LargeUtf8,
 
+    /// The `utf8` state key.
     key: DataType::LargeUtf8,
+
+    /// Only contains meaningful values when a service stores state as `utf8`. This is the case for
+    /// TypeScript services since the TypeScript SDK serializes values as JSON.
     value_utf8: DataType::LargeUtf8,
+
+    /// A binary, uninterpreted representation of the value. You can use the more specific column
+    /// `value_utf8` if the value is a string.
     value: DataType::LargeBinary,
 ));
