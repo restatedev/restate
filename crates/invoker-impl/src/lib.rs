@@ -260,8 +260,9 @@ where
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
+        let in_memory_limit = updateable_options.load().in_memory_queue_length_limit();
         // Prepare the segmented queue
-        let mut segmented_input_queue = SegmentQueue::init(tmp_dir, 1_056_784)
+        let mut segmented_input_queue = SegmentQueue::init(tmp_dir, in_memory_limit)
             .await
             .expect("Cannot initialize input spillable queue");
 
