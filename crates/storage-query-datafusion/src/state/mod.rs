@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod row;
-mod schema;
+pub(crate) mod schema;
 mod table;
 
 pub(crate) use table::register_self;

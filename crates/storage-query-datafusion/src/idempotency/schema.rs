@@ -15,12 +15,21 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(idempotency(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
+    /// The name for the invoked service.
     service_name: DataType::LargeUtf8,
+
+    /// The key of the Virtual Object or of the Workflow. Null for regular services.
     service_key: DataType::LargeUtf8,
+
+    /// The invoked handler.
     service_handler: DataType::LargeUtf8,
+
+    /// The user provided idempotency key.
     idempotency_key: DataType::LargeUtf8,
 
+    /// [Invocation ID](/operate/invocation#invocation-identifier).
     invocation_id: DataType::LargeUtf8
 ));

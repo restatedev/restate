@@ -16,6 +16,7 @@ restate-node-services = { workspace = true, features = ["clients"] }
 restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"]}
+restate-storage-query-datafusion = { workspace = true, features = ["table_docs"] }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }
 

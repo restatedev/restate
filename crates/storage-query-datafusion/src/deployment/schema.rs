@@ -15,8 +15,15 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(deployment(
+    /// The ID of the service deployment.
     id: DataType::LargeUtf8,
+
+    /// The type of the endpoint. Either `http` or `lambda`.
     ty: DataType::LargeUtf8,
+
+    /// The address of the endpoint. Either HTTP URL or Lambda ARN.
     endpoint: DataType::LargeUtf8,
+
+    /// Timestamp indicating the deployment registration time.
     created_at: DataType::Date64,
 ));

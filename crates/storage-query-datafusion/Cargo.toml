@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 options_schema = ["dep:schemars"]
+table_docs = []
 
 [dependencies]
 restate-core = { workspace = true }

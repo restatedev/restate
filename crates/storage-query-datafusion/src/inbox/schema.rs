@@ -15,14 +15,21 @@ use crate::table_macro::*;
 use datafusion::arrow::datatypes::DataType;
 
 define_table!(inbox(
+    /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
+    /// The name for the invoked virtual object/workflow.
     service_name: DataType::LargeUtf8,
+
+    /// The key of the virtual object/workflow.
     service_key: DataType::LargeUtf8,
 
+    /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// Sequence number in the inbox.
     sequence_number: DataType::UInt64,
 
+    /// Timestamp indicating the start of this invocation.
     created_at: DataType::Date64,
 ));
