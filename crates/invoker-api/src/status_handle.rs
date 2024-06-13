@@ -124,8 +124,8 @@ pub trait StatusHandle {
     ) -> impl Future<Output = Self::Iterator> + Send;
 }
 
-#[cfg(any(test, feature = "mocks"))]
-pub mod mocks {
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util {
     use super::*;
 
     #[derive(Debug, Clone, Default)]

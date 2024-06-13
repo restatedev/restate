@@ -22,8 +22,8 @@ pub trait EntryEnricher {
     ) -> Result<EnrichedRawEntry, InvocationError>;
 }
 
-#[cfg(any(test, feature = "mocks"))]
-pub mod mocks {
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util {
     use super::*;
 
     use restate_types::identifiers::{InvocationId, InvocationUuid};

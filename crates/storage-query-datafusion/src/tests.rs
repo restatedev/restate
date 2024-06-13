@@ -16,7 +16,7 @@ use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use restate_core::TaskCenterBuilder;
-use restate_invoker_api::status_handle::mocks::MockStatusHandle;
+use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
 use restate_storage_api::invocation_status_table::{

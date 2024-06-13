@@ -9,13 +9,12 @@ publish = false
 
 [features]
 default = []
-mocks = []
+test-util = ["restate-types/test-util"]
 serde = ["dep:serde"]
 
 [dependencies]
 restate-errors = { workspace = true }
 restate-types = { workspace = true }
-
 
 anyhow = { workspace = true }
 bytes = { workspace = true }

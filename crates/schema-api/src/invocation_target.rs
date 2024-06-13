@@ -388,9 +388,9 @@ impl fmt::Display for OutputContentTypeRule {
     }
 }
 
-#[cfg(feature = "mocks")]
+#[cfg(feature = "test-util")]
 #[allow(dead_code)]
-pub mod mocks {
+pub mod test_util {
     use super::*;
 
     use std::collections::HashMap;

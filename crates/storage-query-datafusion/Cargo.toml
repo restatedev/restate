@@ -41,11 +41,11 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
-restate-invoker-api = { workspace = true, features = ["mocks"] }
+restate-invoker-api = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["mocks"] }
-restate-storage-api = { workspace = true, features = ["mocks"] }
-restate-service-protocol = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["test-util"] }
+restate-storage-api = { workspace = true, features = ["test-util"] }
+restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }

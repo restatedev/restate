@@ -22,8 +22,8 @@ pub use journal_reader::{JournalMetadata, JournalReader};
 pub use state_reader::{EagerState, StateReader};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 
-#[cfg(any(test, feature = "mocks"))]
-pub mod mocks {
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util {
     use super::*;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, ServiceId};

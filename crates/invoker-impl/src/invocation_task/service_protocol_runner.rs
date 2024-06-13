@@ -40,8 +40,7 @@ use restate_types::journal::EntryType;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::future::poll_fn;
-use tracing::log::warn;
-use tracing::{debug, info, trace, Span};
+use tracing::{debug, info, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Runs the interaction between the server and the service endpoint.

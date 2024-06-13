@@ -387,8 +387,8 @@ pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
     ) -> impl Future<Output = ()> + Send;
 }
 
-#[cfg(any(test, feature = "mocks"))]
-mod mocks {
+#[cfg(any(test, feature = "test-util"))]
+mod test_util {
     use super::*;
 
     use restate_types::invocation::VirtualObjectHandlerType;
