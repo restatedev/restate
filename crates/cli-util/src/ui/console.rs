@@ -23,27 +23,11 @@
 //!  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 use std::fmt::{Display, Formatter};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::stylesheet::Style;
-use crate::app::UiConfig;
-use crate::cli_env::CliEnv;
+use crate::context::CliContext;
 
 use dialoguer::console::Style as DStyle;
-
-static SHOULD_COLORIZE: AtomicBool = AtomicBool::new(true);
-
-#[inline]
-pub fn colors_enabled() -> bool {
-    SHOULD_COLORIZE.load(Ordering::Relaxed)
-}
-
-#[inline]
-pub fn set_colors_enabled(val: bool) {
-    // Override dialoguer/console to ensure it follows our colorful setting
-    dialoguer::console::set_colors_enabled(val);
-    SHOULD_COLORIZE.store(val, Ordering::Relaxed)
-}
 
 /// Emoji that fallback to a string if colors are disabled.
 #[derive(Copy, Clone)]
@@ -59,7 +43,7 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // passthrough debug formatting to the actual wrapped value
-        if colors_enabled() {
+        if CliContext::get().colors_enabled() {
             // unpack the style and the string.
             let dstyle = DStyle::from(self.0);
             write!(f, "{:?}", dstyle.apply_to(&self.1))
@@ -71,7 +55,7 @@ where
 
 impl Display for Icon<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if colors_enabled() {
+        if CliContext::get().colors_enabled() {
             write!(f, "{}", self.0)
         } else {
             write!(f, "{}", self.1)
@@ -84,7 +68,7 @@ where
     T: Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if colors_enabled() {
+        if CliContext::get().colors_enabled() {
             // unpack the style and the string.
             let dstyle = DStyle::from(self.0);
             write!(f, "{}", dstyle.apply_to(&self.1))
@@ -97,7 +81,7 @@ where
 /// Factory trait to create styled tables that respect the UI config.
 /// Impl is in stylesheets.
 pub trait StyledTable {
-    fn new_styled(ui_config: &UiConfig) -> Self;
+    fn new_styled() -> Self;
     fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self;
     fn add_kv_row<V: Into<comfy_table::Cell>>(&mut self, key: &str, value: V) -> &mut Self;
     fn add_kv_row_if<P: Fn() -> bool, V: Display>(
@@ -114,8 +98,8 @@ pub trait StyledTable {
     }
 }
 
-pub fn confirm_or_exit(env: &CliEnv, prompt: &str) -> anyhow::Result<()> {
-    if !confirm(env, prompt) {
+pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
+    if !confirm(prompt) {
         return Err(anyhow::anyhow!("User aborted"));
     }
     Ok(())
@@ -139,9 +123,9 @@ pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
         .interact_text()?)
 }
 
-pub fn confirm(env: &CliEnv, prompt: &str) -> bool {
+pub fn confirm(prompt: &str) -> bool {
     let theme = dialoguer::theme::ColorfulTheme::default();
-    if env.auto_confirm {
+    if CliContext::get().auto_confirm() {
         c_println!(
             "{} {}",
             prompt,
@@ -289,16 +273,16 @@ macro_rules! c_error {
 macro_rules! c_warn {
     ($($arg:tt)*) => {
         {
-            let mut table = comfy_table::Table::new();
-            table.load_preset(comfy_table::presets::UTF8_BORDERS_ONLY);
-            table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+            let mut table = $crate::_comfy_table::Table::new();
+            table.load_preset($crate::_comfy_table::presets::UTF8_BORDERS_ONLY);
+            table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
             table.set_width(120);
             let formatted = format!($($arg)*);
 
             table.add_row(vec![
-                comfy_table::Cell::new(format!(" {} ",
-        $crate::ui::stylesheet::WARN_ICON)).set_alignment(comfy_table::CellAlignment::Center),
-                comfy_table::Cell::new(formatted).add_attribute(comfy_table::Attribute::Bold).fg(comfy_table::Color::Yellow),
+                $crate::_comfy_table::Cell::new(format!(" {} ",
+        $crate::ui::stylesheet::WARN_ICON)).set_alignment($crate::_comfy_table::CellAlignment::Center),
+                $crate::_comfy_table::Cell::new(formatted).add_attribute($crate::_comfy_table::Attribute::Bold).fg($crate::_comfy_table::Color::Yellow),
             ]);
             $crate::ui::console::c_eprintln!("{}", table);
         }
@@ -309,16 +293,16 @@ macro_rules! c_warn {
 macro_rules! c_tip {
     ($($arg:tt)*) => {
         {
-            let mut table = comfy_table::Table::new();
-            table.load_preset(comfy_table::presets::NOTHING);
-            table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+            let mut table = $crate::_comfy_table::Table::new();
+            table.load_preset($crate::_comfy_table::presets::NOTHING);
+            table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
             table.set_width(120);
             let formatted = format!($($arg)*);
 
             table.add_row(vec![
-                comfy_table::Cell::new(format!(" {} ",
-        $crate::ui::stylesheet::TIP_ICON)).set_alignment(comfy_table::CellAlignment::Center),
-                comfy_table::Cell::new(formatted).add_attribute(comfy_table::Attribute::Italic).add_attribute(comfy_table::Attribute::Dim),
+                $crate::_comfy_table::Cell::new(format!(" {} ",
+        $crate::ui::stylesheet::TIP_ICON)).set_alignment($crate::_comfy_table::CellAlignment::Center),
+                $crate::_comfy_table::Cell::new(formatted).add_attribute($crate::_comfy_table::Attribute::Italic).add_attribute($crate::_comfy_table::Attribute::Dim),
             ]);
             $crate::ui::console::c_eprintln!("{}", table);
         }

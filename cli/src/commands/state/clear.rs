@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::c_indent_table;
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::get_state_keys;
-use crate::commands::state::util::{compute_version, update_state};
-use crate::console::c_println;
-use crate::ui::console::{confirm_or_exit, StyledTable};
+use std::collections::HashMap;
+
 use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use crossterm::style::Stylize;
 use itertools::Itertools;
-use std::collections::HashMap;
+use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::{c_indent_table, c_println};
+
+use crate::cli_env::CliEnv;
+use crate::clients::datafusion_helpers::get_state_keys;
+use crate::commands::state::util::{compute_version, update_state};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]
@@ -54,7 +55,7 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
         bail!("No state found!");
     }
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["SERVICE/KEY", "STATE"]);
     for (svc_id, svc_state) in &services_state {
         table.add_row(vec![
@@ -73,7 +74,7 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
     c_println!("About to submit the new state mutation to the system for processing.");
     c_println!("If there are currently active invocations, then this mutation will be enqueued to be processed after them.");
     c_println!();
-    confirm_or_exit(env, "Are you sure?")?;
+    confirm_or_exit("Are you sure?")?;
 
     c_println!();
 

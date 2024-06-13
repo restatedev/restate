@@ -8,21 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Result;
+use indicatif::ProgressBar;
+
+use restate_admin_rest_model::services::ServiceType;
+use restate_cli_util::c_title;
+
 use super::{render_locked_keys, render_services_status, Status};
-use crate::c_title;
-use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     get_locked_keys_status, get_service_invocations, get_service_status,
 };
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
 use crate::ui::invocations::render_invocation_compact;
 
-use anyhow::Result;
-use indicatif::ProgressBar;
-use restate_admin_rest_model::services::ServiceType;
-
 pub async fn run_detailed_status(
-    env: &CliEnv,
     service_name: &str,
     opts: &Status,
     metas_client: AdminClient,
@@ -51,13 +50,13 @@ pub async fn run_detailed_status(
 
     // Render Summary
     c_title!("📷", "Summary");
-    render_services_status(env, vec![service], status_map).await?;
+    render_services_status(vec![service], status_map).await?;
 
     if is_object {
         let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
         if !locked_keys.is_empty() {
             c_title!("📨", "Active Keys");
-            render_locked_keys(env, locked_keys, opts.locked_keys_limit).await?;
+            render_locked_keys(locked_keys, opts.locked_keys_limit).await?;
         }
     }
 
@@ -65,7 +64,7 @@ pub async fn run_detailed_status(
     if !active.is_empty() {
         c_title!("🚂", "Recent Invocations");
         for inv in active {
-            render_invocation_compact(env, &inv);
+            render_invocation_compact(&inv);
         }
     }
 

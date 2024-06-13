@@ -13,14 +13,15 @@
 use anyhow::bail;
 use http::StatusCode;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
+use restate_cli_util::{c_warn, CliContext};
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
+use crate::build_info;
 use crate::cli_env::CliEnv;
-use crate::{build_info, c_warn};
 
 use super::errors::ApiError;
 
@@ -112,8 +113,6 @@ pub struct AdminClient {
     pub(crate) admin_api_version: AdminApiVersion,
 }
 
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 impl AdminClient {
     pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let raw_client = reqwest::Client::builder()
@@ -124,7 +123,7 @@ impl AdminClient {
                 std::env::consts::OS,
                 std::env::consts::ARCH,
             ))
-            .connect_timeout(env.connect_timeout)
+            .connect_timeout(CliContext::get().connect_timeout())
             .build()?;
 
         let base_url = env.admin_base_url()?.clone();
@@ -134,7 +133,7 @@ impl AdminClient {
             inner: raw_client,
             base_url,
             bearer_token,
-            request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+            request_timeout: CliContext::get().request_timeout(),
             admin_api_version: AdminApiVersion::Unknown,
         };
 

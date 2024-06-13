@@ -12,22 +12,27 @@ use cling::prelude::*;
 use comfy_table::Table;
 use figment::Profile;
 use itertools::Itertools;
-use restate_admin_rest_model::version::AdminApiVersion;
-use restate_types::art::render_restate_logo;
 use strum::IntoEnumIterator;
+
+use restate_admin_rest_model::version::AdminApiVersion;
+use restate_cli_util::ui::duration_to_human_rough;
+use restate_cli_util::{c_eprintln, c_error, c_println, c_success, CliContext};
+use restate_types::art::render_restate_logo;
 
 use crate::build_info;
 use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
-use crate::{c_eprintln, c_error, c_println, c_success};
 
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]
 pub struct WhoAmI {}
 
 pub async fn run(State(env): State<CliEnv>) {
-    c_println!("{}", render_restate_logo(crate::console::colors_enabled()));
+    c_println!(
+        "{}",
+        render_restate_logo(CliContext::get().colors_enabled())
+    );
     c_println!("            Restate");
     c_println!("       https://restate.dev/");
     c_println!();
@@ -105,8 +110,8 @@ pub async fn run(State(env): State<CliEnv>) {
 
     table.add_row(vec![
         "Loaded .env file",
-        &env.loaded_env_file
-            .as_ref()
+        &CliContext::get()
+            .loaded_dotenv()
             .map(|x| x.display().to_string())
             .unwrap_or("(NONE)".to_string()),
     ]);
@@ -168,10 +173,8 @@ pub async fn run(State(env): State<CliEnv>) {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
-                            let left = crate::ui::duration_to_human_rough(
-                                delta,
-                                chrono_humanize::Tense::Present,
-                            );
+                            let left =
+                                duration_to_human_rough(delta, chrono_humanize::Tense::Present);
                             table.add_row(vec![
                                 "Logged in?",
                                 &format!("true (expires in {})", left),

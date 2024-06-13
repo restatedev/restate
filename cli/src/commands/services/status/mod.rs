@@ -11,24 +11,24 @@
 mod agg_status;
 mod detailed_status;
 
-use crate::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
 use crate::clients::AdminClient;
-use crate::ui::console::{Styled, StyledTable};
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_handlers::icon_for_service_type;
-use crate::ui::stylesheet::Style;
-use crate::ui::watcher::Watch;
-use crate::ui::{duration_to_human_precise, duration_to_human_rough};
 
 use anyhow::Result;
 use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use restate_admin_rest_model::services::ServiceMetadata;
+use restate_cli_util::c_println;
+use restate_cli_util::ui::console::{Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::ui::{duration_to_human_precise, duration_to_human_rough};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
@@ -55,19 +55,18 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
     let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     if let Some(svc) = &opts.service {
-        detailed_status::run_detailed_status(env, svc, opts, client, sql_client).await
+        detailed_status::run_detailed_status(svc, opts, client, sql_client).await
     } else {
-        agg_status::run_aggregated_status(env, opts, client, sql_client).await
+        agg_status::run_aggregated_status(opts, client, sql_client).await
     }
 }
 
 async fn render_services_status(
-    env: &CliEnv,
     services: Vec<ServiceMetadata>,
     status_map: ServiceStatusMap,
 ) -> Result<()> {
     let empty = ServiceStatus::default();
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec![
         "",
         "PENDING",
@@ -193,7 +192,6 @@ async fn render_handlers_status(
     Ok(())
 }
 async fn render_locked_keys(
-    env: &CliEnv,
     locked_keys: ServiceHandlerLockedKeysMap,
     limit_per_service: usize,
 ) -> Result<()> {
@@ -202,7 +200,7 @@ async fn render_locked_keys(
         return Ok(());
     }
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["", "QUEUE", "LOCKED BY", "HANDLER", "NOTES"]);
     for (svc_name, locked_keys) in locked_keys {
         let mut keys: Vec<_> = locked_keys.into_iter().collect();

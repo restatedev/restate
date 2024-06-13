@@ -8,8 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::{future::Future, str::FromStr};
+
+use anyhow::{Context, Result};
+use cling::prelude::*;
+use indicatif::ProgressBar;
+use itertools::Itertools;
+use toml_edit::{table, value, DocumentMut};
+
+use restate_cli_util::{c_error, c_success};
+
 use crate::{
-    c_error, c_success,
     cli_env::CliEnv,
     clients::cloud::{
         generated::{
@@ -20,12 +29,6 @@ use crate::{
     },
     console::{choose, confirm_or_exit, input},
 };
-use anyhow::{Context, Result};
-use cling::prelude::*;
-use indicatif::ProgressBar;
-use itertools::Itertools;
-use std::{future::Future, str::FromStr};
-use toml_edit::{table, value, DocumentMut};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_configure")]
@@ -153,7 +156,7 @@ pub async fn run_configure(State(env): State<CliEnv>, opts: &Configure) -> Resul
     let profile = profile_input(&profiles, &environments[environment_i].name)?;
 
     if profiles.contains(&profile) {
-        confirm_or_exit(&env, &format!("Overwrite existing profile {profile}?"))?
+        confirm_or_exit(&format!("Overwrite existing profile {profile}?"))?
     }
 
     write_environment(
