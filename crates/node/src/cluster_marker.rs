@@ -235,9 +235,8 @@ mod tests {
     use semver::Version;
     use std::fs;
     use std::fs::OpenOptions;
-    use std::io::Write;
     use std::path::Path;
-    use tempfile::{tempdir, NamedTempFile};
+    use tempfile::tempdir;
 
     fn read_cluster_marker(path: impl AsRef<Path>) -> anyhow::Result<ClusterMarker> {
         let bytes = fs::read(path)?;
@@ -248,11 +247,8 @@ mod tests {
         cluster_marker: &ClusterMarker,
         path: impl AsRef<Path>,
     ) -> anyhow::Result<()> {
-        let mut file = OpenOptions::new().create(true).write(true).open(path)?;
+        let file = OpenOptions::new().create(true).write(true).open(path)?;
         serde_json::to_writer(&file, cluster_marker)?;
-        file.flush()?;
-        file.sync_all()?;
-
         Ok(())
     }
 
@@ -263,10 +259,8 @@ mod tests {
 
     #[test]
     fn cluster_marker_is_created() {
-        let file = tempdir()
-            .unwrap()
-            .into_path()
-            .join(CLUSTER_MARKER_FILE_NAME);
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let current_version = Version::new(2, 2, 3);
 
         validate_and_update_cluster_marker_inner(
@@ -296,7 +290,8 @@ mod tests {
 
     #[test]
     fn cluster_marker_is_updated() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let previous_version = Version::new(1, 1, 6);
         let current_version = Version::new(2, 2, 3);
 
@@ -308,20 +303,19 @@ mod tests {
                     .min_forward_compatible_version
                     .clone(),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             current_version.clone(),
-            file.path(),
+            &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         )
         .unwrap();
 
-        let cluster_marker = read_cluster_marker(file.path()).unwrap();
+        let cluster_marker = read_cluster_marker(file).unwrap();
 
         assert_eq!(
             cluster_marker,
@@ -341,7 +335,8 @@ mod tests {
 
     #[test]
     fn max_version_is_maintained() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let max_version = Version::new(2, 2, 6);
         let current_version = Version::new(2, 1, 3);
 
@@ -353,20 +348,19 @@ mod tests {
                     .min_forward_compatible_version
                     .clone(),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             current_version.clone(),
-            file.path(),
+            &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         )
         .unwrap();
 
-        let cluster_marker = read_cluster_marker(file.path()).unwrap();
+        let cluster_marker = read_cluster_marker(file).unwrap();
 
         assert_eq!(
             cluster_marker,
@@ -386,7 +380,8 @@ mod tests {
 
     #[test]
     fn incompatible_cluster_name() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let max_version = Version::new(2, 2, 6);
         let current_version = Version::new(2, 1, 3);
 
@@ -398,15 +393,14 @@ mod tests {
                     .min_forward_compatible_version
                     .clone(),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             current_version.clone(),
-            file.path(),
+            &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -418,7 +412,8 @@ mod tests {
 
     #[test]
     fn forward_incompatible_version() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let max_version = Version::new(2, 2, 6);
         let this_version = Version::new(1, 0, 3);
 
@@ -428,15 +423,14 @@ mod tests {
                 max_version.clone(),
                 Version::new(2, 0, 0),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             this_version.clone(),
-            file.path(),
+            &file,
             &COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -448,7 +442,8 @@ mod tests {
 
     #[test]
     fn backward_incompatible_version() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let max_version = Version::new(0, 9, 2);
         let this_version = Version::new(2, 1, 1);
         write_cluster_marker(
@@ -457,15 +452,14 @@ mod tests {
                 max_version.clone(),
                 Version::new(0, 9, 0),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             this_version.clone(),
-            file.path(),
+            &file,
             &COMPATIBILITY_INFORMATION,
         );
         assert!(matches!(
@@ -478,7 +472,8 @@ mod tests {
 
     #[test]
     fn compatible_version() -> anyhow::Result<()> {
-        let mut file = NamedTempFile::new().unwrap();
+        let dir = tempdir().unwrap();
+        let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
         let max_version = Version::new(2, 0, 2);
         let this_version = Version::new(2, 3, 1);
         write_cluster_marker(
@@ -489,15 +484,14 @@ mod tests {
                     .min_forward_compatible_version
                     .clone(),
             ),
-            file.path(),
+            &file,
         )
         .unwrap();
-        file.flush()?;
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
             this_version.clone(),
-            file.path(),
+            &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
         assert!(result.is_ok());
