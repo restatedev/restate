@@ -4,10 +4,11 @@ members = [
     "crates/*",
     "crates/codederror/derive",
     "server",
+    "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
+    "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
-    "tools/bifrost-benchpress",
 ]
 default-members = [
     "cli",
@@ -15,6 +16,7 @@ default-members = [
     "crates/codederror/derive",
     "server",
     "tools/xtask",
+    "tools/restatectl",
 ]
 resolver = "2"
 
@@ -34,6 +36,7 @@ restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
+restate-cli-util = { path = "crates/cli-util" }
 restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
@@ -85,15 +88,21 @@ base64 = "0.21"
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
 bytestring = { version = "1.2", features = ["serde"] }
-clap = { version = "4", default-features = false }
 chrono = { version = "0.4.31", default-features = false, features = ["clock"] }
+comfy-table = { version = "7.1" }
+chrono-humanize = { version = "0.2.3" }
+clap = { version = "4", default-features = false }
+clap-verbosity-flag = { version = "2.0.1" }
+cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
+crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
 datafusion = { version = "35.0.0" }
 datafusion-expr = { version = "35.0.0" }
 derive-getters = {  version = "0.3.0" }
 derive_builder = "0.12.0"
 derive_more = { version = "0.99.17" }
+dialoguer = { version = "0.11.0" }
 enum-map = { version = "2.7.3" }
 enumset = { version = "1.1.3" }
 flexbuffers = { version = "2.0.0" }

@@ -8,26 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+
 use anyhow::{bail, Result};
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
+
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_admin_rest_model::services::ServiceMetadata;
-use std::collections::HashMap;
+use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{c_eprintln, c_error, c_indentln, c_success};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface};
 use crate::console::c_println;
-use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
 use crate::ui::service_handlers::icon_for_service_type;
-use crate::ui::stylesheet::Style;
-use crate::{c_eprintln, c_error, c_indentln, c_success};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]
@@ -82,7 +84,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         &latest_services,
     );
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.add_kv_row("ID:", deployment.id);
 
     add_deployment_to_kv_table(&deployment.deployment, &mut table);
@@ -173,7 +175,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         );
     }
 
-    confirm_or_exit(&env, "Are you sure you want to remove this deployment?")?;
+    confirm_or_exit("Are you sure you want to remove this deployment?")?;
 
     let result = client
         .remove_deployment(

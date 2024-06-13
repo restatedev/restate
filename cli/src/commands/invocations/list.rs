@@ -11,18 +11,19 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::c_eprintln;
-use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{find_active_invocations, InvocationState};
-use crate::ui::console::Styled;
-use crate::ui::invocations::render_invocation_compact;
-use crate::ui::stylesheet::Style;
-use crate::ui::watcher::Watch;
-
 use anyhow::Result;
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
+
+use restate_cli_util::c_eprintln;
+use restate_cli_util::ui::console::Styled;
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+
+use crate::cli_env::CliEnv;
+use crate::clients::datafusion_helpers::{find_active_invocations, InvocationState};
+use crate::ui::invocations::render_invocation_compact;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
@@ -160,7 +161,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         // Truncate the output to fit the requested limit
         results.truncate(opts.limit);
         for inv in &results {
-            render_invocation_compact(env, inv);
+            render_invocation_compact(inv);
         }
     }
 

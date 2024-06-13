@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::console::{Icon, StyledTable};
-use crate::app::UiConfig;
-
 use comfy_table::{Cell, Color, Table};
 use restate_admin_rest_model::handlers::HandlerMetadata;
 use restate_admin_rest_model::services::ServiceType;
+use restate_cli_util::ui::console::{Icon, StyledTable};
 
-pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMetadata]) -> Table {
-    let mut table = Table::new_styled(ui_config);
+pub fn create_service_handlers_table(handlers: &[HandlerMetadata]) -> Table {
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT"]);
 
     for handler in handlers {
@@ -30,7 +28,6 @@ pub fn create_service_handlers_table(ui_config: &UiConfig, handlers: &[HandlerMe
 }
 
 pub fn create_service_handlers_table_diff(
-    ui_config: &UiConfig,
     old_service_handlers: &[HandlerMetadata],
     new_service_handlers: &[HandlerMetadata],
 ) -> Table {
@@ -39,7 +36,7 @@ pub fn create_service_handlers_table_diff(
         .map(|m| (m.name.clone(), m))
         .collect::<std::collections::HashMap<_, _>>();
 
-    let mut table = Table::new_styled(ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["", "HANDLER", "INPUT", "OUTPUT"]);
 
     // Additions and updates

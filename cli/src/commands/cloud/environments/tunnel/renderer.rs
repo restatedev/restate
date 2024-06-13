@@ -10,13 +10,11 @@
 
 use std::hash::Hasher;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{io::Write, sync::Arc};
-
 use std::sync::OnceLock;
+use std::{io::Write, sync::Arc};
 
 use arc_swap::ArcSwapOption;
 use comfy_table::{Cell, Table};
-
 use crossterm::cursor::MoveTo;
 use crossterm::execute;
 use crossterm::{
@@ -24,12 +22,10 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, Clear, ClearType},
 };
 
-use crate::app::TableStyle;
-use crate::ui::stylesheet;
-use crate::{
-    app::UiConfig, c_indent_table, c_println, c_tip, c_warn, console::StyledTable,
-    ui::output::Console,
-};
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::output::Console;
+use restate_cli_util::ui::stylesheet;
+use restate_cli_util::{c_indent_table, c_println, c_tip, c_warn, CliContext};
 
 use super::remote::RemotePort;
 
@@ -44,8 +40,8 @@ impl TunnelRenderer {
     pub(crate) fn new(remote_ports: &[RemotePort]) -> std::io::Result<Self> {
         // Redirect console output to in-memory buffer
         let console = Console::in_memory();
-        crate::ui::output::set_stdout(console.clone());
-        crate::ui::output::set_stderr(console);
+        restate_cli_util::ui::output::set_stdout(console.clone());
+        restate_cli_util::ui::output::set_stderr(console);
 
         queue!(
             std::io::stdout(),
@@ -85,9 +81,7 @@ impl TunnelRenderer {
         };
         let rows = rows as usize;
 
-        let mut tunnel_table = Table::new_styled(&UiConfig {
-            table_style: TableStyle::Compact,
-        });
+        let mut tunnel_table = Table::new_styled();
 
         tunnel_table.set_header(vec![
             comfy_table::Cell::new(format!(" {} ", stylesheet::TIP_ICON))
@@ -153,7 +147,7 @@ impl TunnelRenderer {
             );
         }
 
-        let b = if let Some(b) = crate::ui::output::stdout().take_buffer() {
+        let b = if let Some(b) = restate_cli_util::ui::output::stdout().take_buffer() {
             b
         } else {
             return;
@@ -162,7 +156,7 @@ impl TunnelRenderer {
         let mut output = "restate cloud environment tunnel - Press Ctrl-C to exit".to_string();
         let line_count = b.lines().count();
 
-        let logo = restate_types::art::render_restate_logo(crate::console::colors_enabled());
+        let logo = restate_types::art::render_restate_logo(CliContext::get().colors_enabled());
         let logo_line_count = logo.lines().count();
 
         if line_count + logo_line_count + 3 < rows {
@@ -250,8 +244,8 @@ impl Drop for TunnelRenderer {
             crossterm::cursor::MoveToPreviousLine(1),
         )
         .unwrap();
-        crate::ui::output::set_stdout(Console::stdout());
-        crate::ui::output::set_stderr(Console::stderr());
+        restate_cli_util::ui::output::set_stdout(Console::stdout());
+        restate_cli_util::ui::output::set_stderr(Console::stderr());
         println!();
     }
 }

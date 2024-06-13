@@ -7,18 +7,18 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use anyhow::{bail, Result};
+use cling::prelude::*;
+
+use restate_cli_util::ui::console::{confirm_or_exit, Styled};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{c_println, c_success};
+use restate_types::identifiers::InvocationId;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
-use crate::ui::console::{confirm_or_exit, Styled};
 use crate::ui::invocations::render_simple_invocation_list;
-use crate::ui::stylesheet::Style;
-use crate::{c_println, c_success};
-
-use anyhow::{bail, Result};
-use cling::prelude::*;
-use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_cancel")]
@@ -62,7 +62,7 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
         bail!("No invocations found for query {}!", opts.query);
     };
 
-    render_simple_invocation_list(&env, &invocations);
+    render_simple_invocation_list(&invocations);
 
     // Get the invocation and confirm
     let prompt = format!(
@@ -73,7 +73,7 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
             Styled(Style::Warn, "cancel")
         },
     );
-    confirm_or_exit(&env, &prompt)?;
+    confirm_or_exit(&prompt)?;
 
     for inv in invocations {
         let result = client.cancel_invocation(&inv.id, opts.kill).await?;

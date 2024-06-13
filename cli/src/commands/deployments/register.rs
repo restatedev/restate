@@ -12,25 +12,25 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 
+use anyhow::Result;
+use cling::prelude::*;
+use comfy_table::Table;
+use http::{HeaderName, HeaderValue, StatusCode, Uri};
+use indicatif::ProgressBar;
+
+use restate_admin_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
+use restate_admin_rest_model::services::ServiceMetadata;
+use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
+
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
 use crate::console::c_println;
-use crate::ui::console::{confirm_or_exit, Styled, StyledTable};
 use crate::ui::deployments::render_deployment_url;
 use crate::ui::service_handlers::{
     create_service_handlers_table, create_service_handlers_table_diff, icon_for_service_type,
 };
-use crate::ui::stylesheet::Style;
-use crate::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
-
-use http::{HeaderName, HeaderValue, StatusCode, Uri};
-use restate_admin_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
-
-use anyhow::Result;
-use cling::prelude::*;
-use comfy_table::Table;
-use indicatif::ProgressBar;
-use restate_admin_rest_model::services::ServiceMetadata;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
@@ -281,10 +281,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 icon_for_service_type(&service.ty),
             );
 
-            c_indent_table!(
-                2,
-                create_service_handlers_table(&env.ui_config, &service.handlers)
-            );
+            c_indent_table!(2, create_service_handlers_table(&service.handlers));
             c_println!();
         }
         c_println!();
@@ -360,18 +357,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     );
                 }
 
-                let tt = create_service_handlers_table_diff(
-                    &env.ui_config,
-                    &existing_svc.handlers,
-                    &svc.handlers,
-                );
+                let tt = create_service_handlers_table_diff(&existing_svc.handlers, &svc.handlers);
                 c_indent_table!(2, tt);
             } else {
-                c_indentln!(
-                    2,
-                    "{}",
-                    create_service_handlers_table(&env.ui_config, &svc.handlers)
-                );
+                c_indentln!(2, "{}", create_service_handlers_table(&svc.handlers));
             }
             c_println!();
         }
@@ -399,7 +388,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         }
     }
 
-    confirm_or_exit(&env, "Are you sure you want to apply those changes?")?;
+    confirm_or_exit("Are you sure you want to apply those changes?")?;
 
     let progress = ProgressBar::new_spinner();
     progress
@@ -423,7 +412,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     progress.finish_and_clear();
     // print the result of the discovery
     c_success!("DEPLOYMENT:");
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["SERVICE", "REV"]);
     for svc in dry_run_result.services {
         table.add_row(vec![svc.name, svc.revision.to_string()]);
