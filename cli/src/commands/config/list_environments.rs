@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{
-    c_println,
-    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE},
-    console::StyledTable,
-};
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment, Profile,
+};
+
+use restate_cli_util::c_println;
+
+use crate::{
+    cli_env::{CliConfig, CliEnv, LOCAL_PROFILE},
+    console::StyledTable,
 };
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -41,7 +43,7 @@ pub async fn run_list_environments(
         figment = figment.merge(Toml::file_exact(env.config_file).nested());
     }
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     let header = vec!["CURRENT", "NAME", "ADMIN_BASE_URL"];
     table.set_styled_header(header);
 

@@ -10,21 +10,18 @@
 
 //! Resolves restate's CLI default data/config directory paths
 
-#[cfg(test)]
-use std::collections::HashMap;
 use std::fmt::Display;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use dotenvy::dotenv;
 use figment::providers::{Format, Serialized, Toml};
 use figment::{Figment, Profile};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::app::{GlobalOpts, UiConfig};
+use restate_cli_util::OsEnv;
+
+use crate::app::GlobalOpts;
 
 pub const CONFIG_FILENAME: &str = "config.toml";
 
@@ -86,20 +83,9 @@ pub enum EnvironmentType {
 
 #[derive(Clone)]
 pub struct CliEnv {
-    pub loaded_env_file: Option<PathBuf>,
     pub config_home: PathBuf,
     pub config_file: PathBuf,
     pub environment_file: PathBuf,
-    /// Should we use colors and emojis or not?
-    pub colorful: bool,
-    /// Auto answer yes to prompts that asks for confirmation
-    pub auto_confirm: bool,
-    /// Timeout for the connect phase of the request.
-    pub connect_timeout: Duration,
-    /// Overall request timeout.
-    pub request_timeout: Option<Duration>,
-    /// UI Configuration
-    pub ui_config: UiConfig,
 
     /// Default text editor for state editing
     pub editor: Option<String>,
@@ -140,9 +126,6 @@ impl CliEnv {
 
     /// Loading CliEnv with a custom OsEnv. OsEnv can be customised in cfg(test)
     pub fn load_from_env(os_env: &OsEnv, global_opts: &GlobalOpts) -> Result<Self> {
-        // Load .env file. Best effort.
-        let maybe_env = dotenv();
-
         let config_home = os_env
             .get(CLI_CONFIG_HOME_ENV)
             .map(|x| Ok(PathBuf::from(x)))
@@ -178,45 +161,6 @@ impl CliEnv {
             .or_else(|| os_env.get("VISUAL"))
             .or_else(|| os_env.get("EDITOR"));
 
-        // color setup
-        // NO_COLOR=1 with any value other than "0" means user doesn't want colors.
-        // e.g.
-        //  NO_COLOR=1 (no colors)
-        //  NO_COLOR=true (no colors)
-        //  NO_COLOR=something (no colors)
-        //  NO_COLOR=0 or unset (yes *color* if term supports it)
-        let should_color = os_env
-            .get("NO_COLOR")
-            .map(|x| x == "0")
-            .unwrap_or_else(|| true);
-
-        // dumb terminal? no colors or fancy stuff
-        let smart_term = os_env
-            .get("TERM")
-            .map(|x| x != "dumb")
-            .unwrap_or_else(|| true);
-
-        // CLICOLOR_FORCE is set? enforce coloring..
-        // Se http://bixense.com/clicolors/ for details.
-        let force_colorful = os_env
-            .get("CLICOLOR_FORCE")
-            .map(|x| x != "0")
-            .unwrap_or_else(|| false);
-
-        let colorful = if force_colorful {
-            // CLICOLOR_FORCE is set, we enforce coloring
-            true
-        } else {
-            // We colorize only if it's a smart terminal (not TERM=dumb, nor pipe)
-            // and NO_COLOR is anything but "0"
-            let is_terminal = std::io::stdout().is_terminal();
-            is_terminal && smart_term && should_color
-        };
-
-        // Ensure we follows our colorful setting in our console utilities
-        // without passing the environment around.
-        crate::console::set_colors_enabled(colorful);
-
         let defaults = CliConfig::default();
         let local = CliConfig::local();
 
@@ -231,15 +175,9 @@ impl CliEnv {
         figment = Self::merge_with_env(os_env, figment)?;
 
         Ok(Self {
-            loaded_env_file: maybe_env.ok(),
             config_home,
             config_file,
             environment_file,
-            connect_timeout: Duration::from_millis(global_opts.connect_timeout),
-            request_timeout: global_opts.request_timeout.map(Duration::from_millis),
-            colorful,
-            auto_confirm: global_opts.yes,
-            ui_config: global_opts.ui_config.clone(),
             editor: default_editor,
             environment,
             environment_source,
@@ -381,44 +319,10 @@ fn default_config_home() -> Result<PathBuf> {
         .join("Restate"))
 }
 
-/// Wrapper over the OS environment variables that uses a hashmap in test cfg to
-/// enable testing.
-#[derive(Default)]
-pub struct OsEnv<'a> {
-    /// Environment variable mocks
-    #[cfg(test)]
-    pub env: HashMap<&'a str, String>,
-
-    #[cfg(not(test))]
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl<'a> OsEnv<'a> {
-    // Retrieves a environment variable from the os or from a table if in testing mode
-    #[cfg(test)]
-    pub fn get<K: AsRef<str>>(&self, key: K) -> Option<String> {
-        self.env.get(key.as_ref()).map(ToString::to_string)
-    }
-
-    #[cfg(not(test))]
-    #[inline]
-    pub fn get<K: AsRef<str>>(&self, key: K) -> Option<String> {
-        std::env::var(key.as_ref()).ok()
-    }
-
-    #[cfg(test)]
-    pub fn insert(&mut self, k: &'a str, v: String) -> Option<String> {
-        self.env.insert(k, v)
-    }
-
-    #[cfg(test)]
-    pub fn clear(&mut self) {
-        self.env.clear();
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use restate_cli_util::OsEnv;
+
     use super::*;
 
     #[test]
@@ -527,18 +431,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    #[test]
-    fn test_default_timeout_applied() {
-        let opts = &GlobalOpts {
-            connect_timeout: 1000,
-            request_timeout: Some(5000),
-            ..GlobalOpts::default()
-        };
-        let cli_env = CliEnv::load_from_env(&OsEnv::default(), opts).unwrap();
-        assert_eq!(cli_env.connect_timeout, Duration::from_millis(1000));
-        assert_eq!(cli_env.request_timeout, Some(Duration::from_millis(5000)));
     }
 
     #[test]

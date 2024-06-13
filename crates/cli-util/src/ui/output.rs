@@ -11,12 +11,12 @@
 use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 
 const BUF_INITIAL_CAPACITY: usize = 2048;
 
-static GLOBAL_STDOUT_CONSOLE: OnceCell<Console> = OnceCell::new();
-static GLOBAL_STDERR_CONSOLE: OnceCell<Console> = OnceCell::new();
+static GLOBAL_STDOUT_CONSOLE: OnceLock<Console> = OnceLock::new();
+static GLOBAL_STDERR_CONSOLE: OnceLock<Console> = OnceLock::new();
 
 pub fn set_stdout(out: Console) {
     let _ = GLOBAL_STDOUT_CONSOLE.set(out);

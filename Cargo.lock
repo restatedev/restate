@@ -5405,7 +5405,6 @@ dependencies = [
  "ctrlc",
  "dialoguer",
  "dirs",
- "dotenvy",
  "figment",
  "futures",
  "http 0.2.12",
@@ -5418,10 +5417,10 @@ dependencies = [
  "itertools 0.11.0",
  "jsonwebtoken",
  "octocrab",
- "once_cell",
  "open",
  "reqwest",
  "restate-admin-rest-model",
+ "restate-cli-util",
  "restate-serde-util",
  "restate-service-protocol",
  "restate-types",
@@ -5437,14 +5436,34 @@ dependencies = [
  "toml_edit 0.22.13",
  "tower",
  "tracing",
- "tracing-log",
- "tracing-subscriber",
  "typify 0.1.0",
  "unicode-width",
  "url",
  "uuid",
  "vergen",
  "zip",
+]
+
+[[package]]
+name = "restate-cli-util"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "chrono",
+ "chrono-humanize",
+ "clap",
+ "clap-verbosity-flag",
+ "cling",
+ "comfy-table",
+ "crossterm 0.27.0",
+ "dialoguer",
+ "dotenvy",
+ "parking_lot",
+ "tokio",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6435,6 +6454,26 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "restatectl"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap-verbosity-flag",
+ "cling",
+ "crossterm 0.27.0",
+ "ctrlc",
+ "restate-cli-util",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "vergen",
 ]
 
 [[package]]

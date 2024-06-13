@@ -8,19 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::console::c_println;
-use crate::ui::console::{confirm_or_exit, StyledTable};
-
-use crate::c_title;
-use crate::commands::state::util::{
-    as_json, compute_version, from_json, get_current_state, pretty_print_json, read_json_file,
-    update_state, write_json_file,
-};
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use tempfile::tempdir;
+
+use restate_cli_util::ui::console::{confirm_or_exit, StyledTable};
+use restate_cli_util::{c_println, c_title};
+
+use crate::cli_env::CliEnv;
+use crate::commands::state::util::{
+    as_json, compute_version, from_json, get_current_state, pretty_print_json, read_json_file,
+    update_state, write_json_file,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_edit")]
@@ -59,7 +59,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     // confirm change
     //
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["", ""]);
     table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
@@ -71,13 +71,13 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     c_println!();
 
     c_title!("ℹ️ ", "New State");
-    c_println!("{}", pretty_print_json(env, &modified_state_json)?);
+    c_println!("{}", pretty_print_json(&modified_state_json)?);
     c_println!();
 
     c_println!("About to submit the new state mutation to the system for processing.");
     c_println!("If there are currently active invocations, then this mutation will be enqueued to be processed after them.");
     c_println!();
-    confirm_or_exit(env, "Are you sure?")?;
+    confirm_or_exit("Are you sure?")?;
 
     c_println!();
 

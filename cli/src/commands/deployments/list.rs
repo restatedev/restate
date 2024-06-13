@@ -10,26 +10,26 @@
 
 use std::collections::HashMap;
 
-use crate::c_error;
+use anyhow::Result;
+use cling::prelude::*;
+use comfy_table::{Cell, Table};
+
+use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
+use restate_admin_rest_model::services::ServiceMetadata;
+use restate_cli_util::c_error;
+use restate_cli_util::ui::console::{Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+use restate_types::identifiers::DeploymentId;
+
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::AdminClientInterface;
 use crate::console::c_println;
-use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
     calculate_deployment_status, render_active_invocations, render_deployment_status,
     render_deployment_type, render_deployment_url, DeploymentStatus,
 };
-use crate::ui::stylesheet::Style;
-use crate::ui::watcher::Watch;
-
-use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
-
-use anyhow::Result;
-use cling::prelude::*;
-use comfy_table::{Cell, Table};
-use restate_admin_rest_model::services::ServiceMetadata;
-use restate_types::identifiers::DeploymentId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -72,7 +72,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         latest_services.insert(service.name.clone(), service);
     }
     //
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     let mut header = vec![
         "DEPLOYMENT",
         "TYPE",

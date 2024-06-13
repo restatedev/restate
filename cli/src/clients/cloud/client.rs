@@ -10,12 +10,15 @@
 
 //! A wrapper client for Restate Cloud HTTP service.
 
+use std::time::Duration;
+
 use http::StatusCode;
 use serde::{de::DeserializeOwned, Serialize};
-use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
+
+use restate_cli_util::CliContext;
 
 use crate::build_info;
 use crate::cli_env::CliEnv;
@@ -88,8 +91,6 @@ pub struct CloudClient {
     pub(crate) request_timeout: Duration,
 }
 
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 impl CloudClient {
     pub fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let access_token = if let Some(credentials) = &env.config.cloud.credentials {
@@ -108,14 +109,14 @@ impl CloudClient {
                 std::env::consts::OS,
                 std::env::consts::ARCH,
             ))
-            .connect_timeout(env.connect_timeout)
+            .connect_timeout(CliContext::get().connect_timeout())
             .build()?;
 
         Ok(Self {
             inner: raw_client,
             base_url: env.config.cloud.api_base_url.clone(),
             access_token,
-            request_timeout: env.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+            request_timeout: CliContext::get().request_timeout(),
         })
     }
 

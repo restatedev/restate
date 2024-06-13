@@ -1,0 +1,32 @@
+[package]
+name = "restatectl"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-cli-util = { workspace = true } 
+
+anyhow = { workspace = true }
+clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
+clap-verbosity-flag = { version = "2.0.1" }
+cling = { version = "0.1.0", default-features = false, features = ["derive"] }
+crossterm = { version = "0.27.0" }
+ctrlc = { version = "3.4" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-log = { version = "0.2" }
+
+[build-dependencies]
+vergen = { version = "8", default-features = false, features = [
+    "build",
+    "git",
+    "gitcl",
+    "cargo",
+] }

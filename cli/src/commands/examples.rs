@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::console::{c_println, Styled};
-use crate::ui::stylesheet::Style;
+use std::collections::HashMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
 use anyhow::{anyhow, bail, Context, Result};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
@@ -18,11 +20,12 @@ use dialoguer::Select;
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
-use std::collections::HashMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+
+use restate_cli_util::ui::stylesheet::Style;
+
+use crate::console::{c_println, Styled};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]

@@ -15,19 +15,20 @@ use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_admin_rest_model::services::ServiceMetadata;
+use restate_cli_util::ui::console::{Styled, StyledTable};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::console::{Styled, StyledTable};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
 };
 use crate::ui::service_handlers::icon_for_service_type;
-use crate::ui::stylesheet::Style;
-use crate::ui::watcher::Watch;
-use crate::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
+
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -82,7 +83,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         &latest_services,
     );
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.add_kv_row("ID:", deployment.id);
 
     add_deployment_to_kv_table(&deployment.deployment, &mut table);
@@ -133,7 +134,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             service.revision,
             latest_revision_message
         );
-        let mut methods_table = Table::new_styled(&env.ui_config);
+        let mut methods_table = Table::new_styled();
         methods_table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT", "ACTIVE INVOCATIONS"]);
 
         for handler in &service.handlers {

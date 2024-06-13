@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::console::StyledTable;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+
 use anyhow::{anyhow, bail, Context};
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
@@ -18,13 +20,14 @@ use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_admin_rest_model::services::{ModifyServiceStateRequest, ServiceType};
-use restate_types::state_mut::StateMutationVersion;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::Path;
+
+use restate_admin_rest_model::services::{ModifyServiceStateRequest, ServiceType};
+use restate_cli_util::ui::console::StyledTable;
+use restate_types::state_mut::StateMutationVersion;
+
+use crate::cli_env::CliEnv;
+use crate::clients::{AdminClient, AdminClientInterface};
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 pub struct StateEntriesQueryResult {
@@ -182,8 +185,8 @@ pub(crate) fn read_json_file(path: &Path) -> anyhow::Result<Value> {
     }
 }
 
-pub(crate) fn pretty_print_json(env: &CliEnv, value: &Value) -> anyhow::Result<Table> {
-    let mut table = Table::new_styled(&env.ui_config);
+pub(crate) fn pretty_print_json(value: &Value) -> anyhow::Result<Table> {
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["KEY", "VALUE"]);
 
     let object = pretty_print_json_object(value)?;
