@@ -1021,7 +1021,7 @@ mod tests {
     use bytes::Bytes;
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
-    use restate_invoker_api::mocks::EmptyStorageReader;
+    use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_types::arc_util::Constant;
     use restate_types::config::InvokerOptionsBuilder;
     use tempfile::tempdir;
@@ -1030,7 +1030,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use restate_invoker_api::{entry_enricher, ServiceHandle};
-    use restate_schema_api::deployment::mocks::MockDeploymentMetadataRegistry;
+    use restate_schema_api::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::journal::enriched::EnrichedEntryHeader;
@@ -1161,7 +1161,7 @@ mod tests {
                 restate_service_client::AssumeRoleCacheMode::None,
             )
             .unwrap(),
-            entry_enricher::mocks::MockEntryEnricher,
+            entry_enricher::test_util::MockEntryEnricher,
         );
 
         let mut handle = service.handle();

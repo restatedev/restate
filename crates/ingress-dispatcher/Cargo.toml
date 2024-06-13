@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-mocks = ["dep:restate-test-util"]
+test-util = ["dep:restate-test-util"]
 
 [dependencies]
 restate-bifrost = { workspace = true }

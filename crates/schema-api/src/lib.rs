@@ -188,8 +188,8 @@ pub mod deployment {
         fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
     }
 
-    #[cfg(feature = "mocks")]
-    pub mod mocks {
+    #[cfg(feature = "test-util")]
+    pub mod test_util {
         use super::*;
 
         use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION_VALUE;
@@ -413,9 +413,9 @@ pub mod service {
         fn list_services(&self) -> Vec<ServiceMetadata>;
     }
 
-    #[cfg(feature = "mocks")]
+    #[cfg(feature = "test-util")]
     #[allow(dead_code)]
-    pub mod mocks {
+    pub mod test_util {
         use super::*;
 
         use std::collections::HashMap;

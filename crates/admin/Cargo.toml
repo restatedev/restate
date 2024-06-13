@@ -52,7 +52,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 restate-schema = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 
 tempfile = { workspace = true }

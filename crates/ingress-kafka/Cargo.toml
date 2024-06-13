@@ -33,9 +33,9 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
-restate-ingress-dispatcher = { workspace = true, features = ["mocks"] }
+restate-ingress-dispatcher = { workspace = true, features = ["test-util"] }
 restate-schema = { workspace = true }
-restate-schema-api = { workspace = true, features = ["mocks"] }
+restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 

@@ -58,11 +58,11 @@ mod mocks {
     use super::*;
 
     use anyhow::Error;
-    use restate_schema_api::invocation_target::mocks::MockInvocationTargetResolver;
+    use restate_schema_api::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_schema_api::invocation_target::{
         InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
     };
-    use restate_schema_api::service::mocks::MockServiceMetadataResolver;
+    use restate_schema_api::service::test_util::MockServiceMetadataResolver;
     use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
     use restate_types::identifiers::DeploymentId;
     use restate_types::ingress::InvocationResponse;

@@ -11,7 +11,7 @@ publish = false
 default = []
 
 deployment = ["dep:restate-types", "dep:http", "dep:base64", "dep:restate-base64-util", "dep:bytestring", "service"]
-mocks = []
+test-util = []
 serde = ["dep:serde", "dep:serde_with", "dep:restate-serde-util"]
 serde_schema = ["serde", "dep:schemars", "restate-types?/schemars", "restate-serde-util?/schema"]
 service = ["dep:bytes", "dep:restate-types", "dep:humantime"]

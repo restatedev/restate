@@ -276,8 +276,8 @@ impl IngressDispatcherRequest {
     }
 }
 
-#[cfg(feature = "mocks")]
-pub mod mocks {
+#[cfg(feature = "test-util")]
+pub mod test_util {
     use super::*;
 
     use crate::error::IngressDispatchError;

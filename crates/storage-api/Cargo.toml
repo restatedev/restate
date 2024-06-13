@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-mocks = []
+test-util = []
 serde = ["dep:serde"]
 
 [dependencies]

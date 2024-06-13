@@ -246,7 +246,7 @@ mod tests {
     use hyper_util::client::legacy::Client;
     use hyper_util::rt::TokioExecutor;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
-    use restate_ingress_dispatcher::mocks::MockDispatcher;
+    use restate_ingress_dispatcher::test_util::MockDispatcher;
     use restate_ingress_dispatcher::{IngressDispatcherRequest, IngressInvocationResponse};
     use restate_test_util::assert_eq;
     use restate_types::identifiers::InvocationId;

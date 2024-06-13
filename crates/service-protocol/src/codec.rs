@@ -161,8 +161,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
     }
 }
 
-#[cfg(feature = "mocks")]
-mod mocks {
+#[cfg(feature = "test-util")]
+mod test_util {
     use std::str::FromStr;
 
     use super::*;

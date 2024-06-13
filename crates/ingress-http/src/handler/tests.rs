@@ -24,7 +24,7 @@ use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_core::TestCoreEnv;
-use restate_ingress_dispatcher::mocks::MockDispatcher;
+use restate_ingress_dispatcher::test_util::MockDispatcher;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
 use restate_schema_api::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
