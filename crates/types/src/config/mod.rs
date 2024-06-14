@@ -68,24 +68,34 @@ static NODE_BASE_DIR: Lazy<std::sync::RwLock<TempOrPath>> =
 pub type UpdateableConfiguration = Arc<ArcSwap<Configuration>>;
 
 #[cfg(not(any(test, feature = "test-util")))]
-fn data_dir(dir: &str) -> PathBuf {
+pub fn node_dir() -> PathBuf {
     NODE_BASE_DIR
         .get()
         .expect("base_dir is initialized")
-        .join(dir)
+        .clone()
+}
+
+#[cfg(not(any(test, feature = "test-util")))]
+fn data_dir(dir: &str) -> PathBuf {
+    node_dir().join(dir)
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub fn node_dir() -> PathBuf {
+    let guard = NODE_BASE_DIR.read().unwrap();
+    match &*guard {
+        TempOrPath::Temp(temp) => temp.path().to_path_buf(),
+        TempOrPath::Path(path) => path.clone(),
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn data_dir(dir: &str) -> PathBuf {
-    let guard = NODE_BASE_DIR.read().unwrap();
-    match &*guard {
-        TempOrPath::Temp(temp) => temp.path().join(dir),
-        TempOrPath::Path(path) => path.join(dir),
-    }
+    node_dir().join(dir)
 }
 
 pub fn node_filepath(filename: &str) -> PathBuf {
-    data_dir(filename)
+    node_dir().join(filename)
 }
 
 #[cfg(any(test, feature = "test-util"))]
