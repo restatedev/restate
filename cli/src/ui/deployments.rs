@@ -136,7 +136,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 table.add_kv_row_if(
                     || assume_role_arn.is_some(),
                     "Deployment Assume Role ARN:",
-                    assume_role_arn.as_ref().unwrap(),
+                    || assume_role_arn.as_ref().unwrap(),
                 );
 
                 table.add_kv_row("Endpoint:", arn);

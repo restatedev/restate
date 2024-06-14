@@ -84,14 +84,14 @@ pub trait StyledTable {
     fn new_styled() -> Self;
     fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self;
     fn add_kv_row<V: Into<comfy_table::Cell>>(&mut self, key: &str, value: V) -> &mut Self;
-    fn add_kv_row_if<P: Fn() -> bool, V: Display>(
+    fn add_kv_row_if<P: Fn() -> bool, V: Fn() -> D, D: Display>(
         &mut self,
         predicate: P,
         key: &str,
         value: V,
     ) -> &mut Self {
         if predicate() {
-            self.add_kv_row(key, value)
+            self.add_kv_row(key, value())
         } else {
             self
         }
