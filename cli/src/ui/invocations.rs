@@ -13,16 +13,16 @@ use comfy_table::{Attribute, Cell, Table};
 use dialoguer::console::style;
 use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
+use restate_cli_util::c_indent_table;
+use restate_cli_util::c_indentln;
+use restate_cli_util::c_println;
+use restate_cli_util::ui::console::Icon;
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::duration_to_human_precise;
 
-use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::JournalEntryType;
 use crate::clients::datafusion_helpers::{Invocation, InvocationState};
 use crate::clients::datafusion_helpers::{JournalEntry, SimpleInvocation};
-use crate::ui::console::Icon;
-use crate::ui::console::StyledTable;
-use crate::{c_indent_table, c_indentln, c_println};
-
-use super::duration_to_human_precise;
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();
@@ -211,8 +211,8 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
     }
 }
 
-pub fn render_simple_invocation_list(env: &CliEnv, invocations: &[SimpleInvocation]) {
-    let mut invocations_table = Table::new_styled(&env.ui_config);
+pub fn render_simple_invocation_list(invocations: &[SimpleInvocation]) {
+    let mut invocations_table = Table::new_styled();
     invocations_table.set_styled_header(vec!["ID", "TARGET", "STATUS"]);
 
     for inv in invocations {
@@ -230,9 +230,9 @@ pub fn render_simple_invocation_list(env: &CliEnv, invocations: &[SimpleInvocati
 //    Status:      backing-off  (Retried 67 time(s). Next retry in in 9 seconds and 616 ms))
 //    Deployment:  bG9jYWxob3N0OjkwODEv
 //    Error:       [Internal] other client error: error trying to connect: tcp connect error: Connection refused (os error 61)
-pub fn render_invocation_compact(env: &CliEnv, invocation: &Invocation) {
+pub fn render_invocation_compact(invocation: &Invocation) {
     c_indentln!(1, "{}", invocation_header(invocation));
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     add_invocation_to_kv_table(&mut table, invocation);
     c_indent_table!(2, table);
     c_println!();

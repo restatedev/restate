@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use cling::prelude::*;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use remote::RemotePort;
-
-use std::sync::Arc;
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+use restate_cli_util::CliContext;
 
 use crate::cli_env::EnvironmentType;
 use crate::clients::cloud::{CloudClient, CloudClientInterface};
@@ -101,7 +103,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
             std::env::consts::OS,
             std::env::consts::ARCH,
         ))
-        .connect_timeout(env.connect_timeout)
+        .connect_timeout(CliContext::get().connect_timeout())
         .http2_prior_knowledge()
         .build()?;
 

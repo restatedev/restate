@@ -9,11 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use anyhow::Result;
-use clap_verbosity_flag::LogLevel;
 use cling::prelude::*;
 use figment::Profile;
 use tracing::info;
-use tracing_log::AsTrace;
+
+use restate_cli_util::{CliContext, CommonOpts};
 
 use crate::cli_env::{CliEnv, EnvironmentSource};
 use crate::commands::*;
@@ -23,49 +23,15 @@ use crate::commands::*;
 #[cling(run = "init")]
 pub struct CliApp {
     #[clap(flatten)]
-    #[cling(collect)]
-    pub verbose: clap_verbosity_flag::Verbosity<Quiet>,
+    pub common_opts: CommonOpts,
     #[clap(flatten)]
     pub global_opts: GlobalOpts,
     #[clap(subcommand)]
     pub cmd: Command,
 }
 
-#[derive(Args, Clone, Default)]
-pub struct UiConfig {
-    /// Which table output style to use
-    #[arg(long, default_value = "compact", global = true)]
-    pub table_style: TableStyle,
-}
-
-#[derive(ValueEnum, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TableStyle {
-    #[default]
-    /// No borders, condensed layout
-    Compact,
-    /// UTF8 borders, good for multiline text
-    Borders,
-}
-
-const DEFAULT_CONNECT_TIMEOUT: u64 = 5_000;
-
 #[derive(Args, Collect, Clone, Default)]
 pub struct GlobalOpts {
-    /// Auto answer "yes" to confirmation prompts
-    #[arg(long, short, global = true)]
-    pub yes: bool,
-
-    /// Connection timeout for service interactions, in milliseconds.
-    #[arg(long, default_value_t = DEFAULT_CONNECT_TIMEOUT, global = true)]
-    pub connect_timeout: u64,
-
-    /// Overall request timeout for service interactions, in milliseconds.
-    #[arg(long, global = true)]
-    pub request_timeout: Option<u64>,
-
-    #[clap(flatten)]
-    pub ui_config: UiConfig,
-
     /// Environment to select from the config file. Environment is read from these sources in order of precedence:
     ///
     /// 1. This command line argument
@@ -111,18 +77,9 @@ pub enum Command {
     Cloud(cloud::Cloud),
 }
 
-fn init(
-    Collected(verbosity): Collected<clap_verbosity_flag::Verbosity<Quiet>>,
-    global_opts: &GlobalOpts,
-) -> Result<State<CliEnv>> {
+fn init(common_opts: &CommonOpts, global_opts: &GlobalOpts) -> Result<State<CliEnv>> {
+    CliContext::new(common_opts.clone()).set_as_global();
     let env = CliEnv::load(global_opts)?;
-    // Setup logging from env and from -v .. -vvvv
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_max_level(verbosity.log_level_filter().as_trace())
-        .with_ansi(env.colorful)
-        .init();
 
     match &env.environment_source {
         EnvironmentSource::Argument => {
@@ -139,23 +96,5 @@ fn init(
         }
     }
 
-    // We only log after we've initialized the logger with the desired log
-    // level.
-    match &env.loaded_env_file {
-        Some(path) => {
-            info!("Loaded .env file from: {}", path.display())
-        }
-        None => info!("Didn't load '.env' file"),
-    };
-
     Ok(State(env))
-}
-
-/// Silent (no) logging by default in CLI
-#[derive(Clone)]
-pub struct Quiet;
-impl LogLevel for Quiet {
-    fn default() -> Option<tracing_log::log::Level> {
-        None
-    }
 }

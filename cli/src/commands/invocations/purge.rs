@@ -11,12 +11,12 @@
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
-use crate::ui::console::confirm_or_exit;
 use crate::ui::invocations::render_simple_invocation_list;
-use crate::{c_println, c_success};
 
 use anyhow::{bail, Result};
 use cling::prelude::*;
+use restate_cli_util::ui::console::confirm_or_exit;
+use restate_cli_util::{c_println, c_success};
 use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -61,10 +61,10 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
         bail!("No invocations found for query {}! Note that the purge command works only on completed invocations. If you need to cancel/kill an invocation, consider using the cancel command.", opts.query);
     };
 
-    render_simple_invocation_list(&env, &invocations);
+    render_simple_invocation_list(&invocations);
 
     // Get the invocation and confirm
-    confirm_or_exit(&env, "Are you sure you want to purge these invocations?")?;
+    confirm_or_exit("Are you sure you want to purge these invocations?")?;
 
     for inv in invocations {
         let result = client.purge_invocation(&inv.id).await?;

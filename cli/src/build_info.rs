@@ -11,7 +11,7 @@
 //! Build information
 #![allow(dead_code)]
 
-use once_cell::sync::Lazy;
+use std::sync::OnceLock;
 
 /// The version of restate CLI.
 pub const RESTATE_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,7 +34,7 @@ pub const RESTATE_CLI_DEBUG: &str = env!("VERGEN_CARGO_DEBUG");
 pub const RESTATE_CLI_BUILD_FEATURES: &str = env!("VERGEN_CARGO_FEATURES");
 
 /// Returns build information, e.g: 0.0.1-dev (debug) (2ba1491 aarch64-apple-darwin 2023-11-21)
-pub fn build_info() -> String {
+fn build_info() -> String {
     format!(
         "{RESTATE_CLI_VERSION}{} ({RESTATE_CLI_COMMIT_SHA} {RESTATE_CLI_TARGET_TRIPLE} {RESTATE_CLI_BUILD_DATE})",
         if RESTATE_CLI_DEBUG == "true" {
@@ -45,8 +45,8 @@ pub fn build_info() -> String {
     )
 }
 
-static VERSION: Lazy<String> = Lazy::new(build_info);
+static VERSION: OnceLock<String> = OnceLock::new();
 
 pub fn version() -> &'static str {
-    &VERSION
+    VERSION.get_or_init(build_info)
 }

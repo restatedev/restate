@@ -9,6 +9,9 @@
 // by the Apache License, Version 2.0.
 //
 
+use std::io;
+use std::time::Instant;
+
 use anyhow::Result;
 use arrow::error::ArrowError;
 use arrow::util::display::ArrayFormatter;
@@ -18,16 +21,15 @@ use comfy_table::Cell;
 use comfy_table::Table;
 use serde::Deserialize;
 use serde::Serialize;
-use std::io;
-use std::time::Instant;
 
-use crate::c_eprintln;
-use crate::c_println;
+use restate_cli_util::c_eprintln;
+use restate_cli_util::c_println;
+use restate_cli_util::ui::console::Styled;
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+
 use crate::cli_env::CliEnv;
-use crate::ui::console::Styled;
-use crate::ui::console::StyledTable;
-use crate::ui::stylesheet::Style;
-use crate::ui::watcher::Watch;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_sql")]
@@ -61,7 +63,7 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
     let start_time = Instant::now();
     let resp = client.run_query(sql_opts.query.clone()).await?;
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     // add headers.
     let mut headers = vec![];
     for col in resp.schema.fields() {
