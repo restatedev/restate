@@ -31,7 +31,7 @@ use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_tracing_instrumentation::TracingGuard;
 use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
-use restate_types::config::Configuration;
+use restate_types::config::{node_dir, Configuration};
 
 mod signal;
 
@@ -84,29 +84,21 @@ enum WipeMode {
 }
 
 impl WipeMode {
-    async fn wipe(
-        mode: Option<&WipeMode>,
-        worker_storage_dir: PathBuf,
-        local_loglet_storage_dir: PathBuf,
-        local_metadata_store_storage_dir: PathBuf,
-    ) -> io::Result<()> {
-        let (wipe_worker, wipe_local_loglet, wipe_local_metadata_store) = match mode {
-            Some(WipeMode::Worker) => (true, true, false),
-            Some(WipeMode::LocalLoglet) => (false, true, false),
-            Some(WipeMode::LocalMetadataStore) => (false, false, true),
-            Some(WipeMode::All) => (true, true, true),
-            None => (false, false, false),
-        };
+    async fn wipe(mode: Option<&WipeMode>, config: &Configuration) -> io::Result<()> {
+        match mode {
+            Some(WipeMode::Worker) => {
+                restate_fs_util::remove_dir_all_if_exists(config.worker.storage.data_dir()).await?
+            }
+            Some(WipeMode::LocalLoglet) => {
+                restate_fs_util::remove_dir_all_if_exists(config.bifrost.local.data_dir()).await?
+            }
+            Some(WipeMode::LocalMetadataStore) => {
+                restate_fs_util::remove_dir_all_if_exists(config.metadata_store.data_dir()).await?
+            }
+            Some(WipeMode::All) => restate_fs_util::remove_dir_all_if_exists(node_dir()).await?,
+            _ => {}
+        }
 
-        if wipe_worker {
-            restate_fs_util::remove_dir_all_if_exists(worker_storage_dir).await?;
-        }
-        if wipe_local_loglet {
-            restate_fs_util::remove_dir_all_if_exists(local_loglet_storage_dir).await?;
-        }
-        if wipe_local_metadata_store {
-            restate_fs_util::remove_dir_all_if_exists(local_metadata_store_storage_dir).await?
-        }
         Ok(())
     }
 }
@@ -209,14 +201,9 @@ fn main() {
             {
                 let config = Configuration::pinned();
 
-                WipeMode::wipe(
-                    cli_args.wipe.as_ref(),
-                    config.worker.storage.data_dir(),
-                    config.bifrost.local.data_dir(),
-                    config.metadata_store.data_dir(),
-                )
-                .await
-                .expect("Error when trying to wipe the configured storage path");
+                WipeMode::wipe(cli_args.wipe.as_ref(), &config)
+                    .await
+                    .expect("Error when trying to wipe the configured storage path");
             }
 
             let node = Node::create(Configuration::current().clone()).await;
