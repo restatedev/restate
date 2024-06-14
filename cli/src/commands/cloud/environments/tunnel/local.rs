@@ -25,6 +25,7 @@ use hyper::client::HttpConnector;
 use hyper::service::Service;
 use hyper::Response;
 use hyper_rustls::HttpsConnector;
+use restate_cli_util::CliContext;
 use restate_types::retries::RetryPolicy;
 use tracing::{error, info};
 use url::Url;
@@ -50,7 +51,7 @@ pub(crate) async fn run_local(
 
     let mut http_connector = HttpConnector::new();
     http_connector.set_nodelay(true);
-    http_connector.set_connect_timeout(Some(env.connect_timeout));
+    http_connector.set_connect_timeout(Some(CliContext::get().connect_timeout()));
     http_connector.enforce_http(false);
     // default interval on linux is 75 secs, also use this as the start-after
     http_connector.set_keepalive(Some(Duration::from_secs(75)));

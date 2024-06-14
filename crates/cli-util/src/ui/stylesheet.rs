@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::app::UiConfig;
+use crate::context::CliContext;
+use crate::opts::TableStyle;
 
 use super::console::{Icon, StyledTable};
 
@@ -49,19 +50,20 @@ impl From<Style> for dialoguer::console::Style {
 
 /// Defines how compact/borders table style will actually look like
 impl StyledTable for comfy_table::Table {
-    fn new_styled(ui_config: &UiConfig) -> Self {
+    fn new_styled() -> Self {
+        let ctx = CliContext::get();
         let mut table = comfy_table::Table::new();
         table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
-        match ui_config.table_style {
-            crate::app::TableStyle::Compact => {
+        match ctx.table_style() {
+            TableStyle::Compact => {
                 table.load_preset(comfy_table::presets::NOTHING);
             }
-            crate::app::TableStyle::Borders => {
+            TableStyle::Borders => {
                 table.load_preset(comfy_table::presets::UTF8_FULL);
                 table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
             }
         }
-        if !crate::console::colors_enabled() {
+        if !ctx.colors_enabled() {
             table.force_no_tty();
         } else {
             table.enforce_styling();

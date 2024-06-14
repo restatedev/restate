@@ -1,0 +1,30 @@
+[package]
+name = "restate-cli-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+chrono = { workspace = true }
+chrono-humanize = { workspace = true }
+clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
+clap-verbosity-flag = { workspace = true }
+cling = { workspace = true }
+comfy-table = { workspace = true }
+crossterm = { workspace = true }
+dialoguer = { workspace = true }
+dotenvy = { version = "0.15" }
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true }
+tracing-log = { version = "0.2.0" }
+tracing-subscriber = { workspace = true }

@@ -11,19 +11,18 @@
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use indicatif::ProgressBar;
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{c_println, c_title};
 
-use crate::c_title;
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{AdminClient, AdminClientInterface};
-use crate::console::c_println;
-use crate::ui::console::StyledTable;
 use crate::ui::deployments::{
     add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
     render_deployment_url,
 };
 use crate::ui::service_handlers::create_service_handlers_table;
-use crate::ui::watcher::Watch;
 
 use anyhow::Result;
 
@@ -46,7 +45,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = AdminClient::new(env).await?;
     let service = client.get_service(&opts.name).await?.into_body().await?;
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.add_kv_row("Name:", &service.name);
     table.add_kv_row("Service type:", &format!("{:?}", service.ty));
     table.add_kv_row("Revision:", service.revision);
@@ -66,7 +65,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     // Methods
     c_println!();
     c_title!("🔌", "Handlers");
-    let table = create_service_handlers_table(&env.ui_config, &service.handlers);
+    let table = create_service_handlers_table(&service.handlers);
     c_println!("{}", table);
 
     // Printing other existing endpoints with previous revisions. We currently don't
@@ -117,7 +116,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
     let sql_client = crate::clients::DataFusionHttpClient::from(client);
     // We have older deployments for this service, let's grab
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     let headers = vec![
         "ADDRESS",
         "TYPE",

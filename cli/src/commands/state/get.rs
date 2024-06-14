@@ -8,16 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::c_title;
-use crate::cli_env::CliEnv;
-use crate::console::c_println;
-use crate::ui::console::StyledTable;
-use crate::ui::watcher::Watch;
-
-use crate::commands::state::util::{as_json, get_current_state, pretty_print_json_object};
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{c_println, c_title};
+
+use crate::cli_env::CliEnv;
+use crate::commands::state::util::{as_json, get_current_state, pretty_print_json_object};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_get")]
@@ -55,7 +55,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
 
     c_title!("🤖", "State");
 
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["", ""]);
     table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
@@ -64,7 +64,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
     c_println!();
 
     let pretty_json = pretty_print_json_object(&current_state_json)?;
-    let mut table = Table::new_styled(&env.ui_config);
+    let mut table = Table::new_styled();
     table.set_styled_header(vec!["KEY", "VALUE"]);
     for (k, v) in pretty_json {
         table.add_row(vec![Cell::new(k), Cell::new(v)]);

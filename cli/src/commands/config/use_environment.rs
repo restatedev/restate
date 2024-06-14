@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{c_success, cli_env::CliEnv};
 use anyhow::Result;
 use cling::prelude::*;
+
+use restate_cli_util::c_success;
+
+use crate::cli_env::CliEnv;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_use_environment")]

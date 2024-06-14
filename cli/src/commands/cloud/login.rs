@@ -10,19 +10,21 @@
 
 use std::net::SocketAddr;
 
-use crate::{
-    build_info, c_println, c_success, c_tip,
-    cli_env::CliEnv,
-    clients::cloud::{CloudClient, CloudClientInterface},
-};
 use anyhow::{anyhow, Context, Result};
 use axum::{extract, response::Html};
 use cling::prelude::*;
 use indicatif::ProgressBar;
+use restate_cli_util::{c_println, c_success, c_tip, CliContext};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use toml_edit::{table, value, DocumentMut};
 use url::Url;
+
+use crate::{
+    build_info,
+    cli_env::CliEnv,
+    clients::cloud::{CloudClient, CloudClientInterface},
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
@@ -78,7 +80,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
             std::env::consts::ARCH,
         ))
         .https_only(true)
-        .connect_timeout(env.connect_timeout)
+        .connect_timeout(CliContext::get().connect_timeout())
         .build()
         .context("Failed to build oauth token client")?;
 
