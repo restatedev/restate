@@ -34,9 +34,10 @@ use tokio::sync::Mutex;
 
 use crate::extended_query::NoopExtendedQueryHandler;
 use pgwire::api::auth::noop::NoopStartupHandler;
+use pgwire::api::copy::NoopCopyHandler;
 use pgwire::api::query::SimpleQueryHandler;
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response};
-use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
+use pgwire::api::{ClientInfo, PgWireHandlerFactory, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
@@ -44,48 +45,64 @@ use restate_storage_query_datafusion::context::QueryContext;
 use tracing::warn;
 
 pub(crate) struct HandlerFactory {
-    processor: Arc<StatelessMakeHandler<DfSessionService>>,
-    placeholder: Arc<StatelessMakeHandler<NoopExtendedQueryHandler>>,
-    authenticator: Arc<StatelessMakeHandler<NoopStartupHandler>>,
+    processor: Arc<DfSessionService>,
+    placeholder: Arc<NoopExtendedQueryHandler>,
+    authenticator: Arc<NoopStartupHandler>,
+    copy_handler: Arc<NoopCopyHandler>,
+}
+
+impl PgWireHandlerFactory for HandlerFactory {
+    type StartupHandler = NoopStartupHandler;
+    type SimpleQueryHandler = DfSessionService;
+    type ExtendedQueryHandler = NoopExtendedQueryHandler;
+    type CopyHandler = NoopCopyHandler;
+
+    fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
+        self.processor.clone()
+    }
+
+    fn extended_query_handler(&self) -> Arc<Self::ExtendedQueryHandler> {
+        self.placeholder.clone()
+    }
+
+    fn startup_handler(&self) -> Arc<Self::StartupHandler> {
+        self.authenticator.clone()
+    }
+
+    fn copy_handler(&self) -> Arc<Self::CopyHandler> {
+        self.copy_handler.clone()
+    }
 }
 
 impl HandlerFactory {
     pub fn new(ctx: QueryContext) -> Self {
-        let processor = Arc::new(StatelessMakeHandler::new(Arc::new(DfSessionService::new(
-            ctx,
-        ))));
+        let processor = Arc::new(DfSessionService::new(ctx));
         // We have not implemented extended query in this server, use placeholder instead
-        let placeholder = Arc::new(StatelessMakeHandler::new(Arc::new(
-            NoopExtendedQueryHandler::new(),
-        )));
-        let authenticator = Arc::new(StatelessMakeHandler::new(Arc::new(NoopStartupHandler)));
+        let placeholder = Arc::new(NoopExtendedQueryHandler::new());
+        let authenticator = Arc::new(NoopStartupHandler);
+        let copy_handler = Arc::new(NoopCopyHandler);
 
         Self {
             processor,
             placeholder,
             authenticator,
+            copy_handler,
         }
     }
+}
 
-    pub fn spawn_connection(&self, incoming_socket: TcpStream, addr: SocketAddr) {
-        let authenticator_ref = self.authenticator.make();
-        let processor_ref = self.processor.make();
-        let placeholder_ref = self.placeholder.make();
-        tokio::spawn(async move {
-            let result = process_socket(
-                incoming_socket,
-                None,
-                authenticator_ref,
-                processor_ref,
-                placeholder_ref,
-            )
-            .await;
+pub fn spawn_connection(
+    factory: Arc<HandlerFactory>,
+    incoming_socket: TcpStream,
+    addr: SocketAddr,
+) {
+    tokio::spawn(async move {
+        let result = process_socket(incoming_socket, None, factory).await;
 
-            if let Err(err) = result {
-                warn!("Failed processing socket for connection '{addr}': {err}");
-            }
-        });
-    }
+        if let Err(err) = result {
+            warn!("Failed processing socket for connection '{addr}': {err}");
+        }
+    });
 }
 
 pub struct DfSessionService {
@@ -102,7 +119,11 @@ impl DfSessionService {
 
 #[async_trait]
 impl SimpleQueryHandler for DfSessionService {
-    async fn do_query<'a, C>(&self, _client: &C, query: &'a str) -> PgWireResult<Vec<Response<'a>>>
+    async fn do_query<'a, 'b: 'a, C>(
+        &'b self,
+        _client: &mut C,
+        query: &'a str,
+    ) -> PgWireResult<Vec<Response<'a>>>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {

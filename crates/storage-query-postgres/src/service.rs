@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::pgwire_server::HandlerFactory;
+use crate::pgwire_server::{spawn_connection, HandlerFactory};
 use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_storage_query_datafusion::context::QueryContext;
@@ -17,6 +17,7 @@ use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::select;
 use tracing::warn;
@@ -63,12 +64,12 @@ impl PostgresQueryService {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
-        let factory = HandlerFactory::new(query_context);
+        let factory = Arc::new(HandlerFactory::new(query_context));
         loop {
             select! {
                 incoming_socket = listener.accept() => {
                     match incoming_socket {
-                        Ok((stream, addr)) => factory.spawn_connection(stream, addr),
+                        Ok((stream, addr)) => spawn_connection(factory.clone(), stream, addr),
                         Err(err) => {
                             warn!("Failed to accept storage query connection: {err}");
                         }
