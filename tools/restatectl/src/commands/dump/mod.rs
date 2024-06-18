@@ -8,15 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod context;
-mod opts;
-mod os_env;
-pub mod ui;
+mod cluster_state;
 
-pub use context::CliContext;
-pub use opts::CommonOpts;
-pub use os_env::OsEnv;
+use cling::prelude::*;
 
-// Re-export comfy-table for console c_* macros
-pub use comfy_table as _comfy_table;
-pub use unicode_width as _unicode_width;
+#[derive(Run, Subcommand, Clone)]
+pub enum Dump {
+    /// Dump the latest cluster state
+    ClusterState(cluster_state::ClusterStateOpts),
+}

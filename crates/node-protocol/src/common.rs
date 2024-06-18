@@ -120,6 +120,42 @@ impl From<KeyRange> for RangeInclusive<PartitionKey> {
     }
 }
 
+impl From<restate_types::logs::Lsn> for Lsn {
+    fn from(lsn: restate_types::logs::Lsn) -> Self {
+        let value: u64 = lsn.into();
+        Lsn { value }
+    }
+}
+
+impl std::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(generation) = self.generation {
+            write!(f, "N{}:{}", self.id, generation)
+        } else {
+            write!(f, "N{}", self.id)
+        }
+    }
+}
+
+impl std::fmt::Display for Lsn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+impl std::fmt::Display for LeaderEpoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "e{}", self.value)
+    }
+}
+
+impl From<restate_types::identifiers::LeaderEpoch> for LeaderEpoch {
+    fn from(epoch: restate_types::identifiers::LeaderEpoch) -> Self {
+        let value: u64 = epoch.into();
+        LeaderEpoch { value }
+    }
+}
+
 // write tests for RequestId
 #[cfg(test)]
 mod tests {

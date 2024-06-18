@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use axum::routing::get;
+use tonic::codec::CompressionEncoding;
 use tower_http::trace::TraceLayer;
 
 use restate_cluster_controller::ClusterControllerHandle;
@@ -84,17 +85,23 @@ impl NetworkServer {
                 .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
         }
 
-        let cluster_controller_service = self
-            .admin_deps
-            .map(|admin_deps| ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps)));
+        let cluster_controller_service = self.admin_deps.map(|admin_deps| {
+            ClusterCtrlSvcServer::new(ClusterCtrlSvcHandler::new(admin_deps))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip)
+        });
 
         let server_builder = tonic::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
-            .add_service(NodeSvcServer::new(NodeSvcHandler::new(
-                tc,
-                self.worker_deps,
-                self.connection_manager,
-            )))
+            .add_service(
+                NodeSvcServer::new(NodeSvcHandler::new(
+                    tc,
+                    self.worker_deps,
+                    self.connection_manager,
+                ))
+                .accept_compressed(CompressionEncoding::Gzip)
+                .send_compressed(CompressionEncoding::Gzip),
+            )
             .add_optional_service(cluster_controller_service)
             .add_service(reflection_service_builder.build()?);
 

@@ -13,6 +13,17 @@ pub mod cluster_ctrl {
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("cluster_ctrl_svc_descriptor");
+
+    impl std::fmt::Display for RunMode {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let o = match self {
+                RunMode::Unknown => "UNKNOWN",
+                RunMode::Leader => "Leader",
+                RunMode::Follower => "Follower",
+            };
+            write!(f, "{}", o)
+        }
+    }
 }
 
 pub mod node_svc {
