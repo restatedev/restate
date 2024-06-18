@@ -24,6 +24,18 @@ pub enum TableStyle {
     Borders,
 }
 
+#[derive(ValueEnum, Clone, Copy, Eq, PartialEq, Default, Debug)]
+#[clap(rename_all = "kebab-case")]
+pub enum TimeFormat {
+    /// Human friendly timestamps and durations
+    #[default]
+    Human,
+    /// RFC-3339/ISO-8601 formatted (1996-12-19T16:39:57-08:00)
+    Iso8601,
+    /// RFC-2822 formatted (Tue, 1 Jul 2003 10:52:37 +0200)
+    Rfc2822,
+}
+
 /// Silent (no) logging by default in CLI
 #[derive(Clone, Default)]
 pub(crate) struct Quiet;
@@ -38,6 +50,9 @@ pub(crate) struct UiOpts {
     /// Which table output style to use
     #[arg(long, default_value = "compact", global = true)]
     pub table_style: TableStyle,
+
+    #[arg(long, default_value = "human", global = true)]
+    pub time_format: TimeFormat,
 }
 
 #[derive(Args, Clone, Default)]
