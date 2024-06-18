@@ -68,8 +68,7 @@ toml_edit = "0.22.12"
 tower = { workspace = true }
 tracing = { workspace = true }
 typify = "0.1.0"
-unicode-width = { version = "0.1.11" }
-url = { version = "2.4.1" }
+url = { workspace = true }
 uuid = { workspace = true }
 zip = "0.6"
 

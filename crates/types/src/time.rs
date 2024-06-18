@@ -63,6 +63,24 @@ impl From<SystemTime> for MillisSinceEpoch {
     }
 }
 
+/// # Panics
+/// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
+impl From<prost_types::Timestamp> for MillisSinceEpoch {
+    fn from(value: prost_types::Timestamp) -> Self {
+        // safest approach is to convert into SystemTime first, then calculate distance to
+        // UNIX_EPOCH
+        Self::from(std::time::SystemTime::try_from(value).expect("Timestamp is after UNIX_EPOCH"))
+    }
+}
+
+impl From<MillisSinceEpoch> for prost_types::Timestamp {
+    fn from(value: MillisSinceEpoch) -> Self {
+        // safest approach is to convert into SystemTime first, then calculate distance to
+        // UNIX_EPOCH
+        Self::from(std::time::SystemTime::from(value))
+    }
+}
+
 impl Display for MillisSinceEpoch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ms since epoch", self.0)
@@ -124,6 +142,17 @@ impl From<SystemTime> for NanosSinceEpoch {
             )
             .expect("nanos since Unix epoch should fit in u64"),
         )
+    }
+}
+
+/// # Panics
+/// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
+impl From<prost_types::Timestamp> for NanosSinceEpoch {
+    fn from(value: prost_types::Timestamp) -> Self {
+        // safest approach is to convert into SystemTime first, then calculate distance to
+        // UNIX_EPOCH
+        let ts = std::time::SystemTime::try_from(value).expect("Timestamp is after UNIX_EPOCH");
+        Self::from(ts)
     }
 }
 

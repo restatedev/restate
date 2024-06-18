@@ -9,19 +9,27 @@ publish = false
 
 [dependencies]
 restate-cli-util = { workspace = true } 
+restate-node-protocol = { workspace = true }
+restate-node-services = { workspace = true, features = ["clients"] }
+restate-types = { workspace = true }
 
 anyhow = { workspace = true }
+chrono = { workspace = true }
 clap = { version = "4.1", features = ["derive", "env", "wrap_help", "color"] }
 clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
+prost-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tonic = { workspace = true, features = ["transport", "prost"] }
+tower = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 tracing-log = { version = "0.2" }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
 
 [build-dependencies]
 vergen = { version = "8", default-features = false, features = [

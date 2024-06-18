@@ -28,3 +28,4 @@ tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 tracing-log = { version = "0.2.0" }
 tracing-subscriber = { workspace = true }
+unicode-width = { version = "0.1.11" }

@@ -11,4 +11,5 @@
 mod cluster_state;
 mod service;
 
+pub use cluster_state::NodeState;
 pub use service::{ClusterControllerHandle, Error, Service};

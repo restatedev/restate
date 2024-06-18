@@ -390,7 +390,7 @@ where
                     .await?;
             }
         } else {
-            status.skipped_records += 1;
+            status.num_skipped_records += 1;
             trace!(
                 "Ignore message which is not targeted to me: {:?}",
                 envelope.header
