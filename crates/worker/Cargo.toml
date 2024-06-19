@@ -74,6 +74,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
+restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-schema-api = { workspace = true, features = ["test-util"] }
