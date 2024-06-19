@@ -19,7 +19,7 @@ use restate_storage_api::promise_table::{OwnedPromiseRow, ReadOnlyPromiseTable};
 use restate_types::identifiers::PartitionKey;
 
 use super::row::append_promise_row;
-use super::schema::PromiseBuilder;
+use super::schema::SysPromiseBuilder;
 use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
@@ -31,7 +31,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let table = PartitionedTableProvider::new(
         partition_selector,
-        PromiseBuilder::schema(),
+        SysPromiseBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, PromiseScanner),
     );
 
@@ -44,7 +44,7 @@ pub(crate) fn register_self(
 struct PromiseScanner;
 
 impl ScanLocalPartition for PromiseScanner {
-    type Builder = PromiseBuilder;
+    type Builder = SysPromiseBuilder;
     type Item = OwnedPromiseRow;
 
     fn scan_partition_store(

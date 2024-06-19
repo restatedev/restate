@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::ServiceBuilder;
+use super::schema::SysServiceBuilder;
 
 use crate::table_util::format_using;
 use restate_schema_api::service::ServiceMetadata;
@@ -16,7 +16,7 @@ use restate_types::invocation::ServiceType;
 
 #[inline]
 pub(crate) fn append_service_row(
-    builder: &mut ServiceBuilder,
+    builder: &mut SysServiceBuilder,
     output: &mut String,
     service_metadata: ServiceMetadata,
 ) {

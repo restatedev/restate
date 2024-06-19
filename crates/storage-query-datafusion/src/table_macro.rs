@@ -481,11 +481,18 @@ macro_rules! define_table {
         // --------------------------------------------------------------------------
 
         #[cfg(feature = "table_docs")]
-        pub const TABLE_DOCS: &'static [(&'static str, &'static str, &'static str)] = &[
-            $(
-                (stringify!($element), document_type!($ty), concat!($($doc),*)),
-            )+
-        ];
+        pub const TABLE_DOCS: $crate::table_docs::StaticTableDocs = $crate::table_docs::StaticTableDocs {
+            name: stringify!($table_name),
+            columns: &[
+                $(
+                    $crate::table_docs::TableColumn {
+                        name: stringify!($element),
+                        column_type: document_type!($ty),
+                        description: concat!($($doc),*)
+                    },
+                )+
+            ],
+        };
     })
 }
 

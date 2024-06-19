@@ -19,7 +19,7 @@ use restate_types::identifiers::{JournalEntryId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal::row::append_journal_row;
-use crate::journal::schema::JournalBuilder;
+use crate::journal::schema::SysJournalBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
@@ -30,7 +30,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let journal_table = PartitionedTableProvider::new(
         partition_selector,
-        JournalBuilder::schema(),
+        SysJournalBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, JournalScanner),
     );
 
@@ -43,7 +43,7 @@ pub(crate) fn register_self(
 struct JournalScanner;
 
 impl ScanLocalPartition for JournalScanner {
-    type Builder = JournalBuilder;
+    type Builder = SysJournalBuilder;
     type Item = (JournalEntryId, JournalEntry);
 
     fn scan_partition_store(

@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::DeploymentBuilder;
+use super::schema::SysDeploymentBuilder;
 use crate::table_util::format_using;
 use restate_schema_api::deployment::{Deployment, DeploymentType};
 
 #[inline]
 pub(crate) fn append_deployment_row(
-    builder: &mut DeploymentBuilder,
+    builder: &mut SysDeploymentBuilder,
     output: &mut String,
     deployment: Deployment,
 ) {

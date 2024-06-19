@@ -22,7 +22,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::keyed_service_status::row::append_virtual_object_status_row;
-use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
+use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
@@ -33,7 +33,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let status_table = PartitionedTableProvider::new(
         partition_selector,
-        KeyedServiceStatusBuilder::schema(),
+        SysKeyedServiceStatusBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, VirtualObjectStatusScanner),
     );
 
@@ -46,7 +46,7 @@ pub(crate) fn register_self(
 struct VirtualObjectStatusScanner;
 
 impl ScanLocalPartition for VirtualObjectStatusScanner {
-    type Builder = KeyedServiceStatusBuilder;
+    type Builder = SysKeyedServiceStatusBuilder;
     type Item = (ServiceId, VirtualObjectStatus);
 
     fn scan_partition_store(

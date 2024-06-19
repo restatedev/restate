@@ -14,7 +14,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(service(
+define_table!(sys_service(
     /// The name of the registered user service.
     name: DataType::LargeUtf8,
 

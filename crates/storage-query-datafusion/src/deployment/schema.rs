@@ -14,7 +14,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(deployment(
+define_table!(sys_deployment(
     /// The ID of the service deployment.
     id: DataType::LargeUtf8,
 

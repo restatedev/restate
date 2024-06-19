@@ -19,7 +19,7 @@ use restate_storage_api::idempotency_table::{IdempotencyMetadata, ReadOnlyIdempo
 use restate_types::identifiers::{IdempotencyId, PartitionKey};
 
 use super::row::append_idempotency_row;
-use super::schema::IdempotencyBuilder;
+use super::schema::SysIdempotencyBuilder;
 use crate::context::{QueryContext, SelectPartitions};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
@@ -31,7 +31,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let table = PartitionedTableProvider::new(
         partition_selector,
-        IdempotencyBuilder::schema(),
+        SysIdempotencyBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, IdempotencyScanner),
     );
 
@@ -44,7 +44,7 @@ pub(crate) fn register_self(
 struct IdempotencyScanner;
 
 impl ScanLocalPartition for IdempotencyScanner {
-    type Builder = IdempotencyBuilder;
+    type Builder = SysIdempotencyBuilder;
     type Item = (IdempotencyId, IdempotencyMetadata);
 
     fn scan_partition_store(
