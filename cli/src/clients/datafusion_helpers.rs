@@ -276,12 +276,6 @@ pub async fn find_active_invocations_simple(
 }
 
 #[derive(Debug, Clone)]
-pub struct InvocationDetailed {
-    pub invocation: Invocation,
-    pub journal: Vec<JournalEntry>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Invocation {
     pub id: String,
     pub target: String,
@@ -296,7 +290,6 @@ pub struct Invocation {
     // If it **requires** this deployment.
     pub pinned_deployment_id: Option<String>,
     pub pinned_deployment_exists: bool,
-    pub deployment_id_at_latest_svc_revision: String,
     // Last attempted deployment
     pub last_attempt_deployment_id: Option<String>,
     pub last_attempt_server: Option<String>,
@@ -557,7 +550,6 @@ pub struct ServiceHandlerLockedKeysMap {
 #[derive(Clone, Default, Debug)]
 pub struct LockedKeyInfo {
     pub num_pending: i64,
-    pub oldest_pending: Option<chrono::DateTime<Local>>,
     // Who is holding the lock
     pub invocation_holding_lock: Option<String>,
     pub invocation_method_holding_lock: Option<String>,
@@ -631,11 +623,9 @@ pub async fn get_locked_keys_status(
                 let service = batch.column(0).as_string::<i32>().value(i);
                 let key = value_as_string(&batch, 1, i);
                 let num_pending = value_as_i64(&batch, 2, i);
-                let oldest_pending = value_as_dt_opt(&batch, 3, i);
 
                 let info = LockedKeyInfo {
                     num_pending,
-                    oldest_pending,
                     ..LockedKeyInfo::default()
                 };
                 key_map.insert(service, key, info);
@@ -854,9 +844,6 @@ pub async fn find_active_invocations(
             next_retry_at: row.next_retry_at.map(Into::into),
             pinned_deployment_id: row.pinned_deployment_id,
             pinned_deployment_exists: row.known_deployment_id.is_some(),
-            deployment_id_at_latest_svc_revision: row
-                .comp_latest_deployment
-                .expect("comp_latest_deployment"),
             last_failure_message: row.last_failure,
             last_failure_entry_index: row.last_failure_related_entry_index,
             last_failure_entry_name: row.last_failure_related_entry_name,
