@@ -12,17 +12,19 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
-use restate_core::{metadata, TaskCenter};
-use restate_network::error::ProtocolError;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::network_server::WorkerDependencies;
+use restate_core::{metadata, TaskCenter};
+use restate_network::error::ProtocolError;
+use restate_network::protobuf::node_svc::node_svc_server::NodeSvc;
+use restate_network::protobuf::node_svc::IdentResponse;
+use restate_network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
 use restate_network::ConnectionManager;
-use restate_node_protocol::node::Message;
-use restate_node_services::node_svc::node_svc_server::NodeSvc;
-use restate_node_services::node_svc::{IdentResponse, NodeStatus};
-use restate_node_services::node_svc::{StorageQueryRequest, StorageQueryResponse};
+use restate_types::protobuf::common::NodeStatus;
+use restate_types::protobuf::node::Message;
+
+use crate::network_server::WorkerDependencies;
 
 pub struct NodeSvcHandler {
     task_center: TaskCenter,

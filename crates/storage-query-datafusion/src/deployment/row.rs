@@ -10,7 +10,7 @@
 
 use super::schema::DeploymentBuilder;
 use crate::table_util::format_using;
-use restate_schema_api::deployment::{Deployment, DeploymentType};
+use restate_types::schema::deployment::{Deployment, DeploymentType};
 
 #[inline]
 pub(crate) fn append_deployment_row(

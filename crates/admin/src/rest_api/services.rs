@@ -21,6 +21,7 @@ use okapi_operation::*;
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
 use tracing::warn;

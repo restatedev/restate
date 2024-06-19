@@ -13,11 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-// Export schema types to be used by other crates without exposing the fact
-// that we are using proxying to restate-schema-api or restate-types
-pub use restate_schema_api::service::{HandlerMetadata, ServiceMetadata};
-pub use restate_types::identifiers::ServiceRevision;
-pub use restate_types::invocation::ServiceType;
+use restate_types::schema::service::ServiceMetadata;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]

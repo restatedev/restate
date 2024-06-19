@@ -11,8 +11,8 @@
 use super::schema::ServiceBuilder;
 
 use crate::table_util::format_using;
-use restate_schema_api::service::ServiceMetadata;
 use restate_types::invocation::ServiceType;
+use restate_types::schema::service::ServiceMetadata;
 
 #[inline]
 pub(crate) fn append_service_row(

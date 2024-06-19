@@ -15,7 +15,6 @@ options_schema = ["dep:schemars"]
 restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-partition-store = { workspace = true }
-restate-schema-api = { workspace = true, features = ["deployment"] }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
@@ -43,7 +42,6 @@ tracing = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-invoker-api = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }

@@ -15,12 +15,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Stream;
 
-use restate_node_protocol::codec::{Targeted, WireDecode};
-use restate_node_protocol::common::ProtocolVersion;
-use restate_node_protocol::common::TargetName;
-use restate_node_protocol::node::message::BinaryMessage;
-use restate_node_protocol::CodecError;
-use restate_node_protocol::MessageEnvelope;
+use restate_types::net::codec::{Targeted, WireDecode};
+use restate_types::net::CodecError;
+use restate_types::net::MessageEnvelope;
+use restate_types::net::ProtocolVersion;
+use restate_types::net::TargetName;
+use restate_types::protobuf::node::message::BinaryMessage;
 use restate_types::GenerationalNodeId;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;

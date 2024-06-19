@@ -20,7 +20,7 @@ use restate_bifrost::Bifrost;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::arc_util::ArcSwapExt;

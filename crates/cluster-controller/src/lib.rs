@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cluster_state;
+pub mod protobuf;
 mod service;
 
-pub use cluster_state::NodeState;
 pub use service::{ClusterControllerHandle, Error, Service};

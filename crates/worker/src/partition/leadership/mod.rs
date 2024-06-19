@@ -20,8 +20,8 @@ use restate_core::{
 };
 use restate_invoker_api::InvokeInputJournal;
 use restate_network::Networking;
-use restate_node_protocol::ingress;
 use restate_timer::TokioClock;
+use restate_types::net::ingress;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
