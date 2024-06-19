@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-test-util = ["dep:rand", "tokio/test-util"]
+test-util = ["tokio/test-util", "restate-types/test-util"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
@@ -20,15 +20,22 @@ arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+dashmap = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
+http = { workspace = true }
 humantime = { workspace = true }
+hyper = { workspace = true }
 metrics = { workspace = true }
-rand = { workspace = true, optional = true }
+once_cell = { workspace = true }
+pin-project = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
@@ -36,18 +43,21 @@ static_assertions = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["tracing" ] }
-tokio-stream = { workspace = true }
+tokio = { workspace = true, features = ["tracing"] }
+tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tower = { workspace = true }
 tracing = { workspace = true }
 
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
-rand = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }

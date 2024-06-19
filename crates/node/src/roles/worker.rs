@@ -12,10 +12,10 @@ use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::network::Networking;
 use restate_core::{cancellation_watcher, metadata, task_center, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
-use restate_network::Networking;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::UpdateableConfiguration;
 use restate_types::schema::subscriptions::SubscriptionResolver;

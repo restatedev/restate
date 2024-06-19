@@ -13,13 +13,13 @@ use std::time::Duration;
 use restate_types::retries::with_jitter;
 use tracing::{info, instrument, trace};
 
-use restate_core::metadata;
-use restate_core::network::{NetworkSendError, NetworkSender};
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
-use crate::error::NetworkError;
-use crate::{ConnectionManager, ConnectionSender};
+use super::error::NetworkError;
+use super::{ConnectionManager, ConnectionSender};
+use super::{NetworkSendError, NetworkSender};
+use crate::metadata;
 
 const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 10;
 // todo: make this configurable

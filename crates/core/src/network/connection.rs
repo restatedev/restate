@@ -15,8 +15,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use restate_core::metadata;
-use restate_core::network::NetworkSendError;
+use crate::metadata;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::{serialize_message, WireEncode};
 use restate_types::net::ProtocolVersion;
@@ -25,8 +24,9 @@ use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
 use restate_types::GenerationalNodeId;
 
-use crate::metric_definitions::CONNECTION_SEND_DURATION;
-use crate::metric_definitions::MESSAGE_SENT;
+use super::error::NetworkSendError;
+use super::metric_definitions::CONNECTION_SEND_DURATION;
+use super::metric_definitions::MESSAGE_SENT;
 
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
