@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arrow_flight::decode::FlightRecordBatchStream;
-use arrow_flight::error::FlightError;
-use arrow_flight::FlightData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::error::FlightError;
+use arrow_flight::FlightData;
 use axum::body::StreamBody;
 use axum::extract::State;
 use axum::response::IntoResponse;
@@ -30,14 +30,14 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
 use okapi_operation::*;
-use restate_network::protobuf::node_svc::StorageQueryRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
 
-use crate::state::QueryServiceState;
+use restate_core::network::protobuf::node_svc::StorageQueryRequest;
 
 use super::error::StorageQueryError;
+use crate::state::QueryServiceState;
 
 #[serde_as]
 #[derive(Debug, Deserialize, JsonSchema)]

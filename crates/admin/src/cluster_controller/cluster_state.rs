@@ -16,8 +16,8 @@ use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, N
 use std::time::Instant;
 use tokio::task::JoinHandle;
 
+use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
-use restate_network::rpc_router::RpcRouter;
 use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
 use restate_types::time::MillisSinceEpoch;

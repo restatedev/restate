@@ -8,15 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
-use crate::local::service::LocalMetadataStoreService;
-use crate::local::store::LocalMetadataStore;
-use crate::{MetadataStoreClient, Precondition, WriteError};
+use std::time::Duration;
+
 use bytestring::ByteString;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use test_log::test;
+use tonic_health::pb::health_client::HealthClient;
+use tonic_health::pb::HealthCheckRequest;
+
+use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
-use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_rocksdb::RocksDbManager;
 use restate_types::arc_util::{Constant, Updateable};
 use restate_types::config::{
@@ -25,11 +28,11 @@ use restate_types::config::{
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use test_log::test;
-use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
+
+use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::local::service::LocalMetadataStoreService;
+use crate::local::store::LocalMetadataStore;
+use crate::{MetadataStoreClient, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize, Default)]
 struct Value {

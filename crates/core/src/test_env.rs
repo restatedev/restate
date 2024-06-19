@@ -31,7 +31,8 @@ use tracing::info;
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
-    Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkSendError, NetworkSender,
+    Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError, NetworkSender,
+    ProtocolError,
 };
 use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
 use crate::{Metadata, MetadataManager, MetadataWriter};
@@ -43,7 +44,7 @@ pub struct MockNetworkSender {
 }
 
 impl NetworkSender for MockNetworkSender {
-    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
+    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkError>
     where
         M: WireEncode + Targeted + Send + Sync,
     {
@@ -56,15 +57,16 @@ impl NetworkSender for MockNetworkSender {
             Some(to) => to,
             None => match metadata().nodes_config().find_node_by_id(to) {
                 Ok(node) => node.current_generation,
-                Err(e) => return Err(NetworkSendError::UnknownNode(e)),
+                Err(e) => return Err(NetworkError::UnknownNode(e)),
             },
         };
 
         let header = Header::new(metadata().nodes_config_version());
-        let body = serialize_message(message, CURRENT_PROTOCOL_VERSION)?;
+        let body =
+            serialize_message(message, CURRENT_PROTOCOL_VERSION).map_err(ProtocolError::Codec)?;
         sender
             .send((to, Message::new(header, body)))
-            .map_err(|_| NetworkSendError::Shutdown(ShutdownError))?;
+            .map_err(|_| NetworkError::Shutdown(ShutdownError))?;
         Ok(())
     }
 }

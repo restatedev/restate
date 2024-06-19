@@ -20,9 +20,7 @@ restate-admin = { workspace = true, features = ["servers"] }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-grpc-util = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-network = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }

@@ -41,7 +41,6 @@ restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
-restate-grpc-util = { path = "crates/grpc-util" }
 restate-ingress-dispatcher = { path = "crates/ingress-dispatcher" }
 restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
@@ -49,7 +48,6 @@ restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
 restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-metadata-store = { path = "crates/metadata-store" }
-restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
 restate-partition-store = { path = "crates/partition-store" }
 restate-queue = { path = "crates/queue" }
