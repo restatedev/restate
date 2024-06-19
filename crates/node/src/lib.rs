@@ -177,12 +177,9 @@ impl Node {
 
         let server = NetworkServer::new(
             networking.connection_manager(),
-            worker_role.as_ref().map(|worker| {
-                WorkerDependencies::new(
-                    worker.storage_query_context().clone(),
-                    worker.subscription_controller(),
-                )
-            }),
+            worker_role
+                .as_ref()
+                .map(|worker| WorkerDependencies::new(worker.storage_query_context().clone())),
             admin_role.as_ref().map(|cluster_controller| {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
