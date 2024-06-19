@@ -87,7 +87,7 @@ impl PartitionStoreManager {
 
     pub async fn has_partition(&self, partition_id: PartitionId) -> bool {
         let guard = self.lookup.lock().await;
-        guard.live.get(&partition_id).is_some()
+        guard.live.contains_key(&partition_id)
     }
 
     pub async fn get_partition_store(&self, partition_id: PartitionId) -> Option<PartitionStore> {

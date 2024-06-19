@@ -16,7 +16,7 @@ use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::message::{AckKind, MessageIndex};
+use restate_types::message::MessageIndex;
 use restate_types::NodeId;
 use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 use std::future::Future;
@@ -50,9 +50,6 @@ impl OutboxTruncation {
         self.0
     }
 }
-
-#[derive(Debug, Clone)]
-pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 pub(crate) fn wrap_outbox_message_in_envelope(
     message: OutboxMessage,

@@ -10,7 +10,8 @@
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use metrics_tracing_context::TracingContextLayer;
-use metrics_util::{layers::Layer, MetricKindMask};
+use metrics_util::layers::Layer;
+use metrics_util::MetricKindMask;
 
 use restate_types::config::CommonOptions;
 
