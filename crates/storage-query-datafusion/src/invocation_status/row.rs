@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_status::schema::{InvocationStatusBuilder, InvocationStatusRowBuilder};
+use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
@@ -18,7 +18,7 @@ use restate_types::invocation::{ServiceType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
-    builder: &mut InvocationStatusBuilder,
+    builder: &mut SysInvocationStatusBuilder,
     output: &mut String,
     invocation_id: InvocationId,
     invocation_status: InvocationStatus,
@@ -82,7 +82,7 @@ pub(crate) fn append_invocation_status_row(
 }
 
 fn fill_in_flight_invocation_metadata(
-    row: &mut InvocationStatusRowBuilder,
+    row: &mut SysInvocationStatusRowBuilder,
     output: &mut String,
     meta: InFlightInvocationMetadata,
 ) {
@@ -94,7 +94,7 @@ fn fill_in_flight_invocation_metadata(
 }
 
 #[inline]
-fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, source: Source) {
+fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String, source: Source) {
     match source {
         Source::Service(invocation_id, invocation_target) => {
             row.invoked_by("service");
@@ -116,14 +116,14 @@ fn fill_invoked_by(row: &mut InvocationStatusRowBuilder, output: &mut String, so
 }
 
 #[inline]
-fn fill_timestamps(row: &mut InvocationStatusRowBuilder, stat: &StatusTimestamps) {
+fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimestamps) {
     row.created_at(stat.creation_time().as_u64() as i64);
     row.modified_at(stat.modification_time().as_u64() as i64);
 }
 
 #[inline]
 fn fill_journal_metadata(
-    row: &mut InvocationStatusRowBuilder,
+    row: &mut SysInvocationStatusRowBuilder,
     output: &mut String,
     journal_metadata: &JournalMetadata,
 ) {

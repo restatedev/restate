@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keyed_service_status::schema::KeyedServiceStatusBuilder;
+use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
 use crate::table_util::format_using;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
 #[inline]
 pub(crate) fn append_virtual_object_status_row(
-    builder: &mut KeyedServiceStatusBuilder,
+    builder: &mut SysKeyedServiceStatusBuilder,
     output: &mut String,
     service_id: ServiceId,
     status: VirtualObjectStatus,

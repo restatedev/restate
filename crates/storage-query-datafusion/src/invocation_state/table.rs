@@ -22,8 +22,8 @@ use restate_invoker_api::{InvocationStatusReport, StatusHandle};
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 
 use crate::context::QueryContext;
-use crate::invocation_state::row::append_state_row;
-use crate::invocation_state::schema::StateBuilder;
+use crate::invocation_state::row::append_invocation_state_row;
+use crate::invocation_state::schema::SysInvocationStateBuilder;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -31,8 +31,10 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
 ) -> datafusion::common::Result<()> {
-    let status_table =
-        GenericTableProvider::new(StateBuilder::schema(), Arc::new(StatusScanner(status)));
+    let status_table = GenericTableProvider::new(
+        SysInvocationStateBuilder::schema(),
+        Arc::new(StatusScanner(status)),
+    );
 
     ctx.as_ref()
         .register_table("sys_invocation_state", Arc::new(status_table))
@@ -71,13 +73,13 @@ async fn for_each_state<'a, I>(
 ) where
     I: Iterator<Item = InvocationStatusReport> + 'a,
 {
-    let mut builder = StateBuilder::new(schema.clone());
+    let mut builder = SysInvocationStateBuilder::new(schema.clone());
     let mut temp = String::new();
     let mut rows = rows.collect::<Vec<_>>();
     // need to be ordered by partition key for symmetric joins
     rows.sort_unstable_by_key(|row| row.invocation_id().partition_key());
     for row in rows {
-        append_state_row(&mut builder, &mut temp, row);
+        append_invocation_state_row(&mut builder, &mut temp, row);
         if builder.full() {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
@@ -86,7 +88,7 @@ async fn for_each_state<'a, I>(
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = StateBuilder::new(schema.clone());
+            builder = SysInvocationStateBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {

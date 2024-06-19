@@ -20,7 +20,7 @@ use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::inbox::row::append_inbox_row;
-use crate::inbox::schema::InboxBuilder;
+use crate::inbox::schema::SysInboxBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
@@ -31,7 +31,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let table = PartitionedTableProvider::new(
         partition_selector,
-        InboxBuilder::schema(),
+        SysInboxBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, InboxScanner),
     );
 
@@ -44,7 +44,7 @@ pub(crate) fn register_self(
 struct InboxScanner;
 
 impl ScanLocalPartition for InboxScanner {
-    type Builder = InboxBuilder;
+    type Builder = SysInboxBuilder;
     type Item = SequenceNumberInboxEntry;
 
     fn scan_partition_store(

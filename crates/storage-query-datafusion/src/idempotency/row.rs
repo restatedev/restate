@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::schema::IdempotencyBuilder;
+use super::schema::SysIdempotencyBuilder;
 
 use crate::table_util::format_using;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
@@ -16,7 +16,7 @@ use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 
 #[inline]
 pub(crate) fn append_idempotency_row(
-    builder: &mut IdempotencyBuilder,
+    builder: &mut SysIdempotencyBuilder,
     output: &mut String,
     idempotency_id: IdempotencyId,
     idempotency_metadata: IdempotencyMetadata,

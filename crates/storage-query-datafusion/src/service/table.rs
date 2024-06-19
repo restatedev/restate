@@ -20,7 +20,7 @@ use tokio::sync::mpsc::Sender;
 
 use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 
-use super::schema::ServiceBuilder;
+use super::schema::SysServiceBuilder;
 use crate::context::QueryContext;
 use crate::service::row::append_service_row;
 use crate::table_providers::{GenericTableProvider, Scan};
@@ -31,7 +31,7 @@ pub(crate) fn register_self(
     resolver: impl ServiceMetadataResolver + Send + Sync + Debug + 'static,
 ) -> datafusion::common::Result<()> {
     let service_table = GenericTableProvider::new(
-        ServiceBuilder::schema(),
+        SysServiceBuilder::schema(),
         Arc::new(ServiceMetadataScanner(resolver)),
     );
 
@@ -70,7 +70,7 @@ async fn for_each_state(
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: Vec<ServiceMetadata>,
 ) {
-    let mut builder = ServiceBuilder::new(schema.clone());
+    let mut builder = SysServiceBuilder::new(schema.clone());
     let mut temp = String::new();
     for service in rows {
         append_service_row(&mut builder, &mut temp, service);
@@ -82,7 +82,7 @@ async fn for_each_state(
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = ServiceBuilder::new(schema.clone());
+            builder = SysServiceBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {

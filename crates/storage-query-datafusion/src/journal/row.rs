@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::journal::schema::JournalBuilder;
+use crate::journal::schema::SysJournalBuilder;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
@@ -21,7 +21,7 @@ use restate_types::journal::{Entry, SleepEntry};
 
 #[inline]
 pub(crate) fn append_journal_row(
-    builder: &mut JournalBuilder,
+    builder: &mut SysJournalBuilder,
     output: &mut String,
     journal_entry_id: JournalEntryId,
     journal_entry: JournalEntry,

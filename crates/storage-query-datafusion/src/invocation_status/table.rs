@@ -22,7 +22,7 @@ use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::invocation_status::row::append_invocation_status_row;
-use crate::invocation_status::schema::InvocationStatusBuilder;
+use crate::invocation_status::schema::SysInvocationStatusBuilder;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::table_providers::PartitionedTableProvider;
 
@@ -33,7 +33,7 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let status_table = PartitionedTableProvider::new(
         partition_selector,
-        InvocationStatusBuilder::schema(),
+        SysInvocationStatusBuilder::schema(),
         LocalPartitionsScanner::new(partition_store_manager, StatusScanner),
     );
 
@@ -46,7 +46,7 @@ pub(crate) fn register_self(
 struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
-    type Builder = InvocationStatusBuilder;
+    type Builder = SysInvocationStatusBuilder;
     type Item = (InvocationId, InvocationStatus);
 
     fn scan_partition_store(

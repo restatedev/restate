@@ -18,6 +18,7 @@ use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_schema_api::subscription::Subscription;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_storage_query_datafusion::table_docs;
 use restate_types::arc_util::Constant;
 use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
@@ -149,16 +150,31 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_table_docs(table: &str, mut w: impl io::Write) -> io::Result<()> {
-    let columns = restate_storage_query_datafusion::table_docs(table);
-
-    writeln!(&mut w, "## Table: `{table}`\n")?;
-    writeln!(&mut w, "| Column name | Type | Description |")?;
-    writeln!(&mut w, "|-------------|------|-------------|")?;
-    for (name, ty, desc) in columns {
-        writeln!(&mut w, "| `{name}` | `{ty}` | {} |", desc.trim())?;
+fn render_table_docs(mut write: impl Write) -> io::Result<()> {
+    for table_doc in restate_storage_query_datafusion::table_docs::ALL_TABLE_DOCS {
+        render_table_doc(table_doc, &mut write)?;
     }
-    writeln!(&mut w)?;
+
+    // sys_invocation is a view which was not registered at table_docs::TABLE_DOCS
+    render_table_doc(&table_docs::sys_invocation_table_docs(), &mut write)?;
+
+    Ok(())
+}
+
+fn render_table_doc(table_doc: &impl table_docs::TableDocs, w: &mut impl Write) -> io::Result<()> {
+    writeln!(w, "## Table: `{}`\n", table_doc.name())?;
+    writeln!(w, "| Column name | Type | Description |")?;
+    writeln!(w, "|-------------|------|-------------|")?;
+    for column in table_doc.columns() {
+        writeln!(
+            w,
+            "| `{}` | `{}` | {} |",
+            column.name,
+            column.column_type,
+            column.description.trim()
+        )?;
+    }
+    writeln!(w)?;
 
     Ok(())
 }
@@ -176,15 +192,7 @@ To learn how to access the instrospection interface, check out the [instrospecti
 "
     )?;
 
-    render_table_docs("state", &mut dest)?;
-    render_table_docs("sys_invocation", &mut dest)?;
-    render_table_docs("sys_journal", &mut dest)?;
-    render_table_docs("sys_keyed_service_status", &mut dest)?;
-    render_table_docs("sys_inbox", &mut dest)?;
-    render_table_docs("sys_idempotency", &mut dest)?;
-    render_table_docs("sys_promise", &mut dest)?;
-    render_table_docs("sys_service", &mut dest)?;
-    render_table_docs("sys_deployment", &mut dest)?;
+    render_table_docs(&mut dest)?;
 
     Ok(())
 }

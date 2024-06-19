@@ -21,7 +21,7 @@ use tokio::sync::mpsc::Sender;
 use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::ServiceRevision;
 
-use super::schema::DeploymentBuilder;
+use super::schema::SysDeploymentBuilder;
 use crate::context::QueryContext;
 use crate::deployment::row::append_deployment_row;
 use crate::table_providers::{GenericTableProvider, Scan};
@@ -32,7 +32,7 @@ pub(crate) fn register_self(
     resolver: impl DeploymentResolver + Send + Sync + Debug + 'static,
 ) -> datafusion::common::Result<()> {
     let deployment_table = GenericTableProvider::new(
-        DeploymentBuilder::schema(),
+        SysDeploymentBuilder::schema(),
         Arc::new(DeploymentMetadataScanner(resolver)),
     );
 
@@ -71,7 +71,7 @@ async fn for_each_state(
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: Vec<(Deployment, Vec<(String, ServiceRevision)>)>,
 ) {
-    let mut builder = DeploymentBuilder::new(schema.clone());
+    let mut builder = SysDeploymentBuilder::new(schema.clone());
     let mut temp = String::new();
     for (deployment, _) in rows {
         append_deployment_row(&mut builder, &mut temp, deployment);
@@ -83,7 +83,7 @@ async fn for_each_state(
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = DeploymentBuilder::new(schema.clone());
+            builder = SysDeploymentBuilder::new(schema.clone());
         }
     }
     if !builder.empty() {
