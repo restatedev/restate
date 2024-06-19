@@ -12,50 +12,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
+use std::time::Instant;
+use tokio::task::JoinHandle;
+
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_network::rpc_router::RpcRouter;
-use restate_node_protocol::partition_processor_manager::GetProcessorsState;
-use restate_types::identifiers::PartitionId;
+use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
-use restate_types::processors::PartitionProcessorStatus;
 use restate_types::time::MillisSinceEpoch;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 
 use restate_core::{Metadata, ShutdownError, TaskCenter};
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
-
-/// A container for health information about every node and partition in the
-/// cluster.
-#[derive(Debug, Clone)]
-pub struct ClusterState {
-    pub last_refreshed: Option<Instant>,
-    pub nodes_config_version: Version,
-    pub partition_table_version: Version,
-    pub nodes: BTreeMap<PlainNodeId, NodeState>,
-}
-
-impl ClusterState {
-    pub fn is_reliable(&self) -> bool {
-        // todo: make this configurable
-        // If the cluster state is older than 10 seconds, then it is not reliable.
-        self.last_refreshed
-            .map(|last_refreshed| last_refreshed.elapsed().as_secs() < 10)
-            .unwrap_or(false)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum NodeState {
-    Alive {
-        last_heartbeat_at: MillisSinceEpoch,
-        generation: GenerationalNodeId,
-        partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
-    },
-    Dead {
-        last_seen_alive: Option<MillisSinceEpoch>,
-    },
-}
+use restate_types::Version;
 
 pub struct ClusterStateRefresher<N> {
     task_center: TaskCenter,
@@ -184,13 +152,13 @@ where
                             .nodes
                             .get(&node_id)
                             .and_then(|state| match state {
-                                NodeState::Alive {
+                                NodeState::Alive(AliveNode {
                                     last_heartbeat_at, ..
-                                } => Some(*last_heartbeat_at),
-                                NodeState::Dead { last_seen_alive } => *last_seen_alive,
+                                }) => Some(*last_heartbeat_at),
+                                NodeState::Dead(DeadNode { last_seen_alive }) => *last_seen_alive,
                             });
 
-                    nodes.insert(node_id, NodeState::Dead { last_seen_alive });
+                    nodes.insert(node_id, NodeState::Dead(DeadNode { last_seen_alive }));
                     continue;
                 };
 
@@ -198,11 +166,11 @@ where
 
                 nodes.insert(
                     node_id,
-                    NodeState::Alive {
+                    NodeState::Alive(AliveNode {
                         last_heartbeat_at: MillisSinceEpoch::now(),
-                        generation: from,
+                        generational_node_id: from,
                         partitions: msg.state,
-                    },
+                    }),
                 );
             }
 

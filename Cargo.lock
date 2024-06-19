@@ -4972,6 +4972,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-dto"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5145d3fa63cf018899b3fdb7595a84597ac4315a2296663d81b15d87994e8a"
+dependencies = [
+ "prost-dto-core",
+ "prost-dto-derive",
+]
+
+[[package]]
+name = "prost-dto-core"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cfc357b4d026d9c61112e75827e7f01e6b7fbe38664836194b19c063ca124ba"
+dependencies = [
+ "chrono",
+ "darling 0.20.8",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.65",
+]
+
+[[package]]
+name = "prost-dto-derive"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4feef623adf0ea256c19bdc3fbcad12060be6b3fb5f29bd471b1eeb02b3d33f6"
+dependencies = [
+ "proc-macro2",
+ "prost-dto-core",
+ "syn 2.0.65",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5269,9 +5303,7 @@ dependencies = [
  "restate-errors",
  "restate-fs-util",
  "restate-futures-util",
- "restate-node-services",
- "restate-schema",
- "restate-schema-api",
+ "restate-network",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -5299,7 +5331,6 @@ dependencies = [
  "bytes",
  "http 0.2.12",
  "humantime",
- "restate-schema-api",
  "restate-serde-util",
  "restate-types",
  "schemars",
@@ -5478,16 +5509,20 @@ dependencies = [
  "derive_builder",
  "futures",
  "googletest",
+ "prost",
+ "prost-dto",
+ "prost-types",
  "restate-bifrost",
  "restate-core",
  "restate-network",
- "restate-node-protocol",
  "restate-types",
  "schemars",
  "serde",
  "test-log",
  "thiserror",
  "tokio",
+ "tonic 0.10.2",
+ "tonic-build",
  "tracing",
 ]
 
@@ -5510,8 +5545,6 @@ dependencies = [
  "humantime",
  "metrics",
  "rand",
- "restate-node-protocol",
- "restate-schema",
  "restate-test-util",
  "restate-types",
  "schemars",
@@ -5593,8 +5626,6 @@ dependencies = [
  "googletest",
  "restate-bifrost",
  "restate-core",
- "restate-node-protocol",
- "restate-schema-api",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
@@ -5631,7 +5662,6 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-ingress-dispatcher",
- "restate-schema-api",
  "restate-serde-util",
  "restate-service-protocol",
  "restate-test-util",
@@ -5665,8 +5695,6 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-ingress-dispatcher",
- "restate-schema",
- "restate-schema-api",
  "restate-test-util",
  "restate-timer-queue",
  "restate-types",
@@ -5720,7 +5748,6 @@ dependencies = [
  "restate-futures-util",
  "restate-invoker-api",
  "restate-queue",
- "restate-schema-api",
  "restate-service-client",
  "restate-service-protocol",
  "restate-test-util",
@@ -5758,7 +5785,6 @@ dependencies = [
  "prost-types",
  "restate-core",
  "restate-grpc-util",
- "restate-node-protocol",
  "restate-rocksdb",
  "restate-types",
  "rocksdb",
@@ -5795,11 +5821,11 @@ dependencies = [
  "metrics",
  "once_cell",
  "pin-project",
+ "prost",
+ "prost-types",
  "rand",
  "restate-core",
  "restate-grpc-util",
- "restate-node-protocol",
- "restate-node-services",
  "restate-test-util",
  "restate-types",
  "static_assertions",
@@ -5807,6 +5833,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.10.2",
+ "tonic-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5847,11 +5874,7 @@ dependencies = [
  "restate-grpc-util",
  "restate-metadata-store",
  "restate-network",
- "restate-node-protocol",
- "restate-node-services",
  "restate-rocksdb",
- "restate-schema",
- "restate-schema-api",
  "restate-service-client",
  "restate-service-protocol",
  "restate-storage-query-datafusion",
@@ -5877,42 +5900,6 @@ dependencies = [
  "tower-http 0.4.4",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "restate-node-protocol"
-version = "1.1.0"
-dependencies = [
- "bytes",
- "bytestring",
- "derive_more",
- "enum-map",
- "flexbuffers",
- "prost",
- "prost-build",
- "prost-types",
- "restate-schema",
- "restate-types",
- "serde",
- "serde_with",
- "strum 0.26.2",
- "strum_macros 0.26.2",
- "thiserror",
-]
-
-[[package]]
-name = "restate-node-services"
-version = "1.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "prost",
- "prost-types",
- "restate-node-protocol",
- "restate-types",
- "thiserror",
- "tonic 0.10.2",
- "tonic-build",
 ]
 
 [[package]]
@@ -5997,44 +5984,6 @@ dependencies = [
  "thiserror",
  "threadpool",
  "tokio",
- "tracing",
-]
-
-[[package]]
-name = "restate-schema"
-version = "1.1.0"
-dependencies = [
- "arc-swap",
- "bytes",
- "derive_more",
- "flexbuffers",
- "http 0.2.12",
- "restate-schema-api",
- "restate-test-util",
- "restate-types",
- "serde",
- "serde_with",
- "strum_macros 0.26.2",
-]
-
-[[package]]
-name = "restate-schema-api"
-version = "1.1.0"
-dependencies = [
- "anyhow",
- "base64 0.21.7",
- "bytes",
- "bytestring",
- "http 0.2.12",
- "humantime",
- "itertools 0.11.0",
- "restate-base64-util",
- "restate-serde-util",
- "restate-types",
- "schemars",
- "serde",
- "serde_with",
- "thiserror",
  "tracing",
 ]
 
@@ -6144,7 +6093,6 @@ dependencies = [
  "regress 0.9.1",
  "restate-base64-util",
  "restate-errors",
- "restate-schema-api",
  "restate-service-client",
  "restate-test-util",
  "restate-types",
@@ -6201,7 +6149,6 @@ dependencies = [
  "restate-invoker-api",
  "restate-partition-store",
  "restate-rocksdb",
- "restate-schema-api",
  "restate-service-protocol",
  "restate-storage-api",
  "restate-types",
@@ -6329,6 +6276,7 @@ dependencies = [
  "hostname",
  "http 0.2.12",
  "humantime",
+ "itertools 0.11.0",
  "jsonptr",
  "num-traits",
  "once_cell",
@@ -6336,6 +6284,7 @@ dependencies = [
  "prettyplease",
  "prost",
  "prost-build",
+ "prost-dto",
  "prost-types",
  "rand",
  "regress 0.9.1",
@@ -6427,11 +6376,8 @@ dependencies = [
  "restate-invoker-impl",
  "restate-metadata-store",
  "restate-network",
- "restate-node-protocol",
  "restate-partition-store",
  "restate-rocksdb",
- "restate-schema",
- "restate-schema-api",
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
@@ -6473,8 +6419,7 @@ dependencies = [
  "ctrlc",
  "prost-types",
  "restate-cli-util",
- "restate-node-protocol",
- "restate-node-services",
+ "restate-cluster-controller",
  "restate-types",
  "thiserror",
  "tokio",
@@ -8513,8 +8458,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-metadata-store",
- "restate-node-services",
- "restate-schema-api",
+ "restate-network",
  "restate-service-client",
  "restate-service-protocol",
  "restate-types",

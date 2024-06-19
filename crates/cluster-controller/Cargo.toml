@@ -9,13 +9,14 @@ publish = false
 
 [features]
 default = []
+clients = []
+servers = []
 options_schema = ["dep:schemars"]
 
 [dependencies]
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-network = { workspace = true }
-restate-node-protocol = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -23,11 +24,18 @@ arc-swap = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
+prost = { workspace = true }
+prost-dto = { workspace = true }
+prost-types = { workspace = true }
 schemars = { workspace = true, optional = true}
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

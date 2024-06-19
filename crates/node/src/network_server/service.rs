@@ -12,15 +12,13 @@ use axum::routing::get;
 use tonic::codec::CompressionEncoding;
 use tower_http::trace::TraceLayer;
 
+use restate_cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::{cancellation_watcher, task_center};
 use restate_grpc_util::run_hyper_server;
 use restate_metadata_store::MetadataStoreClient;
+use restate_network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_network::ConnectionManager;
-use restate_node_protocol::{common, node};
-use restate_node_services::cluster_ctrl;
-use restate_node_services::cluster_ctrl::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
-use restate_node_services::node_svc::node_svc_server::NodeSvcServer;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
 use restate_worker::SubscriptionControllerHandle;
@@ -77,12 +75,16 @@ impl NetworkServer {
 
         // -- GRPC Service Setup
         let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
-            .register_encoded_file_descriptor_set(node::FILE_DESCRIPTOR_SET)
-            .register_encoded_file_descriptor_set(common::FILE_DESCRIPTOR_SET);
+            .register_encoded_file_descriptor_set(
+                restate_network::protobuf::node_svc::FILE_DESCRIPTOR_SET,
+            )
+            .register_encoded_file_descriptor_set(restate_types::protobuf::FILE_DESCRIPTOR_SET);
 
         if self.admin_deps.is_some() {
             reflection_service_builder = reflection_service_builder
-                .register_encoded_file_descriptor_set(cluster_ctrl::FILE_DESCRIPTOR_SET);
+                .register_encoded_file_descriptor_set(
+                    restate_cluster_controller::protobuf::FILE_DESCRIPTOR_SET,
+                );
         }
 
         let cluster_controller_service = self.admin_deps.map(|admin_deps| {

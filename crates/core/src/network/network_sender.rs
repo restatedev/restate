@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node_protocol::codec::{Targeted, WireEncode};
+use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
 use super::NetworkSendError;

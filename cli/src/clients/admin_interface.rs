@@ -14,6 +14,7 @@ use super::AdminClient;
 
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::services::*;
+use restate_types::schema::service::ServiceMetadata;
 
 pub trait AdminClientInterface {
     /// Check if the admin service is healthy by invoking /health

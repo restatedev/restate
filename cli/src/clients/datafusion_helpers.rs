@@ -14,21 +14,21 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
-use super::DataFusionHttpClient;
-
+use anyhow::Result;
 use arrow::array::{Array, ArrayAccessor, AsArray, StringArray};
 use arrow::datatypes::{ArrowTemporalType, Date64Type};
 use arrow::record_batch::RecordBatch;
-use clap::ValueEnum;
-use restate_admin_rest_model::deployments::DeploymentId;
-
-use anyhow::Result;
 use arrow_convert::{ArrowDeserialize, ArrowField};
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Local, TimeZone};
-use restate_admin_rest_model::services::ServiceType;
+use clap::ValueEnum;
+
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
+use restate_types::identifiers::DeploymentId;
 use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::invocation::ServiceType;
+
+use super::DataFusionHttpClient;
 
 static JOURNAL_QUERY_LIMIT: usize = 100;
 
@@ -433,7 +433,7 @@ pub async fn count_deployment_active_inv_by_method(
     let mut output = vec![];
 
     let query = format!(
-        "SELECT 
+        "SELECT
             target_service_name,
             target_handler_name,
             COUNT(id) AS inv_count
@@ -472,7 +472,7 @@ pub async fn get_service_status(
     // Inbox analysis (pending invocations)....
     {
         let query = format!(
-            "SELECT 
+            "SELECT
                 target_service_name,
                 target_handler_name,
                 COUNT(id),
@@ -614,7 +614,7 @@ pub async fn get_locked_keys_status(
     // Inbox analysis (pending invocations)....
     {
         let query = format!(
-            "SELECT 
+            "SELECT
                 service_name,
                 service_key,
                 COUNT(id),

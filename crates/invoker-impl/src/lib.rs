@@ -29,7 +29,6 @@ use restate_invoker_api::{
     InvokeInputJournal, JournalReader, StateReader,
 };
 use restate_queue::SegmentQueue;
-use restate_schema_api::deployment::DeploymentResolver;
 use restate_timer_queue::TimerQueue;
 use restate_types::arc_util::Updateable;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
@@ -39,6 +38,7 @@ use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -1031,12 +1031,12 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use restate_invoker_api::{entry_enricher, ServiceHandle};
-    use restate_schema_api::deployment::test_util::MockDeploymentMetadataRegistry;
     use restate_test_util::{check, let_assert};
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::retries::RetryPolicy;
+    use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 
     use crate::invocation_task::InvocationTaskError;
     use crate::quota::InvokerConcurrencyQuota;

@@ -77,6 +77,19 @@ impl Lsn {
     }
 }
 
+impl From<crate::protobuf::common::Lsn> for Lsn {
+    fn from(lsn: crate::protobuf::common::Lsn) -> Self {
+        Self::from(lsn.value)
+    }
+}
+
+impl From<Lsn> for crate::protobuf::common::Lsn {
+    fn from(lsn: Lsn) -> Self {
+        let value: u64 = lsn.into();
+        Self { value }
+    }
+}
+
 impl SequenceNumber for Lsn {
     /// The maximum possible sequence number, this is useful when creating a read stream
     /// with an open ended tail.

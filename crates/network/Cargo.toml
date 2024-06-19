@@ -10,8 +10,6 @@ publish = false
 [dependencies]
 restate-core = { workspace = true }
 restate-grpc-util = { workspace = true }
-restate-node-protocol = { workspace = true }
-restate-node-services = { workspace = true, features = ["clients"] }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -25,14 +23,19 @@ http = { workspace = true }
 metrics = { workspace = true }
 once_cell = { workspace = true }
 pin-project = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true }
 tracing = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

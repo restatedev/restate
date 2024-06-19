@@ -1,0 +1,41 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+import "restate/common.proto";
+import "restate/node.proto";
+
+package restate.node_svc;
+
+service NodeSvc {
+  // Get identity information from this node.
+  rpc GetIdent(google.protobuf.Empty) returns (IdentResponse);
+
+  // Queries the storage of the worker and returns the result as a stream of
+  // responses
+  rpc QueryStorage(StorageQueryRequest) returns (stream StorageQueryResponse);
+
+  // Create a bidirectional node-to-node stream
+  rpc CreateConnection(stream restate.node.Message)
+      returns (stream restate.node.Message);
+}
+
+message IdentResponse {
+  restate.common.NodeStatus status = 1;
+  restate.common.NodeId node_id = 2;
+}
+
+message StorageQueryRequest { string query = 1; }
+
+message StorageQueryResponse {
+  bytes header = 1;
+  bytes data = 2;
+}

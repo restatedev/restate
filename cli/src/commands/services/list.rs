@@ -15,11 +15,11 @@ use cling::prelude::*;
 use comfy_table::Table;
 
 use restate_admin_rest_model::deployments::DeploymentResponse;
-use restate_admin_rest_model::services::HandlerMetadata;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::{c_error, c_println};
 use restate_types::identifiers::DeploymentId;
+use restate_types::schema::service::HandlerMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClientInterface;

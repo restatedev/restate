@@ -18,9 +18,7 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-node-services = { workspace = true, features = ["servers", "clients"] }
-restate-schema = { workspace = true }
-restate-schema-api = { workspace = true, features = ["deployment", "serde", "serde_schema"] }
+restate-network = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["schemars"] }
@@ -51,9 +49,8 @@ tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-restate-schema = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
 
 tempfile = { workspace = true }
 test-log = { workspace = true }

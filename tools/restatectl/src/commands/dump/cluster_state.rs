@@ -17,12 +17,13 @@ use cling::prelude::*;
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{timestamp_as_human_duration, Tense};
-use restate_node_protocol::common::Lsn;
-use restate_node_services::cluster_ctrl::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
+use restate_cluster_controller::protobuf::ClusterStateRequest;
+use restate_types::logs::Lsn;
 
 use restate_cli_util::{c_println, c_title};
-use restate_node_services::cluster_ctrl::{
-    node_state, ClusterStateRequest, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
+use restate_types::protobuf::cluster::{
+    node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId};
 use tonic::codec::CompressionEncoding;
@@ -56,7 +57,12 @@ async fn dump_cluster_state(
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
     let req = ClusterStateRequest::default();
-    let state = client.get_cluster_state(req).await?.into_inner();
+    let state = client
+        .get_cluster_state(req)
+        .await?
+        .into_inner()
+        .cluster_state
+        .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
 
     let mut processors: BTreeMap<u64, PartitionDetails> = BTreeMap::new();
     let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
@@ -102,7 +108,7 @@ async fn dump_cluster_state(
             ),
             render_replay_status(
                 details.status.replay_status(),
-                details.status.target_tail_lsn,
+                details.status.target_tail_lsn.map(Into::into),
             ),
             Cell::new(
                 details

@@ -20,14 +20,11 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
-pub use error::*;
-pub use handle::*;
 use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::UpdateableConfiguration;
 pub use subscription_controller::SubscriptionController;
 pub use subscription_integration::SubscriptionControllerHandle;
 
-use crate::ingress_integration::InvocationStorageReaderImpl;
 use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -41,11 +38,14 @@ use restate_invoker_impl::{
 use restate_metadata_store::MetadataStoreClient;
 use restate_network::Networking;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_schema::UpdateableSchema;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
+use restate_types::schema::UpdateableSchema;
 
+pub use self::error::*;
+pub use self::handle::*;
+use crate::ingress_integration::InvocationStorageReaderImpl;
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;

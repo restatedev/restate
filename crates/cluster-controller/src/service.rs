@@ -15,30 +15,29 @@ use std::sync::Arc;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time;
+use tokio::time::MissedTickBehavior;
 use tokio::time::{Instant, Interval};
+use tracing::{debug, warn};
 
-use restate_node_protocol::cluster_controller::{
-    Action, AttachRequest, AttachResponse, RunPartition,
-};
-use restate_node_protocol::common::{KeyRange, RequestId};
 use restate_types::arc_util::Updateable;
 use restate_types::config::{AdminOptions, Configuration};
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
+use restate_types::net::RequestId;
+use restate_types::partition_table::{FixedPartitionTable, KeyRange};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskCenter};
-use restate_node_protocol::MessageEnvelope;
+use restate_types::cluster::cluster_state::RunMode;
+use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::processors::RunMode;
+use restate_types::net::MessageEnvelope;
 use restate_types::{GenerationalNodeId, Version};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, warn};
 
-use crate::cluster_state::{ClusterState, ClusterStateRefresher, NodeState};
+use crate::cluster_state::ClusterStateRefresher;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -236,11 +235,11 @@ where
 
         for node_state in cluster_state.nodes.values() {
             match node_state {
-                NodeState::Alive {
-                    generation,
+                NodeState::Alive(AliveNode {
+                    generational_node_id,
                     partitions,
                     ..
-                } => {
+                }) => {
                     for (partition_id, partition_processor_status) in partitions.iter() {
                         let lsn = partition_processor_status
                             .last_persisted_log_lsn
@@ -248,10 +247,10 @@ where
                         persisted_lsns_per_partition
                             .entry(*partition_id)
                             .or_default()
-                            .insert(*generation, lsn);
+                            .insert(*generational_node_id, lsn);
                     }
                 }
-                NodeState::Dead { .. } => {
+                NodeState::Dead(_) => {
                     // nothing to do
                 }
             }
@@ -346,17 +345,16 @@ mod tests {
     use restate_bifrost::{Bifrost, Record, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnvBuilder};
-    use restate_node_protocol::partition_processor_manager::{
-        GetProcessorsState, ProcessorsStateResponse,
-    };
-    use restate_node_protocol::MessageEnvelope;
     use restate_types::arc_util::Constant;
+    use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
     use restate_types::config::AdminOptions;
     use restate_types::identifiers::PartitionId;
     use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
-    use restate_types::net::AdvertisedAddress;
+    use restate_types::net::partition_processor_manager::{
+        GetProcessorsState, ProcessorsStateResponse,
+    };
+    use restate_types::net::{AdvertisedAddress, MessageEnvelope};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-    use restate_types::processors::{PartitionProcessorStatus, RunMode};
     use restate_types::{GenerationalNodeId, Version};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;

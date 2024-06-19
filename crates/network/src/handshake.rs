@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use futures::Stream;
-use restate_node_protocol::common::{ProtocolVersion, CURRENT_PROTOCOL_VERSION};
-use restate_node_protocol::node::{message, Header, Hello, Message, Welcome};
+use restate_types::net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION};
+use restate_types::protobuf::node::{message, Header, Hello, Message, Welcome};
 use tokio_stream::StreamExt;
 
 use crate::error::ProtocolError;
