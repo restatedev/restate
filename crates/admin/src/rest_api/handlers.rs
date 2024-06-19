@@ -15,6 +15,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use okapi_operation::*;
 use restate_admin_rest_model::handlers::*;
+use restate_types::schema::service::HandlerMetadata;
 
 /// List discovered handlers for service
 #[openapi(

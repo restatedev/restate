@@ -24,7 +24,6 @@ use restate_invoker_api::{
     EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
     StateReader,
 };
-use restate_schema_api::deployment::DeploymentResolver;
 use restate_service_client::{Request, ServiceClient, ServiceClientError};
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::deployment::PinnedDeployment;
@@ -33,6 +32,7 @@ use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, Partiti
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryType;
+use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use std::collections::HashSet;

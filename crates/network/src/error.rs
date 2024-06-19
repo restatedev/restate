@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::ShutdownError;
-use restate_node_protocol::common::MIN_SUPPORTED_PROTOCOL_VERSION;
+use restate_types::net::MIN_SUPPORTED_PROTOCOL_VERSION;
 use restate_types::nodes_config::NodesConfigError;
 use restate_types::NodeId;
 

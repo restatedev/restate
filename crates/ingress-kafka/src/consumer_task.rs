@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt;
+
 use base64::Engine;
 use bytes::Bytes;
 use opentelemetry::trace::TraceContextExt;
@@ -15,17 +17,17 @@ use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{ClientConfig, Message};
-use restate_ingress_dispatcher::{
-    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
-};
-use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
-use restate_types::identifiers::SubscriptionId;
-use restate_types::invocation::{Header, SpanRelation};
-use restate_types::message::MessageIndex;
-use std::fmt;
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use restate_ingress_dispatcher::{
+    DeduplicationId, DispatchIngressRequest, IngressDispatcher, IngressDispatcherRequest,
+};
+use restate_types::identifiers::SubscriptionId;
+use restate_types::invocation::{Header, SpanRelation};
+use restate_types::message::MessageIndex;
+use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

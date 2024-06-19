@@ -18,8 +18,8 @@ use hyper::http::HeaderValue;
 use hyper::{Request, Response};
 use path_parsing::RequestType;
 use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_schema_api::invocation_target::InvocationTargetResolver;
-use restate_schema_api::service::ServiceMetadataResolver;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::service::ServiceMetadataResolver;
 use std::convert::Infallible;
 use std::task::{Context, Poll};
 

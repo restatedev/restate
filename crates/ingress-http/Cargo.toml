@@ -17,7 +17,6 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-schema-api = { workspace = true, features = ["service", "invocation_target"]}
 restate-types = { workspace = true }
 restate-service-protocol = { workspace = true, features = [ "awakeable-id" ] }
 
@@ -68,7 +67,6 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-ingress-dispatcher = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"]}
 
 hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }

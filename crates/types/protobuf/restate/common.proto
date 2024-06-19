@@ -1,0 +1,54 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+package restate.common;
+
+enum ProtocolVersion {
+  ProtocolVersion_UNKNOWN = 0;
+  FLEXBUFFERS = 1;
+}
+
+message NodeId {
+  uint32 id = 1;
+  optional uint32 generation = 2;
+}
+
+// Partition Processor leadershop epoch number
+message LeaderEpoch { uint64 value = 1; }
+
+// Log sequence number
+message Lsn { uint64 value = 1; }
+
+// A generic type for versioned metadata
+message Version { uint32 value = 1; }
+
+// The handle name or type tag of the message. For every target there must be
+// exactly one message handler implementation.
+enum TargetName {
+  TargetName_UNKNOWN = 0;
+  METADATA_MANAGER = 1;
+  INGRESS = 2;
+  LOCAL_METADATA_STORE = 3;
+  LOCAL_METADATA_STORE_CLIENT = 4;
+  ATTACH_REQUEST = 5;
+  ATTACH_RESPONSE = 6;
+  GET_PROCESSORS_STATE_REQUEST = 7;
+  PROCESSORS_STATE_RESPONSE = 8;
+}
+
+enum NodeStatus {
+  NodeStatus_UNKNOWN = 0;
+  ALIVE = 1;
+  // The node is not fully running yet.
+  STARTING_UP = 2;
+  // The node is performing a graceful shutdown.
+  SHUTTING_DOWN = 3;
+}

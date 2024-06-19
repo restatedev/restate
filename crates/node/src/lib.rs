@@ -25,7 +25,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
 
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
-use restate_core::{spawn_metadata_manager, MetadataManager};
+use restate_core::{spawn_metadata_manager, MetadataKind, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
@@ -41,7 +41,6 @@ use restate_types::Version;
 use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
 use crate::roles::{AdminRole, WorkerRole};
-use restate_node_protocol::metadata::MetadataKind;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {

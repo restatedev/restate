@@ -21,7 +21,7 @@ use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
-use restate_types::identifiers::InvalidLambdaARN;
+use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
