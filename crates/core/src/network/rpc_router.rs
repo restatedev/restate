@@ -14,16 +14,15 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use restate_core::{cancellation_watcher, ShutdownError};
-use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
-use restate_types::NodeId;
 use tokio::sync::oneshot;
-
-use restate_core::network::{
-    MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender,
-};
-use restate_types::net::{MessageEnvelope, RpcMessage, RpcRequest};
 use tracing::warn;
+
+use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
+use restate_types::net::{MessageEnvelope, RpcMessage, RpcRequest};
+use restate_types::NodeId;
+
+use super::{MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender};
+use crate::{cancellation_watcher, ShutdownError};
 
 /// A router for sending and receiving RPC messages through Networking
 ///

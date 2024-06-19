@@ -8,10 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc_svc;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::store::LocalMetadataStore;
+use restate_core::network::grpc_util;
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_types::arc_util::Updateable;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
@@ -19,6 +16,10 @@ use restate_types::net::BindAddress;
 use tonic::server::NamedService;
 
 use super::BuildError;
+use crate::grpc_svc;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::local::grpc::handler::LocalMetadataStoreHandler;
+use crate::local::store::LocalMetadataStore;
 
 pub struct LocalMetadataStoreService {
     metadata_store: LocalMetadataStore,
@@ -28,7 +29,7 @@ pub struct LocalMetadataStoreService {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed running grpc server: {0}")]
-    GrpcServer(#[from] restate_grpc_util::Error),
+    GrpcServer(#[from] grpc_util::Error),
     #[error("error while running server server grpc reflection service: {0}")]
     GrpcReflection(#[from] tonic_reflection::server::Error),
     #[error("system is shutting down")]
@@ -86,7 +87,7 @@ impl LocalMetadataStoreService {
             "metadata-store-grpc",
             None,
             async move {
-                restate_grpc_util::run_hyper_server(
+                grpc_util::run_hyper_server(
                     &self.bind_address,
                     service,
                     cancellation_watcher(),

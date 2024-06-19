@@ -18,9 +18,9 @@ use tonic::transport::{Channel, Uri};
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
+use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
-use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::arc_util::Constant;
