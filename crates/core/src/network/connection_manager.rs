@@ -15,29 +15,29 @@ use std::time::Instant;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rand::seq::SliceRandom;
-use restate_core::network::{Handler, MessageRouter};
 use restate_types::net::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
-use restate_core::metadata;
-use restate_core::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
-use restate_grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::AdvertisedAddress;
 use restate_types::protobuf::node::message::{self, ConnectionControl};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 use super::connection::{Connection, ConnectionSender};
+use super::error::{NetworkError, ProtocolError};
+use super::grpc_util::create_grpc_channel_from_advertised_address;
 use super::handshake::{negotiate_protocol_version, wait_for_hello, wait_for_welcome};
-use crate::error::{NetworkError, ProtocolError};
-use crate::metric_definitions::{
+use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
     ONGOING_DRAIN, OUTGOING_CONNECTION,
 };
-use crate::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use super::{Handler, MessageRouter};
+use crate::metadata;
+use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
@@ -595,13 +595,13 @@ fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::handshake::HANDSHAKE_TIMEOUT;
+    use crate::network::handshake::HANDSHAKE_TIMEOUT;
 
     use super::*;
 
     use googletest::prelude::*;
 
-    use restate_core::TestCoreEnv;
+    use crate::TestCoreEnv;
     use restate_test_util::assert_eq;
     use restate_types::net::{
         ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -616,7 +616,7 @@ mod tests {
         test_setup
             .tc
             .run_in_scope("test", None, async {
-                let metadata = restate_core::metadata();
+                let metadata = crate::metadata();
                 let (tx, rx) = mpsc::channel(1);
                 let connections = ConnectionManager::default();
 
@@ -680,7 +680,7 @@ mod tests {
         test_setup
             .tc
             .run_in_scope("test", None, async {
-                let metadata = restate_core::metadata();
+                let metadata = crate::metadata();
 
                 let (tx, rx) = mpsc::channel(1);
                 let my_node_id = metadata.my_node_id();
@@ -744,7 +744,7 @@ mod tests {
         test_setup
             .tc
             .run_in_scope("test", None, async {
-                let metadata = restate_core::metadata();
+                let metadata = crate::metadata();
 
                 let (tx, rx) = mpsc::channel(1);
                 let mut my_node_id = metadata.my_node_id();
