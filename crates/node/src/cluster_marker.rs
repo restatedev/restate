@@ -209,6 +209,7 @@ fn validate_and_update_cluster_marker_inner(
         // write the new cluster marker file
         let new_cluster_marker_file = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(tmp_cluster_marker_filepath.as_path())
             .map_err(ClusterValidationError::CreateFile)?;
@@ -247,7 +248,11 @@ mod tests {
         cluster_marker: &ClusterMarker,
         path: impl AsRef<Path>,
     ) -> anyhow::Result<()> {
-        let file = OpenOptions::new().create(true).write(true).open(path)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?;
         serde_json::to_writer(&file, cluster_marker)?;
         Ok(())
     }
