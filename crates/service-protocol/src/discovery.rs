@@ -10,15 +10,14 @@
 
 use bytes::Bytes;
 use codederror::CodedError;
-
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap, StatusCode, Version};
+use hyper::{Body, HeaderMap, StatusCode};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use restate_errors::{META0003, META0012, META0013};
+use restate_errors::{META0003, META0012, META0013, META0014};
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
@@ -33,7 +32,6 @@ use restate_types::service_protocol::{
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt::Display;
 use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
@@ -114,29 +112,40 @@ pub struct DiscoveredMetadata {
     pub supported_protocol_versions: RangeInclusive<i32>,
 }
 
-#[derive(Debug, thiserror::Error, CodedError)]
+#[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
-    #[code(META0013)]
     BadResponse(Cow<'static, str>),
     #[error(
         "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
         String::from_utf8_lossy(.1)
     )]
-    #[code(unknown)]
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
     #[error("bad status code: {0}")]
-    #[code(META0003)]
     BadStatusCode(u16),
     #[error("client error: {0}")]
-    #[code(META0003)]
     Client(#[from] ServiceClientError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
-    #[code(META0012)]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
+}
+
+impl CodedError for DiscoveryError {
+    fn code(&self) -> Option<&'static codederror::Code> {
+        match self {
+            DiscoveryError::BadResponse(_) => Some(&META0013),
+            DiscoveryError::Decode(_, _) => None,
+            DiscoveryError::BadStatusCode(_) => Some(&META0003),
+            // special code for possible http1.1 errors
+            DiscoveryError::Client(ServiceClientError::Http(
+                restate_service_client::HttpError::PossibleHTTP11Only(_),
+            )) => Some(&META0014),
+            DiscoveryError::Client(_) => Some(&META0003),
+            DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),
+        }
+    }
 }
 
 impl DiscoveryError {
@@ -315,26 +324,8 @@ impl ServiceDiscovery {
         build_request: impl Fn() -> Request<Body>,
         mut retry_iter: RetryIter,
     ) -> Result<(ResponseParts, Bytes), DiscoveryError> {
-        let mut try_http1 = false;
         loop {
-            let req = build_request();
-            let req = if try_http1 {
-                let (mut parts, body) = req.into_parts();
-
-                parts.address = match parts.address {
-                    Endpoint::Http(uri, Version::HTTP_2) => Endpoint::Http(uri, Version::HTTP_11),
-                    other => other,
-                };
-
-                // only try once; if we see another possible http2 error, we can try again
-                try_http1 = false;
-
-                Request::new(parts, body)
-            } else {
-                req
-            };
-
-            let response_fut = client.call(req);
+            let response_fut = client.call(build_request());
             let response = async {
                 let (parts, body) = response_fut
                     .await
@@ -361,24 +352,11 @@ impl ServiceDiscovery {
                 Err(e) => e,
             };
 
-            if is_possible_h1_only_error(&e) {
-                if let Some(next_retry_interval) = retry_iter.next() {
-                    warn!(
-                        "Detected possible HTTP1.1 endpoint when discovering deployment at address '{}'. Retrying with HTTP1.1 in {} seconds",
-                        address,
-                        next_retry_interval.as_secs(),
-                    );
-                    try_http1 = true;
-                    tokio::time::sleep(next_retry_interval).await;
-                    continue;
-                }
-            }
-
             // Discovery failed
             if e.is_retryable() {
                 if let Some(next_retry_interval) = retry_iter.next() {
                     warn!(
-                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {:?}",
+                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
                         address,
                         next_retry_interval.as_secs(),
                         e
@@ -390,24 +368,6 @@ impl ServiceDiscovery {
 
             return Err(e);
         }
-    }
-}
-
-fn is_possible_h1_only_error(err: &DiscoveryError) -> bool {
-    if let DiscoveryError::Client(ServiceClientError::Http(
-        restate_service_client::http::HttpError::Hyper(err),
-    )) = err
-    {
-        // there is a race condition in hyper; sometimes we see the proper h2 FRAME_SIZE_ERROR
-        // other times we just see a generic 'canceled' error
-        return err.is_canceled()
-            || err
-                .source()
-                .and_then(|err| err.downcast_ref::<h2::Error>())
-                .and_then(|err| err.reason())
-                == Some(h2::Reason::FRAME_SIZE_ERROR);
-    } else {
-        false
     }
 }
 

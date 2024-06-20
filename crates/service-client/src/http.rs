@@ -20,6 +20,7 @@ use hyper::http::HeaderValue;
 use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
 use hyper_rustls::HttpsConnector;
 use restate_types::config::HttpOptions;
+use std::error::Error;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
@@ -134,8 +135,23 @@ impl HttpClient {
 
         let fut = client.request(request);
 
-        Either::Left(async move { Ok(fut.await?) })
+        Either::Left(async move {
+            match fut.await {
+                Ok(res) => Ok(res),
+                Err(err) if is_possible_h11_only_error(&err) => {
+                    Err(HttpError::PossibleHTTP11Only(err))
+                }
+                Err(err) => Err(HttpError::Hyper(err)),
+            }
+        })
     }
+}
+
+fn is_possible_h11_only_error(err: &hyper::Error) -> bool {
+    err.source()
+        .and_then(|err| err.downcast_ref::<h2::Error>())
+        .and_then(|err| err.reason())
+        == Some(h2::Reason::FRAME_SIZE_ERROR)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,6 +160,8 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
+    #[error("server possibly only supports HTTP1.1: {0}")]
+    PossibleHTTP11Only(#[source] hyper::Error),
 }
 
 impl HttpError {
@@ -153,6 +171,7 @@ impl HttpError {
         match self {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
+            HttpError::PossibleHTTP11Only(_) => false,
         }
     }
 }
