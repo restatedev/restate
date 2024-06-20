@@ -36,8 +36,12 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 1. Make sure that [COMPATIBILITY_INFORMATION](/crates/node/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
 1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
 1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
-1. In case you're creating a MAJOR or MINOR release, create the branch with the name `release-MAJOR.MINOR` as well.
 1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version after the release.
+
+**Note:** 
+Don't immediately create a release branch after a MAJOR/MINOR release.
+A release branch `release-MAJOR.MINOR` should only be created once a change to the storage formats, APIs or a new feature gets merged that should be shipped with the next MAJOR/MINOR release.
+
 
 ## Post-release
 
