@@ -25,9 +25,6 @@ use opentelemetry_http::HeaderInjector;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
-use restate_schema_api::deployment::{
-    Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
-};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClientError};
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
@@ -37,6 +34,9 @@ use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
+use restate_types::schema::deployment::{
+    Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::future::poll_fn;

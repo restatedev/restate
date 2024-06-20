@@ -18,7 +18,7 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use tokio::sync::mpsc::Sender;
 
-use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
+use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 
 use super::schema::SysServiceBuilder;
 use crate::context::QueryContext;

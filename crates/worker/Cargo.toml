@@ -31,11 +31,8 @@ restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
-restate-node-protocol = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-schema = { workspace = true }
-restate-schema-api = { workspace = true, features = [ "service", "subscription"] }
 restate-serde-util = { workspace = true, features = ["proto"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = [ "codec", "awakeable-id", "message" ] }
@@ -77,7 +74,6 @@ tracing-opentelemetry = { workspace = true }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }

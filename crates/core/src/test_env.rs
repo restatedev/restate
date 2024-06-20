@@ -13,19 +13,19 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
 
-use restate_node_protocol::codec::{
-    serialize_message, try_unwrap_binary_message, Targeted, WireEncode,
-};
-use restate_node_protocol::metadata::MetadataKind;
-use restate_node_protocol::node::{Header, Message};
-use restate_node_protocol::CURRENT_PROTOCOL_VERSION;
 use restate_types::logs::metadata::{create_static_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
+use restate_types::net::codec::{
+    serialize_message, try_unwrap_binary_message, Targeted, WireEncode,
+};
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
+use restate_types::net::CURRENT_PROTOCOL_VERSION;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::FixedPartitionTable;
+use restate_types::protobuf::node::{Header, Message};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
 

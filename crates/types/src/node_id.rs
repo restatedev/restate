@@ -144,6 +144,40 @@ impl PartialEq<PlainNodeId> for NodeId {
     }
 }
 
+impl From<crate::protobuf::common::NodeId> for NodeId {
+    fn from(node_id: crate::protobuf::common::NodeId) -> Self {
+        NodeId::new(node_id.id, node_id.generation)
+    }
+}
+
+impl From<NodeId> for crate::protobuf::common::NodeId {
+    fn from(node_id: NodeId) -> Self {
+        crate::protobuf::common::NodeId {
+            id: node_id.id().into(),
+            generation: node_id.as_generational().map(|g| g.generation()),
+        }
+    }
+}
+
+impl From<PlainNodeId> for crate::protobuf::common::NodeId {
+    fn from(node_id: PlainNodeId) -> Self {
+        let id: u32 = node_id.into();
+        crate::protobuf::common::NodeId {
+            id,
+            generation: None,
+        }
+    }
+}
+
+impl From<GenerationalNodeId> for crate::protobuf::common::NodeId {
+    fn from(node_id: GenerationalNodeId) -> Self {
+        crate::protobuf::common::NodeId {
+            id: node_id.raw_id(),
+            generation: Some(node_id.generation()),
+        }
+    }
+}
+
 impl PlainNodeId {
     pub fn with_generation(self, generation: u32) -> GenerationalNodeId {
         GenerationalNodeId(self, generation)

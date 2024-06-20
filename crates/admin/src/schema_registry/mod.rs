@@ -16,18 +16,18 @@ use crate::schema_registry::updater::SchemaUpdater;
 use http::Uri;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{metadata, MetadataWriter};
-use restate_schema::Schema;
-use restate_schema_api::deployment::{
-    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
-};
-use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
-use restate_schema_api::subscription::{
-    ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
-};
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::{DiscoverEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::metadata_store::keys::SCHEMA_INFORMATION_KEY;
+use restate_types::schema::deployment::{
+    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
+};
+use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
+use restate_types::schema::subscriptions::{
+    ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
+};
+use restate_types::schema::Schema;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;

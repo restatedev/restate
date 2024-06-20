@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use http::Uri;
+
+use restate_types::schema::service::ServiceMetadataResolver;
+
 use super::Handler;
 use super::HandlerError;
-
 use crate::InvocationStorageReader;
-use http::Uri;
-use restate_schema_api::service::ServiceMetadataResolver;
 
 pub(crate) enum WorkflowRequestType {
     Attach(String, String),

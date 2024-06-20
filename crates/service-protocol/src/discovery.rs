@@ -18,10 +18,10 @@ use hyper::{Body, HeaderMap, StatusCode};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013};
-use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
 use restate_types::retries::{RetryIter, RetryPolicy};
+use restate_types::schema::deployment::ProtocolType;
 use restate_types::service_discovery::{
     ServiceDiscoveryProtocolVersion, MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION,
     MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,

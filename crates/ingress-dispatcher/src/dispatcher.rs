@@ -18,11 +18,12 @@ use dashmap::DashMap;
 use restate_bifrost::Bifrost;
 use restate_core::metadata;
 use restate_core::network::MessageHandler;
-use restate_node_protocol::codec::Targeted;
-use restate_node_protocol::ingress::IngressMessage;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{IngressRequestId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
+use restate_types::net::codec::Targeted;
+use restate_types::net::ingress::IngressMessage;
+use restate_types::net::MessageEnvelope;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{
     append_envelope_to_bifrost, Command, Destination, Envelope, Header, Source,
@@ -146,7 +147,7 @@ impl DispatchIngressRequest for IngressDispatcher {
 impl MessageHandler for IngressDispatcher {
     type MessageType = IngressMessage;
 
-    async fn on_message(&self, msg: restate_node_protocol::MessageEnvelope<Self::MessageType>) {
+    async fn on_message(&self, msg: MessageEnvelope<Self::MessageType>) {
         let (peer, msg) = msg.split();
         trace!("Processing message '{}' from '{}'", msg.kind(), peer);
 
