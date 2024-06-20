@@ -20,26 +20,34 @@ use hyper::http::HeaderValue;
 use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
 use hyper_rustls::HttpsConnector;
 use restate_types::config::HttpOptions;
+use std::error::Error;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
-
 type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    client: hyper::Client<Connector, Body>,
+    // alpn client defaults to http1.1, but can upgrade to http2 using ALPN for TLS servers
+    alpn_client: hyper::Client<Connector, Body>,
+    // h2 client defaults to http2 and so supports unencrypted http2 servers
+    h2_client: hyper::Client<Connector, Body>,
 }
 
 impl HttpClient {
-    pub fn new(client: hyper::Client<Connector, Body>) -> Self {
-        Self { client }
+    pub fn new(
+        alpn_client: hyper::Client<Connector, Body>,
+        h2_client: hyper::Client<Connector, Body>,
+    ) -> Self {
+        Self {
+            alpn_client,
+            h2_client,
+        }
     }
 
     pub fn from_options(options: &HttpOptions) -> HttpClient {
         let mut builder = hyper::Client::builder();
         builder
-            .http2_only(true)
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
 
@@ -48,15 +56,20 @@ impl HttpClient {
         http_connector.set_nodelay(true);
         http_connector.set_connect_timeout(Some(options.connect_timeout.into()));
 
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http2()
+            .wrap_connector(http_connector);
+
+        let proxy_connector = ProxyConnector::new(options.http_proxy.clone(), https_connector);
+
         HttpClient::new(
-            builder.build::<_, hyper::Body>(ProxyConnector::new(
-                options.http_proxy.clone(),
-                hyper_rustls::HttpsConnectorBuilder::new()
-                    .with_native_roots()
-                    .https_or_http()
-                    .enable_http2()
-                    .wrap_connector(http_connector),
-            )),
+            builder.clone().build::<_, Body>(proxy_connector.clone()), // h1 client with alpn upgrade support
+            {
+                builder.http2_only(true);
+                builder.build::<_, hyper::Body>(proxy_connector) // h2-prior knowledge client
+            },
         )
     }
 
@@ -117,10 +130,34 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let fut = self.client.request(request);
+        let client = match request.version() {
+            Version::HTTP_2 => &self.h2_client,
+            _ => &self.alpn_client,
+        };
 
-        Either::Left(async move { Ok(fut.await?) })
+        let fut = client.request(request);
+
+        Either::Left(async move {
+            match fut.await {
+                Ok(res) => Ok(res),
+                Err(err) if is_possible_h11_only_error(&err) => {
+                    Err(HttpError::PossibleHTTP11Only(err))
+                }
+                Err(err) => Err(HttpError::Hyper(err)),
+            }
+        })
     }
+}
+
+fn is_possible_h11_only_error(err: &hyper::Error) -> bool {
+    // this is the error we see from the h2 lib when the server sends back an http1.1 response
+    // to an http2 request. http2 is designed to start requests with what looks like an invalid
+    // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
+    // this as an invalid frame.
+    err.source()
+        .and_then(|err| err.downcast_ref::<h2::Error>())
+        .and_then(|err| err.reason())
+        == Some(h2::Reason::FRAME_SIZE_ERROR)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +166,8 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
+    #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1: {0}")]
+    PossibleHTTP11Only(#[source] hyper::Error),
 }
 
 impl HttpError {
@@ -138,6 +177,7 @@ impl HttpError {
         match self {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
+            HttpError::PossibleHTTP11Only(_) => false,
         }
     }
 }

@@ -27,6 +27,7 @@ use std::future;
 use std::future::Future;
 use std::sync::Arc;
 
+pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
 use crate::request_identity::SignRequest;
 
