@@ -31,7 +31,7 @@ itertools = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
-regress = { version = "0.9", optional = true }
+regress = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 size = { version = "0.4.1", optional = true }
