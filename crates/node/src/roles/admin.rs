@@ -8,19 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use anyhow::Context;
 use codederror::CodedError;
-use restate_core::network::MessageRouterBuilder;
-use restate_network::Networking;
-use std::time::Duration;
 use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
+use restate_core::network::MessageRouterBuilder;
+use restate_core::network::Networking;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::arc_util::ArcSwapExt;

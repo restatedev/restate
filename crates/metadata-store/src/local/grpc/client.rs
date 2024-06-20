@@ -8,19 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
-use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
 use async_trait::async_trait;
 use bytestring::ByteString;
+use tonic::transport::Channel;
+use tonic::{Code, Status};
+
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
-use restate_grpc_util::create_grpc_channel_from_advertised_address;
+use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
-use tonic::transport::Channel;
-use tonic::{Code, Status};
+
+use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
+use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
+use crate::local::grpc::pb_conversions::ConversionError;
 
 /// Client end to interact with the [`LocalMetadataStore`].
 #[derive(Debug, Clone)]

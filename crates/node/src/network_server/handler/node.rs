@@ -15,12 +15,12 @@ use futures::TryStreamExt;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
+use restate_core::network::protobuf::node_svc::IdentResponse;
+use restate_core::network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
+use restate_core::network::ConnectionManager;
+use restate_core::network::ProtocolError;
 use restate_core::{metadata, TaskCenter};
-use restate_network::error::ProtocolError;
-use restate_network::protobuf::node_svc::node_svc_server::NodeSvc;
-use restate_network::protobuf::node_svc::IdentResponse;
-use restate_network::protobuf::node_svc::{StorageQueryRequest, StorageQueryResponse};
-use restate_network::ConnectionManager;
 use restate_types::protobuf::common::NodeStatus;
 use restate_types::protobuf::node::Message;
 
