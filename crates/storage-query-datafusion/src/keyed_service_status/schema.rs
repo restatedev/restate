@@ -18,7 +18,7 @@ define_table!(sys_keyed_service_status(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// The name for the invoked virtual object/workflow.
+    /// The name of the invoked virtual object/workflow.
     service_name: DataType::LargeUtf8,
 
     /// The key of the virtual object/workflow.

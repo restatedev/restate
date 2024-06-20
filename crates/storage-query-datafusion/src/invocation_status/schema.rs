@@ -25,14 +25,14 @@ define_table!(sys_invocation_status(
     status: DataType::LargeUtf8,
 
     /// Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g.
-    /// `Greeter/greet`. Format for Virtual Objects/Workflows: `VirtualObjectName/Key/HandlerName`,
+    /// `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`,
     /// e.g. `Greeter/Francesco/greet`.
     target: DataType::LargeUtf8,
 
-    /// The name for the invoked service.
+    /// The name of the invoked service.
     target_service_name: DataType::LargeUtf8,
 
-    /// The key of the Virtual Object or of the Workflow. Null for regular services.
+    /// The key of the virtual object or the workflow ID. Null for regular services.
     target_service_key: DataType::LargeUtf8,
 
     /// The invoked handler.
@@ -56,8 +56,9 @@ define_table!(sys_invocation_status(
     /// `null` if invoked externally.
     invoked_by_target: DataType::LargeUtf8,
 
-    /// The opaque service deployment ID that has been committed for this invocation; this is set
-    /// after the first journal entry is stored for this invocation.
+    /// The ID of the service deployment that started processing this invocation, and will continue
+    /// to do so (e.g. for retries). This gets set after the first journal entry has been stored for
+    /// this invocation.
     pinned_deployment_id: DataType::LargeUtf8,
 
     /// The ID of the trace that is assigned to this invocation. Only relevant when tracing is
@@ -70,7 +71,7 @@ define_table!(sys_invocation_status(
     /// Timestamp indicating the start of this invocation.
     created_at: DataType::Date64,
 
-    /// Timestamp indicating the last state transition. For example, last time the status changed
-    /// from `invoked` to `suspended`.
+    /// Timestamp indicating the last invocation status transition. For example, last time the
+    /// status changed from `invoked` to `suspended`.
     modified_at: DataType::Date64,
 ));

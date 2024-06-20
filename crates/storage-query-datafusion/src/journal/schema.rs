@@ -39,7 +39,8 @@ define_table!(sys_journal(
 
     /// If this entry represents an outbound invocation, indicates the invocation Target. Format
     /// for plain services: `ServiceName/HandlerName`, e.g. `Greeter/greet`. Format for
-    /// Virtual Objects/Workflows: `VirtualObjectName/Key/HandlerName`, e.g. `Greeter/Francesco/greet`.
+    /// virtual objects/workflows: `VirtualObjectName/Key/HandlerName`, e.g.
+    /// `Greeter/Francesco/greet`.
     invoked_target: DataType::LargeUtf8,
 
     /// If this entry represents a sleep, indicates wakeup time.
