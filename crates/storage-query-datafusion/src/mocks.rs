@@ -90,6 +90,7 @@ impl SelectPartitions for MockPartitionSelector {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
 
 impl MockQueryEngine {

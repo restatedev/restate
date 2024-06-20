@@ -21,7 +21,6 @@ use restate_core::{cancellation_watcher, task_center};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
-use restate_worker::SubscriptionControllerHandle;
 
 use crate::network_server::handler;
 use crate::network_server::handler::cluster_ctrl::ClusterCtrlSvcHandler;
@@ -132,18 +131,11 @@ async fn handler_404() -> (http::StatusCode, &'static str) {
 
 pub struct WorkerDependencies {
     pub query_context: QueryContext,
-    pub subscription_controller: Option<SubscriptionControllerHandle>,
 }
 
 impl WorkerDependencies {
-    pub fn new(
-        query_context: QueryContext,
-        subscription_controller: Option<SubscriptionControllerHandle>,
-    ) -> Self {
-        WorkerDependencies {
-            query_context,
-            subscription_controller,
-        }
+    pub fn new(query_context: QueryContext) -> Self {
+        WorkerDependencies { query_context }
     }
 }
 
