@@ -18,10 +18,10 @@ define_table!(sys_promise(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// The name for the workflow.
+    /// The name of the workflow service.
     service_name: DataType::LargeUtf8,
 
-    /// The key of the virtual workflow.
+    /// The workflow ID.
     service_key: DataType::LargeUtf8,
 
     /// The promise key.

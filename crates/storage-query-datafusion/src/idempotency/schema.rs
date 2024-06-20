@@ -18,10 +18,10 @@ define_table!(sys_idempotency(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// The name for the invoked service.
+    /// The name of the invoked service.
     service_name: DataType::LargeUtf8,
 
-    /// The key of the Virtual Object or of the Workflow. Null for regular services.
+    /// The key of the virtual object or the workflow ID. Null for regular services.
     service_key: DataType::LargeUtf8,
 
     /// The invoked handler.

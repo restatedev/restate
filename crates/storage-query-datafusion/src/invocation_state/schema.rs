@@ -24,8 +24,9 @@ define_table!(sys_invocation_state(
     /// If true, the invocation is currently in-flight
     in_flight: DataType::Boolean,
 
-    /// The number of attempts since the last successful attempt of this invocation.
-    /// Increments on start, so 2 or more means a failure occurred.
+    /// The number of invocation attempts since the current leader started executing it. Increments
+    /// on start, so a value greater than 1 means a failure occurred. Note: the value is not a
+    /// global attempt counter across invocation suspensions and leadership changes.
     retry_count: DataType::UInt64,
 
     /// Timestamp indicating the start of the most recent attempt of this invocation.
@@ -35,8 +36,8 @@ define_table!(sys_invocation_state(
     // guaranteed to be set unlike in `sys_status` table which require that the
     // deployment to be committed before it is set.
 
-    /// The opaque service deployment ID that was used in the most recent attempt of this
-    /// invocation; this will be set before a journal entry is stored, but can change later.
+    /// The ID of the service deployment that executed the most recent attempt of this invocation;
+    /// this is set before a journal entry is stored, but can change later.
     last_attempt_deployment_id: DataType::LargeUtf8,
 
     /// Server/SDK version, e.g. `restate-sdk-java/1.0.1`

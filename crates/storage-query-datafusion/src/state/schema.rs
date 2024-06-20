@@ -28,7 +28,8 @@ define_table!(state(
     key: DataType::LargeUtf8,
 
     /// Only contains meaningful values when a service stores state as `utf8`. This is the case for
-    /// TypeScript services since the TypeScript SDK serializes values as JSON.
+    /// services that serialize state using JSON (default for Typescript SDK, Java/Kotlin SDK if
+    /// using JsonSerdes).
     value_utf8: DataType::LargeUtf8,
 
     /// A binary, uninterpreted representation of the value. You can use the more specific column
