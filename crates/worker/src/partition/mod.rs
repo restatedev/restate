@@ -8,6 +8,36 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::RangeInclusive;
+use std::time::{Duration, Instant};
+
+use assert2::let_assert;
+use futures::TryStreamExt as _;
+use metrics::{counter, histogram};
+use tokio::sync::{mpsc, watch};
+use tokio::time::MissedTickBehavior;
+use tokio_stream::StreamExt;
+use tracing::{debug, instrument, trace, Span};
+
+use restate_bifrost::{Bifrost, FindTailAttributes, LogRecord, Record};
+use restate_core::cancellation_watcher;
+use restate_core::metadata;
+use restate_core::network::Networking;
+use restate_partition_store::{PartitionStore, RocksDBTransaction};
+use restate_storage_api::deduplication_table::{
+    DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
+};
+use restate_storage_api::StorageError;
+use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
+use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::time::MillisSinceEpoch;
+use restate_wal_protocol::control::AnnounceLeader;
+use restate_wal_protocol::{Command, Destination, Envelope, Header};
+
+use self::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::{
     PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
     PARTITION_TIMER_DUE_HANDLED, PP_APPLY_RECORD_DURATION,
@@ -15,23 +45,6 @@ use crate::metric_definitions::{
 use crate::partition::leadership::{ActionEffect, LeadershipState};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
-use assert2::let_assert;
-use futures::TryStreamExt as _;
-use metrics::{counter, histogram};
-use restate_core::metadata;
-use restate_network::Networking;
-use restate_partition_store::{PartitionStore, RocksDBTransaction};
-use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::time::MillisSinceEpoch;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
-use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, watch};
-use tokio::time::MissedTickBehavior;
-use tokio_stream::StreamExt;
-use tracing::{debug, instrument, trace, Span};
 
 mod action_effect_handler;
 mod leadership;
@@ -39,18 +52,6 @@ pub mod shuffle;
 mod state_machine;
 pub mod storage;
 pub mod types;
-
-use restate_bifrost::{Bifrost, FindTailAttributes, LogRecord, Record};
-use restate_core::cancellation_watcher;
-use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
-};
-use restate_storage_api::StorageError;
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
-
-use self::storage::invoker::InvokerStorageReader;
 
 /// Control messages from Manager to individual partition processor instances.
 pub enum PartitionProcessorControlCommand {}

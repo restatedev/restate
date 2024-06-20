@@ -13,13 +13,12 @@ use std::time::Duration;
 use restate_types::retries::with_jitter;
 use tracing::{info, instrument, trace};
 
-use restate_core::metadata;
-use restate_core::network::{NetworkSendError, NetworkSender};
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
-use crate::error::NetworkError;
-use crate::{ConnectionManager, ConnectionSender};
+use super::{ConnectionManager, ConnectionSender};
+use super::{NetworkError, NetworkSender};
+use crate::metadata;
 
 const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 10;
 // todo: make this configurable
@@ -57,7 +56,7 @@ impl Networking {
 
 impl NetworkSender for Networking {
     #[instrument(level = "info", skip(self, to, message), fields(to = %to, msg = ?message.target()))]
-    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkSendError>
+    async fn send<M>(&self, to: NodeId, message: &M) -> Result<(), NetworkError>
     where
         M: WireEncode + Targeted + Send + Sync,
     {
@@ -71,13 +70,13 @@ impl NetworkSender for Networking {
                 Some(to) => to,
                 None => match metadata().nodes_config().find_node_by_id(to) {
                     Ok(node) => node.current_generation,
-                    Err(e) => return Err(NetworkSendError::UnknownNode(e)),
+                    Err(e) => return Err(NetworkError::UnknownNode(e)),
                 },
             };
 
             attempts += 1;
             if attempts > DEFAULT_MAX_CONNECT_ATTEMPTS {
-                return Err(NetworkSendError::Unavailable(format!(
+                return Err(NetworkError::Unavailable(format!(
                     "failed to connect to node {} after {} attempts",
                     to, DEFAULT_MAX_CONNECT_ATTEMPTS
                 )));
@@ -107,7 +106,7 @@ impl NetworkSender for Networking {
                 Err(NetworkError::OldPeerGeneration(e)) => {
                     if target_is_generational {
                         // Caller asked for this specific node generation and we know it's old.
-                        return Err(NetworkSendError::OldPeerGeneration(e));
+                        return Err(NetworkError::OldPeerGeneration(e));
                     }
                     info!(
                         "Connection to node {} failed with {}, next retry is attempt {}/{}",
@@ -118,21 +117,21 @@ impl NetworkSender for Networking {
                     );
                     continue;
                 }
-                Err(e) => return Err(NetworkSendError::Unavailable(e.to_string())),
+                Err(e) => return Err(NetworkError::Unavailable(e.to_string())),
             };
 
             // can only fail due to codec errors or if connection is closed. Retry only if
             // connection closed.
             match sender.send(message).await {
                 Ok(_) => return Ok(()),
-                Err(NetworkSendError::ConnectionClosed) => {
+                Err(NetworkError::ConnectionClosed) => {
                     info!(
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
                         to, attempts + 1, DEFAULT_MAX_CONNECT_ATTEMPTS
                     );
                     continue;
                 }
-                Err(e) => return Err(NetworkSendError::Unavailable(e.to_string())),
+                Err(e) => return Err(NetworkError::Unavailable(e.to_string())),
             }
         }
     }
