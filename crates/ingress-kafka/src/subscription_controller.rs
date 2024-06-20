@@ -16,11 +16,11 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_core::cancellation_watcher;
 use restate_ingress_dispatcher::IngressDispatcher;
-use restate_schema_api::subscription::{Source, Subscription};
 use restate_types::arc_util::Updateable;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
 use tokio::sync::mpsc;
 

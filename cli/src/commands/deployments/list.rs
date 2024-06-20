@@ -15,12 +15,12 @@ use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
 use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
-use restate_admin_rest_model::services::ServiceMetadata;
 use restate_cli_util::c_error;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 use restate_types::identifiers::DeploymentId;
+use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;

@@ -55,22 +55,26 @@ pub trait InvocationStorageReader {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
-    use super::*;
+    use std::collections::HashMap;
 
     use anyhow::Error;
-    use restate_schema_api::invocation_target::test_util::MockInvocationTargetResolver;
-    use restate_schema_api::invocation_target::{
-        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
-    };
-    use restate_schema_api::service::test_util::MockServiceMetadataResolver;
-    use restate_schema_api::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
+    use serde::{Deserialize, Serialize};
+
     use restate_types::identifiers::DeploymentId;
     use restate_types::ingress::InvocationResponse;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
-    use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
+    use restate_types::schema::invocation_target::{
+        InvocationTargetMetadata, InvocationTargetResolver, DEFAULT_IDEMPOTENCY_RETENTION,
+    };
+    use restate_types::schema::service::test_util::MockServiceMetadataResolver;
+    use restate_types::schema::service::{
+        HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
+    };
+
+    use super::*;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub(super) struct GreetingRequest {

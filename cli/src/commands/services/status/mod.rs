@@ -11,6 +11,18 @@
 mod agg_status;
 mod detailed_status;
 
+use anyhow::Result;
+use chrono_humanize::Tense;
+use cling::prelude::*;
+use comfy_table::{Cell, Table};
+
+use restate_cli_util::c_println;
+use restate_cli_util::ui::console::{Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::ui::{duration_to_human_precise, duration_to_human_rough};
+use restate_types::schema::service::ServiceMetadata;
+
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
@@ -18,17 +30,6 @@ use crate::clients::datafusion_helpers::{
 use crate::clients::AdminClient;
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_handlers::icon_for_service_type;
-
-use anyhow::Result;
-use chrono_humanize::Tense;
-use cling::prelude::*;
-use comfy_table::{Cell, Table};
-use restate_admin_rest_model::services::ServiceMetadata;
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::{Styled, StyledTable};
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::ui::{duration_to_human_precise, duration_to_human_rough};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
