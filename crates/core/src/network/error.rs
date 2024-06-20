@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_node_protocol::CodecError;
+use restate_types::net::CodecError;
 use restate_types::nodes_config::NodesConfigError;
 
 use crate::ShutdownError;

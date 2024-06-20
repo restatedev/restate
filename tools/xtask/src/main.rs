@@ -8,14 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::env;
+use std::io::Write;
+use std::time::Duration;
+use std::{env, io};
+
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use schemars::gen::SchemaSettings;
+use tonic::transport::{Channel, Uri};
+
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::TaskKind;
 use restate_core::TestCoreEnv;
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_api::subscription::Subscription;
+use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
@@ -24,15 +31,12 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::invocation::InvocationTermination;
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::subscriptions::Subscription;
+use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
 use restate_worker::WorkerHandleError;
-use schemars::gen::SchemaSettings;
-use std::io::Write;
-use std::time::Duration;
-use std::{env, io};
-use tonic::transport::{Channel, Uri};
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()
@@ -85,7 +89,7 @@ impl SubscriptionController for Mock {
     }
 }
 
-impl restate_schema_api::subscription::SubscriptionValidator for Mock {
+impl SubscriptionValidator for Mock {
     type Error = WorkerHandleError;
 
     fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {

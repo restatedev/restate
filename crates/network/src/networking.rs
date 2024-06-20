@@ -15,7 +15,7 @@ use tracing::{info, instrument, trace};
 
 use restate_core::metadata;
 use restate_core::network::{NetworkSendError, NetworkSender};
-use restate_node_protocol::codec::{Targeted, WireEncode};
+use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
 use crate::error::NetworkError;

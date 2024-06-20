@@ -18,7 +18,6 @@ restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-queue = { workspace = true }
-restate-schema-api = { workspace = true, features = ["deployment"] }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message"] }
 restate-timer-queue = { workspace = true }
@@ -48,7 +47,6 @@ tracing-opentelemetry = { workspace = true }
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-invoker-api = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true }

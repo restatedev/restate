@@ -13,22 +13,22 @@ use crate::schema_registry::error::{
 };
 use crate::schema_registry::{ModifyServiceChange, ServiceName};
 use http::{HeaderValue, Uri};
-use restate_schema::deployment::DeploymentSchemas;
-use restate_schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
-use restate_schema::Schema;
-use restate_schema_api::deployment::DeploymentMetadata;
-use restate_schema_api::invocation_target::{
-    InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-};
-use restate_schema_api::subscription::{
-    EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
-};
 use restate_types::endpoint_manifest;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use restate_types::schema::deployment::DeploymentMetadata;
+use restate_types::schema::deployment::DeploymentSchemas;
+use restate_types::schema::invocation_target::{
+    InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
+};
+use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
+use restate_types::schema::subscriptions::{
+    EventReceiverServiceType, Sink, Source, Subscription, SubscriptionValidator,
+};
+use restate_types::schema::Schema;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -580,9 +580,9 @@ impl DiscoveredHandlerMetadata {
 mod tests {
     use super::*;
 
-    use restate_schema_api::deployment::{Deployment, DeploymentResolver};
-    use restate_schema_api::service::ServiceMetadataResolver;
     use restate_test_util::{assert, assert_eq, let_assert};
+    use restate_types::schema::deployment::{Deployment, DeploymentResolver};
+    use restate_types::schema::service::ServiceMetadataResolver;
 
     use restate_types::Versioned;
     use test_log::test;

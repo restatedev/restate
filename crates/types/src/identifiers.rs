@@ -60,6 +60,19 @@ impl Default for LeaderEpoch {
     }
 }
 
+impl From<crate::protobuf::common::LeaderEpoch> for LeaderEpoch {
+    fn from(epoch: crate::protobuf::common::LeaderEpoch) -> Self {
+        Self::from(epoch.value)
+    }
+}
+
+impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
+    fn from(epoch: LeaderEpoch) -> Self {
+        let value: u64 = epoch.into();
+        Self { value }
+    }
+}
+
 /// Identifying the partition
 #[derive(
     Copy,
