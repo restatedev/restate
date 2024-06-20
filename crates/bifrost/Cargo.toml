@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
+default = []
 options_schema = ["dep:schemars"]
 test-util = []
 
