@@ -4,6 +4,7 @@ members = [
     "crates/*",
     "crates/codederror/derive",
     "server",
+    "benchmarks",
     "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
     "tools/restatectl",
@@ -15,7 +16,6 @@ default-members = [
     "crates/*",
     "crates/codederror/derive",
     "server",
-    "tools/xtask",
     "tools/restatectl",
 ]
 resolver = "2"
@@ -34,7 +34,6 @@ description = "Restate makes distributed applications easy!"
 codederror = { path = "crates/codederror" }
 restate-admin = { path = "crates/admin" }
 restate-base64-util = { path = "crates/base64-util" }
-restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
 restate-core = { path = "crates/core" }
