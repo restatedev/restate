@@ -17,7 +17,7 @@ use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use restate_errors::{META0003, META0012, META0013};
+use restate_errors::{META0003, META0012, META0013, META0014};
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
@@ -112,29 +112,40 @@ pub struct DiscoveredMetadata {
     pub supported_protocol_versions: RangeInclusive<i32>,
 }
 
-#[derive(Debug, thiserror::Error, CodedError)]
+#[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
     // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
-    #[code(META0013)]
     BadResponse(Cow<'static, str>),
     #[error(
         "received a bad response from the SDK that cannot be decoded: {0}. Discovery response: {}",
         String::from_utf8_lossy(.1)
     )]
-    #[code(unknown)]
     Decode(#[source] serde_json::Error, Bytes),
 
     // Network related retryable errors
     #[error("bad status code: {0}")]
-    #[code(META0003)]
     BadStatusCode(u16),
     #[error("client error: {0}")]
-    #[code(META0003)]
     Client(#[from] ServiceClientError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
-    #[code(META0012)]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
+}
+
+impl CodedError for DiscoveryError {
+    fn code(&self) -> Option<&'static codederror::Code> {
+        match self {
+            DiscoveryError::BadResponse(_) => Some(&META0013),
+            DiscoveryError::Decode(_, _) => None,
+            DiscoveryError::BadStatusCode(_) => Some(&META0003),
+            // special code for possible http1.1 errors
+            DiscoveryError::Client(ServiceClientError::Http(
+                restate_service_client::HttpError::PossibleHTTP11Only(_),
+            )) => Some(&META0014),
+            DiscoveryError::Client(_) => Some(&META0003),
+            DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),
+        }
+    }
 }
 
 impl DiscoveryError {

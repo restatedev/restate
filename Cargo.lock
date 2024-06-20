@@ -6108,6 +6108,7 @@ dependencies = [
  "bytestring",
  "derive_builder",
  "futures",
+ "h2 0.3.26",
  "http-serde",
  "humantime",
  "hyper 0.14.28",

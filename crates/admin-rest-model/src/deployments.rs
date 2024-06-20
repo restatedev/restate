@@ -104,6 +104,17 @@ pub enum RegisterDeploymentRequest {
         /// Additional headers added to the discover/invoke requests to the deployment.
         ///
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Use http1.1
+        ///
+        /// If `true`, discovery will be attempted using a client that defaults to HTTP1.1
+        /// instead of a prior-knowledge HTTP2 client. HTTP2 may still be used for TLS servers
+        /// that advertise HTTP2 support via ALPN. HTTP1.1 deployments will only work in
+        /// request-response mode.
+        ///
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        use_http_11: bool,
+
         /// # Force
         ///
         /// If `true`, it will override, if existing, any deployment using the same `uri`.

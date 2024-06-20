@@ -52,6 +52,11 @@ pub struct Register {
     #[clap(long="extra-header", value_parser = parse_header, action = clap::ArgAction::Append)]
     extra_headers: Option<Vec<HeaderKeyValue>>,
 
+    /// Attempt discovery using a client that defaults to HTTP1.1 instead of a prior-knowledge HTTP2 client.
+    /// This may be necessary if you see `META0014` discovering local dev servers like `wrangler dev`.
+    #[clap(long = "use-http1.1")]
+    use_http_11: bool,
+
     /// The URL or ARN that Restate server needs to fetch service information from.
     ///
     /// The URL must be network-accessible from Restate server. In case of using
@@ -175,6 +180,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
             uri: uri.clone(),
             additional_headers: headers.clone().map(Into::into),
+            use_http_11: discover_opts.use_http_11,
             force,
             dry_run,
         },

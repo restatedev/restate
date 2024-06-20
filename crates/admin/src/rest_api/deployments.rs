@@ -48,11 +48,19 @@ pub async fn create_deployment<V>(
         RegisterDeploymentRequest::Http {
             uri,
             additional_headers,
+            use_http_11,
             force,
             dry_run,
         } => (
             DiscoverEndpoint::new(
-                Endpoint::Http(uri, Default::default()),
+                Endpoint::Http(
+                    uri,
+                    if use_http_11 {
+                        http::Version::HTTP_11
+                    } else {
+                        http::Version::HTTP_2
+                    },
+                ),
                 additional_headers.unwrap_or_default().into(),
             ),
             force,
