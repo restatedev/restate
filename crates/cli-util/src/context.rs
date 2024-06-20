@@ -18,7 +18,7 @@ use dotenvy::dotenv;
 use tracing::info;
 use tracing_log::AsTrace;
 
-use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, UiOpts};
+use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts};
 use crate::os_env::OsEnv;
 
 static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
@@ -138,6 +138,10 @@ impl CliContext {
 
     pub fn table_style(&self) -> TableStyle {
         self.ui.table_style
+    }
+
+    pub fn time_format(&self) -> TimeFormat {
+        self.ui.time_format
     }
 
     pub fn colors_enabled(&self) -> bool {

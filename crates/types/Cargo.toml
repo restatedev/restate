@@ -36,6 +36,7 @@ num-traits = { version = "0.2.17" }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 regress = { version = "0.9" }
 schemars = { workspace = true, optional = true }
