@@ -19,7 +19,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 authors = ["restate.dev"]
 edition = "2021"
 rust-version = "1.75"
