@@ -28,7 +28,9 @@ type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
+    // alpn client defaults to http1.1, but can upgrade to http2 using ALPN for TLS servers
     alpn_client: hyper::Client<Connector, Body>,
+    // h2 client defaults to http2 and so supports unencrypted http2 servers
     h2_client: hyper::Client<Connector, Body>,
 }
 
@@ -148,6 +150,10 @@ impl HttpClient {
 }
 
 fn is_possible_h11_only_error(err: &hyper::Error) -> bool {
+    // this is the error we see from the h2 lib when the server sends back an http1.1 response
+    // to an http2 request. http2 is designed to start requests with what looks like an invalid
+    // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
+    // this as an invalid frame.
     err.source()
         .and_then(|err| err.downcast_ref::<h2::Error>())
         .and_then(|err| err.reason())
@@ -160,7 +166,7 @@ pub enum HttpError {
     Hyper(#[from] hyper::Error),
     #[error(transparent)]
     Http(#[from] hyper::http::Error),
-    #[error("server possibly only supports HTTP1.1: {0}")]
+    #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1: {0}")]
     PossibleHTTP11Only(#[source] hyper::Error),
 }
 
