@@ -52,11 +52,11 @@ impl<'a> Attrs<'a> {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct Error<'a> {
-    pub original: &'a Attribute,
-    pub is_transparent: bool,
-}
+// #[derive(Copy, Clone)]
+// pub struct Error<'a> {
+//     pub original: &'a Attribute,
+//     pub is_transparent: bool,
+// }
 
 #[derive(Clone)]
 pub struct Code<'a> {
