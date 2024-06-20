@@ -15,7 +15,6 @@ default-members = [
     "crates/*",
     "crates/codederror/derive",
     "server",
-    "tools/xtask",
     "tools/restatectl",
 ]
 resolver = "2"
