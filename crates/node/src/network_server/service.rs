@@ -14,11 +14,11 @@ use tower_http::trace::TraceLayer;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_admin::cluster_controller::ClusterControllerHandle;
+use restate_core::network::grpc_util::run_hyper_server;
+use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
+use restate_core::network::ConnectionManager;
 use restate_core::{cancellation_watcher, task_center};
-use restate_grpc_util::run_hyper_server;
 use restate_metadata_store::MetadataStoreClient;
-use restate_network::protobuf::node_svc::node_svc_server::NodeSvcServer;
-use restate_network::ConnectionManager;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
 use restate_worker::SubscriptionControllerHandle;
@@ -76,7 +76,7 @@ impl NetworkServer {
         // -- GRPC Service Setup
         let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
             .register_encoded_file_descriptor_set(
-                restate_network::protobuf::node_svc::FILE_DESCRIPTOR_SET,
+                restate_core::network::protobuf::node_svc::FILE_DESCRIPTOR_SET,
             )
             .register_encoded_file_descriptor_set(restate_types::protobuf::FILE_DESCRIPTOR_SET);
 
