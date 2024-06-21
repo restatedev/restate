@@ -5439,7 +5439,6 @@ dependencies = [
  "tower",
  "tracing",
  "typify 0.1.0",
- "unicode-width",
  "url",
  "uuid",
  "vergen",
@@ -5466,6 +5465,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "unicode-width",
 ]
 
 [[package]]
@@ -5838,6 +5838,7 @@ dependencies = [
  "metrics-tracing-context",
  "metrics-util",
  "once_cell",
+ "prost-types",
  "restate-admin",
  "restate-bifrost",
  "restate-cluster-controller",
@@ -6336,6 +6337,7 @@ dependencies = [
  "prettyplease",
  "prost",
  "prost-build",
+ "prost-types",
  "rand",
  "regress 0.9.1",
  "restate-base64-util",
@@ -6464,18 +6466,26 @@ name = "restatectl"
 version = "1.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "clap-verbosity-flag",
  "cling",
  "crossterm 0.27.0",
  "ctrlc",
+ "prost-types",
  "restate-cli-util",
+ "restate-node-protocol",
+ "restate-node-services",
+ "restate-types",
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tonic 0.10.2",
+ "tower",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "url",
  "vergen",
 ]
 
@@ -7601,6 +7611,7 @@ dependencies = [
  "axum",
  "base64 0.21.7",
  "bytes",
+ "flate2",
  "h2 0.3.26",
  "http 0.2.12",
  "http-body 0.4.6",

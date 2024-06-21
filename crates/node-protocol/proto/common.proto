@@ -21,6 +21,12 @@ message NodeId {
   optional uint32 generation = 2;
 }
 
+// Partition Processor leadershop epoch number
+message LeaderEpoch { uint64 value = 1; }
+
+// Log sequence number
+message Lsn { uint64 value = 1; }
+
 // A generic type for versioned metadata
 message Version { uint32 value = 1; }
 

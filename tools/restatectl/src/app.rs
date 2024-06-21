@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use cling::prelude::*;
+use std::str::FromStr;
 
-use restate_cli_util::c_tip;
+use cling::prelude::*;
+use restate_types::net::AdvertisedAddress;
+
 use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
+
+use crate::commands::dump::Dump;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -20,20 +24,26 @@ use restate_cli_util::CommonOpts;
 pub struct CliApp {
     #[clap(flatten)]
     pub common_opts: CommonOpts,
+    #[clap(flatten)]
+    pub connection: ConnectionInfo,
     #[clap(subcommand)]
     pub cmd: Command,
 }
 
+#[derive(Parser, Collect, Debug, Clone)]
+pub struct ConnectionInfo {
+    /// Cluster Controller host:port (e.g. http://localhost:5122/)
+    #[clap(long, value_hint= clap::ValueHint::Url, default_value_t = AdvertisedAddress::from_str("http://localhost:5122/").unwrap(), global = true)]
+    pub cluster_controller: AdvertisedAddress,
+}
+
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
-    #[cling(run = "hello")]
-    Hello,
+    /// Dump various metadata from the cluster controller
+    #[clap(subcommand)]
+    Dump(Dump),
 }
 
 fn init(common_opts: &CommonOpts) {
     CliContext::new(common_opts.clone()).set_as_global();
-}
-
-async fn hello() {
-    c_tip!("Placeholder");
 }

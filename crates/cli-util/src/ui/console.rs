@@ -164,7 +164,7 @@ macro_rules! _gecho {
     (@title, ($icon:expr), $where:tt, $($arg:tt)*) => {
         {
             use std::fmt::Write;
-            use unicode_width::UnicodeWidthStr;
+            use $crate::_unicode_width::UnicodeWidthStr;
 
             let mut _lock = $crate::ui::output::$where();
             let _icon = $crate::ui::console::Icon($icon, "");
