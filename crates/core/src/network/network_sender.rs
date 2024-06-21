@@ -11,7 +11,7 @@
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::NodeId;
 
-use super::NetworkSendError;
+use super::NetworkError;
 
 /// Send NetworkMessage to nodes
 pub trait NetworkSender: Send + Sync + Clone {
@@ -38,7 +38,7 @@ pub trait NetworkSender: Send + Sync + Clone {
         &self,
         to: NodeId,
         message: &M,
-    ) -> impl std::future::Future<Output = Result<(), NetworkSendError>> + Send
+    ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send
     where
         M: WireEncode + Targeted + Send + Sync;
 }

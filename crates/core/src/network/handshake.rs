@@ -15,7 +15,7 @@ use restate_types::net::{ProtocolVersion, CURRENT_PROTOCOL_VERSION};
 use restate_types::protobuf::node::{message, Header, Hello, Message, Welcome};
 use tokio_stream::StreamExt;
 
-use crate::error::ProtocolError;
+use super::error::ProtocolError;
 
 //todo: make this configurable
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
