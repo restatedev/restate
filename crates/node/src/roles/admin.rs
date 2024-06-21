@@ -15,12 +15,12 @@ use restate_network::Networking;
 use std::time::Duration;
 use tonic::transport::Channel;
 
+use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
-use restate_cluster_controller::ClusterControllerHandle;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::arc_util::ArcSwapExt;
@@ -42,7 +42,7 @@ pub enum AdminRoleBuildError {
 
 pub struct AdminRole {
     updateable_config: UpdateableConfiguration,
-    controller: restate_cluster_controller::Service<Networking>,
+    controller: restate_admin::cluster_controller::Service<Networking>,
     admin: AdminService<IngressOptions>,
 }
 
@@ -71,7 +71,7 @@ impl AdminRole {
             service_discovery,
         );
 
-        let controller = restate_cluster_controller::Service::new(
+        let controller = restate_admin::cluster_controller::Service::new(
             updateable_config
                 .clone()
                 .map_as_updateable_owned(|c| &c.admin),

@@ -12,7 +12,7 @@
 use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 use restate_core::TaskCenter;
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
+use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]

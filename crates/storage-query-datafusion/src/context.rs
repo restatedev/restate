@@ -23,11 +23,11 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::PartitionStoreManager;
-use restate_schema_api::deployment::DeploymentResolver;
-use restate_schema_api::service::ServiceMetadataResolver;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
+use restate_types::schema::deployment::DeploymentResolver;
+use restate_types::schema::service::ServiceMetadataResolver;
 
 use crate::{analyzer, physical_optimizer};
 

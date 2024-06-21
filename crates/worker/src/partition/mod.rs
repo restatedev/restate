@@ -21,8 +21,8 @@ use metrics::{counter, histogram};
 use restate_core::metadata;
 use restate_network::Networking;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
+use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::processors::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::time::MillisSinceEpoch;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -141,9 +141,8 @@ where
             self.status.replay_status = ReplayStatus::Active;
         } else {
             // catching up.
-            self.status.replay_status = ReplayStatus::CatchingUp {
-                target_tail_lsn: current_tail.unwrap(),
-            }
+            self.status.target_tail_lsn = current_tail;
+            self.status.replay_status = ReplayStatus::CatchingUp;
         }
 
         let mut log_reader = bifrost
@@ -324,10 +323,8 @@ where
         status.last_applied_log_lsn = Some(record.0);
         status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match status.replay_status {
-            ReplayStatus::CatchingUp {
+            ReplayStatus::CatchingUp if status.target_tail_lsn.is_some_and(|v| record.0 >= v) => {
                 // finished catching up
-                target_tail_lsn,
-            } if record.0 >= target_tail_lsn => {
                 status.replay_status = ReplayStatus::Active;
             }
             _ => {}

@@ -13,6 +13,7 @@
 
 mod manager;
 pub use manager::MetadataManager;
+use restate_types::schema::{Schema, UpdateableSchema};
 
 use std::sync::{Arc, OnceLock};
 
@@ -20,9 +21,9 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use enum_map::EnumMap;
 use tokio::sync::{oneshot, watch};
 
-pub use restate_node_protocol::metadata::MetadataKind;
-use restate_node_protocol::metadata::{MetadataContainer, Schema, UpdateableSchema};
 use restate_types::logs::metadata::Logs;
+use restate_types::net::metadata::MetadataContainer;
+pub use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::{GenerationalNodeId, Version, Versioned};

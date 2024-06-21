@@ -8,10 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::marker::PhantomData;
+use std::str::FromStr;
+
 use anyhow::anyhow;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
+
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_types::errors::{codes, InvocationError};
 use restate_types::identifiers::InvocationId;
@@ -24,8 +28,7 @@ use restate_types::journal::enriched::{
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
 use restate_types::journal::{CompleteAwakeableEntry, Entry, InvokeEntry, OneWayCallEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
-use std::marker::PhantomData;
-use std::str::FromStr;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 #[derive(Debug, Clone)]
 pub(super) struct EntryEnricher<Schemas, Codec> {
@@ -45,7 +48,7 @@ impl<Schemas, Codec> EntryEnricher<Schemas, Codec> {
 
 impl<Schemas, Codec> EntryEnricher<Schemas, Codec>
 where
-    Schemas: restate_schema_api::invocation_target::InvocationTargetResolver,
+    Schemas: InvocationTargetResolver,
     Codec: RawEntryCodec,
 {
     fn resolve_service_invocation_target(
@@ -111,7 +114,7 @@ where
 
 impl<Schemas, Codec> restate_invoker_api::EntryEnricher for EntryEnricher<Schemas, Codec>
 where
-    Schemas: restate_schema_api::invocation_target::InvocationTargetResolver,
+    Schemas: InvocationTargetResolver,
     Codec: RawEntryCodec,
 {
     fn enrich_entry(

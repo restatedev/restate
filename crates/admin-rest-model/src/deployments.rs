@@ -9,18 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use http::Uri;
-use restate_schema_api::service::ServiceMetadata;
-use restate_serde_util::SerdeableHeaderHashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::time::SystemTime;
 
-// Export schema types to be used by other crates without exposing the fact
-// that we are using proxying to restate-schema-api or restate-types
-use restate_schema_api::deployment::DeploymentType;
-pub use restate_schema_api::deployment::{DeploymentMetadata, ProtocolType};
+use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
-pub use restate_types::identifiers::{DeploymentId, LambdaARN};
+use restate_types::identifiers::{DeploymentId, LambdaARN};
+use restate_types::schema::deployment::DeploymentType;
+use restate_types::schema::deployment::{DeploymentMetadata, ProtocolType};
+use restate_types::schema::service::ServiceMetadata;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]

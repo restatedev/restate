@@ -8,20 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::path_parsing::WorkflowRequestType;
-use super::Handler;
-use super::HandlerError;
-
-use crate::{GetOutputResult, InvocationStorageReader};
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::Full;
+use tracing::{info, warn};
+
 use restate_ingress_dispatcher::DispatchIngressRequest;
 use restate_ingress_dispatcher::IngressDispatcherRequest;
-use restate_schema_api::invocation_target::InvocationTargetResolver;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
-use tracing::{info, warn};
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+
+use super::path_parsing::WorkflowRequestType;
+use super::Handler;
+use super::HandlerError;
+use crate::{GetOutputResult, InvocationStorageReader};
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader>
 where

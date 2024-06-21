@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::handler::error::HandlerError;
-use crate::handler::Handler;
 use bytes::Bytes;
 use http::{header, HeaderName, Response};
 use http_body_util::Full;
-use restate_schema_api::invocation_target::InvocationTargetMetadata;
+use tracing::{info, trace};
+
 use restate_types::identifiers::InvocationId;
 use restate_types::ingress::IngressResponseResult;
 use restate_types::invocation::InvocationTarget;
-use tracing::{info, trace};
+use restate_types::schema::invocation_target::InvocationTargetMetadata;
+
+use crate::handler::error::HandlerError;
+use crate::handler::Handler;
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
