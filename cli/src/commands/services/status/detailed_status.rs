@@ -40,7 +40,7 @@ pub async fn run_detailed_status(
         .into_body()
         .await?;
 
-    let is_object = service.ty == ServiceType::VirtualObject;
+    let is_stateful = service.ty.has_state();
 
     // Print summary table first.
     let status_map = get_service_status(&sql_client, vec![service_name]).await?;
@@ -52,7 +52,7 @@ pub async fn run_detailed_status(
     c_title!("📷", "Summary");
     render_services_status(vec![service], status_map).await?;
 
-    if is_object {
+    if is_stateful {
         let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
         if !locked_keys.is_empty() {
             c_title!("📨", "Active Keys");

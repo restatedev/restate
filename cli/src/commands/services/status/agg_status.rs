@@ -11,7 +11,6 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_admin_rest_model::services::ServiceType;
 use restate_cli_util::{c_error, c_title};
 
 use super::{render_locked_keys, render_services_status, Status};
@@ -48,7 +47,7 @@ pub async fn run_aggregated_status(
 
     let keyed: Vec<_> = services
         .iter()
-        .filter(|svc| svc.ty == ServiceType::VirtualObject)
+        .filter(|svc| svc.ty.is_keyed())
         .cloned()
         .collect();
 
