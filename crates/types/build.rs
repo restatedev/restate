@@ -11,10 +11,12 @@
 use jsonptr::Pointer;
 use std::env;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use typify::{TypeSpace, TypeSpaceSettings};
 
 fn main() -> std::io::Result<()> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
     prost_build::Config::new()
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional")
@@ -33,6 +35,9 @@ fn main() -> std::io::Result<()> {
             ],
             &["service-protocol"],
         )?;
+
+    // Common proto types for internal use
+    build_restate_proto(&out_dir)?;
 
     let mut parsed_content: serde_json::Value = serde_json::from_reader(
         File::open("./service-protocol/endpoint_manifest_schema.json").unwrap(),
@@ -75,7 +80,31 @@ fn main() -> std::io::Result<()> {
         prettyplease::unparse(&syn::parse2::<syn::File>(type_space.to_stream()).unwrap())
     );
 
-    let mut out_file = Path::new(&env::var("OUT_DIR").unwrap()).to_path_buf();
-    out_file.push("endpoint_manifest.rs");
-    std::fs::write(out_file, contents)
+    std::fs::write(out_dir.join("endpoint_manifest.rs"), contents)
+}
+
+fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
+    prost_build::Config::new()
+        .bytes(["."])
+        .enum_attribute(
+            "TargetName",
+            "#[derive(::enum_map::Enum, ::strum_macros::EnumIs, ::strum_macros::Display)]",
+        )
+        .enum_attribute("Message.body", "#[derive(::strum_macros::EnumIs)]")
+        .btree_map([
+            ".restate.cluster.ClusterState",
+            ".restate.cluster.AliveNode",
+        ])
+        .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
+        // allow older protobuf compiler to be used
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile_protos(
+            &[
+                "./protobuf/restate/common.proto",
+                "./protobuf/restate/cluster.proto",
+                "./protobuf/restate/node.proto",
+            ],
+            &["protobuf"],
+        )?;
+    Ok(())
 }

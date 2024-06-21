@@ -15,7 +15,6 @@ options_schema = ["dep:schemars"]
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingress-dispatcher = { workspace = true }
-restate-schema-api = { workspace = true, features = ["subscription"] }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
@@ -34,8 +33,6 @@ tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 restate-ingress-dispatcher = { workspace = true, features = ["test-util"] }
-restate-schema = { workspace = true }
-restate-schema-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 

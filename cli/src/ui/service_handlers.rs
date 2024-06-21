@@ -9,9 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use comfy_table::{Cell, Color, Table};
-use restate_admin_rest_model::handlers::HandlerMetadata;
-use restate_admin_rest_model::services::ServiceType;
+
 use restate_cli_util::ui::console::{Icon, StyledTable};
+use restate_types::invocation::ServiceType;
+use restate_types::schema::service::HandlerMetadata;
 
 pub fn create_service_handlers_table(handlers: &[HandlerMetadata]) -> Table {
     let mut table = Table::new_styled();

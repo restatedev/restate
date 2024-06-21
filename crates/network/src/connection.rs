@@ -17,12 +17,12 @@ use tracing::instrument;
 
 use restate_core::metadata;
 use restate_core::network::NetworkSendError;
-use restate_node_protocol::codec::Targeted;
-use restate_node_protocol::codec::{serialize_message, WireEncode};
-use restate_node_protocol::common::ProtocolVersion;
-use restate_node_protocol::node::message;
-use restate_node_protocol::node::Header;
-use restate_node_protocol::node::Message;
+use restate_types::net::codec::Targeted;
+use restate_types::net::codec::{serialize_message, WireEncode};
+use restate_types::net::ProtocolVersion;
+use restate_types::protobuf::node::message;
+use restate_types::protobuf::node::Header;
+use restate_types::protobuf::node::Message;
 use restate_types::GenerationalNodeId;
 
 use crate::metric_definitions::CONNECTION_SEND_DURATION;

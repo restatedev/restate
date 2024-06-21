@@ -8,14 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{Handler, APPLICATION_JSON};
-
-use crate::handler::error::HandlerError;
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
 use http_body_util::Full;
-use restate_schema_api::service::ServiceMetadataResolver;
 use serde::Serialize;
+
+use restate_types::schema::service::ServiceMetadataResolver;
+
+use super::{Handler, APPLICATION_JSON};
+use crate::handler::error::HandlerError;
 
 #[derive(Debug, Serialize)]
 #[cfg_attr(test, derive(serde::Deserialize))]

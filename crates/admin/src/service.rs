@@ -21,9 +21,9 @@ use tracing::info;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{cancellation_watcher, task_center, MetadataWriter};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
-use restate_schema_api::subscription::SubscriptionValidator;
+use restate_network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::schema::subscriptions::SubscriptionValidator;
 
 use crate::schema_registry::SchemaRegistry;
 use crate::Error;

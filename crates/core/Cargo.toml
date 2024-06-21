@@ -13,8 +13,6 @@ test-util = ["dep:rand", "tokio/test-util"]
 options_schema = ["dep:schemars"]
 
 [dependencies]
-restate-node-protocol = { workspace = true }
-restate-schema = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

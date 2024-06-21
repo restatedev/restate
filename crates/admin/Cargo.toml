@@ -9,6 +9,8 @@ publish = false
 
 [features]
 default = []
+clients = []
+servers = []
 options_schema = ["restate-service-client/options_schema"]
 
 [dependencies]
@@ -18,15 +20,14 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-fs-util = { workspace = true }
 restate-futures-util = { workspace = true }
-restate-node-services = { workspace = true, features = ["servers", "clients"] }
-restate-schema = { workspace = true }
-restate-schema-api = { workspace = true, features = ["deployment", "serde", "serde_schema"] }
+restate-network = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 arrow-flight = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
@@ -39,22 +40,30 @@ futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 okapi-operation = { version = "0.2.2", features = ["axum-integration"] }
+prost = { workspace = true }
+prost-dto = { workspace = true }
+prost-types = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
-[dev-dependencies]
-restate-schema = { workspace = true, features = ["test-util"] }
-restate-schema-api = { workspace = true, features = ["test-util"] }
-restate-test-util = { workspace = true }
+[build-dependencies]
+tonic-build = { workspace = true }
 
+[dev-dependencies]
+restate-bifrost = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
+restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
+
+googletest = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing = { workspace = true }

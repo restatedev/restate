@@ -8,9 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Display;
+use std::future::Future;
+use std::hash::Hash;
+
 use bytes::Bytes;
+use tokio::sync::oneshot;
+
 use restate_core::metadata;
-use restate_schema_api::subscription::{EventReceiverServiceType, Sink, Subscription};
 use restate_types::identifiers::{
     partitioner, IngressRequestId, InvocationId, PartitionKey, WithPartitionKey,
 };
@@ -21,10 +26,7 @@ use restate_types::invocation::{
     SubmitNotificationSink, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
-use std::fmt::Display;
-use std::future::Future;
-use std::hash::Hash;
-use tokio::sync::oneshot;
+use restate_types::schema::subscriptions::{EventReceiverServiceType, Sink, Subscription};
 
 mod dispatcher;
 pub mod error;

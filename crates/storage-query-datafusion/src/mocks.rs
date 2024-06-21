@@ -8,32 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::context::SelectPartitions;
-
-use super::context::QueryContext;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
+
 use restate_core::task_center;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::StatusHandle;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_schema_api::deployment::test_util::MockDeploymentMetadataRegistry;
-use restate_schema_api::deployment::{Deployment, DeploymentResolver};
-use restate_schema_api::service::test_util::MockServiceMetadataResolver;
-use restate_schema_api::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::ops::RangeInclusive;
+use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
+use restate_types::schema::deployment::{Deployment, DeploymentResolver};
+use restate_types::schema::service::test_util::MockServiceMetadataResolver;
+use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
+
+use super::context::QueryContext;
+use crate::context::SelectPartitions;
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(

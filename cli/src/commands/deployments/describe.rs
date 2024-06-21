@@ -13,9 +13,13 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_admin_rest_model::services::ServiceMetadata;
 use restate_cli_util::ui::console::{Styled, StyledTable};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
+use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
@@ -25,10 +29,6 @@ use crate::ui::deployments::{
     render_deployment_status,
 };
 use crate::ui::service_handlers::icon_for_service_type;
-
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]

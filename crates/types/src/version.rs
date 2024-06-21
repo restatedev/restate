@@ -42,6 +42,20 @@ impl Default for Version {
     }
 }
 
+impl From<crate::protobuf::common::Version> for Version {
+    fn from(version: crate::protobuf::common::Version) -> Self {
+        crate::Version::from(version.value)
+    }
+}
+
+impl From<Version> for crate::protobuf::common::Version {
+    fn from(version: Version) -> Self {
+        crate::protobuf::common::Version {
+            value: version.into(),
+        }
+    }
+}
+
 /// A trait for all metadata types that have a version.
 pub trait Versioned {
     /// Returns the version of the versioned value

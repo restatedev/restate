@@ -15,14 +15,14 @@ use dashmap::DashMap;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use restate_core::{cancellation_watcher, ShutdownError};
-use restate_node_protocol::codec::{Targeted, WireDecode, WireEncode};
+use restate_types::net::codec::{Targeted, WireDecode, WireEncode};
 use restate_types::NodeId;
 use tokio::sync::oneshot;
 
 use restate_core::network::{
     MessageHandler, MessageRouterBuilder, NetworkSendError, NetworkSender,
 };
-use restate_node_protocol::{MessageEnvelope, RpcMessage, RpcRequest};
+use restate_types::net::{MessageEnvelope, RpcMessage, RpcRequest};
 use tracing::warn;
 
 /// A router for sending and receiving RPC messages through Networking
@@ -293,7 +293,7 @@ where
 
     fn on_message(
         &self,
-        msg: restate_node_protocol::MessageEnvelope<Self::MessageType>,
+        msg: MessageEnvelope<Self::MessageType>,
     ) -> impl std::future::Future<Output = ()> + Send {
         self.handle_message(msg);
         std::future::ready(())
@@ -304,7 +304,7 @@ where
 mod test {
     use super::*;
     use futures::future::join_all;
-    use restate_node_protocol::common::TargetName;
+    use restate_types::net::{CodecError, TargetName};
     use restate_types::GenerationalNodeId;
     use tokio::sync::Barrier;
 
@@ -334,8 +334,8 @@ mod test {
     impl WireDecode for TestResponse {
         fn decode<B: bytes::Buf>(
             _: &mut B,
-            _: restate_node_protocol::common::ProtocolVersion,
-        ) -> Result<Self, restate_node_protocol::CodecError>
+            _: restate_types::net::ProtocolVersion,
+        ) -> Result<Self, CodecError>
         where
             Self: Sized,
         {

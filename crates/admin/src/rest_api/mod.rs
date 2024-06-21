@@ -23,8 +23,8 @@ use codederror::CodedError;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::*;
 use restate_errors::warn_it;
-use restate_schema_api::subscription::SubscriptionValidator;
 use restate_types::identifiers::PartitionKey;
+use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
