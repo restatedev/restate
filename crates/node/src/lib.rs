@@ -16,6 +16,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use codederror::CodedError;
+use restate_log_server::LogServerService;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
 
@@ -80,6 +81,12 @@ pub enum BuildError {
         #[code]
         restate_metadata_store::local::BuildError,
     ),
+    #[error("building log-server failed: {0}")]
+    LogServer(
+        #[from]
+        #[code]
+        restate_log_server::LogServerBuildError,
+    ),
     #[error("node neither runs cluster controller nor its address has been configured")]
     #[code(unknown)]
     UnknownClusterController,
@@ -98,6 +105,7 @@ pub struct Node {
     metadata_store_role: Option<LocalMetadataStoreService>,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
+    log_server: Option<LogServerService>,
     server: NetworkServer,
 }
 
@@ -144,9 +152,25 @@ impl Node {
         let updating_schema_information = metadata.schema_updateable();
         let bifrost = BifrostService::new(metadata.clone());
 
+        let tc = task_center();
+        let log_server = if config.has_role(Role::LogServer) {
+            Some(
+                LogServerService::create(
+                    updateable_config.clone(),
+                    tc.clone(),
+                    metadata.clone(),
+                    &mut router_builder,
+                    networking.clone(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         let admin_role = if config.has_role(Role::Admin) {
             Some(AdminRole::new(
-                task_center(),
+                tc.clone(),
                 updateable_config.clone(),
                 metadata.clone(),
                 networking.clone(),
@@ -204,6 +228,7 @@ impl Node {
             metadata_store_role,
             admin_role,
             worker_role,
+            log_server,
             server,
         })
     }
@@ -310,6 +335,15 @@ impl Node {
         // Need to run start in new tc scope to have access to metadata()
         tc.run_in_scope("bifrost-init", None, self.bifrost.start())
             .await?;
+
+        if let Some(log_server) = self.log_server {
+            tc.spawn(
+                TaskKind::SystemBoot,
+                "log-server-init",
+                None,
+                log_server.start(),
+            )?;
+        }
 
         if let Some(admin_role) = self.admin_role {
             tc.spawn(
