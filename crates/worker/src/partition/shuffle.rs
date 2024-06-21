@@ -19,7 +19,7 @@ use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::message::{AckKind, MessageIndex};
+use restate_types::message::MessageIndex;
 use restate_types::NodeId;
 use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 
@@ -53,9 +53,6 @@ impl OutboxTruncation {
         self.0
     }
 }
-
-#[derive(Debug, Clone)]
-pub(crate) struct ShuffleInput(pub(crate) AckKind);
 
 pub(crate) fn wrap_outbox_message_in_envelope(
     message: OutboxMessage,
@@ -101,11 +98,6 @@ pub(super) trait OutboxReader {
         &mut self,
         next_sequence_number: MessageIndex,
     ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
-
-    fn get_message(
-        &mut self,
-        next_sequence_number: MessageIndex,
-    ) -> impl Future<Output = Result<Option<OutboxMessage>, OutboxReaderError>> + Send;
 }
 
 /// The hint sender allows to send hints to the shuffle service. If more hints are sent than the
@@ -516,20 +508,6 @@ mod tests {
                 )
             }))
         }
-
-        async fn get_message(
-            &mut self,
-            next_sequence_number: MessageIndex,
-        ) -> Result<Option<OutboxMessage>, OutboxReaderError> {
-            Ok(self
-                .subslice_from_index(next_sequence_number)
-                .first()
-                .and_then(|x| {
-                    x.clone().map(|service_invocation| {
-                        OutboxMessage::ServiceInvocation(service_invocation)
-                    })
-                }))
-        }
     }
 
     /// Outbox reader which is used to let the shuffler fail in a controlled manner so that we
@@ -579,22 +557,6 @@ mod tests {
                     OutboxMessage::ServiceInvocation(record.clone().expect("record must exist")),
                 )
             }))
-        }
-
-        async fn get_message(
-            &mut self,
-            next_sequence_number: MessageIndex,
-        ) -> Result<Option<OutboxMessage>, OutboxReaderError> {
-            self.check_fail(next_sequence_number)?;
-
-            Ok(self
-                .records
-                .get(next_sequence_number as usize)
-                .and_then(|msg| {
-                    msg.clone().map(|service_invocation| {
-                        OutboxMessage::ServiceInvocation(service_invocation)
-                    })
-                }))
         }
     }
 
