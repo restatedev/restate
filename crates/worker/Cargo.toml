@@ -30,7 +30,6 @@ restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-network = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true, features = ["proto"] }

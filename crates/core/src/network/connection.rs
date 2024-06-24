@@ -15,8 +15,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use restate_core::metadata;
-use restate_core::network::NetworkSendError;
+use crate::metadata;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::{serialize_message, WireEncode};
 use restate_types::net::ProtocolVersion;
@@ -25,8 +24,10 @@ use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
 use restate_types::GenerationalNodeId;
 
-use crate::metric_definitions::CONNECTION_SEND_DURATION;
-use crate::metric_definitions::MESSAGE_SENT;
+use super::metric_definitions::CONNECTION_SEND_DURATION;
+use super::metric_definitions::MESSAGE_SENT;
+use super::NetworkError;
+use super::ProtocolError;
 
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
@@ -115,21 +116,22 @@ impl ConnectionSender {
     /// This doesn't auto-retry connection resets or send errors, this is up to the user
     /// for retrying externally.
     #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
-    pub async fn send<M>(&self, message: M) -> Result<(), NetworkSendError>
+    pub async fn send<M>(&self, message: M) -> Result<(), NetworkError>
     where
         M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
         let header = Header::new(metadata().nodes_config_version());
-        let body = serialize_message(message, self.protocol_version)?;
+        let body =
+            serialize_message(message, self.protocol_version).map_err(ProtocolError::Codec)?;
         let res = self
             .connection
             .upgrade()
-            .ok_or(NetworkSendError::ConnectionClosed)?
+            .ok_or(NetworkError::ConnectionClosed)?
             .sender
             .send(Message::new(header, body))
             .await
-            .map_err(|_| NetworkSendError::ConnectionClosed);
+            .map_err(|_| NetworkError::ConnectionClosed);
         MESSAGE_SENT.increment(1);
         CONNECTION_SEND_DURATION.record(send_start.elapsed());
         res
