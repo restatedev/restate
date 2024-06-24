@@ -68,6 +68,7 @@ macro_rules! define_primitive_trait {
     };
 }
 
+#[cfg(feature = "table_docs")]
 macro_rules! document_type {
     (DataType::Utf8) => {
         "Utf8"
@@ -499,4 +500,5 @@ macro_rules! define_table {
 pub(crate) use define_builder;
 pub(crate) use define_primitive_trait;
 pub(crate) use define_table;
+#[cfg(feature = "table_docs")]
 pub(crate) use document_type;
