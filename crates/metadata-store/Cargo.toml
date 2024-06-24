@@ -14,7 +14,6 @@ test-util = []
 [dependencies]
 codederror = { workspace = true }
 restate-core = { workspace = true }
-restate-grpc-util = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
 

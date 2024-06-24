@@ -20,14 +20,16 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
+use codederror::CodedError;
+
 use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::UpdateableConfiguration;
 pub use subscription_controller::SubscriptionController;
 pub use subscription_integration::SubscriptionControllerHandle;
 
-use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
+use restate_core::network::Networking;
 use restate_core::{task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
@@ -36,7 +38,6 @@ use restate_invoker_impl::{
     InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_metadata_store::MetadataStoreClient;
-use restate_network::Networking;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;

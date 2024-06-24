@@ -23,15 +23,15 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
 use restate_bifrost::Bifrost;
+use restate_core::network::rpc_router::{RpcError, RpcRouter};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::NetworkSender;
+use restate_core::network::Networking;
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::TaskCenter;
 use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKind};
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
-use restate_network::rpc_router::{RpcError, RpcRouter};
-use restate_network::Networking;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_types::arc_util::{ArcSwapExt, Updateable};

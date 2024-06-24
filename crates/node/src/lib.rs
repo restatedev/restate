@@ -12,11 +12,6 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
-use restate_bifrost::BifrostService;
-use restate_core::network::MessageRouterBuilder;
-use restate_network::Networking;
-use restate_types::arc_util::ArcSwapExt;
-use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
 use std::future::Future;
 use std::time::Duration;
 
@@ -24,11 +19,16 @@ use codederror::CodedError;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
 
+use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
+use restate_core::network::MessageRouterBuilder;
+use restate_core::network::Networking;
 use restate_core::{spawn_metadata_manager, MetadataKind, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::arc_util::ArcSwapExt;
+use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
 use restate_types::logs::metadata::{create_static_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
