@@ -45,8 +45,9 @@ pub(crate) async fn get_current_state(
     //
     let client = AdminClient::new(env).await?;
     let service_meta = client.get_service(service).await?.into_body().await?;
-    if service_meta.ty != ServiceType::VirtualObject {
-        bail!("Only virtual objects support state");
+    match service_meta.ty {
+        ServiceType::VirtualObject | ServiceType::Workflow => {}
+        ServiceType::Service => bail!("Only virtual objects and workflows support state"),
     }
     //
     // 1. get the key-value pairs
