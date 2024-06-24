@@ -18,6 +18,7 @@ mod version;
 
 pub mod arc_util;
 pub mod art;
+pub mod cluster;
 pub mod config;
 pub mod deployment;
 pub mod endpoint_manifest;
@@ -33,8 +34,9 @@ pub mod metadata_store;
 pub mod net;
 pub mod nodes_config;
 pub mod partition_table;
-pub mod processors;
+pub mod protobuf;
 pub mod retries;
+pub mod schema;
 pub mod service_discovery;
 pub mod service_protocol;
 pub mod state_mut;

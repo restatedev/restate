@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use restate_types::schema::Schema;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -16,12 +17,12 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, info, trace, warn};
 
-use restate_node_protocol::metadata::{MetadataMessage, MetadataUpdate, Schema};
-use restate_node_protocol::MessageEnvelope;
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
 };
+use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
+use restate_types::net::MessageEnvelope;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
 use restate_types::GenerationalNodeId;

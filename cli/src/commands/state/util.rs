@@ -22,8 +22,9 @@ use comfy_table::{Cell, Table};
 use itertools::Itertools;
 use serde_json::Value;
 
-use restate_admin_rest_model::services::{ModifyServiceStateRequest, ServiceType};
+use restate_admin_rest_model::services::ModifyServiceStateRequest;
 use restate_cli_util::ui::console::StyledTable;
+use restate_types::invocation::ServiceType;
 use restate_types::state_mut::StateMutationVersion;
 
 use crate::cli_env::CliEnv;

@@ -1,0 +1,33 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "restate/common.proto";
+import "restate/cluster.proto";
+import "google/protobuf/empty.proto";
+
+package restate.cluster_ctrl;
+
+service ClusterCtrlSvc {
+  rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
+
+  rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
+}
+
+message ClusterStateRequest {}
+
+message ClusterStateResponse {
+  restate.cluster.ClusterState cluster_state = 1;
+}
+
+message TrimLogRequest {
+  uint64 log_id = 1;
+  uint64 trim_point = 2;
+}

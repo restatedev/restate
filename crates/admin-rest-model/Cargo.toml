@@ -9,11 +9,10 @@ publish = false
 
 [features]
 default = []
-schema = ["dep:schemars", "restate-schema-api/serde_schema", "restate-serde-util/schema", "restate-types/schemars"]
+schema = ["dep:schemars", "restate-serde-util/schema", "restate-types/schemars"]
 
 [dependencies]
 restate-types = { workspace = true }
-restate-schema-api = { workspace = true, features = [ "deployment", "serde", "subscription", "service" ] }
 restate-serde-util = { workspace = true }
 
 bytes = { workspace = true }

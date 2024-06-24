@@ -13,23 +13,17 @@ options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
     "restate-worker/options_schema",
-    "restate-cluster-controller/options_schema",
     "restate-metadata-store/options_schema"]
 
 [dependencies]
-restate-admin = { workspace = true }
+restate-admin = { workspace = true, features = ["servers"] }
 restate-bifrost = { workspace = true }
-restate-cluster-controller = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-grpc-util = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-network = { workspace = true }
-restate-node-protocol = { workspace = true }
-restate-node-services = { workspace = true, features = ["servers"] }
 restate-rocksdb = { workspace = true }
-restate-schema = { workspace = true }
-restate-schema-api = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }

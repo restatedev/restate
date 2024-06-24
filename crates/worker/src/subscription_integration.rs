@@ -8,13 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{SubscriptionController, WorkerHandleError};
-use restate_ingress_kafka::SubscriptionCommandSender;
-use restate_schema_api::subscription::{Subscription, SubscriptionValidator};
-use restate_types::config::IngressOptions;
-use restate_types::identifiers::SubscriptionId;
 use std::ops::Deref;
 use std::sync::Arc;
+
+use restate_ingress_kafka::SubscriptionCommandSender;
+use restate_types::config::IngressOptions;
+use restate_types::identifiers::SubscriptionId;
+use restate_types::schema::subscriptions::{Subscription, SubscriptionValidator};
+
+use crate::{SubscriptionController, WorkerHandleError};
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionControllerHandle(Arc<IngressOptions>, SubscriptionCommandSender);

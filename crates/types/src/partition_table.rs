@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::{PartitionId, PartitionKey};
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::borrow::Borrow;
 use std::ops::RangeInclusive;
+
+use crate::identifiers::{PartitionId, PartitionKey};
+use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot find target peer for partition key {0}")]
@@ -22,6 +23,18 @@ pub trait FindPartition {
         &self,
         partition_key: PartitionKey,
     ) -> Result<PartitionId, PartitionTableError>;
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KeyRange {
+    pub from: PartitionKey,
+    pub to: PartitionKey,
+}
+
+impl From<KeyRange> for RangeInclusive<PartitionKey> {
+    fn from(val: KeyRange) -> Self {
+        RangeInclusive::new(val.from, val.to)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
