@@ -46,8 +46,8 @@ humantime = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-metrics-tracing-context = { version = "0.15.0" }
-metrics-util = { version = "0.16.0" }
+metrics-tracing-context = { version = "0.16.0" }
+metrics-util = { version = "0.17.0" }
 once_cell = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }

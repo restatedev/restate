@@ -1,14 +1,13 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
+# https://github.com/EmbarkStudios/cargo-deny/pull/611
+version = 2
 yanked = "deny"
-notice = "warn"
 
 
 [licenses]
-unlicensed = "deny"
+version = 2
 allow = [
     "MIT",
     "Apache-2.0",
@@ -20,11 +19,6 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
 ]
-deny = []
-# Lint level for licenses considered copyleft
-copyleft = "deny"
-allow-osi-fsf-free = "neither"
-default = "deny"
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
 # canonical license text of a valid SPDX license file.
@@ -176,7 +170,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-    "https://github.com/rust-rocksdb/rust-rocksdb.git",
+    "https://github.com/restatedev/rust-rocksdb.git",
 ]
 
 [sources.allow-org]
