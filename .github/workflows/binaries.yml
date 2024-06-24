@@ -46,11 +46,20 @@ jobs:
       RUSTC_WRAPPER: "sccache"
       SCCACHE_GHA_ENABLED: "true"
     steps:
+      - name: Clean up Github actions runner
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-
-      - uses: ./.github/actions/clean-runner
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
