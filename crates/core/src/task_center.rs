@@ -130,6 +130,9 @@ impl TaskCenterBuilder {
             self.ingress_runtime = Some(ingress_runtime);
         }
 
+        if cfg!(any(test, feature = "test-util")) {
+            eprintln!("!!!! Runnning with test-util enabled !!!!");
+        }
         metric_definitions::describe_metrics();
         Ok(TaskCenter {
             inner: Arc::new(TaskCenterInner {
