@@ -22,7 +22,7 @@ use restate_types::schema::subscriptions::SubscriptionResolver;
 use restate_types::schema::UpdateableSchema;
 use restate_types::Version;
 use restate_worker::SubscriptionController;
-use restate_worker::{SubscriptionControllerHandle, Worker};
+use restate_worker::Worker;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -87,10 +87,6 @@ impl WorkerRole {
 
     pub fn storage_query_context(&self) -> &QueryContext {
         self.worker.storage_query_context()
-    }
-
-    pub fn subscription_controller(&self) -> Option<SubscriptionControllerHandle> {
-        Some(self.worker.subscription_controller_handle())
     }
 
     pub async fn start(self) -> anyhow::Result<()> {
