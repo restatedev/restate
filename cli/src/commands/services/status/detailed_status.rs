@@ -11,7 +11,6 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_admin_rest_model::services::ServiceType;
 use restate_cli_util::c_title;
 
 use super::{render_locked_keys, render_services_status, Status};
