@@ -18,11 +18,12 @@ use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 
-use restate_admin_rest_model::deployments::{Deployment, LambdaARN, RegisterDeploymentRequest};
-use restate_admin_rest_model::services::ServiceMetadata;
+use restate_admin_rest_model::deployments::{Deployment, RegisterDeploymentRequest};
 use restate_cli_util::ui::console::{confirm_or_exit, Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
+use restate_types::identifiers::LambdaARN;
+use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};

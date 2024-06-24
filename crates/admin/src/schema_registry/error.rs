@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::ServiceName;
 use http::header::InvalidHeaderValue;
 use http::Uri;
+
 use restate_core::metadata_store::ReadModifyWriteError;
 use restate_core::ShutdownError;
-use restate_schema_api::invocation_target::BadInputContentType;
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::DeploymentId;
 use restate_types::invocation::ServiceType;
+use restate_types::schema::invocation_target::BadInputContentType;
+
+use crate::schema_registry::ServiceName;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum SchemaRegistryError {

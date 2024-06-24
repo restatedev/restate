@@ -12,6 +12,7 @@ use anyhow::Result;
 use indicatif::ProgressBar;
 
 use restate_cli_util::{c_error, c_title};
+use restate_types::invocation::ServiceType;
 
 use super::{render_locked_keys, render_services_status, Status};
 use crate::clients::datafusion_helpers::{get_locked_keys_status, get_service_status};

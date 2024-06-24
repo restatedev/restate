@@ -1,0 +1,66 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+import "restate/common.proto";
+
+package restate.node;
+
+//
+// # Wire Protocol Of Streaming Connections
+// -------------------------------------
+//
+message Header { restate.common.Version my_nodes_config_version = 1; }
+
+// First message sent to an ingress after starting the connection. The message
+// must be sent before any other message.
+message Hello {
+  restate.common.ProtocolVersion min_protocol_version = 1;
+  restate.common.ProtocolVersion max_protocol_version = 2;
+  // generational node id of sender (who am I)
+  restate.common.NodeId my_node_id = 3;
+  string cluster_name = 4;
+}
+
+message Welcome {
+  restate.common.ProtocolVersion protocol_version = 2;
+  // generational node id of sender
+  restate.common.NodeId my_node_id = 3;
+}
+
+// Bidirectional Communication
+message Message {
+  enum Signal {
+    Signal_UNKNOWN = 0;
+    SHUTDOWN = 1;
+    // Connection will be dropped
+    DRAIN_CONNECTION = 2;
+    CODEC_ERROR = 3;
+  }
+  message ConnectionControl {
+    Signal signal = 1;
+    string message = 2;
+  }
+
+  message BinaryMessage {
+    restate.common.TargetName target = 1;
+    bytes payload = 2;
+  }
+
+  Header header = 1;
+  oneof body {
+    ConnectionControl connection_control = 2;
+    // Sent as first message
+    Hello hello = 3;
+    // Sent as first response
+    Welcome welcome = 4;
+    BinaryMessage encoded = 5;
+  }
+}

@@ -37,7 +37,6 @@ restate-base64-util = { path = "crates/base64-util" }
 restate-benchmarks = { path = "crates/benchmarks" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
-restate-cluster-controller = { path = "crates/cluster-controller" }
 restate-core = { path = "crates/core" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
@@ -52,13 +51,9 @@ restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-network = { path = "crates/network" }
 restate-node = { path = "crates/node" }
-restate-node-protocol = { path = "crates/node-protocol" }
-restate-node-services = { path = "crates/node-services" }
 restate-partition-store = { path = "crates/partition-store" }
 restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
-restate-schema = { path = "crates/schema" }
-restate-schema-api = { path = "crates/schema-api" }
 restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
 restate-service-client = { path = "crates/service-client" }
@@ -127,6 +122,7 @@ paste = "1.0"
 pin-project = "1.0"
 prost = "0.12.1"
 prost-build = "0.12.1"
+prost-dto = { version = "0.0.2" }
 prost-types = "0.12.1"
 rand = "0.8.5"
 rayon = { version = "1.10" }

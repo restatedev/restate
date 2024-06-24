@@ -16,7 +16,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rand::seq::SliceRandom;
 use restate_core::network::{Handler, MessageRouter};
-use restate_node_protocol::codec::try_unwrap_binary_message;
+use restate_types::net::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
@@ -25,10 +25,9 @@ use tracing::{debug, info, trace, warn, Instrument, Span};
 use restate_core::metadata;
 use restate_core::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 use restate_grpc_util::create_grpc_channel_from_advertised_address;
-use restate_node_protocol::node::message::{self, ConnectionControl};
-use restate_node_protocol::node::{Header, Hello, Message, Welcome};
-use restate_node_services::node_svc::node_svc_client::NodeSvcClient;
 use restate_types::net::AdvertisedAddress;
+use restate_types::protobuf::node::message::{self, ConnectionControl};
+use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 use super::connection::{Connection, ConnectionSender};
@@ -38,6 +37,7 @@ use crate::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
     ONGOING_DRAIN, OUTGOING_CONNECTION,
 };
+use crate::protobuf::node_svc::node_svc_client::NodeSvcClient;
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
@@ -283,11 +283,7 @@ impl ConnectionManager {
         node_id: GenerationalNodeId,
     ) -> Result<Arc<Connection>, NetworkError> {
         let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
-        let connection = Connection::new(
-            node_id,
-            restate_node_protocol::common::CURRENT_PROTOCOL_VERSION,
-            tx,
-        );
+        let connection = Connection::new(node_id, restate_types::net::CURRENT_PROTOCOL_VERSION, tx);
 
         let transformed = ReceiverStream::new(rx).map(Ok);
         let incoming = Box::pin(transformed);
@@ -606,12 +602,12 @@ mod tests {
     use googletest::prelude::*;
 
     use restate_core::TestCoreEnv;
-    use restate_node_protocol::node::message;
-    use restate_node_protocol::{
-        common::ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
-    };
     use restate_test_util::assert_eq;
+    use restate_types::net::{
+        ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+    };
     use restate_types::nodes_config::NodesConfigError;
+    use restate_types::protobuf::node::message;
 
     // Test handshake with a client
     #[tokio::test]

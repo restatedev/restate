@@ -18,8 +18,8 @@ use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use tokio::sync::mpsc::Sender;
 
-use restate_schema_api::deployment::{Deployment, DeploymentResolver};
 use restate_types::identifiers::ServiceRevision;
+use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 
 use super::schema::SysDeploymentBuilder;
 use crate::context::QueryContext;

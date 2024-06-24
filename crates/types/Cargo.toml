@@ -11,11 +11,12 @@ publish = false
 default = []
 
 schemars = ["dep:schemars", "restate-serde-util/schema"]
-test-util = ["dep:tempfile"]
+test-util = ["dep:tempfile", "dep:restate-test-util"]
 
 [dependencies]
 restate-base64-util = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-test-util = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
@@ -32,10 +33,12 @@ flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
+itertools = { workspace = true }
 num-traits = { version = "0.2.17" }
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
+prost-dto = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 regress = { version = "0.9" }

@@ -12,8 +12,8 @@ use super::APPLICATION_JSON;
 
 use bytes::Bytes;
 use http::{header, Response, StatusCode};
-use restate_schema_api::invocation_target::InputValidationError;
 use restate_types::errors::{IdDecodeError, InvocationError};
+use restate_types::schema::invocation_target::InputValidationError;
 use serde::Serialize;
 use std::string;
 
