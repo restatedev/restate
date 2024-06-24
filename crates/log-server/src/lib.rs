@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod local_loglet;
-pub mod memory_loglet;
-pub mod replicated_loglet;
+mod error;
+mod metric_definitions;
+mod service;
+
+pub use error::{LogServerBuildError, LogServerError, Result};
+pub use service::LogServerService;
