@@ -33,6 +33,7 @@ description = "Restate makes distributed applications easy!"
 # Own crates
 codederror = { path = "crates/codederror" }
 restate-admin = { path = "crates/admin" }
+restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
@@ -45,7 +46,7 @@ restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
-restate-admin-rest-model = { path = "crates/admin-rest-model" }
+restate-log-server = { path = "crates/log-server" }
 restate-metadata-store = { path = "crates/metadata-store" }
 restate-node = { path = "crates/node" }
 restate-partition-store = { path = "crates/partition-store" }

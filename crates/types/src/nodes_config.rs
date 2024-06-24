@@ -44,7 +44,10 @@ pub enum Role {
     Worker,
     /// Admin runs cluster controller and user-facing admin APIs
     Admin,
+    /// Serves the metadata store
     MetadataStore,
+    /// Serves a log server for replicated loglets
+    LogServer,
 }
 
 #[serde_as]
