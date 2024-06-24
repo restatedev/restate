@@ -20,6 +20,7 @@ use tracing::{debug, info};
 use url::Url;
 
 use crate::cli_env::CliEnv;
+use crate::clients::AdminClientInterface;
 use crate::{build_info, c_warn};
 
 use super::errors::ApiError;
@@ -130,7 +131,7 @@ impl AdminClient {
         let base_url = env.admin_base_url()?.clone();
         let bearer_token = env.bearer_token()?.map(str::to_string);
 
-        let mut client = Self {
+        let client = Self {
             inner: raw_client,
             base_url,
             bearer_token,
@@ -138,17 +139,36 @@ impl AdminClient {
             admin_api_version: AdminApiVersion::Unknown,
         };
 
-        let version_information: VersionInformation = match client
-            .run(reqwest::Method::GET, client.base_url.join("/version")?)
-            .await
-        {
-            Ok(envelope) => envelope.into_body().await?,
-            Err(_) => {
-                c_warn!("Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.", client.base_url);
-                return Ok(client);
+        if let Ok(envelope) = client.version().await {
+            match envelope.into_body().await {
+                Ok(version_information) => {
+                    return Self::choose_api_version(client, version_information)
+                }
+                Err(err) => debug!("Failed parsing the version information: {err}"),
             }
-        };
+        }
 
+        // we couldn't validate the admin API. This could mean that the server is not running or
+        // runs an old version which does not support version information. Query the health endpoint
+        // to see whether the server is reachable and fail if not.
+        if client
+            .health()
+            .await
+            .map_err(Into::into)
+            .and_then(|r| r.success_or_error())
+            .is_err()
+        {
+            bail!("Unable to connect to the Restate server '{}'. Please make sure that it is running and reachable.", client.base_url);
+        }
+
+        c_warn!("Could not verify the admin API version. Please make sure that your CLI is compatible with the Restate server '{}'.", client.base_url);
+        Ok(client)
+    }
+
+    fn choose_api_version(
+        mut client: AdminClient,
+        version_information: VersionInformation,
+    ) -> anyhow::Result<AdminClient> {
         if let Some(admin_api_version) = AdminApiVersion::choose_max_supported_version(
             MIN_ADMIN_API_VERSION..=MAX_ADMIN_API_VERSION,
             version_information.min_admin_api_version..=version_information.max_admin_api_version,
