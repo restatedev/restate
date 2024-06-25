@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use http::Uri;
-use restate_schema_api::service::ServiceMetadata;
+use restate_schema_api::{deployment::DeploymentTypeHttp, service::ServiceMetadata};
 use restate_serde_util::{SerdeableHeaderHashMap, VersionSerde};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -26,24 +26,7 @@ pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Deployment {
-    Http {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
-        uri: Uri,
-        protocol_type: ProtocolType,
-        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
-        #[serde(default)]
-        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
-        http_version: Option<http::Version>,
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
-        additional_headers: SerdeableHeaderHashMap,
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
-        created_at: humantime::Timestamp,
-        min_protocol_version: i32,
-        max_protocol_version: i32,
-    },
+    Http(DeploymentHttp),
     Lambda {
         arn: LambdaARN,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,22 +43,51 @@ pub enum Deployment {
     },
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeploymentHttp {
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub uri: Uri,
+    pub protocol_type: ProtocolType,
+    #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+    #[serde(default)]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    http_version: Option<http::Version>,
+    #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+    #[serde(default)]
+    pub additional_headers: SerdeableHeaderHashMap,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub created_at: humantime::Timestamp,
+    pub min_protocol_version: i32,
+    pub max_protocol_version: i32,
+}
+
+impl DeploymentHttp {
+    pub fn http_version(&self) -> http::Version {
+        match self.http_version {
+            Some(v) => v,
+            None => DeploymentTypeHttp::backfill_http_version(self.protocol_type),
+        }
+    }
+}
+
 impl From<DeploymentMetadata> for Deployment {
     fn from(value: DeploymentMetadata) -> Self {
         match value.ty {
-            DeploymentType::Http {
-                address,
-                protocol_type,
-                http_version,
-            } => Self::Http {
-                uri: address,
-                protocol_type,
-                http_version,
-                additional_headers: value.delivery_options.additional_headers.into(),
-                created_at: SystemTime::from(value.created_at).into(),
-                min_protocol_version: *value.supported_protocol_versions.start(),
-                max_protocol_version: *value.supported_protocol_versions.end(),
-            },
+            DeploymentType::Http(http) => {
+                let (uri, protocol_type, http_version) = http.into_parts();
+                Self::Http(DeploymentHttp {
+                    uri,
+                    protocol_type,
+                    http_version: Some(http_version),
+                    additional_headers: value.delivery_options.additional_headers.into(),
+                    created_at: SystemTime::from(value.created_at).into(),
+                    min_protocol_version: *value.supported_protocol_versions.start(),
+                    max_protocol_version: *value.supported_protocol_versions.end(),
+                })
+            }
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,

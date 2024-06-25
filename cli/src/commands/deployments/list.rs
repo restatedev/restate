@@ -23,7 +23,9 @@ use crate::ui::deployments::{
 use crate::ui::stylesheet::Style;
 use crate::ui::watcher::Watch;
 
-use restate_admin_rest_model::deployments::{Deployment, DeploymentResponse, ServiceNameRevPair};
+use restate_admin_rest_model::deployments::{
+    Deployment, DeploymentHttp, DeploymentResponse, ServiceNameRevPair,
+};
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -115,7 +117,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             render_active_invocations(active_inv),
             Cell::new(deployment.id),
             Cell::new(match &deployment.deployment {
-                Deployment::Http { created_at, .. } => created_at,
+                Deployment::Http(DeploymentHttp { created_at, .. }) => created_at,
                 Deployment::Lambda { created_at, .. } => created_at,
             }),
         ];

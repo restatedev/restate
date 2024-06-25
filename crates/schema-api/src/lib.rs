@@ -78,24 +78,7 @@ pub mod deployment {
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum DeploymentType {
-        Http {
-            #[cfg_attr(
-                feature = "serde",
-                serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
-            )]
-            #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
-            address: Uri,
-            protocol_type: ProtocolType,
-            #[cfg_attr(
-                feature = "serde",
-                serde(
-                    default,
-                    with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
-                )
-            )]
-            #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
-            http_version: Option<http::Version>,
-        },
+        Http(DeploymentTypeHttp),
         Lambda {
             arn: LambdaARN,
             #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
@@ -103,17 +86,60 @@ pub mod deployment {
         },
     }
 
+    #[derive(Debug, Clone)]
+    #[cfg_attr(feature = "serde", serde_with::serde_as)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
+    pub struct DeploymentTypeHttp {
+        #[cfg_attr(
+            feature = "serde",
+            serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+        address: Uri,
+        protocol_type: ProtocolType,
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                default,
+                with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
+            )
+        )]
+        #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        http_version: Option<http::Version>,
+    }
+
+    impl DeploymentTypeHttp {
+        pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
+            match protocol_type {
+                ProtocolType::BidiStream => http::Version::HTTP_2,
+                ProtocolType::RequestResponse => http::Version::HTTP_11,
+            }
+        }
+
+        pub fn into_parts(self) -> (Uri, ProtocolType, http::Version) {
+            (
+                self.address,
+                self.protocol_type,
+                match self.http_version {
+                    Some(v) => v,
+                    None => Self::backfill_http_version(self.protocol_type),
+                },
+            )
+        }
+    }
+
     impl DeploymentType {
         pub fn protocol_type(&self) -> ProtocolType {
             match self {
-                DeploymentType::Http { protocol_type, .. } => *protocol_type,
+                DeploymentType::Http(DeploymentTypeHttp { protocol_type, .. }) => *protocol_type,
                 DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
             }
         }
 
         pub fn normalized_address(&self) -> String {
             match self {
-                DeploymentType::Http { address, .. } => {
+                DeploymentType::Http(DeploymentTypeHttp { address, .. }) => {
                     // We use only authority and path, as those uniquely identify the deployment.
                     format!(
                         "{}{}",
@@ -135,11 +161,11 @@ pub mod deployment {
             supported_protocol_versions: RangeInclusive<i32>,
         ) -> Self {
             Self {
-                ty: DeploymentType::Http {
+                ty: DeploymentType::Http(DeploymentTypeHttp {
                     address,
                     protocol_type,
                     http_version: Some(http_version),
-                },
+                }),
                 delivery_options,
                 created_at: MillisSinceEpoch::now(),
                 supported_protocol_versions,
@@ -170,7 +196,9 @@ pub mod deployment {
             impl<'a> Display for Wrapper<'a> {
                 fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                     match self {
-                        Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
+                        Wrapper(DeploymentType::Http(DeploymentTypeHttp { address, .. })) => {
+                            address.fmt(f)
+                        }
                         Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
                     }
                 }
