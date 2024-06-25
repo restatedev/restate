@@ -106,6 +106,7 @@ pub mod deployment {
             )
         )]
         #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+        // optional as we did not used to store this and it could be missing in pre-existing deployments
         http_version: Option<http::Version>,
     }
 

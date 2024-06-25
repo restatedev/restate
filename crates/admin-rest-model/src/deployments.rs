@@ -53,6 +53,7 @@ pub struct DeploymentHttp {
     #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
     #[serde(default)]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    // optional as we did not used to provide this and the CLI must check if its missing
     http_version: Option<http::Version>,
     #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
     #[serde(default)]
