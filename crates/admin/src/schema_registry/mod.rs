@@ -106,9 +106,10 @@ impl<V> SchemaRegistry<V> {
         let discovered_metadata = self.service_discovery.discover(&discover_endpoint).await?;
 
         let deployment_metadata = match discover_endpoint.into_inner() {
-            (Endpoint::Http(uri, _), headers) => DeploymentMetadata::new_http(
+            (Endpoint::Http(uri, http_version), headers) => DeploymentMetadata::new_http(
                 uri.clone(),
                 discovered_metadata.protocol_type,
+                http_version,
                 DeliveryOptions::new(headers),
                 discovered_metadata.supported_protocol_versions,
             ),

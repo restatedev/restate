@@ -220,12 +220,13 @@ where
             DeploymentType::Http {
                 address,
                 protocol_type,
+                http_version,
             } => Endpoint::Http(
                 address,
-                match protocol_type {
+                http_version.unwrap_or(match protocol_type {
                     ProtocolType::RequestResponse => http::Version::default(),
                     ProtocolType::BidiStream => http::Version::HTTP_2,
-                },
+                }),
             ),
         };
 

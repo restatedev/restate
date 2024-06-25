@@ -38,14 +38,17 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
 
 pub fn render_deployment_type(deployment: &Deployment) -> String {
     match deployment {
-        Deployment::Http { protocol_type, .. } => {
+        Deployment::Http {
+            http_version,
+            protocol_type,
+            ..
+        } => {
             format!(
-                "HTTP {}",
-                if protocol_type == &ProtocolType::BidiStream {
-                    "2"
-                } else {
-                    "1"
-                }
+                "{:?}",
+                http_version.unwrap_or(match protocol_type {
+                    ProtocolType::BidiStream => http::Version::HTTP_2,
+                    ProtocolType::RequestResponse => http::Version::HTTP_11,
+                })
             )
         }
         Deployment::Lambda { .. } => "AWS Lambda".to_string(),
@@ -104,6 +107,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
             Deployment::Http {
                 uri,
                 protocol_type,
+                http_version: _,
                 additional_headers,
                 created_at,
                 min_protocol_version,

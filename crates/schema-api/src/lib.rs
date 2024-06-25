@@ -86,6 +86,15 @@ pub mod deployment {
             #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
             address: Uri,
             protocol_type: ProtocolType,
+            #[cfg_attr(
+                feature = "serde",
+                serde(
+                    default,
+                    with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
+                )
+            )]
+            #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
+            http_version: Option<http::Version>,
         },
         Lambda {
             arn: LambdaARN,
@@ -121,6 +130,7 @@ pub mod deployment {
         pub fn new_http(
             address: Uri,
             protocol_type: ProtocolType,
+            http_version: http::Version,
             delivery_options: DeliveryOptions,
             supported_protocol_versions: RangeInclusive<i32>,
         ) -> Self {
@@ -128,6 +138,7 @@ pub mod deployment {
                 ty: DeploymentType::Http {
                     address,
                     protocol_type,
+                    http_version: Some(http_version),
                 },
                 delivery_options,
                 created_at: MillisSinceEpoch::now(),
@@ -203,6 +214,7 @@ pub mod deployment {
                 let metadata = DeploymentMetadata::new_http(
                     "http://localhost:9080".parse().unwrap(),
                     ProtocolType::BidiStream,
+                    http::Version::HTTP_2,
                     Default::default(),
                     1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 );
@@ -215,6 +227,7 @@ pub mod deployment {
                 let metadata = DeploymentMetadata::new_http(
                     uri.parse().unwrap(),
                     ProtocolType::BidiStream,
+                    http::Version::HTTP_2,
                     Default::default(),
                     1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 );

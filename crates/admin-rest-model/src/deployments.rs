@@ -10,7 +10,7 @@
 
 use http::Uri;
 use restate_schema_api::service::ServiceMetadata;
-use restate_serde_util::SerdeableHeaderHashMap;
+use restate_serde_util::{SerdeableHeaderHashMap, VersionSerde};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::time::SystemTime;
@@ -31,6 +31,10 @@ pub enum Deployment {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
         protocol_type: ProtocolType,
+        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+        #[serde(default)]
+        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+        http_version: Option<http::Version>,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
@@ -62,9 +66,11 @@ impl From<DeploymentMetadata> for Deployment {
             DeploymentType::Http {
                 address,
                 protocol_type,
+                http_version,
             } => Self::Http {
                 uri: address,
                 protocol_type,
+                http_version,
                 additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),
