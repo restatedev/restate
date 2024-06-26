@@ -25,6 +25,7 @@ pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "DeploymentShadow")]
+#[serde(untagged)]
 pub enum Deployment {
     Http {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
@@ -32,7 +33,6 @@ pub enum Deployment {
         uri: Uri,
         protocol_type: ProtocolType,
         #[serde(with = "serde_with::As::<VersionSerde>")]
-        #[serde(default)]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         http_version: http::Version,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
@@ -131,6 +131,32 @@ impl From<DeploymentShadow> for Deployment {
                 max_protocol_version,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn can_deserialise_without_http_version() {
+        let dt: super::Deployment = serde_json::from_str(
+            r#"{"uri":"google.com","protocol_type":"BidiStream","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+        )
+        .unwrap();
+        let serialised = serde_json::to_string(&dt).unwrap();
+        assert_eq!(
+            r#"{"uri":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            serialised
+        );
+
+        let dt: super::Deployment = serde_json::from_str(
+            r#"{"uri":"google.com","protocol_type":"RequestResponse","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+        )
+        .unwrap();
+        let serialised = serde_json::to_string(&dt).unwrap();
+        assert_eq!(
+            r#"{"uri":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            serialised
+        );
     }
 }
 

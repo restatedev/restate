@@ -6013,6 +6013,7 @@ dependencies = [
  "restate-types",
  "schemars",
  "serde",
+ "serde_json",
  "serde_with",
  "thiserror",
  "tracing",

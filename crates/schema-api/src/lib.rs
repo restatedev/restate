@@ -88,7 +88,7 @@ pub mod deployment {
             protocol_type: ProtocolType,
             #[cfg_attr(
                 feature = "serde",
-                serde(default, with = "serde_with::As::<restate_serde_util::VersionSerde>")
+                serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")
             )]
             #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
             http_version: http::Version,
@@ -150,6 +150,32 @@ pub mod deployment {
                     assume_role_arn,
                 },
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn can_deserialise_without_http_version() {
+            let dt: super::DeploymentType = serde_json::from_str(
+                r#"{"Http":{"address":"google.com","protocol_type":"BidiStream"}}"#,
+            )
+            .unwrap();
+            let serialised = serde_json::to_string(&dt).unwrap();
+            assert_eq!(
+                r#"{"Http":{"address":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0"}}"#,
+                serialised
+            );
+
+            let dt: super::DeploymentType = serde_json::from_str(
+                r#"{"Http":{"address":"google.com","protocol_type":"RequestResponse"}}"#,
+            )
+            .unwrap();
+            let serialised = serde_json::to_string(&dt).unwrap();
+            assert_eq!(
+                r#"{"Http":{"address":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1"}}"#,
+                serialised
+            );
         }
     }
 
