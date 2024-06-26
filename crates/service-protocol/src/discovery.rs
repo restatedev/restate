@@ -130,8 +130,8 @@ pub enum DiscoveryError {
     Client(#[from] ServiceClientError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
-    #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over HTTP2. Discovery with --use-http1.1 or Lambda is not supported")]
-    BidirectionalRequiresHTTP2,
+    #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported")]
+    BidirectionalNotSupported,
 }
 
 impl CodedError for DiscoveryError {
@@ -146,7 +146,7 @@ impl CodedError for DiscoveryError {
             )) => Some(&META0014),
             DiscoveryError::Client(_) => Some(&META0003),
             DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),
-            DiscoveryError::BidirectionalRequiresHTTP2 => Some(&META0015),
+            DiscoveryError::BidirectionalNotSupported => Some(&META0015),
         }
     }
 }
@@ -169,7 +169,7 @@ impl DiscoveryError {
             DiscoveryError::BadResponse(_)
             | DiscoveryError::Decode(_, _)
             | DiscoveryError::UnsupportedServiceProtocol { .. }
-            | DiscoveryError::BidirectionalRequiresHTTP2 => false,
+            | DiscoveryError::BidirectionalNotSupported => false,
         }
     }
 }
@@ -276,15 +276,17 @@ impl ServiceDiscovery {
         match (protocol_type, endpoint) {
             // all endpoints support request response
             (ProtocolType::RequestResponse, _) => {}
-            // http2 supports bidi
-            (ProtocolType::BidiStream, Endpoint::Http(_, hyper::Version::HTTP_2)) => {}
-            // alpn client is not guaranteed to support bidi
-            (ProtocolType::BidiStream, Endpoint::Http(_, _)) => {
-                return Err(DiscoveryError::BidirectionalRequiresHTTP2);
-            }
-            // lambda client does not support bidi
-            (ProtocolType::BidiStream, Endpoint::Lambda(_, _)) => {
-                return Err(DiscoveryError::BidirectionalRequiresHTTP2);
+            // http2 upwards supports bidi
+            (
+                ProtocolType::BidiStream,
+                Endpoint::Http(_, hyper::Version::HTTP_2 | hyper::Version::HTTP_3),
+            ) => {}
+            // http1.1 *can* support bidi depending on server implementation (and load balancers)
+            // trust the user if this is what they advertise
+            (ProtocolType::BidiStream, Endpoint::Http(_, hyper::Version::HTTP_11)) => {}
+            // lambda client and HTTP < 1.1 do not support bidi
+            (ProtocolType::BidiStream, _) => {
+                return Err(DiscoveryError::BidirectionalNotSupported);
             }
         }
 
