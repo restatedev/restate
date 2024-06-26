@@ -33,10 +33,9 @@ pub struct CliApp {
 #[derive(Args, Collect, Clone, Default)]
 pub struct GlobalOpts {
     /// Environment to select from the config file. Environment is read from these sources in order of precedence:
-    ///
-    /// 1. This command line argument
-    /// 2. $RESTATE_ENVIRONMENT
-    /// 3. The file $RESTATE_CLI_CONFIG_HOME/environment (default: $HOME/.config/restate/environment)
+    ///     1. This command line argument
+    ///     2. $RESTATE_ENVIRONMENT
+    ///     3. The file $RESTATE_CLI_CONFIG_HOME/environment (default: $HOME/.config/restate/environment)
     /// If none of these are provided, the 'local' environment is used, pointing to an instance running locally.
     #[arg(long, short, global = true, verbatim_doc_comment)]
     pub environment: Option<Profile>,

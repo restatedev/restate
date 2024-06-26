@@ -14,6 +14,7 @@ use super::AdminClient;
 
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::services::*;
+use restate_admin_rest_model::version::VersionInformation;
 use restate_types::schema::service::ServiceMetadata;
 
 pub trait AdminClientInterface {
@@ -42,6 +43,8 @@ pub trait AdminClientInterface {
         service: &str,
         req: ModifyServiceStateRequest,
     ) -> reqwest::Result<Envelope<()>>;
+
+    async fn version(&self) -> reqwest::Result<Envelope<VersionInformation>>;
 }
 
 impl AdminClientInterface for AdminClient {
@@ -135,5 +138,11 @@ impl AdminClientInterface for AdminClient {
             .expect("Bad url!");
 
         self.run_with_body(reqwest::Method::POST, url, req).await
+    }
+
+    async fn version(&self) -> reqwest::Result<Envelope<VersionInformation>> {
+        let url = self.base_url.join("/version").expect("Bad url!");
+
+        self.run(reqwest::Method::GET, url).await
     }
 }

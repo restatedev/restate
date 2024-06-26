@@ -37,9 +37,11 @@ impl MillisSinceEpoch {
         self.0
     }
 
+    /// Returns zero duration if self is in the future. Should not be used where monotonic
+    /// clock/duration is expected.
     pub fn elapsed(&self) -> Duration {
         let now = Self::now();
-        Duration::from_millis(now.0 - self.0)
+        Duration::from_millis(now.0.saturating_sub(self.0))
     }
 }
 
@@ -113,9 +115,11 @@ impl NanosSinceEpoch {
         self.0
     }
 
+    /// Returns zero duration if self is in the future. Should not be used where monotonic
+    /// clock/duration is expected.
     pub fn elapsed(&self) -> Duration {
         let now = Self::now();
-        Duration::from_nanos(now.0 - self.0)
+        Duration::from_nanos(now.0.saturating_sub(self.0))
     }
 }
 
@@ -174,5 +178,15 @@ mod tests {
         let t = NanosSinceEpoch::now().as_u64();
         assert!(t < u64::MAX);
         println!("{:?}", t);
+    }
+
+    #[test]
+    fn elapsed_saturating_to_zero() {
+        let future = SystemTime::now().add(Duration::from_secs(10));
+        let ms_epoch = MillisSinceEpoch::from(future);
+        let ns_epoch = NanosSinceEpoch::from(future);
+
+        assert_eq!(ms_epoch.elapsed(), Duration::ZERO);
+        assert_eq!(ns_epoch.elapsed(), Duration::ZERO);
     }
 }
