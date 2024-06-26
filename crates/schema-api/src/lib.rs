@@ -74,8 +74,8 @@ pub mod deployment {
     }
 
     #[derive(Debug, Clone)]
-    #[cfg_attr(feature = "serde", serde_with::serde_as)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(from = "DeploymentTypeShadow"))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
     pub enum DeploymentType {
         Http {
@@ -88,13 +88,10 @@ pub mod deployment {
             protocol_type: ProtocolType,
             #[cfg_attr(
                 feature = "serde",
-                serde(
-                    default,
-                    with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
-                )
+                serde(default, with = "serde_with::As::<restate_serde_util::VersionSerde>")
             )]
-            #[cfg_attr(feature = "serde_schema", schemars(with = "Option<String>"))]
-            http_version: Option<http::Version>,
+            #[cfg_attr(feature = "serde_schema", schemars(with = "String"))]
+            http_version: http::Version,
         },
         Lambda {
             arn: LambdaARN,
@@ -103,7 +100,67 @@ pub mod deployment {
         },
     }
 
+    #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
+    #[cfg(feature = "serde")]
+    enum DeploymentTypeShadow {
+        Http {
+            #[cfg_attr(
+                feature = "serde",
+                serde(with = "serde_with::As::<serde_with::DisplayFromStr>")
+            )]
+            address: Uri,
+            protocol_type: ProtocolType,
+            #[cfg_attr(
+                feature = "serde",
+                serde(
+                    default,
+                    with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
+                )
+            )]
+            // this field did not used to be stored, so we must consider it optional when deserialising
+            http_version: Option<http::Version>,
+        },
+        Lambda {
+            arn: LambdaARN,
+            assume_role_arn: Option<ByteString>,
+        },
+    }
+
+    #[cfg(feature = "serde")]
+    impl From<DeploymentTypeShadow> for DeploymentType {
+        fn from(value: DeploymentTypeShadow) -> Self {
+            match value {
+                DeploymentTypeShadow::Http {
+                    address,
+                    protocol_type,
+                    http_version,
+                } => Self::Http {
+                    address,
+                    protocol_type,
+                    http_version: match http_version {
+                        Some(v) => v,
+                        None => Self::backfill_http_version(protocol_type),
+                    },
+                },
+                DeploymentTypeShadow::Lambda {
+                    arn,
+                    assume_role_arn,
+                } => Self::Lambda {
+                    arn,
+                    assume_role_arn,
+                },
+            }
+        }
+    }
+
     impl DeploymentType {
+        pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
+            match protocol_type {
+                ProtocolType::BidiStream => http::Version::HTTP_2,
+                ProtocolType::RequestResponse => http::Version::HTTP_11,
+            }
+        }
+
         pub fn protocol_type(&self) -> ProtocolType {
             match self {
                 DeploymentType::Http { protocol_type, .. } => *protocol_type,
@@ -138,7 +195,7 @@ pub mod deployment {
                 ty: DeploymentType::Http {
                     address,
                     protocol_type,
-                    http_version: Some(http_version),
+                    http_version,
                 },
                 delivery_options,
                 created_at: MillisSinceEpoch::now(),

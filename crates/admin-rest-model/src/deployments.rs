@@ -24,17 +24,17 @@ pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(from = "DeploymentShadow")]
 pub enum Deployment {
     Http {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
         protocol_type: ProtocolType,
-        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+        #[serde(with = "serde_with::As::<VersionSerde>")]
         #[serde(default)]
-        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
-        http_version: Option<http::Version>,
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        http_version: http::Version,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
@@ -58,6 +58,80 @@ pub enum Deployment {
         min_protocol_version: i32,
         max_protocol_version: i32,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeploymentShadow {
+    Http {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        uri: Uri,
+        protocol_type: ProtocolType,
+        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+        #[serde(default)]
+        // this field did not used to be provided; to provide backwards compatibility with old restate, we must consider it optional when deserialising
+        http_version: Option<http::Version>,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+    },
+    Lambda {
+        arn: LambdaARN,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        assume_role_arn: Option<String>,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+    },
+}
+
+impl From<DeploymentShadow> for Deployment {
+    fn from(value: DeploymentShadow) -> Self {
+        match value {
+            DeploymentShadow::Http {
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Http {
+                uri,
+                protocol_type,
+                http_version: http_version
+                    .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            },
+            DeploymentShadow::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            },
+        }
+    }
 }
 
 impl From<DeploymentMetadata> for Deployment {

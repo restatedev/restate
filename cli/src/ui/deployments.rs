@@ -38,18 +38,8 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
 
 pub fn render_deployment_type(deployment: &Deployment) -> String {
     match deployment {
-        Deployment::Http {
-            http_version,
-            protocol_type,
-            ..
-        } => {
-            format!(
-                "{:?}",
-                http_version.unwrap_or(match protocol_type {
-                    ProtocolType::BidiStream => http::Version::HTTP_2,
-                    ProtocolType::RequestResponse => http::Version::HTTP_11,
-                })
-            )
+        Deployment::Http { http_version, .. } => {
+            format!("{:?}", http_version)
         }
         Deployment::Lambda { .. } => "AWS Lambda".to_string(),
     }
