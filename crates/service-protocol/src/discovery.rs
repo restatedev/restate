@@ -437,7 +437,7 @@ mod tests {
                 &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_11),
                 response
             ),
-            Err(DiscoveryError::BidirectionalRequiresHTTP2)
+            Err(DiscoveryError::BidirectionalNotSupported)
         ));
     }
 
