@@ -11,9 +11,7 @@
 use std::collections::HashMap;
 
 use comfy_table::{Cell, Color, Table};
-use restate_admin_rest_model::deployments::{
-    Deployment, DeploymentHttp, ProtocolType, ServiceNameRevPair,
-};
+use restate_admin_rest_model::deployments::{Deployment, ProtocolType, ServiceNameRevPair};
 use restate_admin_rest_model::services::ServiceMetadata;
 use restate_types::identifiers::DeploymentId;
 
@@ -33,15 +31,25 @@ pub enum DeploymentStatus {
 
 pub fn render_deployment_url(deployment: &Deployment) -> String {
     match deployment {
-        Deployment::Http(DeploymentHttp { uri, .. }) => uri.to_string(),
+        Deployment::Http { uri, .. } => uri.to_string(),
         Deployment::Lambda { arn, .. } => arn.to_string(),
     }
 }
 
 pub fn render_deployment_type(deployment: &Deployment) -> String {
     match deployment {
-        Deployment::Http(http) => {
-            format!("{:?}", http.http_version(),)
+        Deployment::Http {
+            http_version,
+            protocol_type,
+            ..
+        } => {
+            format!(
+                "{:?}",
+                http_version.unwrap_or(match protocol_type {
+                    ProtocolType::BidiStream => http::Version::HTTP_2,
+                    ProtocolType::RequestResponse => http::Version::HTTP_11,
+                })
+            )
         }
         Deployment::Lambda { .. } => "AWS Lambda".to_string(),
     }
@@ -96,15 +104,15 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
     table.add_kv_row("Deployment Type:", render_deployment_type(deployment));
     let (additional_headers, created_at, min_protocol_version, max_protocol_version) =
         match &deployment {
-            Deployment::Http(DeploymentHttp {
+            Deployment::Http {
                 uri,
                 protocol_type,
+                http_version: _,
                 additional_headers,
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
-                ..
-            }) => {
+            } => {
                 let protocol_type = match protocol_type {
                     ProtocolType::RequestResponse => "Request/Response",
                     ProtocolType::BidiStream => "Streaming",
