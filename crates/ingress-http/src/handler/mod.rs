@@ -8,21 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-
-use error::HandlerError;
-use futures::future::BoxFuture;
-use futures::FutureExt;
-use http_body_util::Full;
-use hyper::http::HeaderValue;
-use hyper::{Request, Response};
-use path_parsing::RequestType;
-use restate_ingress_dispatcher::DispatchIngressRequest;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
-use std::convert::Infallible;
-use std::task::{Context, Poll};
-
 mod awakeables;
 mod error;
 mod health;
@@ -35,18 +20,36 @@ mod tests;
 mod tracing;
 mod workflow;
 
+use std::convert::Infallible;
+use std::task::{Context, Poll};
+
+use error::HandlerError;
+use futures::future::BoxFuture;
+use futures::FutureExt;
+use http_body_util::Full;
+use hyper::http::HeaderValue;
+use hyper::{Request, Response};
+use path_parsing::RequestType;
+
+use restate_ingress_dispatcher::DispatchIngressRequest;
+use restate_types::live::Live;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::service::ServiceMetadataResolver;
+
+use super::*;
+
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 #[derive(Clone)]
 pub(crate) struct Handler<Schemas, Dispatcher, StorageReader> {
-    schemas: Schemas,
+    schemas: Live<Schemas>,
     dispatcher: Dispatcher,
     storage_reader: StorageReader,
 }
 
 impl<Schemas, Dispatcher, StorageReader> Handler<Schemas, Dispatcher, StorageReader> {
     pub(crate) fn new(
-        schemas: Schemas,
+        schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         storage_reader: StorageReader,
     ) -> Self {
@@ -79,7 +82,7 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let res = self.parse_path(req.uri());
 
-        let this = self.clone();
+        let mut this = self.clone();
         async move {
             match res? {
                 RequestType::Health => this.handle_health(req),

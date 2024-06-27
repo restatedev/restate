@@ -17,6 +17,7 @@ use googletest::prelude::*;
 use http::StatusCode;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
+use restate_types::live::Live;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use tracing_test::traced_test;
@@ -1093,7 +1094,12 @@ where
     let handler_fut = node_env.tc.run_in_scope(
         "ingress",
         None,
-        Handler::new(schemas, dispatcher, invocation_storage_reader).oneshot(req),
+        Handler::new(
+            Live::from_value(schemas),
+            dispatcher,
+            invocation_storage_reader,
+        )
+        .oneshot(req),
     );
 
     // Mock the service invocation receiver

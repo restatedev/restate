@@ -30,7 +30,7 @@ where
     Schemas: ServiceMetadataResolver + Send + Sync + 'static,
 {
     pub(crate) fn handle_health<B: http_body::Body>(
-        &self,
+        &mut self,
         req: Request<B>,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         if req.method() != Method::GET {
@@ -39,6 +39,7 @@ where
         let response = HealthResponse {
             services: self
                 .schemas
+                .pinned()
                 .list_services()
                 .into_iter()
                 .map(|c| c.name)

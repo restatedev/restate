@@ -26,6 +26,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
+use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
@@ -94,13 +95,9 @@ impl QueryContext {
         partition_selector: impl SelectPartitions + Clone,
         partition_store_manager: PartitionStoreManager,
         status: impl StatusHandle + Send + Sync + Debug + Clone + 'static,
-        schemas: impl DeploymentResolver
-            + ServiceMetadataResolver
-            + Send
-            + Sync
-            + Debug
-            + Clone
-            + 'static,
+        schemas: Live<
+            impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
+        >,
     ) -> Result<QueryContext, BuildError> {
         let ctx = QueryContext::new(
             options.memory_size.get(),

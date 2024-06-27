@@ -13,14 +13,14 @@ use codederror::CodedError;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
-use restate_core::{cancellation_watcher, metadata, task_center, Metadata, MetadataKind};
+use restate_core::{cancellation_watcher, task_center, Metadata, MetadataKind};
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::schema::subscriptions::SubscriptionResolver;
-use restate_types::schema::UpdateableSchema;
+use restate_types::schema::Schema;
 use restate_types::Version;
 use restate_worker::SubscriptionController;
 use restate_worker::Worker;
@@ -59,6 +59,7 @@ pub enum WorkerRoleBuildError {
 }
 
 pub struct WorkerRole {
+    metadata: Metadata,
     worker: Worker,
 }
 
@@ -70,11 +71,11 @@ impl WorkerRole {
         networking: Networking,
         bifrost: Bifrost,
         metadata_store_client: MetadataStoreClient,
-        updating_schema_information: UpdateableSchema,
+        updating_schema_information: Live<Schema>,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             updateable_config,
-            metadata,
+            metadata.clone(),
             networking,
             bifrost,
             router_builder,
@@ -83,7 +84,7 @@ impl WorkerRole {
         )
         .await?;
 
-        Ok(WorkerRole { worker })
+        Ok(WorkerRole { worker, metadata })
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {
@@ -97,7 +98,7 @@ impl WorkerRole {
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
             None,
-            Self::watch_subscriptions(self.worker.subscription_controller_handle()),
+            Self::watch_subscriptions(self.metadata, self.worker.subscription_controller_handle()),
         )?;
 
         tc.spawn_child(TaskKind::RoleRunner, "worker-service", None, async {
@@ -107,12 +108,14 @@ impl WorkerRole {
         Ok(())
     }
 
-    async fn watch_subscriptions<SC>(subscription_controller: SC) -> anyhow::Result<()>
+    async fn watch_subscriptions<SC>(
+        metadata: Metadata,
+        subscription_controller: SC,
+    ) -> anyhow::Result<()>
     where
         SC: SubscriptionController + Clone + Send + Sync,
     {
-        let metadata = metadata();
-        let schema_view = metadata.schema_updateable();
+        let schema_view = metadata.updateable_schema();
         let mut next_version = Version::MIN;
         let cancellation_watcher = cancellation_watcher();
         tokio::pin!(cancellation_watcher);
@@ -128,7 +131,7 @@ impl WorkerRole {
                     // This might return subscriptions belonging to a higher schema version. As a
                     // result we might re-apply the same list of subscriptions. This is not a
                     // problem, since update_subscriptions is idempotent.
-                    let subscriptions = schema_view.list_subscriptions(&[]);
+                    let subscriptions = schema_view.pinned().list_subscriptions(&[]);
                     subscription_controller
                         .update_subscriptions(subscriptions)
                         .await?;

@@ -14,7 +14,7 @@
 mod manager;
 pub use manager::MetadataManager;
 use restate_types::live::{Live, Pinned};
-use restate_types::schema::{Schema, UpdateableSchema};
+use restate_types::schema::Schema;
 
 use std::sync::{Arc, OnceLock};
 
@@ -148,8 +148,12 @@ impl Metadata {
         self.inner.schema.load().version()
     }
 
-    pub fn schema_updateable(&self) -> UpdateableSchema {
-        UpdateableSchema::from(Arc::clone(&self.inner.schema))
+    pub fn schema_ref(&self) -> Pinned<Schema> {
+        Pinned::new(&self.inner.schema)
+    }
+
+    pub fn updateable_schema(&self) -> Live<Schema> {
+        Live::from(self.inner.schema.clone())
     }
 
     // Returns when the metadata kind is at the provided version (or newer)

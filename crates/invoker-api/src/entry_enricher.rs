@@ -15,7 +15,7 @@ use restate_types::journal::raw::PlainRawEntry;
 
 pub trait EntryEnricher {
     fn enrich_entry(
-        &self,
+        &mut self,
         entry: PlainRawEntry,
         current_invocation_target: &InvocationTarget,
         current_invocation_span_context: &ServiceInvocationSpanContext,
@@ -38,7 +38,7 @@ pub mod test_util {
 
     impl EntryEnricher for MockEntryEnricher {
         fn enrich_entry(
-            &self,
+            &mut self,
             entry: PlainRawEntry,
             _current_invocation_target: &InvocationTarget,
             current_invocation_span_context: &ServiceInvocationSpanContext,
