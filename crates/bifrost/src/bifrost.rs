@@ -21,7 +21,7 @@ use once_cell::sync::OnceCell;
 use smallvec::SmallVec;
 use tracing::{error, instrument};
 
-use restate_core::{metadata, Metadata, MetadataKind};
+use restate_core::{Metadata, MetadataKind};
 use restate_types::logs::metadata::{ProviderKind, Segment};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
@@ -41,18 +41,18 @@ use crate::{
 #[derive(Clone)]
 pub struct Bifrost {
     inner: Arc<BifrostInner>,
+    metadata: Metadata,
 }
 
 impl Bifrost {
-    pub(crate) fn new(inner: Arc<BifrostInner>) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: Arc<BifrostInner>, metadata: Metadata) -> Self {
+        Self { inner, metadata }
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init() -> Self {
+    pub async fn init(metadata: Metadata) -> Self {
         use crate::BifrostService;
 
-        let metadata = metadata();
         let bifrost_svc = BifrostService::new(metadata);
         let bifrost = bifrost_svc.handle();
 
@@ -67,7 +67,7 @@ impl Bifrost {
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
     #[instrument(level = "debug", skip(self, payload), err)]
-    pub async fn append(&mut self, log_id: LogId, payload: Payload) -> Result<Lsn> {
+    pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn> {
         self.inner.append(log_id, payload).await
     }
 
@@ -75,7 +75,7 @@ impl Bifrost {
     /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the first
     /// record in this batch. This will only return after all records have been stored.
     #[instrument(level = "debug", skip(self, payloads), err)]
-    pub async fn append_batch(&mut self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn> {
+    pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn> {
         self.inner.append_batch(log_id, payloads).await
     }
 
@@ -133,7 +133,7 @@ impl Bifrost {
 
     /// The version of the currently loaded logs metadata
     pub fn version(&self) -> Version {
-        metadata().logs_version()
+        self.metadata.logs_version()
     }
 
     #[cfg(test)]
@@ -393,7 +393,7 @@ mod tests {
     use googletest::prelude::*;
 
     use crate::{Record, TrimGap};
-    use restate_core::TestCoreEnv;
+    use restate_core::{metadata, TestCoreEnv};
     use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::arc_util::Constant;
@@ -414,9 +414,9 @@ mod tests {
             .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            let mut bifrost = Bifrost::init().await;
+            let bifrost = Bifrost::init(metadata()).await;
 
-            let mut clean_bifrost_clone = bifrost.clone();
+            let clean_bifrost_clone = bifrost.clone();
 
             let mut max_lsn = Lsn::INVALID;
             for i in 1..=5 {
@@ -434,7 +434,7 @@ mod tests {
             assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 
             // use a cloned bifrost.
-            let mut cloned_bifrost = bifrost.clone();
+            let cloned_bifrost = bifrost.clone();
             for _ in 1..=5 {
                 // Append a record to memory
                 let lsn = cloned_bifrost
@@ -489,7 +489,7 @@ mod tests {
             // to ensure that appends do not fail while waiting for the loglet;
             let memory_provider = MemoryLogletProvider::with_init_delay(delay);
 
-            let mut bifrost = Bifrost::init().await;
+            let bifrost = Bifrost::init(metadata()).await;
 
             // Inject out preconfigured memory provider
             bifrost
@@ -518,7 +518,7 @@ mod tests {
                 RocksDbManager::init(Constant::new(CommonOptions::default()));
 
                 let log_id = LogId::from(0);
-                let mut bifrost = Bifrost::init().await;
+                let bifrost = Bifrost::init(metadata()).await;
 
                 assert!(bifrost.get_trim_point(log_id).await?.is_none());
 
