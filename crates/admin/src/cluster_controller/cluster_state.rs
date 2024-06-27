@@ -106,7 +106,7 @@ where
                     last_state.nodes_config_version,
                 )
                 .await;
-            let nodes_config = metadata.nodes_config();
+            let nodes_config = metadata.nodes_config_snapshot();
 
             let mut nodes = BTreeMap::new();
             let mut join_set = tokio::task::JoinSet::new();

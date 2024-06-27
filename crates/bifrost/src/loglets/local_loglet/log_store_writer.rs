@@ -23,8 +23,8 @@ use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, error, trace, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_types::arc_util::Updateable;
 use restate_types::config::LocalLogletOptions;
+use restate_types::live::LiveLoad;
 use restate_types::logs::SequenceNumber;
 
 use crate::loglet::LogletOffset;
@@ -76,10 +76,10 @@ impl LogStoreWriter {
     /// Must be called from task_center context
     pub fn start(
         mut self,
-        mut updateable: impl Updateable<LocalLogletOptions> + Send + 'static,
+        mut updateable: impl LiveLoad<LocalLogletOptions> + Send + 'static,
     ) -> Result<RocksDbLogWriterHandle, ShutdownError> {
         // big enough to allows a second full batch to queue up while the existing one is being processed
-        let batch_size = std::cmp::max(1, updateable.load().writer_batch_commit_count);
+        let batch_size = std::cmp::max(1, updateable.live_load().writer_batch_commit_count);
         // leave twice as much space in the the channel to ensure we can enqueue up-to a full batch in
         // the backlog while we process this one.
         let (sender, receiver) = mpsc::channel(batch_size * 2);
@@ -90,7 +90,7 @@ impl LogStoreWriter {
             None,
             async move {
                 debug!("Start running LogStoreWriter");
-                let opts = updateable.load();
+                let opts = updateable.live_load();
                 let batch_size = std::cmp::max(1, opts.writer_batch_commit_count);
                 let batch_duration: Duration = opts.writer_batch_commit_duration.into();
                 // We don't want to use chunks_timeout if time-based batching is disabled, why?
@@ -114,7 +114,7 @@ impl LogStoreWriter {
                             break;
                         }
                         Some(cmds) = TokioStreamExt::next(&mut receiver) => {
-                                let opts = updateable.load();
+                                let opts = updateable.live_load();
                                 self.handle_commands(opts, cmds).await;
                         }
                     }

@@ -20,10 +20,10 @@ use restate_core::TaskCenterBuilder;
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
+use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 
 mod idempotency_table_test;

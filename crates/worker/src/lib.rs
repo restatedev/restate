@@ -22,10 +22,8 @@ mod subscription_integration;
 
 use codederror::CodedError;
 
-use restate_types::arc_util::ArcSwapExt;
-use restate_types::config::UpdateableConfiguration;
-pub use subscription_controller::SubscriptionController;
-pub use subscription_integration::SubscriptionControllerHandle;
+pub use crate::subscription_controller::SubscriptionController;
+pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
@@ -42,6 +40,8 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
+use restate_types::config::Configuration;
+use restate_types::live::Live;
 use restate_types::schema::UpdateableSchema;
 
 pub use self::error::*;
@@ -94,7 +94,7 @@ pub enum Error {
 }
 
 pub struct Worker {
-    updateable_config: UpdateableConfiguration,
+    updateable_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: PostgresQueryService,
     #[allow(clippy::type_complexity)]
@@ -111,7 +111,7 @@ pub struct Worker {
 
 impl Worker {
     pub async fn create(
-        updateable_config: UpdateableConfiguration,
+        updateable_config: Live<Configuration>,
         metadata: Metadata,
         networking: Networking,
         bifrost: Bifrost,
@@ -135,12 +135,8 @@ impl Worker {
             );
 
         let partition_store_manager = PartitionStoreManager::create(
-            updateable_config
-                .clone()
-                .map_as_updateable_owned(|c| &c.worker.storage),
-            updateable_config
-                .clone()
-                .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
+            updateable_config.clone().map(|c| &c.worker.storage),
+            updateable_config.clone().map(|c| &c.worker.storage.rocksdb),
             &[],
         )
         .await?;
@@ -230,11 +226,8 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             None,
-            self.ingress_kafka.run(
-                self.updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|c| &c.ingress),
-            ),
+            self.ingress_kafka
+                .run(self.updateable_config.clone().map(|c| &c.ingress)),
         )?;
 
         // Invoker service
@@ -242,11 +235,8 @@ impl Worker {
             TaskKind::SystemService,
             "invoker",
             None,
-            self.invoker.run(
-                self.updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|c| &c.worker.invoker),
-            ),
+            self.invoker
+                .run(self.updateable_config.clone().map(|c| &c.worker.invoker)),
         )?;
 
         tc.spawn_child(

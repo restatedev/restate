@@ -16,9 +16,9 @@ use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use rdkafka::error::KafkaError;
 use restate_core::cancellation_watcher;
 use restate_ingress_dispatcher::IngressDispatcher;
-use restate_types::arc_util::Updateable;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
+use restate_types::live::LiveLoad;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::{Source, Subscription};
 use std::time::Duration;
@@ -63,7 +63,7 @@ impl Service {
 
     pub async fn run(
         mut self,
-        mut updateable_config: impl Updateable<IngressOptions> + Send + 'static,
+        mut updateable_config: impl LiveLoad<IngressOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
@@ -77,7 +77,7 @@ impl Service {
 
         // NOTE: Configuration is pinned to a certain snapshot until we support adding/removing
         // subscriptions dynamically from config
-        let options = &updateable_config.load();
+        let options = &updateable_config.live_load();
 
         loop {
             tokio::select! {

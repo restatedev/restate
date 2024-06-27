@@ -18,9 +18,9 @@ use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, DeduplicationTable, ProducerId,
 };
 use restate_storage_api::Transaction;
-use restate_types::arc_util::Constant;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::live::Constant;
 use tokio::runtime::Builder;
 
 async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
