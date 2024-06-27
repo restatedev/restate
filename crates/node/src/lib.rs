@@ -296,7 +296,7 @@ impl Node {
         // fetch the latest schema information
         metadata.sync(MetadataKind::Schema).await?;
 
-        let nodes_config = metadata.nodes_config();
+        let nodes_config = metadata.nodes_config_ref();
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config

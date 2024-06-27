@@ -49,11 +49,68 @@ impl<T: Serialize> Serialize for Pinned<T> {
     }
 }
 
-pub trait Updateable<T> {
+pub type Caching<T> = arc_swap::Cache<Arc<ArcSwapAny<Arc<T>>>, Arc<T>>;
+/// Provides read-only access to an updateable T
+#[derive(Clone, Default, derive_more::From)]
+pub struct Updateable<T>(Arc<ArcSwap<T>>);
+
+impl<T> Updateable<T> {
+    pub fn into_caching(self) -> Caching<T> {
+        arc_swap::Cache::new(self.0)
+    }
+}
+
+impl<T: Sized + 'static> ArcSwapExt<T> for Updateable<T> {
+    fn pinned(&self) -> Pinned<T> {
+        self.0.pinned()
+    }
+
+    fn snapshot(&self) -> Arc<T> {
+        self.0.snapshot()
+    }
+
+    fn to_caching_updateable(&self) -> impl CachingUpdateable<T> {
+        arc_swap::Cache::new(self.0.clone())
+    }
+
+    fn map_as_updateable<F, U>(&self, f: F) -> impl CachingUpdateable<U>
+    where
+        F: FnMut(&Arc<T>) -> &U,
+    {
+        let cached = arc_swap::Cache::new(self.0.deref());
+        cached.map(f)
+    }
+
+    fn map_as_updateable_owned<F, U>(self, f: F) -> impl CachingUpdateable<U> + Clone
+    where
+        F: FnMut(&Arc<T>) -> &U + Clone,
+    {
+        let cached = arc_swap::Cache::new(self.0);
+        cached.map(f)
+    }
+}
+
+/// Make it possible to create a CachingUpdateable of a fixed arc value.
+#[derive(Clone)]
+pub struct Constant<T>(Arc<T>);
+
+impl<T> Constant<T> {
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+impl<T> CachingUpdateable<T> for Constant<T> {
+    fn load(&mut self) -> &T {
+        &self.0
+    }
+}
+
+pub trait CachingUpdateable<T> {
     fn load(&mut self) -> &T;
 }
 
-impl<A, T, S> Updateable<T::Target> for Cache<A, T>
+impl<A, T, S> CachingUpdateable<T::Target> for Cache<A, T>
 where
     A: Deref<Target = ArcSwapAny<T, S>>,
     T: RefCnt + Deref<Target = <T as RefCnt>::Base>,
@@ -64,7 +121,7 @@ where
     }
 }
 
-impl<A, T, S, F, U> Updateable<U> for MapCache<A, T, F>
+impl<A, T, S, F, U> CachingUpdateable<U> for MapCache<A, T, F>
 where
     A: Deref<Target = ArcSwapAny<T, S>>,
     T: RefCnt,
@@ -76,26 +133,10 @@ where
     }
 }
 
-/// Make it possible to create an Updateable of a fixed arc value.
-#[derive(Clone)]
-pub struct Constant<T>(Arc<T>);
-
-impl<T> Constant<T> {
-    pub fn new(value: T) -> Self {
-        Self(Arc::new(value))
-    }
-}
-
-impl<T> Updateable<T> for Constant<T> {
-    fn load(&mut self) -> &T {
-        &self.0
-    }
-}
-
 pub trait ArcSwapExt<T> {
-    /// Potentially fast access to a snapshot, should be used if an Updateable<T>
-    /// isn't possible (Updateable trait is not object-safe, and requires mut to load()).
-    /// Guard acquired doesn't track config updates. ~10x slower than Updateable's load().
+    /// Potentially fast access to a snapshot, should be used if an CachingUpdateable<T>
+    /// isn't possible (CachingUpdateable trait is not object-safe, and requires mut to load()).
+    /// Guard acquired doesn't track config updates. ~10x slower than CachingUpdateable's load().
     ///
     /// There’s only limited number of “fast” slots for borrowing from the underlying ArcSwap
     /// for each single thread (currently 8, but this might change). If these run out, the
@@ -105,15 +146,15 @@ pub trait ArcSwapExt<T> {
     /// to be stored in data structures or used across async yield points.
     fn pinned(&self) -> Pinned<T>;
 
-    /// The best way to access an updateable when holding a mutable Updateable is
+    /// The best way to access an updateable when holding a mutable CachingUpdateable is
     /// viable.
     ///
     /// ~10% slower than `snapshot()` to create (YMMV), load() is as fast as accessing local objects,
     /// and will always load the latest configuration reference. The downside is that `load()` requires
     /// exclusive reference. This should be the preferred method for accessing the updateable, but
-    /// avoid using `to_updateable()` or `snapshot()` in tight loops. Instead, get a new updateable,
+    /// avoid using `to_caching_updateable()` or `snapshot()` in tight loops. Instead, get a new updateable,
     /// and pass it down to the loop by value for very efficient access.
-    fn to_updateable(&self) -> impl Updateable<T>;
+    fn to_caching_updateable(&self) -> impl CachingUpdateable<T>;
 
     /// Get the latest snapshot of the loaded value, once snapshot is acquired,
     /// access is fast, but acquiring the snapshot is expensive (roughly Atomic + Mutex).
@@ -125,11 +166,11 @@ pub trait ArcSwapExt<T> {
 
     /// Returns an updateable that maps the original object to another. This can be used for
     /// updateable projections.
-    fn map_as_updateable<F, U>(&self, f: F) -> impl Updateable<U>
+    fn map_as_updateable<F, U>(&self, f: F) -> impl CachingUpdateable<U>
     where
         F: FnMut(&Arc<T>) -> &U;
 
-    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U> + Clone
+    fn map_as_updateable_owned<F, U>(self, f: F) -> impl CachingUpdateable<U> + Clone
     where
         F: FnMut(&Arc<T>) -> &U + Clone;
 }
@@ -147,11 +188,11 @@ where
         self.deref().load_full()
     }
 
-    fn to_updateable(&self) -> impl Updateable<T> {
+    fn to_caching_updateable(&self) -> impl CachingUpdateable<T> {
         Cache::new(self.deref())
     }
 
-    fn map_as_updateable<F, U>(&self, f: F) -> impl Updateable<U>
+    fn map_as_updateable<F, U>(&self, f: F) -> impl CachingUpdateable<U>
     where
         F: FnMut(&Arc<T>) -> &U,
     {
@@ -159,7 +200,7 @@ where
         cached.map(f)
     }
 
-    fn map_as_updateable_owned<F, U>(self, f: F) -> impl Updateable<U> + Clone
+    fn map_as_updateable_owned<F, U>(self, f: F) -> impl CachingUpdateable<U> + Clone
     where
         F: FnMut(&Arc<T>) -> &U + Clone,
     {

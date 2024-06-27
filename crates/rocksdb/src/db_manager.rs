@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_serde_util::ByteCount;
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
 
 use crate::background::ReadyStorageTask;
@@ -69,7 +69,9 @@ impl RocksDbManager {
     /// only run it once on program startup.
     ///
     /// Must run in task_center scope.
-    pub fn init(mut base_opts: impl Updateable<CommonOptions> + Send + 'static) -> &'static Self {
+    pub fn init(
+        mut base_opts: impl CachingUpdateable<CommonOptions> + Send + 'static,
+    ) -> &'static Self {
         // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
         if let Some(manager) = DB_MANAGER.get() {
             return manager;
@@ -143,7 +145,7 @@ impl RocksDbManager {
     // todo: move this to async after allowing bifrost to async-create providers.
     pub fn open_db<T: RocksAccess + Send + Sync + 'static>(
         &'static self,
-        mut updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
+        mut updateable_opts: impl CachingUpdateable<RocksDbOptions> + Send + 'static,
         mut db_spec: DbSpec<T>,
     ) -> Result<Arc<T>, RocksError> {
         if self
@@ -410,7 +412,7 @@ impl RocksDbManager {
 #[allow(dead_code)]
 struct ConfigSubscription {
     name: DbName,
-    updateable_rocksdb_opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
+    updateable_rocksdb_opts: Box<dyn CachingUpdateable<RocksDbOptions> + Send + 'static>,
     last_applied_opts: RocksDbOptions,
 }
 
@@ -418,7 +420,7 @@ struct DbWatchdog {
     manager: &'static RocksDbManager,
     cache: Cache,
     watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-    updateable_common_opts: Box<dyn Updateable<CommonOptions> + Send>,
+    updateable_common_opts: Box<dyn CachingUpdateable<CommonOptions> + Send>,
     current_common_opts: CommonOptions,
     subscriptions: Vec<ConfigSubscription>,
 }
@@ -427,7 +429,7 @@ impl DbWatchdog {
     pub async fn run(
         manager: &'static RocksDbManager,
         watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-        mut updateable_common_opts: impl Updateable<CommonOptions> + Send + 'static,
+        mut updateable_common_opts: impl CachingUpdateable<CommonOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let prev_opts = updateable_common_opts.load().clone();
         let mut watchdog = Self {
