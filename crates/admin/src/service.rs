@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_bifrost::Bifrost;
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::AdminOptions;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
@@ -59,7 +59,7 @@ where
 
     pub async fn run(
         self,
-        mut updateable_config: impl Updateable<AdminOptions> + Send + 'static,
+        mut updateable_config: impl CachingUpdateable<AdminOptions> + Send + 'static,
         node_svc_client: NodeSvcClient<Channel>,
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {

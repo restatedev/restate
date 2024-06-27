@@ -30,10 +30,10 @@ pub async fn spawn_environment(
         .expect("task_center builds");
 
     restate_types::config::set_current_config(config.clone());
-    let network_sender = MockNetworkSender::default();
+    let metadata_builder = MetadataBuilder::default();
+    let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
 
     let metadata_store_client = MetadataStoreClient::new_in_memory();
-    let metadata_builder = MetadataBuilder::default();
     let metadata = metadata_builder.to_metadata();
     let metadata_manager = MetadataManager::new(
         metadata_builder,

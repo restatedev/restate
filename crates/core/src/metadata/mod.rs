@@ -13,6 +13,7 @@
 
 mod manager;
 pub use manager::MetadataManager;
+use restate_types::arc_util::Updateable;
 use restate_types::schema::{Schema, UpdateableSchema};
 
 use std::sync::{Arc, OnceLock};
@@ -73,10 +74,18 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Panics if nodes configuration is not loaded yet.
-    #[track_caller]
-    pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
-        self.inner.nodes_config.load_full().unwrap()
+    #[inline(always)]
+    pub fn nodes_config_snapshot(&self) -> Arc<NodesConfiguration> {
+        self.inner.nodes_config.load_full()
+    }
+
+    #[inline(always)]
+    pub fn nodes_config_ref(&self) -> arc_swap::Guard<Arc<NodesConfiguration>> {
+        self.inner.nodes_config.load()
+    }
+
+    pub fn updateable_nodes_config(&self) -> Updateable<NodesConfiguration> {
+        Updateable::from(self.inner.nodes_config.clone())
     }
 
     #[track_caller]
@@ -86,11 +95,7 @@ impl Metadata {
 
     /// Returns Version::INVALID if nodes configuration has not been loaded yet.
     pub fn nodes_config_version(&self) -> Version {
-        let c = self.inner.nodes_config.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
+        self.inner.nodes_config.load().version()
     }
 
     pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
@@ -181,7 +186,7 @@ impl Metadata {
 #[derive(Default)]
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
-    nodes_config: ArcSwapOption<NodesConfiguration>,
+    nodes_config: Arc<ArcSwap<NodesConfiguration>>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
     logs: ArcSwapOption<Logs>,
     schema: Arc<ArcSwap<Schema>>,
