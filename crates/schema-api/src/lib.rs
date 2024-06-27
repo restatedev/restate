@@ -154,23 +154,58 @@ pub mod deployment {
     }
 
     #[cfg(test)]
-    mod tests {
+    #[cfg(feature = "serde")]
+    mod serde_tests {
+        use bytestring::ByteString;
+        use http::Uri;
+        use restate_types::{identifiers::LambdaARN, storage::StorageCodec};
+
+        use crate::deployment::{DeploymentType, ProtocolType};
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        enum OldDeploymentType {
+            Http {
+                #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+                address: Uri,
+                protocol_type: ProtocolType,
+            },
+            Lambda {
+                arn: LambdaARN,
+                assume_role_arn: Option<ByteString>,
+            },
+        }
+
+        restate_types::flexbuffers_storage_encode_decode!(OldDeploymentType);
+        restate_types::flexbuffers_storage_encode_decode!(DeploymentType);
+
         #[test]
         fn can_deserialise_without_http_version() {
-            let dt: super::DeploymentType = serde_json::from_str(
-                r#"{"Http":{"address":"google.com","protocol_type":"BidiStream"}}"#,
+            let mut buf = bytes::BytesMut::default();
+            StorageCodec::encode(
+                &OldDeploymentType::Http {
+                    address: Uri::from_static("google.com"),
+                    protocol_type: ProtocolType::BidiStream,
+                },
+                &mut buf,
             )
             .unwrap();
+            let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
             let serialised = serde_json::to_string(&dt).unwrap();
             assert_eq!(
                 r#"{"Http":{"address":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0"}}"#,
                 serialised
             );
 
-            let dt: super::DeploymentType = serde_json::from_str(
-                r#"{"Http":{"address":"google.com","protocol_type":"RequestResponse"}}"#,
+            let mut buf = bytes::BytesMut::default();
+            StorageCodec::encode(
+                &OldDeploymentType::Http {
+                    address: Uri::from_static("google.com"),
+                    protocol_type: ProtocolType::RequestResponse,
+                },
+                &mut buf,
             )
             .unwrap();
+            let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
             let serialised = serde_json::to_string(&dt).unwrap();
             assert_eq!(
                 r#"{"Http":{"address":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1"}}"#,
