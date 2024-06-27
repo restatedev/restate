@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use restate_types::schema::Schema;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -25,12 +24,12 @@ use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
 use restate_types::net::MessageEnvelope;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
+use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
 use restate_types::{Version, Versioned};
 
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
-use crate::metadata;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
 use crate::task_center;
@@ -57,6 +56,7 @@ where
 {
     sender: CommandSender,
     networking: N,
+    metadata: Metadata,
 }
 
 impl<N> MetadataMessageHandler<N>
@@ -80,18 +80,18 @@ where
     }
 
     fn send_nodes_config(&self, to: GenerationalNodeId, version: Option<Version>) {
-        let config = metadata().nodes_config();
+        let config = self.metadata.nodes_config_snapshot();
         self.send_metadata_internal(to, version, config.deref(), "nodes_config");
     }
 
     fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(partition_table) = metadata().partition_table() {
+        if let Some(partition_table) = self.metadata.partition_table() {
             self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
         }
     }
 
     fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(logs) = metadata().logs() {
+        if let Some(logs) = self.metadata.logs() {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
@@ -225,6 +225,7 @@ where
         sr_builder.add_message_handler(MetadataMessageHandler {
             sender: self.metadata.sender.clone(),
             networking: self.networking.clone(),
+            metadata: self.metadata.clone(),
         });
     }
 
@@ -462,9 +463,9 @@ mod tests {
     {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
-            let network_sender = MockNetworkSender::default();
-            let metadata_store_client = MetadataStoreClient::new_in_memory();
             let metadata_builder = MetadataBuilder::default();
+            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+            let metadata_store_client = MetadataStoreClient::new_in_memory();
             let metadata = metadata_builder.to_metadata();
             let metadata_manager =
                 MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
@@ -545,10 +546,10 @@ mod tests {
     {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
-            let network_sender = MockNetworkSender::default();
+            let metadata_builder = MetadataBuilder::default();
+            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
 
-            let metadata_builder = MetadataBuilder::default();
             let metadata = metadata_builder.to_metadata();
             let metadata_manager =
                 MetadataManager::new(metadata_builder, network_sender, metadata_store_client);

@@ -34,7 +34,7 @@ use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_types::arc_util::{ArcSwapExt, Updateable};
+use restate_types::arc_util::{ArcSwapExt, CachingUpdateable};
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::{
@@ -151,7 +151,7 @@ impl PartitionProcessorManager {
             // We try to get the admin node on every retry since it might change between retries.
             let admin_node = self
                 .metadata
-                .nodes_config()
+                .nodes_config_ref()
                 .get_admin_node()
                 .ok_or(AttachError::NoClusterController)?
                 .current_generation;
@@ -504,7 +504,7 @@ impl PartitionProcessorManager {
 /// table properties to retrieve the flushed log lsn. However, this requires that we update our
 /// RocksDB binding to expose event listeners and table properties :-(
 struct PersistedLogLsnWatchdog {
-    configuration: Box<dyn Updateable<StorageOptions> + Send + Sync + 'static>,
+    configuration: Box<dyn CachingUpdateable<StorageOptions> + Send + Sync + 'static>,
     partition_store_manager: PartitionStoreManager,
     watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     persisted_lsns: BTreeMap<PartitionId, Lsn>,
@@ -514,7 +514,7 @@ struct PersistedLogLsnWatchdog {
 
 impl PersistedLogLsnWatchdog {
     fn new(
-        mut configuration: impl Updateable<StorageOptions> + Send + Sync + 'static,
+        mut configuration: impl CachingUpdateable<StorageOptions> + Send + Sync + 'static,
         partition_store_manager: PartitionStoreManager,
         watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     ) -> Self {

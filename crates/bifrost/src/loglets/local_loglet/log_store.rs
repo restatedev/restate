@@ -13,7 +13,7 @@ use std::sync::Arc;
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
@@ -55,7 +55,7 @@ pub struct RocksDbLogStore {
 impl RocksDbLogStore {
     pub fn new(
         options: &LocalLogletOptions,
-        updateable_options: impl Updateable<RocksDbOptions> + Send + 'static,
+        updateable_options: impl CachingUpdateable<RocksDbOptions> + Send + 'static,
     ) -> Result<Self, LogStoreError> {
         let db_manager = RocksDbManager::get();
 

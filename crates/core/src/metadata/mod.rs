@@ -13,6 +13,7 @@
 
 mod manager;
 pub use manager::MetadataManager;
+use restate_types::arc_util::Updateable;
 use restate_types::schema::{Schema, UpdateableSchema};
 
 use std::sync::{Arc, OnceLock};
@@ -32,9 +33,6 @@ use crate::metadata::manager::Command;
 use crate::metadata_store::ReadError;
 use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
-
-#[derive(Clone, derive_more::From)]
-pub struct UpdateableNodesConfiguration(Arc<ArcSwap<NodesConfiguration>>);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -76,13 +74,18 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Panics if nodes configuration is not loaded yet.
-    pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
+    #[inline(always)]
+    pub fn nodes_config_snapshot(&self) -> Arc<NodesConfiguration> {
         self.inner.nodes_config.load_full()
     }
 
-    pub fn updateable_nodes_config(&self) -> UpdateableNodesConfiguration {
-        UpdateableNodesConfiguration::from(self.inner.nodes_config.clone())
+    #[inline(always)]
+    pub fn nodes_config_ref(&self) -> arc_swap::Guard<Arc<NodesConfiguration>> {
+        self.inner.nodes_config.load()
+    }
+
+    pub fn updateable_nodes_config(&self) -> Updateable<NodesConfiguration> {
+        Updateable::from(self.inner.nodes_config.clone())
     }
 
     #[track_caller]

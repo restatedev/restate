@@ -21,7 +21,7 @@ use tokio::time::MissedTickBehavior;
 use tokio::time::{Instant, Interval};
 use tracing::{debug, warn};
 
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
 use restate_types::net::RequestId;
@@ -56,7 +56,7 @@ pub struct Service<N> {
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
-    configuration: Box<dyn Updateable<AdminOptions> + Send + Sync>,
+    configuration: Box<dyn CachingUpdateable<AdminOptions> + Send + Sync>,
     heartbeat_interval: time::Interval,
     log_trim_interval: Option<time::Interval>,
     log_trim_threshold: Lsn,
@@ -67,7 +67,7 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(
-        mut configuration: impl Updateable<AdminOptions> + Send + Sync + 'static,
+        mut configuration: impl CachingUpdateable<AdminOptions> + Send + Sync + 'static,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: N,
