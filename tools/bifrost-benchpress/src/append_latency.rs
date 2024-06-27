@@ -31,7 +31,7 @@ pub async fn run(
     _common_args: &Arguments,
     opts: &AppendLatencyOpts,
     _tc: TaskCenter,
-    mut bifrost: Bifrost,
+    bifrost: Bifrost,
 ) -> anyhow::Result<()> {
     let log_id = LogId::from(0);
     let mut bytes = BytesMut::default();

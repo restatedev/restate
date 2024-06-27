@@ -26,8 +26,8 @@ pub struct BifrostService {
 impl BifrostService {
     pub fn new(metadata: Metadata) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(metadata, watchdog_sender));
-        let bifrost = Bifrost::new(inner.clone());
+        let inner = Arc::new(BifrostInner::new(metadata.clone(), watchdog_sender));
+        let bifrost = Bifrost::new(inner.clone(), metadata);
         let watchdog = Watchdog::new(inner.clone(), watchdog_receiver);
         Self {
             inner,

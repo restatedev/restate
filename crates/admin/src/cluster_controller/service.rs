@@ -372,13 +372,14 @@ mod tests {
             builder.network_sender.clone(),
             &mut builder.router_builder,
         );
+        let metadata = builder.metadata.clone();
         let svc_handle = svc.handle();
 
         let node_env = builder.build().await;
 
-        let mut bifrost = node_env
+        let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init())
+            .run_in_scope("init", None, Bifrost::init(metadata))
             .await;
 
         node_env.tc.spawn(
@@ -446,6 +447,7 @@ mod tests {
     async fn auto_log_trim() -> anyhow::Result<()> {
         let mut builder = TestCoreEnvBuilder::new_with_mock_network();
 
+        let metadata = builder.metadata.clone();
         let mut admin_options = AdminOptions::default();
         admin_options.log_trim_threshold = 5;
         let interval_duration = Duration::from_secs(10);
@@ -479,9 +481,9 @@ mod tests {
             .build()
             .await;
 
-        let mut bifrost = node_env
+        let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init())
+            .run_in_scope("init", None, Bifrost::init(metadata))
             .await;
 
         node_env.tc.spawn(

@@ -637,7 +637,9 @@ mod tests {
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = tc.run_in_scope("init bifrost", None, Bifrost::init()).await;
+        let bifrost = tc
+            .run_in_scope("init bifrost", None, Bifrost::init(env.metadata.clone()))
+            .await;
         let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
 
         ShuffleEnv {
