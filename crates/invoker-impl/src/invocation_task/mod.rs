@@ -32,6 +32,7 @@ use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId, Partiti
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::EntryType;
+use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
@@ -261,7 +262,7 @@ pub(super) struct InvocationTask<SR, JR, EE, DMR> {
     state_reader: SR,
     journal_reader: JR,
     entry_enricher: EE,
-    deployment_metadata_resolver: DMR,
+    deployment_metadata_resolver: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 }
@@ -319,7 +320,7 @@ where
         state_reader: SR,
         journal_reader: JR,
         entry_enricher: EE,
-        deployment_metadata_resolver: DMR,
+        deployment_metadata_resolver: Live<DMR>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
     ) -> Self {
@@ -409,6 +410,7 @@ where
                 // deployments have been registered for the same service.
                 let deployment_metadata = shortcircuit!(self
                     .deployment_metadata_resolver
+                    .live_load()
                     .get_deployment(&pinned_deployment.deployment_id)
                     .ok_or_else(|| InvocationTaskError::UnknownDeployment(
                         pinned_deployment.deployment_id
@@ -432,6 +434,7 @@ where
                 // of the registered service.
                 let deployment = shortcircuit!(self
                     .deployment_metadata_resolver
+                    .live_load()
                     .resolve_latest_deployment_for_service(self.invocation_target.service_name())
                     .ok_or(InvocationTaskError::NoDeploymentForService));
 

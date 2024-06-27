@@ -85,6 +85,7 @@ where
 
         let invocation_target_meta = if let Some(invocation_target) = self
             .schemas
+            .pinned()
             .resolve_latest_invocation_target(&service_name, &handler_name)
         {
             if !invocation_target.public {

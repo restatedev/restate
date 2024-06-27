@@ -17,7 +17,6 @@ use serde_with::serde_as;
 
 use super::invocation_target::InvocationTargetMetadata;
 use super::Schema;
-use super::UpdateableSchema;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
@@ -188,20 +187,6 @@ impl ServiceMetadataResolver for Schema {
                 service_schemas.as_service_metadata(service_name.clone())
             })
             .collect()
-    }
-}
-
-impl ServiceMetadataResolver for UpdateableSchema {
-    fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
-        self.0.load().resolve_latest_service(service_name)
-    }
-
-    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
-        self.0.load().resolve_latest_service_type(service_name)
-    }
-
-    fn list_services(&self) -> Vec<ServiceMetadata> {
-        self.0.load().list_services()
     }
 }
 

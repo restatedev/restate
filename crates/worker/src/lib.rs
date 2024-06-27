@@ -42,7 +42,7 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
-use restate_types::schema::UpdateableSchema;
+use restate_types::schema::Schema;
 
 pub use self::error::*;
 pub use self::handle::*;
@@ -57,7 +57,7 @@ type PartitionProcessor = partition::PartitionProcessor<
 >;
 
 type ExternalClientIngress =
-    HyperServerIngress<UpdateableSchema, IngressDispatcher, InvocationStorageReaderImpl>;
+    HyperServerIngress<Schema, IngressDispatcher, InvocationStorageReaderImpl>;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 #[error("failed creating worker: {0}")]
@@ -100,8 +100,8 @@ pub struct Worker {
     #[allow(clippy::type_complexity)]
     invoker: InvokerService<
         InvokerStorageReader<PartitionStore>,
-        EntryEnricher<UpdateableSchema, ProtobufRawEntryCodec>,
-        UpdateableSchema,
+        EntryEnricher<Schema, ProtobufRawEntryCodec>,
+        Schema,
     >,
     external_client_ingress: ExternalClientIngress,
     ingress_kafka: IngressKafkaService,
@@ -116,7 +116,7 @@ impl Worker {
         networking: Networking,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
-        schema_view: UpdateableSchema,
+        schema: Live<Schema>,
         metadata_store_client: MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
@@ -145,15 +145,15 @@ impl Worker {
         let ingress_http = HyperServerIngress::from_options(
             &config.ingress,
             ingress_dispatcher.clone(),
-            schema_view.clone(),
+            schema.clone(),
             InvocationStorageReaderImpl::new(partition_store_manager.clone()),
         );
 
         let invoker = InvokerService::from_options(
             &config.common.service_client,
             &config.worker.invoker,
-            EntryEnricher::new(schema_view.clone()),
-            schema_view.clone(),
+            EntryEnricher::new(schema.clone()),
+            schema.clone(),
         )?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
@@ -173,7 +173,7 @@ impl Worker {
             partition_processor_manager.handle(),
             partition_store_manager.clone(),
             invoker.status_reader(),
-            schema_view.clone(),
+            schema.clone(),
         )
         .await?;
 

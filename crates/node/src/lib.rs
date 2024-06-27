@@ -153,7 +153,7 @@ impl Node {
             metadata_store_client.clone(),
         );
         metadata_manager.register_in_message_router(&mut router_builder);
-        let updating_schema_information = metadata.schema_updateable();
+        let updating_schema_information = metadata.updateable_schema();
         let bifrost = BifrostService::new(metadata.clone());
 
         let tc = task_center();
