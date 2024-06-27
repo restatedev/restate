@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_on_bidirectional_with_http11() {
+    fn fail_on_bidirectional_with_lambda() {
         let response = endpoint_manifest::Endpoint {
             min_protocol_version: 0,
             max_protocol_version: 1,
@@ -434,7 +434,12 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_11),
+                &Endpoint::Lambda(
+                    "arn:partition:lambda:region:account_id:function:name:version"
+                        .parse()
+                        .unwrap(),
+                    None
+                ),
                 response
             ),
             Err(DiscoveryError::BidirectionalNotSupported)

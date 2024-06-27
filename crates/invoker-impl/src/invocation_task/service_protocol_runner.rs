@@ -219,8 +219,8 @@ where
             } => Endpoint::Lambda(arn, assume_role_arn),
             DeploymentType::Http {
                 address,
-                protocol_type: _,
                 http_version,
+                ..
             } => Endpoint::Http(address, http_version),
         };
 
