@@ -9,15 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use crate::invocation_task::{
-    service_protocol_version_to_header_value, InvocationErrorRelatedEntry, InvocationTask,
-    InvocationTaskError, InvocationTaskOutputInner, ResponseChunk, ResponseStreamState,
-    TerminalLoopState, X_RESTATE_SERVER,
+    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    InvocationErrorRelatedEntry, InvocationTask, InvocationTaskError, InvocationTaskOutputInner,
+    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
 };
 use crate::Notification;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use hyper::body::Sender;
+use hyper::header::HeaderName;
 use hyper::http::uri::PathAndQuery;
 use hyper::{http, Body, HeaderMap};
 use opentelemetry::propagation::TextMapPropagator;
@@ -30,7 +31,7 @@ use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
 };
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::EntryIndex;
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::EntryType;
@@ -42,6 +43,9 @@ use std::collections::HashSet;
 use std::future::poll_fn;
 use tracing::{debug, info, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+///  Provides the value of the invocation id
+const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
 
 /// Runs the interaction between the server and the service endpoint.
 pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
@@ -134,8 +138,12 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request and send start message
-        let (mut http_stream_tx, request) =
-            Self::prepare_request(path, deployment.metadata, self.service_protocol_version);
+        let (mut http_stream_tx, request) = Self::prepare_request(
+            path,
+            deployment.metadata,
+            self.service_protocol_version,
+            &self.invocation_task.invocation_id,
+        );
 
         crate::shortcircuit!(
             self.write_start(&mut http_stream_tx, journal_size, state_iter)
@@ -192,11 +200,14 @@ where
         path: PathAndQuery,
         deployment_metadata: DeploymentMetadata,
         service_protocol_version: ServiceProtocolVersion,
+        invocation_id: &InvocationId,
     ) -> (Sender, Request<Body>) {
         let (http_stream_tx, req_body) = Body::channel();
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
+
+        let invocation_id_header_value = invocation_id_to_header_value(invocation_id);
 
         let mut headers = HeaderMap::from_iter([
             (
@@ -204,6 +215,7 @@ where
                 service_protocol_header_value.clone(),
             ),
             (http::header::ACCEPT, service_protocol_header_value),
+            (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
 
         // Inject OpenTelemetry context
