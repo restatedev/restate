@@ -489,6 +489,13 @@ fn service_protocol_version_to_header_value(
     }
 }
 
+fn invocation_id_to_header_value(invocation_id: &InvocationId) -> HeaderValue {
+    let value = invocation_id.to_string();
+
+    HeaderValue::try_from(value)
+        .unwrap_or_else(|_| unreachable!("invocation id should be always valid"))
+}
+
 enum ResponseChunk {
     Parts(ResponseParts),
     Data(Bytes),
