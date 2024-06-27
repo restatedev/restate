@@ -18,19 +18,27 @@ use restate_types::NodeId;
 
 use super::{ConnectionManager, ConnectionSender};
 use super::{NetworkError, NetworkSender};
-use crate::metadata;
+use crate::Metadata;
 
 const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 10;
 // todo: make this configurable
 const SEND_RETRY_BASE_DURATION: Duration = Duration::from_millis(250);
 
 /// Access to node-to-node networking infrastructure;
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Networking {
     connections: ConnectionManager,
+    metadata: Metadata,
 }
 
 impl Networking {
+    pub fn new(metadata: Metadata) -> Self {
+        Self {
+            connections: Default::default(),
+            metadata,
+        }
+    }
+
     pub fn connection_manager(&self) -> ConnectionManager {
         self.connections.clone()
     }
@@ -43,7 +51,7 @@ impl Networking {
         let node = match node.as_generational() {
             Some(node) => node,
             None => {
-                metadata()
+                self.metadata
                     .nodes_config()
                     .find_node_by_id(node)?
                     .current_generation
@@ -68,7 +76,7 @@ impl NetworkSender for Networking {
             // to ensure we get the latest if it has been updated since last attempt.
             let to = match to.as_generational() {
                 Some(to) => to,
-                None => match metadata().nodes_config().find_node_by_id(to) {
+                None => match self.metadata.nodes_config().find_node_by_id(to) {
                     Ok(node) => node.current_generation,
                     Err(e) => return Err(NetworkError::UnknownNode(e)),
                 },
