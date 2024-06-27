@@ -73,7 +73,7 @@ pub mod deployment {
         pub created_at: MillisSinceEpoch,
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[cfg_attr(feature = "serde", serde(from = "DeploymentTypeShadow"))]
     #[cfg_attr(feature = "serde_schema", derive(schemars::JsonSchema))]
@@ -190,10 +190,13 @@ pub mod deployment {
             )
             .unwrap();
             let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
-            let serialised = serde_json::to_string(&dt).unwrap();
             assert_eq!(
-                r#"{"Http":{"address":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0"}}"#,
-                serialised
+                DeploymentType::Http {
+                    address: Uri::from_static("google.com"),
+                    protocol_type: ProtocolType::BidiStream,
+                    http_version: http::Version::HTTP_2,
+                },
+                dt
             );
 
             let mut buf = bytes::BytesMut::default();
@@ -206,10 +209,13 @@ pub mod deployment {
             )
             .unwrap();
             let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
-            let serialised = serde_json::to_string(&dt).unwrap();
             assert_eq!(
-                r#"{"Http":{"address":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1"}}"#,
-                serialised
+                DeploymentType::Http {
+                    address: Uri::from_static("google.com"),
+                    protocol_type: ProtocolType::RequestResponse,
+                    http_version: http::Version::HTTP_11,
+                },
+                dt
             );
         }
     }
