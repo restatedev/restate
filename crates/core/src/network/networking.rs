@@ -34,7 +34,7 @@ pub struct Networking {
 impl Networking {
     pub fn new(metadata: Metadata) -> Self {
         Self {
-            connections: Default::default(),
+            connections: ConnectionManager::new(metadata.clone()),
             metadata,
         }
     }
@@ -47,12 +47,11 @@ impl Networking {
     /// messages.
     pub async fn node_connection(&self, node: NodeId) -> Result<ConnectionSender, NetworkError> {
         // find latest generation if this is not generational node id
-
         let node = match node.as_generational() {
             Some(node) => node,
             None => {
                 self.metadata
-                    .nodes_config()
+                    .nodes_config_ref()
                     .find_node_by_id(node)?
                     .current_generation
             }
@@ -76,7 +75,7 @@ impl NetworkSender for Networking {
             // to ensure we get the latest if it has been updated since last attempt.
             let to = match to.as_generational() {
                 Some(to) => to,
-                None => match self.metadata.nodes_config().find_node_by_id(to) {
+                None => match self.metadata.nodes_config_ref().find_node_by_id(to) {
                     Ok(node) => node.current_generation,
                     Err(e) => return Err(NetworkError::UnknownNode(e)),
                 },
@@ -93,7 +92,7 @@ impl NetworkSender for Networking {
                 sleep_with_jitter(SEND_RETRY_BASE_DURATION).await;
             }
 
-            let sender = match self.connections.get_node_sender(to).await {
+            let mut sender = match self.connections.get_node_sender(to).await {
                 Ok(sender) => sender,
                 // retryable errors
                 Err(

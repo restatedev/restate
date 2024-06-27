@@ -19,7 +19,7 @@ use restate_core::ShutdownError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::RocksDbOptions;
 use restate_types::config::StorageOptions;
 use restate_types::identifiers::PartitionId;
@@ -53,8 +53,8 @@ struct PartitionLookup {
 
 impl PartitionStoreManager {
     pub async fn create(
-        mut storage_opts: impl Updateable<StorageOptions> + Send + 'static,
-        updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
+        mut storage_opts: impl CachingUpdateable<StorageOptions> + Send + 'static,
+        updateable_opts: impl CachingUpdateable<RocksDbOptions> + Send + 'static,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> std::result::Result<Self, RocksError> {
         let options = storage_opts.load();
