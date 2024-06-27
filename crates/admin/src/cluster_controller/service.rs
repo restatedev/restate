@@ -21,8 +21,8 @@ use tokio::time::MissedTickBehavior;
 use tokio::time::{Instant, Interval};
 use tracing::{debug, warn};
 
-use restate_types::arc_util::Updateable;
 use restate_types::config::{AdminOptions, Configuration};
+use restate_types::live::LiveLoad;
 use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
 use restate_types::net::RequestId;
 use restate_types::partition_table::{FixedPartitionTable, KeyRange};
@@ -56,7 +56,7 @@ pub struct Service<N> {
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
-    configuration: Box<dyn Updateable<AdminOptions> + Send + Sync>,
+    configuration: Box<dyn LiveLoad<AdminOptions> + Send + Sync>,
     heartbeat_interval: time::Interval,
     log_trim_interval: Option<time::Interval>,
     log_trim_threshold: Lsn,
@@ -67,7 +67,7 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(
-        mut configuration: impl Updateable<AdminOptions> + Send + Sync + 'static,
+        mut configuration: impl LiveLoad<AdminOptions> + Send + Sync + 'static,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: N,
@@ -83,7 +83,7 @@ where
             router_builder,
         );
 
-        let options = configuration.load();
+        let options = configuration.live_load();
 
         let heartbeat_interval = Self::create_heartbeat_interval(options);
         let (log_trim_interval, log_trim_threshold) = Self::create_log_trim_interval(options);
@@ -219,7 +219,7 @@ where
 
     fn on_config_update(&mut self) {
         debug!("Updating the cluster controller settings.");
-        let options = self.configuration.load();
+        let options = self.configuration.live_load();
 
         self.heartbeat_interval = Self::create_heartbeat_interval(options);
         (self.log_trim_interval, self.log_trim_threshold) = Self::create_log_trim_interval(options);
@@ -345,10 +345,10 @@ mod tests {
     use restate_bifrost::{Bifrost, Record, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnvBuilder};
-    use restate_types::arc_util::Constant;
     use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
     use restate_types::config::AdminOptions;
     use restate_types::identifiers::PartitionId;
+    use restate_types::live::Constant;
     use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
     use restate_types::net::partition_processor_manager::{
         GetProcessorsState, ProcessorsStateResponse,

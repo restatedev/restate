@@ -10,20 +10,21 @@
 
 use restate_core::network::{MessageRouterBuilder, Networking};
 use restate_core::{Metadata, TaskCenter, TaskKind};
-use restate_types::config::UpdateableConfiguration;
+use restate_types::config::Configuration;
+use restate_types::live::Live;
 
 use crate::error::LogServerBuildError;
 use crate::metric_definitions::describe_metrics;
 
 pub struct LogServerService {
-    _updateable_config: UpdateableConfiguration,
+    _updateable_config: Live<Configuration>,
     task_center: TaskCenter,
     _metadata: Metadata,
 }
 
 impl LogServerService {
     pub async fn create(
-        updateable_config: UpdateableConfiguration,
+        updateable_config: Live<Configuration>,
         task_center: TaskCenter,
         metadata: Metadata,
         _router_builder: &mut MessageRouterBuilder,

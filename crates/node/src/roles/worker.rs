@@ -17,7 +17,8 @@ use restate_core::{cancellation_watcher, metadata, task_center, Metadata, Metada
 use restate_core::{ShutdownError, TaskKind};
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::config::UpdateableConfiguration;
+use restate_types::config::Configuration;
+use restate_types::live::Live;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 use restate_types::schema::UpdateableSchema;
 use restate_types::Version;
@@ -64,7 +65,7 @@ pub struct WorkerRole {
 impl WorkerRole {
     pub async fn create(
         metadata: Metadata,
-        updateable_config: UpdateableConfiguration,
+        updateable_config: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
         networking: Networking,
         bifrost: Bifrost,

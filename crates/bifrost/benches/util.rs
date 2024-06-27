@@ -14,8 +14,8 @@ use restate_core::{
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
-use restate_types::arc_util::Constant;
 use restate_types::config::Configuration;
+use restate_types::live::Constant;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
@@ -30,10 +30,10 @@ pub async fn spawn_environment(
         .expect("task_center builds");
 
     restate_types::config::set_current_config(config.clone());
-    let network_sender = MockNetworkSender::default();
+    let metadata_builder = MetadataBuilder::default();
+    let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
 
     let metadata_store_client = MetadataStoreClient::new_in_memory();
-    let metadata_builder = MetadataBuilder::default();
     let metadata = metadata_builder.to_metadata();
     let metadata_manager = MetadataManager::new(
         metadata_builder,

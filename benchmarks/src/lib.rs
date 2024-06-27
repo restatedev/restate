@@ -14,18 +14,16 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
 use futures_util::{future, TryFutureExt};
 use hyper::header::CONTENT_TYPE;
 use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
-use restate_types::arc_util::Constant;
 use restate_types::config::{
-    CommonOptionsBuilder, Configuration, ConfigurationBuilder, UpdateableConfiguration,
-    WorkerOptionsBuilder,
+    CommonOptionsBuilder, Configuration, ConfigurationBuilder, WorkerOptionsBuilder,
 };
+use restate_types::live::Constant;
 use tokio::runtime::Runtime;
 
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};
@@ -97,7 +95,7 @@ pub fn spawn_restate(config: Configuration) -> TaskCenter {
         .expect("task_center builds");
     let cloned_tc = tc.clone();
     restate_types::config::set_current_config(config.clone());
-    let updateable_config = UpdateableConfiguration::new(ArcSwap::from_pointee(config.clone()));
+    let updateable_config = Configuration::updateable();
 
     tc.run_in_scope_sync("db-manager-init", None, || {
         RocksDbManager::init(Constant::new(config.common))

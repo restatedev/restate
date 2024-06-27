@@ -36,12 +36,6 @@ impl Version {
     }
 }
 
-impl Default for Version {
-    fn default() -> Self {
-        Self::MIN
-    }
-}
-
 impl From<crate::protobuf::common::Version> for Version {
     fn from(version: crate::protobuf::common::Version) -> Self {
         crate::Version::from(version.value)
@@ -60,6 +54,11 @@ impl From<Version> for crate::protobuf::common::Version {
 pub trait Versioned {
     /// Returns the version of the versioned value
     fn version(&self) -> Version;
+
+    /// Is this a valid version?
+    fn valid(&self) -> bool {
+        self.version() >= Version::MIN
+    }
 }
 
 impl<T: Versioned> Versioned for &T {

@@ -163,8 +163,8 @@ mod tests {
 
     use restate_core::{metadata, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::arc_util::Constant;
     use restate_types::config::CommonOptions;
+    use restate_types::live::Constant;
     use restate_types::logs::metadata::ProviderKind;
     use tokio_stream::StreamExt;
     use tracing::info;

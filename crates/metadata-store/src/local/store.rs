@@ -17,8 +17,8 @@ use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::arc_util::Updateable;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::live::LiveLoad;
 use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
@@ -102,7 +102,7 @@ pub enum BuildError {
 pub struct LocalMetadataStore {
     db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
-    rocksdb_options: Box<dyn Updateable<RocksDbOptions> + Send + Sync>,
+    rocksdb_options: Box<dyn LiveLoad<RocksDbOptions> + Send + Sync>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
@@ -113,7 +113,7 @@ pub struct LocalMetadataStore {
 impl LocalMetadataStore {
     pub fn new(
         options: &MetadataStoreOptions,
-        updateable_rocksdb_options: impl Updateable<RocksDbOptions> + Clone + Send + Sync + 'static,
+        updateable_rocksdb_options: impl LiveLoad<RocksDbOptions> + Clone + Send + Sync + 'static,
     ) -> std::result::Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
@@ -144,7 +144,7 @@ impl LocalMetadataStore {
     }
 
     fn write_options(&mut self) -> WriteOptions {
-        let opts = self.rocksdb_options.load();
+        let opts = self.rocksdb_options.live_load();
         let mut write_opts = WriteOptions::default();
 
         write_opts.disable_wal(opts.rocksdb_disable_wal());
