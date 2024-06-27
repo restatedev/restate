@@ -332,8 +332,7 @@ where
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
-        let maybe_new_version =
-            Self::update_option_internal(&self.metadata.inner.nodes_config, config);
+        let maybe_new_version = Self::update_internal(&self.metadata.inner.nodes_config, config);
 
         self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }

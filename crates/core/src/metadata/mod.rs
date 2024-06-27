@@ -33,6 +33,9 @@ use crate::metadata_store::ReadError;
 use crate::network::NetworkSender;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
 
+#[derive(Clone, derive_more::From)]
+pub struct UpdateableNodesConfiguration(Arc<ArcSwap<NodesConfiguration>>);
+
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
     #[error("failed syncing with metadata store: {0}")]
@@ -74,9 +77,12 @@ pub struct Metadata {
 
 impl Metadata {
     /// Panics if nodes configuration is not loaded yet.
-    #[track_caller]
     pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
-        self.inner.nodes_config.load_full().unwrap()
+        self.inner.nodes_config.load_full()
+    }
+
+    pub fn updateable_nodes_config(&self) -> UpdateableNodesConfiguration {
+        UpdateableNodesConfiguration::from(self.inner.nodes_config.clone())
     }
 
     #[track_caller]
@@ -86,11 +92,7 @@ impl Metadata {
 
     /// Returns Version::INVALID if nodes configuration has not been loaded yet.
     pub fn nodes_config_version(&self) -> Version {
-        let c = self.inner.nodes_config.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
+        self.inner.nodes_config.load().version()
     }
 
     pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
@@ -178,14 +180,26 @@ impl Metadata {
     }
 }
 
-#[derive(Default)]
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
-    nodes_config: ArcSwapOption<NodesConfiguration>,
+    nodes_config: Arc<ArcSwap<NodesConfiguration>>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
     logs: ArcSwapOption<Logs>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
+}
+
+impl Default for MetadataInner {
+    fn default() -> Self {
+        Self {
+            my_node_id: Default::default(),
+            nodes_config: Default::default(),
+            partition_table: Default::default(),
+            logs: Default::default(),
+            schema: Default::default(),
+            write_watches: Default::default(),
+        }
+    }
 }
 
 /// Can send updates to metadata manager. This should be accessible by the rpc handler layer to
