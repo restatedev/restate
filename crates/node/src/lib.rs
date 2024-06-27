@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use codederror::CodedError;
 use restate_log_server::LogServerService;
+use restate_types::live::Live;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
 
@@ -28,8 +29,7 @@ use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataKind, Metada
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::arc_util::ArcSwapExt;
-use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
+use restate_types::config::{CommonOptions, Configuration};
 use restate_types::logs::metadata::{create_static_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
@@ -99,7 +99,7 @@ pub enum BuildError {
 }
 
 pub struct Node {
-    updateable_config: UpdateableConfiguration,
+    updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
@@ -110,7 +110,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub async fn create(updateable_config: UpdateableConfiguration) -> Result<Self, BuildError> {
+    pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
@@ -133,7 +133,7 @@ impl Node {
                 &config.metadata_store,
                 updateable_config
                     .clone()
-                    .map_as_updateable_owned(|config| &config.metadata_store.rocksdb),
+                    .map(|config| &config.metadata_store.rocksdb),
             )?)
         } else {
             None
@@ -296,7 +296,7 @@ impl Node {
         // fetch the latest schema information
         metadata.sync(MetadataKind::Schema).await?;
 
-        let nodes_config = metadata.nodes_config();
+        let nodes_config = metadata.nodes_config_ref();
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config

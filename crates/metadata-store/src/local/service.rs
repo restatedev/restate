@@ -10,8 +10,8 @@
 
 use restate_core::network::grpc_util;
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_types::arc_util::Updateable;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::live::LiveLoad;
 use restate_types::net::BindAddress;
 use tonic::server::NamedService;
 
@@ -45,7 +45,7 @@ impl LocalMetadataStoreService {
     }
     pub fn from_options(
         opts: &MetadataStoreOptions,
-        rocksdb_options: impl Updateable<RocksDbOptions> + Send + Sync + Clone + 'static,
+        rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + Sync + Clone + 'static,
     ) -> Result<Self, BuildError> {
         let store = LocalMetadataStore::new(opts, rocksdb_options)?;
         Ok(LocalMetadataStoreService::new(

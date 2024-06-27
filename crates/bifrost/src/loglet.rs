@@ -27,7 +27,7 @@ use crate::{LogRecord, LsnExt, ProviderError};
 pub fn create_provider(kind: ProviderKind) -> Result<Arc<dyn LogletProvider>, ProviderError> {
     match kind {
         ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
-            &Configuration::current().load().bifrost.local,
+            &Configuration::pinned().bifrost.local,
             Configuration::mapped_updateable(|c| &c.bifrost.local.rocksdb),
         )?),
         ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),

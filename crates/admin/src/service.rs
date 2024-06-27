@@ -13,8 +13,8 @@ use std::sync::Arc;
 use axum::error_handling::HandleErrorLayer;
 use http::StatusCode;
 use restate_bifrost::Bifrost;
-use restate_types::arc_util::Updateable;
 use restate_types::config::AdminOptions;
+use restate_types::live::LiveLoad;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
@@ -59,11 +59,11 @@ where
 
     pub async fn run(
         self,
-        mut updateable_config: impl Updateable<AdminOptions> + Send + 'static,
+        mut updateable_config: impl LiveLoad<AdminOptions> + Send + 'static,
         node_svc_client: NodeSvcClient<Channel>,
         bifrost: Bifrost,
     ) -> anyhow::Result<()> {
-        let opts = updateable_config.load();
+        let opts = updateable_config.live_load();
 
         let rest_state =
             state::AdminServiceState::new(self.schema_registry, bifrost, task_center());

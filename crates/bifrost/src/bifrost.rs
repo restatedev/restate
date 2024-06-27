@@ -396,8 +396,8 @@ mod tests {
     use restate_core::{metadata, TestCoreEnv};
     use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::arc_util::Constant;
     use restate_types::config::CommonOptions;
+    use restate_types::live::Constant;
     use restate_types::logs::SequenceNumber;
     use restate_types::partition_table::FixedPartitionTable;
     use test_log::test;

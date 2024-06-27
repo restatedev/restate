@@ -112,7 +112,6 @@ mod tests {
     use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
     use restate_storage_api::Transaction;
     use restate_test_util::matchers::*;
-    use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, WorkerOptions};
     use restate_types::errors::KILLED_INVOCATION_ERROR;
     use restate_types::identifiers::{
@@ -126,6 +125,7 @@ mod tests {
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
     use restate_types::journal::{Entry, EntryType};
+    use restate_types::live::Constant;
     use restate_types::state_mut::ExternalStateMutation;
     use restate_types::{ingress, GenerationalNodeId};
     use std::collections::{HashMap, HashSet};

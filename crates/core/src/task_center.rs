@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use futures::{Future, FutureExt};
 use metrics::counter;
 use restate_types::config::CommonOptions;
+use restate_types::GenerationalNodeId;
 use tokio::runtime::RuntimeMetrics;
 use tokio::task::JoinHandle;
 use tokio::task_local;
@@ -774,13 +775,22 @@ pub fn current_task_id() -> Option<TaskId> {
     CURRENT_TASK.try_with(|ct| ct.id).ok()
 }
 
-/// Accepss to global metadata handle. This available in task-center tasks only!
+/// Access to global metadata handle. This available in task-center tasks only!
 #[track_caller]
 pub fn metadata() -> Metadata {
     METADATA
         .try_with(|m| m.clone())
         .expect("metadata() called outside task-center scope")
         .expect("metadata() called before global metadata was set")
+}
+
+/// Access to this node id. This available in task-center tasks only!
+#[track_caller]
+pub fn my_node_id() -> GenerationalNodeId {
+    METADATA
+        .try_with(|m| m.as_ref().map(|m| m.my_node_id()))
+        .expect("my_node_id() called outside task-center scope")
+        .expect("my_node_id() called before global metadata was set")
 }
 
 /// The current partition Id associated to the running task-center task.
