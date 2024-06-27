@@ -22,8 +22,6 @@ mod subscription_integration;
 
 use codederror::CodedError;
 
-use restate_types::arc_util::ArcSwapExt;
-use restate_types::config::UpdateableConfiguration;
 pub use subscription_controller::SubscriptionController;
 pub use subscription_integration::SubscriptionControllerHandle;
 
@@ -42,6 +40,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_storage_query_postgres::service::PostgresQueryService;
+use restate_types::config::UpdateableConfiguration;
 use restate_types::schema::UpdateableSchema;
 
 pub use self::error::*;
@@ -135,12 +134,8 @@ impl Worker {
             );
 
         let partition_store_manager = PartitionStoreManager::create(
-            updateable_config
-                .clone()
-                .map_as_updateable_owned(|c| &c.worker.storage),
-            updateable_config
-                .clone()
-                .map_as_updateable_owned(|c| &c.worker.storage.rocksdb),
+            updateable_config.clone().map(|c| &c.worker.storage),
+            updateable_config.clone().map(|c| &c.worker.storage.rocksdb),
             &[],
         )
         .await?;
@@ -230,11 +225,8 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             None,
-            self.ingress_kafka.run(
-                self.updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|c| &c.ingress),
-            ),
+            self.ingress_kafka
+                .run(self.updateable_config.clone().map(|c| &c.ingress)),
         )?;
 
         // Invoker service
@@ -242,11 +234,8 @@ impl Worker {
             TaskKind::SystemService,
             "invoker",
             None,
-            self.invoker.run(
-                self.updateable_config
-                    .clone()
-                    .map_as_updateable_owned(|c| &c.worker.invoker),
-            ),
+            self.invoker
+                .run(self.updateable_config.clone().map(|c| &c.worker.invoker)),
         )?;
 
         tc.spawn_child(

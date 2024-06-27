@@ -27,8 +27,8 @@ use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
-use restate_types::arc_util::Constant;
 use restate_types::config::{reset_base_temp_dir, reset_base_temp_dir_and_retain, Configuration};
+use restate_types::live::Constant;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 // Configure jemalloc similar to mimic restate server
@@ -137,9 +137,9 @@ fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifro
     restate_types::config::set_current_config(config.clone());
     let task_center = tc.clone();
     let bifrost = tc.block_on("spawn", None, async move {
-        let network_sender = MockNetworkSender::default();
-        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata_builder = MetadataBuilder::default();
+        let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata = metadata_builder.to_metadata();
         let metadata_manager = MetadataManager::new(
             metadata_builder,

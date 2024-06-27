@@ -21,10 +21,10 @@ use tonic_health::pb::HealthCheckRequest;
 use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
-use restate_types::arc_util::{Constant, Updateable};
 use restate_types::config::{
     reset_base_temp_dir_and_retain, CommonOptions, MetadataStoreOptions, RocksDbOptions,
 };
+use restate_types::live::{Constant, LiveLoad};
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
@@ -34,10 +34,19 @@ use crate::local::service::LocalMetadataStoreService;
 use crate::local::store::LocalMetadataStore;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
-#[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
     version: Version,
     value: String,
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self {
+            version: Version::MIN,
+            value: Default::default(),
+        }
+    }
 }
 
 impl Value {
@@ -303,7 +312,7 @@ async fn create_test_environment(
 
 async fn start_metadata_store(
     opts: &MetadataStoreOptions,
-    updateables_rocksdb_options: impl Updateable<RocksDbOptions> + Send + Sync + Clone + 'static,
+    updateables_rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + Sync + Clone + 'static,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
     let store = LocalMetadataStore::new(opts, updateables_rocksdb_options)?;

@@ -21,11 +21,11 @@ use hyper::{Body, Uri};
 use pprof::flamegraph::Options;
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
-use restate_types::arc_util::Constant;
 use restate_types::config::{
     CommonOptionsBuilder, Configuration, ConfigurationBuilder, UpdateableConfiguration,
     WorkerOptionsBuilder,
 };
+use restate_types::live::Constant;
 use tokio::runtime::Runtime;
 
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind};

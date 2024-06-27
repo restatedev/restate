@@ -15,10 +15,11 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use crate::metadata;
+use restate_types::live::Live;
 use restate_types::net::codec::Targeted;
 use restate_types::net::codec::{serialize_message, WireEncode};
 use restate_types::net::ProtocolVersion;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::message;
 use restate_types::protobuf::node::Header;
 use restate_types::protobuf::node::Message;
@@ -43,6 +44,7 @@ pub(crate) struct Connection {
     pub(crate) protocol_version: ProtocolVersion,
     pub(crate) sender: mpsc::Sender<Message>,
     pub(crate) created: std::time::Instant,
+    updateable_nodes_config: Live<NodesConfiguration>,
 }
 
 impl Connection {
@@ -50,6 +52,7 @@ impl Connection {
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
         sender: mpsc::Sender<Message>,
+        updateable_nodes_config: Live<NodesConfiguration>,
     ) -> Self {
         Self {
             cid: rand::random(),
@@ -57,6 +60,7 @@ impl Connection {
             protocol_version,
             sender,
             created: std::time::Instant::now(),
+            updateable_nodes_config,
         }
     }
 
@@ -81,6 +85,7 @@ impl Connection {
             peer: self.peer,
             connection: Arc::downgrade(self),
             protocol_version: self.protocol_version,
+            nodes_config: self.updateable_nodes_config.clone(),
         }
     }
 }
@@ -98,6 +103,7 @@ pub struct ConnectionSender {
     peer: GenerationalNodeId,
     connection: Weak<Connection>,
     protocol_version: ProtocolVersion,
+    nodes_config: Live<NodesConfiguration>,
 }
 
 impl ConnectionSender {
@@ -116,12 +122,12 @@ impl ConnectionSender {
     /// This doesn't auto-retry connection resets or send errors, this is up to the user
     /// for retrying externally.
     #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
-    pub async fn send<M>(&self, message: M) -> Result<(), NetworkError>
+    pub async fn send<M>(&mut self, message: M) -> Result<(), NetworkError>
     where
         M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
-        let header = Header::new(metadata().nodes_config_version());
+        let header = Header::new(self.nodes_config.live_load().version());
         let body =
             serialize_message(message, self.protocol_version).map_err(ProtocolError::Codec)?;
         let res = self

@@ -13,8 +13,8 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
-use restate_types::arc_util::Updateable;
 use restate_types::config::{Configuration, LocalLogletOptions, RocksDbOptions};
+use restate_types::live::LiveLoad;
 use restate_types::logs::metadata::LogletParams;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
@@ -35,7 +35,7 @@ pub struct LocalLogletProvider {
 impl LocalLogletProvider {
     pub fn new(
         options: &LocalLogletOptions,
-        updateable_rocksdb_options: impl Updateable<RocksDbOptions> + Send + 'static,
+        updateable_rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + 'static,
     ) -> Result<Arc<Self>, ProviderError> {
         let log_store = RocksDbLogStore::new(options, updateable_rocksdb_options)
             .context("RocksDb LogStore")?;

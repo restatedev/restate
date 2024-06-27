@@ -16,7 +16,6 @@ mod macros;
 mod node_id;
 mod version;
 
-pub mod arc_util;
 pub mod art;
 pub mod cluster;
 pub mod config;
@@ -28,6 +27,7 @@ pub mod identifiers;
 pub mod ingress;
 pub mod invocation;
 pub mod journal;
+pub mod live;
 pub mod logs;
 pub mod message;
 pub mod metadata_store;

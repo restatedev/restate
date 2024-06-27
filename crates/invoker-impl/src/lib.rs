@@ -30,13 +30,13 @@ use restate_invoker_api::{
 };
 use restate_queue::SegmentQueue;
 use restate_timer_queue::TimerQueue;
-use restate_types::arc_util::Updateable;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
+use restate_types::live::LiveLoad;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
@@ -249,7 +249,7 @@ where
 
     pub async fn run(
         self,
-        mut updateable_options: impl Updateable<InvokerOptions> + Send + 'static,
+        mut updateable_options: impl LiveLoad<InvokerOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let Service {
             tmp_dir,
@@ -260,14 +260,16 @@ where
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
 
-        let in_memory_limit = updateable_options.load().in_memory_queue_length_limit();
+        let in_memory_limit = updateable_options
+            .live_load()
+            .in_memory_queue_length_limit();
         // Prepare the segmented queue
         let mut segmented_input_queue = SegmentQueue::init(tmp_dir, in_memory_limit)
             .await
             .expect("Cannot initialize input spillable queue");
 
         loop {
-            let options = updateable_options.load();
+            let options = updateable_options.live_load();
             if !service
                 .step(options, &mut segmented_input_queue, shutdown.as_mut())
                 .await
@@ -1023,8 +1025,8 @@ mod tests {
     use restate_core::TaskKind;
     use restate_core::TestCoreEnv;
     use restate_invoker_api::test_util::EmptyStorageReader;
-    use restate_types::arc_util::Constant;
     use restate_types::config::InvokerOptionsBuilder;
+    use restate_types::live::Constant;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;

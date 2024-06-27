@@ -28,7 +28,6 @@ use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataKind, Metada
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
-use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
 use restate_types::logs::metadata::{create_static_metadata, Logs};
 use restate_types::metadata_store::keys::{
@@ -133,7 +132,7 @@ impl Node {
                 &config.metadata_store,
                 updateable_config
                     .clone()
-                    .map_as_updateable_owned(|config| &config.metadata_store.rocksdb),
+                    .map(|config| &config.metadata_store.rocksdb),
             )?)
         } else {
             None
@@ -296,7 +295,7 @@ impl Node {
         // fetch the latest schema information
         metadata.sync(MetadataKind::Schema).await?;
 
-        let nodes_config = metadata.nodes_config();
+        let nodes_config = metadata.nodes_config_ref();
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config

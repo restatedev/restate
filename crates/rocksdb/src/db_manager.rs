@@ -21,8 +21,8 @@ use tracing::{debug, info, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_serde_util::ByteCount;
-use restate_types::arc_util::Updateable;
 use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
+use restate_types::live::LiveLoad;
 
 use crate::background::ReadyStorageTask;
 use crate::{metric_definitions, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError};
@@ -69,13 +69,13 @@ impl RocksDbManager {
     /// only run it once on program startup.
     ///
     /// Must run in task_center scope.
-    pub fn init(mut base_opts: impl Updateable<CommonOptions> + Send + 'static) -> &'static Self {
+    pub fn init(mut base_opts: impl LiveLoad<CommonOptions> + Send + 'static) -> &'static Self {
         // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
         if let Some(manager) = DB_MANAGER.get() {
             return manager;
         }
         metric_definitions::describe_metrics();
-        let opts = base_opts.load();
+        let opts = base_opts.live_load();
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_actual_total_memtables_size(),
@@ -143,7 +143,7 @@ impl RocksDbManager {
     // todo: move this to async after allowing bifrost to async-create providers.
     pub fn open_db<T: RocksAccess + Send + Sync + 'static>(
         &'static self,
-        mut updateable_opts: impl Updateable<RocksDbOptions> + Send + 'static,
+        mut updateable_opts: impl LiveLoad<RocksDbOptions> + Send + 'static,
         mut db_spec: DbSpec<T>,
     ) -> Result<Arc<T>, RocksError> {
         if self
@@ -154,7 +154,7 @@ impl RocksDbManager {
         }
 
         // get latest options
-        let options = updateable_opts.load().clone();
+        let options = updateable_opts.live_load().clone();
         let name = db_spec.name.clone();
         // use the spec default options as base then apply the config from the updateable.
         self.amend_db_options(&mut db_spec.db_options, &options);
@@ -410,7 +410,7 @@ impl RocksDbManager {
 #[allow(dead_code)]
 struct ConfigSubscription {
     name: DbName,
-    updateable_rocksdb_opts: Box<dyn Updateable<RocksDbOptions> + Send + 'static>,
+    updateable_rocksdb_opts: Box<dyn LiveLoad<RocksDbOptions> + Send + 'static>,
     last_applied_opts: RocksDbOptions,
 }
 
@@ -418,7 +418,7 @@ struct DbWatchdog {
     manager: &'static RocksDbManager,
     cache: Cache,
     watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-    updateable_common_opts: Box<dyn Updateable<CommonOptions> + Send>,
+    updateable_common_opts: Box<dyn LiveLoad<CommonOptions> + Send>,
     current_common_opts: CommonOptions,
     subscriptions: Vec<ConfigSubscription>,
 }
@@ -427,9 +427,9 @@ impl DbWatchdog {
     pub async fn run(
         manager: &'static RocksDbManager,
         watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-        mut updateable_common_opts: impl Updateable<CommonOptions> + Send + 'static,
+        mut updateable_common_opts: impl LiveLoad<CommonOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
-        let prev_opts = updateable_common_opts.load().clone();
+        let prev_opts = updateable_common_opts.live_load().clone();
         let mut watchdog = Self {
             manager,
             cache: manager.cache.clone(),
@@ -497,7 +497,7 @@ impl DbWatchdog {
             info!("Ignoring config update as we are shutting down");
             return;
         }
-        let new_common_opts = self.updateable_common_opts.load();
+        let new_common_opts = self.updateable_common_opts.live_load();
 
         // Stall detection threshold changed?
         let current_stall_detection_millis =

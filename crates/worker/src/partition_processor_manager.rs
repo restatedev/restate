@@ -34,14 +34,12 @@ use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_types::arc_util::{ArcSwapExt, Updateable};
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
-use restate_types::config::{
-    Configuration, StorageOptions, UpdateableConfiguration, WorkerOptions,
-};
+use restate_types::config::{Configuration, StorageOptions, UpdateableConfiguration};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::live::LiveLoad;
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
@@ -121,7 +119,7 @@ impl PartitionProcessorManager {
         let attach_router = RpcRouter::new(networking.clone(), router_builder);
         let incoming_get_state = router_builder.subscribe_to_stream(2);
 
-        let (tx, rx) = mpsc::channel(updateable_config.load().worker.internal_queue_length());
+        let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
             task_center,
             updateable_config,
@@ -151,7 +149,7 @@ impl PartitionProcessorManager {
             // We try to get the admin node on every retry since it might change between retries.
             let admin_node = self
                 .metadata
-                .nodes_config()
+                .nodes_config_ref()
                 .get_admin_node()
                 .ok_or(AttachError::NoClusterController)?
                 .current_generation;
@@ -208,7 +206,7 @@ impl PartitionProcessorManager {
         let watchdog = PersistedLogLsnWatchdog::new(
             self.updateable_config
                 .clone()
-                .map_as_updateable_owned(|config| &config.worker.storage),
+                .map(|config| &config.worker.storage),
             self.partition_store_manager.clone(),
             persisted_lsns_tx,
         );
@@ -314,9 +312,6 @@ impl PartitionProcessorManager {
     }
 
     pub fn apply_plan(&mut self, actions: &[Action]) -> Result<(), ShutdownError> {
-        let config = self.updateable_config.pinned();
-        let options = &config.worker;
-
         for action in actions {
             match action {
                 Action::RunPartition(action) => {
@@ -330,7 +325,6 @@ impl PartitionProcessorManager {
                         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
                         let _task_id = self.spawn_partition_processor(
-                            options,
                             action.partition_id,
                             action.key_range_inclusive.clone().into(),
                             status,
@@ -362,13 +356,15 @@ impl PartitionProcessorManager {
 
     fn spawn_partition_processor(
         &mut self,
-        options: &WorkerOptions,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
         watch_tx: watch::Sender<PartitionProcessorStatus>,
     ) -> Result<TaskId, ShutdownError> {
+        let config = self.updateable_config.pinned();
+        let options = &config.worker;
+
         let planned_mode = status.planned_mode;
         let processor = PartitionProcessor::new(
             partition_id,
@@ -504,7 +500,7 @@ impl PartitionProcessorManager {
 /// table properties to retrieve the flushed log lsn. However, this requires that we update our
 /// RocksDB binding to expose event listeners and table properties :-(
 struct PersistedLogLsnWatchdog {
-    configuration: Box<dyn Updateable<StorageOptions> + Send + Sync + 'static>,
+    configuration: Box<dyn LiveLoad<StorageOptions> + Send + Sync + 'static>,
     partition_store_manager: PartitionStoreManager,
     watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     persisted_lsns: BTreeMap<PartitionId, Lsn>,
@@ -514,11 +510,11 @@ struct PersistedLogLsnWatchdog {
 
 impl PersistedLogLsnWatchdog {
     fn new(
-        mut configuration: impl Updateable<StorageOptions> + Send + Sync + 'static,
+        mut configuration: impl LiveLoad<StorageOptions> + Send + Sync + 'static,
         partition_store_manager: PartitionStoreManager,
         watch_tx: watch::Sender<BTreeMap<PartitionId, Lsn>>,
     ) -> Self {
-        let options = configuration.load();
+        let options = configuration.live_load();
 
         let (persist_lsn_interval, persist_lsn_threshold) = Self::create_persist_lsn(options);
 
@@ -574,7 +570,7 @@ impl PersistedLogLsnWatchdog {
 
     fn on_config_update(&mut self) {
         debug!("Updating the persisted log lsn watchdog");
-        let options = self.configuration.load();
+        let options = self.configuration.live_load();
 
         (self.persist_lsn_interval, self.persist_lsn_threshold) = Self::create_persist_lsn(options);
     }
@@ -633,9 +629,9 @@ mod tests {
     use restate_core::{TaskKind, TestCoreEnv};
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::arc_util::Constant;
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::live::Constant;
     use restate_types::logs::{Lsn, SequenceNumber};
     use std::collections::BTreeMap;
     use std::ops::RangeInclusive;

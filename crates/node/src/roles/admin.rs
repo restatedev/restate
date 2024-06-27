@@ -24,7 +24,6 @@ use restate_core::network::Networking;
 use restate_core::{task_center, Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
-use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{IngressOptions, UpdateableConfiguration};
 use restate_types::retries::RetryPolicy;
 
@@ -73,9 +72,7 @@ impl AdminRole {
         );
 
         let controller = restate_admin::cluster_controller::Service::new(
-            updateable_config
-                .clone()
-                .map_as_updateable_owned(|c| &c.admin),
+            updateable_config.clone().map(|c| &c.admin),
             task_center,
             metadata,
             networking,
@@ -121,7 +118,7 @@ impl AdminRole {
             "admin-rpc-server",
             None,
             self.admin.run(
-                self.updateable_config.map_as_updateable_owned(|c| &c.admin),
+                self.updateable_config.map(|c| &c.admin),
                 node_svc_client,
                 bifrost,
             ),

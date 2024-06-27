@@ -47,8 +47,9 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::arc_util::{ArcSwapExt, Pinned, Updateable};
+use super::live::{LiveLoad, Pinned};
 use crate::errors::GenericError;
+use crate::live::Live;
 use crate::nodes_config::Role;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -65,7 +66,7 @@ static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 static NODE_BASE_DIR: Lazy<std::sync::RwLock<TempOrPath>> =
     Lazy::new(|| std::sync::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
 
-pub type UpdateableConfiguration = Arc<ArcSwap<Configuration>>;
+pub type UpdateableConfiguration = Live<Configuration>;
 
 #[cfg(not(any(test, feature = "test-util")))]
 pub fn node_dir() -> PathBuf {
@@ -155,11 +156,6 @@ pub struct Configuration {
 }
 
 impl Configuration {
-    // Access the raw swappable configuration
-    pub fn current() -> &'static UpdateableConfiguration {
-        &CONFIGURATION
-    }
-
     /// Potentially fast access to a snapshot, should be used if an Updateable<T>
     /// isn't possible (Updateable trait is not object-safe, and requires mut to load()).
     /// Guard acquired doesn't track config updates. ~10x slower than Updateable's load().
@@ -170,8 +166,9 @@ impl Configuration {
     ///
     /// If too many Guards are kept around, the performance might be poor. These are not intended
     /// to be stored in data structures or used across async yield points.
-    pub fn pinned() -> Pinned<Self> {
-        CONFIGURATION.pinned()
+    pub fn pinned() -> Pinned<Configuration> {
+        let c: &Arc<ArcSwap<_>> = &CONFIGURATION;
+        Pinned::new(c)
     }
 
     /// The best way to access an updateable when holding a mutable Updateable is
@@ -182,24 +179,24 @@ impl Configuration {
     /// exclusive reference. This should be the preferred method for accessing the updateable, but
     /// avoid using `to_updateable()` or `snapshot()` in tight loops. Instead, get a new updateable,
     /// and pass it down to the loop by value for very efficient access.
-    pub fn updateable() -> impl Updateable<Self> {
-        CONFIGURATION.to_updateable()
+    pub fn updateable() -> Live<Self> {
+        Live::from(CONFIGURATION.clone())
     }
 
-    pub fn updateable_common() -> impl Updateable<CommonOptions> {
-        CONFIGURATION.map_as_updateable(|c| &c.common)
+    pub fn updateable_common() -> impl LiveLoad<CommonOptions> {
+        Self::updateable().map(|c| &c.common)
     }
 
-    pub fn updateable_worker() -> impl Updateable<WorkerOptions> {
-        CONFIGURATION.map_as_updateable(|c| &c.worker)
+    pub fn updateable_worker() -> impl LiveLoad<WorkerOptions> {
+        Self::updateable().map(|c| &c.worker)
     }
 
     /// Create an updateable that projects a part of the config
-    pub fn mapped_updateable<F, U>(f: F) -> impl Updateable<U>
+    pub fn mapped_updateable<F, U>(f: F) -> impl LiveLoad<U>
     where
-        F: FnMut(&Arc<Configuration>) -> &U,
+        F: FnMut(&Configuration) -> &U + 'static,
     {
-        Configuration::current().map_as_updateable(f)
+        Configuration::updateable().map(f)
     }
 
     pub fn watcher() -> ConfigWatch {
