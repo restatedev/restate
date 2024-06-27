@@ -137,9 +137,9 @@ fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifro
     restate_types::config::set_current_config(config.clone());
     let task_center = tc.clone();
     let bifrost = tc.block_on("spawn", None, async move {
-        let network_sender = MockNetworkSender::default();
-        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata_builder = MetadataBuilder::default();
+        let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
+        let metadata_store_client = MetadataStoreClient::new_in_memory();
         let metadata = metadata_builder.to_metadata();
         let metadata_manager = MetadataManager::new(
             metadata_builder,

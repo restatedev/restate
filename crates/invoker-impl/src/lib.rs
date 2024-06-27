@@ -30,7 +30,7 @@ use restate_invoker_api::{
 };
 use restate_queue::SegmentQueue;
 use restate_timer_queue::TimerQueue;
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
@@ -249,7 +249,7 @@ where
 
     pub async fn run(
         self,
-        mut updateable_options: impl Updateable<InvokerOptions> + Send + 'static,
+        mut updateable_options: impl CachingUpdateable<InvokerOptions> + Send + 'static,
     ) -> anyhow::Result<()> {
         let Service {
             tmp_dir,
