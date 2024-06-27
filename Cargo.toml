@@ -71,8 +71,8 @@ restate-worker = { path = "crates/worker" }
 ahash = "0.8.5"
 anyhow = "1.0.68"
 arc-swap = "1.6"
-arrow = { version = "50.0.0", default-features = false }
-arrow-flight = { version = "50.0.0" }
+arrow = { version = "52.0.0", default-features = false }
+arrow-flight = { version = "52.0.0" }
 assert2 = "0.3.11"
 async-channel = "2.1.1"
 async-trait = "0.1.73"
@@ -90,8 +90,8 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
-datafusion = { version = "35.0.0" }
-datafusion-expr = { version = "35.0.0" }
+datafusion = { version = "39.0.0" }
+datafusion-expr = { version = "39.0.0" }
 derive-getters = {  version = "0.4.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "0.99.17" }
@@ -148,9 +148,9 @@ thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10" }
-tonic = { version = "0.10.2", default-features = false }
-tonic-reflection = { version = "0.10.2" }
-tonic-health = "0.10.2"
+tonic = { version = "0.11.0", default-features = false }
+tonic-reflection = { version = "0.11.0" }
+tonic-health = "0.11.0"
 tonic-build = "0.11.0"
 tower = "0.4"
 tower-http = { version = "0.4", default-features = false }
