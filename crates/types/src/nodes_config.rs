@@ -61,6 +61,17 @@ pub struct NodesConfiguration {
     name_lookup: HashMap<String, PlainNodeId>,
 }
 
+impl Default for NodesConfiguration {
+    fn default() -> Self {
+        Self {
+            version: Version::INVALID,
+            cluster_name: "Unspecified".to_owned(),
+            nodes: Default::default(),
+            name_lookup: Default::default(),
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Eq, PartialEq, strum_macros::EnumIs, serde::Serialize, serde::Deserialize,
 )]

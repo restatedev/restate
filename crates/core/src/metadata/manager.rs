@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use restate_types::schema::Schema;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -25,17 +24,18 @@ use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
 use restate_types::net::MessageEnvelope;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
+use restate_types::schema::Schema;
 use restate_types::GenerationalNodeId;
 use restate_types::{Version, Versioned};
 
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
-use crate::metadata;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
 use crate::task_center;
 
-use super::{Metadata, MetadataContainer, MetadataInner, MetadataKind, MetadataWriter};
+use super::MetadataBuilder;
+use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -56,6 +56,7 @@ where
 {
     sender: CommandSender,
     networking: N,
+    metadata: Metadata,
 }
 
 impl<N> MetadataMessageHandler<N>
@@ -79,18 +80,18 @@ where
     }
 
     fn send_nodes_config(&self, to: GenerationalNodeId, version: Option<Version>) {
-        let config = metadata().nodes_config();
+        let config = self.metadata.nodes_config_snapshot();
         self.send_metadata_internal(to, version, config.deref(), "nodes_config");
     }
 
     fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(partition_table) = metadata().partition_table() {
+        if let Some(partition_table) = self.metadata.partition_table() {
             self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
         }
     }
 
     fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(logs) = metadata().logs() {
+        if let Some(logs) = self.metadata.logs() {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
@@ -197,8 +198,7 @@ where
 /// - NodesConfiguration
 /// - Partition table
 pub struct MetadataManager<N> {
-    self_sender: CommandSender,
-    inner: Arc<MetadataInner>,
+    metadata: Metadata,
     inbound: CommandReceiver,
     networking: N,
     metadata_store_client: MetadataStoreClient,
@@ -208,12 +208,14 @@ impl<N> MetadataManager<N>
 where
     N: NetworkSender + 'static + Clone,
 {
-    pub fn build(networking: N, metadata_store_client: MetadataStoreClient) -> Self {
-        let (self_sender, inbound) = mpsc::unbounded_channel();
+    pub fn new(
+        metadata_builder: MetadataBuilder,
+        networking: N,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Self {
         Self {
-            inner: Arc::new(MetadataInner::default()),
-            inbound,
-            self_sender,
+            metadata: metadata_builder.metadata,
+            inbound: metadata_builder.receiver,
             networking,
             metadata_store_client,
         }
@@ -221,17 +223,18 @@ where
 
     pub fn register_in_message_router(&self, sr_builder: &mut MessageRouterBuilder) {
         sr_builder.add_message_handler(MetadataMessageHandler {
-            sender: self.self_sender.clone(),
+            sender: self.metadata.sender.clone(),
             networking: self.networking.clone(),
+            metadata: self.metadata.clone(),
         });
     }
 
-    pub fn metadata(&self) -> Metadata {
-        Metadata::new(self.inner.clone(), self.self_sender.clone())
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     pub fn writer(&self) -> MetadataWriter {
-        MetadataWriter::new(self.self_sender.clone(), self.inner.clone())
+        MetadataWriter::new(self.metadata.sender.clone(), self.metadata.inner.clone())
     }
 
     /// Start and wait for shutdown signal.
@@ -330,26 +333,26 @@ where
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
-        let maybe_new_version = Self::update_option_internal(&self.inner.nodes_config, config);
+        let maybe_new_version = Self::update_internal(&self.metadata.inner.nodes_config, config);
 
         self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
         let maybe_new_version =
-            Self::update_option_internal(&self.inner.partition_table, partition_table);
+            Self::update_option_internal(&self.metadata.inner.partition_table, partition_table);
 
         self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
     fn update_logs(&mut self, logs: Logs) {
-        let maybe_new_version = Self::update_option_internal(&self.inner.logs, logs);
+        let maybe_new_version = Self::update_option_internal(&self.metadata.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
     fn update_schema(&mut self, schema: Schema) {
-        let maybe_new_version = Self::update_internal(&self.inner.schema, schema);
+        let maybe_new_version = Self::update_internal(&self.metadata.inner.schema, schema);
 
         self.notify_watches(maybe_new_version, MetadataKind::Schema);
     }
@@ -399,14 +402,16 @@ where
 
     fn notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
         // notify watches.
-        self.inner.write_watches[kind].sender.send_if_modified(|v| {
-            if maybe_new_version > *v {
-                *v = maybe_new_version;
-                true
-            } else {
-                false
-            }
-        });
+        self.metadata.inner.write_watches[kind]
+            .sender
+            .send_if_modified(|v| {
+                if maybe_new_version > *v {
+                    *v = maybe_new_version;
+                    true
+                } else {
+                    false
+                }
+            });
     }
 }
 
@@ -458,11 +463,13 @@ mod tests {
     {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
-            let network_sender = MockNetworkSender::default();
+            let metadata_builder = MetadataBuilder::default();
+            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
-            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+            let metadata = metadata_builder.to_metadata();
+            let metadata_manager =
+                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
-            let metadata = metadata_manager.metadata();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
 
@@ -539,11 +546,14 @@ mod tests {
     {
         let tc = TaskCenterBuilder::default().build()?;
         tc.block_on("test", None, async move {
-            let network_sender = MockNetworkSender::default();
+            let metadata_builder = MetadataBuilder::default();
+            let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
             let metadata_store_client = MetadataStoreClient::new_in_memory();
-            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+
+            let metadata = metadata_builder.to_metadata();
+            let metadata_manager =
+                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
-            let metadata = metadata_manager.metadata();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
 

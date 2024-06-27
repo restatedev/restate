@@ -24,7 +24,7 @@ use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
-use restate_core::{spawn_metadata_manager, MetadataKind, MetadataManager};
+use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
@@ -144,11 +144,15 @@ impl Node {
         );
 
         let mut router_builder = MessageRouterBuilder::default();
-        let networking = Networking::default();
-        let metadata_manager =
-            MetadataManager::build(networking.clone(), metadata_store_client.clone());
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        let networking = Networking::new(metadata_builder.to_metadata());
+        let metadata_manager = MetadataManager::new(
+            metadata_builder,
+            networking.clone(),
+            metadata_store_client.clone(),
+        );
         metadata_manager.register_in_message_router(&mut router_builder);
-        let metadata = metadata_manager.metadata();
         let updating_schema_information = metadata.schema_updateable();
         let bifrost = BifrostService::new(metadata.clone());
 
@@ -255,7 +259,7 @@ impl Node {
         );
 
         let metadata_writer = self.metadata_manager.writer();
-        let metadata = self.metadata_manager.metadata();
+        let metadata = self.metadata_manager.metadata().clone();
         let is_set = tc.try_set_global_metadata(metadata.clone());
         debug_assert!(is_set, "Global metadata was already set");
 
@@ -292,7 +296,7 @@ impl Node {
         // fetch the latest schema information
         metadata.sync(MetadataKind::Schema).await?;
 
-        let nodes_config = metadata.nodes_config();
+        let nodes_config = metadata.nodes_config_ref();
 
         // Find my node in nodes configuration.
         let my_node_config = nodes_config

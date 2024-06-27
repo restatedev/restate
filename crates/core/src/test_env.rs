@@ -34,13 +34,25 @@ use crate::network::{
     Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError, NetworkSender,
     ProtocolError,
 };
-use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
+use crate::{
+    cancellation_watcher, metadata, spawn_metadata_manager, MetadataBuilder, ShutdownError, TaskId,
+};
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MockNetworkSender {
     sender: Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>>,
+    metadata: Metadata,
+}
+
+impl MockNetworkSender {
+    pub fn new(metadata: Metadata) -> Self {
+        Self {
+            sender: None,
+            metadata,
+        }
+    }
 }
 
 impl NetworkSender for MockNetworkSender {
@@ -55,7 +67,7 @@ impl NetworkSender for MockNetworkSender {
 
         let to = match to.as_generational() {
             Some(to) => to,
-            None => match metadata().nodes_config().find_node_by_id(to) {
+            None => match self.metadata.nodes_config_ref().find_node_by_id(to) {
                 Ok(node) => node.current_generation,
                 Err(e) => return Err(NetworkError::UnknownNode(e)),
             },
@@ -116,9 +128,13 @@ impl NetworkReceiver {
 }
 
 impl MockNetworkSender {
-    pub fn from_sender(sender: mpsc::UnboundedSender<(GenerationalNodeId, Message)>) -> Self {
+    pub fn from_sender(
+        sender: mpsc::UnboundedSender<(GenerationalNodeId, Message)>,
+        metadata: Metadata,
+    ) -> Self {
         Self {
             sender: Some(sender),
+            metadata,
         }
     }
     pub fn inner_sender(&self) -> Option<mpsc::UnboundedSender<(GenerationalNodeId, Message)>> {
@@ -144,9 +160,10 @@ pub struct TestCoreEnvBuilder<N> {
 impl TestCoreEnvBuilder<MockNetworkSender> {
     pub fn new_with_mock_network() -> TestCoreEnvBuilder<MockNetworkSender> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let network_sender = MockNetworkSender::from_sender(tx);
+        let metadata_builder = MetadataBuilder::default();
+        let network_sender = MockNetworkSender::from_sender(tx, metadata_builder.to_metadata());
 
-        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, Some(rx))
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, Some(rx), metadata_builder)
     }
 }
 
@@ -155,12 +172,14 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(network_sender: N) -> Self {
-        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None)
+        let metadata_builder = MetadataBuilder::default();
+        TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None, metadata_builder)
     }
 
     fn new_with_network_tx_rx(
         network_sender: N,
         network_rx: Option<mpsc::UnboundedReceiver<(GenerationalNodeId, Message)>>,
+        metadata_builder: MetadataBuilder,
     ) -> Self {
         let tc = TaskCenterBuilder::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -170,9 +189,12 @@ where
 
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let metadata_manager =
-            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
-        let metadata = metadata_manager.metadata();
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager = MetadataManager::new(
+            metadata_builder,
+            network_sender.clone(),
+            metadata_store_client.clone(),
+        );
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());

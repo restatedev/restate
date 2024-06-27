@@ -86,7 +86,7 @@ pub async fn run(
     })?;
 
     let writer_task = tc.spawn(TaskKind::TestRunner, "test-log-appender", None, {
-        let mut bifrost = bifrost.clone();
+        let bifrost = bifrost.clone();
         let clock = clock.clone();
         async move {
             let mut append_latencies = Histogram::<u64>::new(3)?;

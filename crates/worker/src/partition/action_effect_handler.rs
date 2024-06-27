@@ -101,7 +101,7 @@ impl ActionEffectHandler {
 
         // Attempt to write batches to different log ids concurrently
         for (log_id, payloads) in buffer {
-            let mut bifrost = self.bifrost.clone();
+            let bifrost = self.bifrost.clone();
             batches.push(async move {
                 bifrost.append_batch(log_id, &payloads).await?;
                 anyhow::Ok(())

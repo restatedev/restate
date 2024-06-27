@@ -107,7 +107,11 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let node_env = TestCoreEnv::create_with_mock_nodes_config(1, 1).await;
     let bifrost = node_env
         .tc
-        .run_in_scope("bifrost init", None, Bifrost::init())
+        .run_in_scope(
+            "bifrost init",
+            None,
+            Bifrost::init(node_env.metadata.clone()),
+        )
         .await;
 
     let admin_service = AdminService::new(

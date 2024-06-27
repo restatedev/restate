@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::{
-    spawn_metadata_manager, MetadataManager, MockNetworkSender, TaskCenter, TaskCenterBuilder,
+    spawn_metadata_manager, MetadataBuilder, MetadataManager, MockNetworkSender, TaskCenter,
+    TaskCenterBuilder,
 };
 use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
@@ -29,13 +30,17 @@ pub async fn spawn_environment(
         .expect("task_center builds");
 
     restate_types::config::set_current_config(config.clone());
-    let network_sender = MockNetworkSender::default();
+    let metadata_builder = MetadataBuilder::default();
+    let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
 
     let metadata_store_client = MetadataStoreClient::new_in_memory();
-    let metadata_manager =
-        MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
+    let metadata = metadata_builder.to_metadata();
+    let metadata_manager = MetadataManager::new(
+        metadata_builder,
+        network_sender.clone(),
+        metadata_store_client.clone(),
+    );
 
-    let metadata = metadata_manager.metadata();
     let metadata_writer = metadata_manager.writer();
     tc.try_set_global_metadata(metadata.clone());
 

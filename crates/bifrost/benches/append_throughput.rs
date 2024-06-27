@@ -28,7 +28,7 @@ async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u64>, co
     let mut appends = FuturesUnordered::new();
     for log_id in log_id_range {
         for _ in 0..count_per_log {
-            let mut bifrost = bifrost.clone();
+            let bifrost = bifrost.clone();
             appends.push(async move {
                 let _ = bifrost
                     .append(LogId::from(log_id), Payload::default())
@@ -43,13 +43,13 @@ async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u64>, co
 async fn append_records_concurrent_single_log(bifrost: Bifrost, log_id: LogId, count_per_log: u64) {
     let mut appends = FuturesOrdered::new();
     for _ in 0..count_per_log {
-        let mut bifrost = bifrost.clone();
+        let bifrost = bifrost.clone();
         appends.push_back(async move { bifrost.append(log_id, Payload::default()).await.unwrap() })
     }
     while appends.next().await.is_some() {}
 }
 
-async fn append_seq(mut bifrost: Bifrost, log_id: LogId, count: u64) {
+async fn append_seq(bifrost: Bifrost, log_id: LogId, count: u64) {
     for _ in 1..=count {
         let _ = bifrost
             .append(log_id, Payload::default())

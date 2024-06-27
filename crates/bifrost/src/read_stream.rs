@@ -161,7 +161,7 @@ mod tests {
     use super::*;
     use googletest::prelude::*;
 
-    use restate_core::{TaskKind, TestCoreEnvBuilder};
+    use restate_core::{metadata, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::arc_util::Constant;
     use restate_types::config::CommonOptions;
@@ -193,7 +193,7 @@ mod tests {
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
             let read_after = Lsn::from(5);
-            let mut bifrost = Bifrost::init().await;
+            let bifrost = Bifrost::init(metadata()).await;
 
             let log_id = LogId::from(0);
             let mut reader = bifrost.create_reader(log_id, read_after, Lsn::MAX).await?;
@@ -282,7 +282,7 @@ mod tests {
                 RocksDbManager::init(Constant::new(CommonOptions::default()));
 
                 let log_id = LogId::from(0);
-                let mut bifrost = Bifrost::init().await;
+                let bifrost = Bifrost::init(metadata()).await;
 
                 assert!(bifrost.get_trim_point(log_id).await?.is_none());
 

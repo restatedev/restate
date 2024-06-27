@@ -47,7 +47,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::arc_util::{ArcSwapExt, Pinned, Updateable};
+use super::arc_util::{ArcSwapExt, CachingUpdateable, Pinned};
 use crate::errors::GenericError;
 use crate::nodes_config::Role;
 
@@ -182,20 +182,20 @@ impl Configuration {
     /// exclusive reference. This should be the preferred method for accessing the updateable, but
     /// avoid using `to_updateable()` or `snapshot()` in tight loops. Instead, get a new updateable,
     /// and pass it down to the loop by value for very efficient access.
-    pub fn updateable() -> impl Updateable<Self> {
-        CONFIGURATION.to_updateable()
+    pub fn updateable() -> impl CachingUpdateable<Self> {
+        CONFIGURATION.to_caching_updateable()
     }
 
-    pub fn updateable_common() -> impl Updateable<CommonOptions> {
+    pub fn updateable_common() -> impl CachingUpdateable<CommonOptions> {
         CONFIGURATION.map_as_updateable(|c| &c.common)
     }
 
-    pub fn updateable_worker() -> impl Updateable<WorkerOptions> {
+    pub fn updateable_worker() -> impl CachingUpdateable<WorkerOptions> {
         CONFIGURATION.map_as_updateable(|c| &c.worker)
     }
 
     /// Create an updateable that projects a part of the config
-    pub fn mapped_updateable<F, U>(f: F) -> impl Updateable<U>
+    pub fn mapped_updateable<F, U>(f: F) -> impl CachingUpdateable<U>
     where
         F: FnMut(&Arc<Configuration>) -> &U,
     {

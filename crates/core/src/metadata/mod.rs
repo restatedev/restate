@@ -13,13 +13,14 @@
 
 mod manager;
 pub use manager::MetadataManager;
+use restate_types::arc_util::Updateable;
 use restate_types::schema::{Schema, UpdateableSchema};
 
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use enum_map::EnumMap;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataContainer;
@@ -41,8 +42,31 @@ pub enum SyncError {
     Shutdown(#[from] ShutdownError),
 }
 
-/// The kind of versioned metadata that can be synchronized across nodes.
+pub struct MetadataBuilder {
+    receiver: manager::CommandReceiver,
+    metadata: Metadata,
+}
 
+impl MetadataBuilder {
+    pub fn to_metadata(&self) -> Metadata {
+        self.metadata.clone()
+    }
+}
+
+impl Default for MetadataBuilder {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        Self {
+            receiver,
+            metadata: Metadata {
+                inner: Default::default(),
+                sender,
+            },
+        }
+    }
+}
+
+/// The kind of versioned metadata that can be synchronized across nodes.
 #[derive(Clone)]
 pub struct Metadata {
     sender: manager::CommandSender,
@@ -50,14 +74,18 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    fn new(inner: Arc<MetadataInner>, sender: manager::CommandSender) -> Self {
-        Self { inner, sender }
+    #[inline(always)]
+    pub fn nodes_config_snapshot(&self) -> Arc<NodesConfiguration> {
+        self.inner.nodes_config.load_full()
     }
 
-    /// Panics if nodes configuration is not loaded yet.
-    #[track_caller]
-    pub fn nodes_config(&self) -> Arc<NodesConfiguration> {
-        self.inner.nodes_config.load_full().unwrap()
+    #[inline(always)]
+    pub fn nodes_config_ref(&self) -> arc_swap::Guard<Arc<NodesConfiguration>> {
+        self.inner.nodes_config.load()
+    }
+
+    pub fn updateable_nodes_config(&self) -> Updateable<NodesConfiguration> {
+        Updateable::from(self.inner.nodes_config.clone())
     }
 
     #[track_caller]
@@ -67,11 +95,7 @@ impl Metadata {
 
     /// Returns Version::INVALID if nodes configuration has not been loaded yet.
     pub fn nodes_config_version(&self) -> Version {
-        let c = self.inner.nodes_config.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
+        self.inner.nodes_config.load().version()
     }
 
     pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
@@ -162,7 +186,7 @@ impl Metadata {
 #[derive(Default)]
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
-    nodes_config: ArcSwapOption<NodesConfiguration>,
+    nodes_config: Arc<ArcSwap<NodesConfiguration>>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
     logs: ArcSwapOption<Logs>,
     schema: Arc<ArcSwap<Schema>>,

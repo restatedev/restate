@@ -19,7 +19,8 @@ use bifrost_benchpress::{append_latency, write_to_read, Arguments, Command};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use restate_bifrost::{Bifrost, BifrostService};
 use restate_core::{
-    spawn_metadata_manager, MetadataManager, MockNetworkSender, TaskCenter, TaskCenterBuilder,
+    spawn_metadata_manager, MetadataBuilder, MetadataManager, MockNetworkSender, TaskCenter,
+    TaskCenterBuilder,
 };
 use restate_errors::fmt::RestateCode;
 use restate_metadata_store::{MetadataStoreClient, Precondition};
@@ -136,12 +137,16 @@ fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifro
     restate_types::config::set_current_config(config.clone());
     let task_center = tc.clone();
     let bifrost = tc.block_on("spawn", None, async move {
-        let network_sender = MockNetworkSender::default();
+        let metadata_builder = MetadataBuilder::default();
+        let network_sender = MockNetworkSender::new(metadata_builder.to_metadata());
         let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let metadata_manager =
-            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager = MetadataManager::new(
+            metadata_builder,
+            network_sender.clone(),
+            metadata_store_client.clone(),
+        );
 
-        let metadata = metadata_manager.metadata();
         let metadata_writer = metadata_manager.writer();
         task_center.try_set_global_metadata(metadata.clone());
 

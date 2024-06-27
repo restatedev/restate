@@ -21,7 +21,7 @@ use tokio::time::MissedTickBehavior;
 use tokio::time::{Instant, Interval};
 use tracing::{debug, warn};
 
-use restate_types::arc_util::Updateable;
+use restate_types::arc_util::CachingUpdateable;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
 use restate_types::net::RequestId;
@@ -56,7 +56,7 @@ pub struct Service<N> {
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
-    configuration: Box<dyn Updateable<AdminOptions> + Send + Sync>,
+    configuration: Box<dyn CachingUpdateable<AdminOptions> + Send + Sync>,
     heartbeat_interval: time::Interval,
     log_trim_interval: Option<time::Interval>,
     log_trim_threshold: Lsn,
@@ -67,7 +67,7 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(
-        mut configuration: impl Updateable<AdminOptions> + Send + Sync + 'static,
+        mut configuration: impl CachingUpdateable<AdminOptions> + Send + Sync + 'static,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: N,
@@ -372,13 +372,14 @@ mod tests {
             builder.network_sender.clone(),
             &mut builder.router_builder,
         );
+        let metadata = builder.metadata.clone();
         let svc_handle = svc.handle();
 
         let node_env = builder.build().await;
 
-        let mut bifrost = node_env
+        let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init())
+            .run_in_scope("init", None, Bifrost::init(metadata))
             .await;
 
         node_env.tc.spawn(
@@ -446,6 +447,7 @@ mod tests {
     async fn auto_log_trim() -> anyhow::Result<()> {
         let mut builder = TestCoreEnvBuilder::new_with_mock_network();
 
+        let metadata = builder.metadata.clone();
         let mut admin_options = AdminOptions::default();
         admin_options.log_trim_threshold = 5;
         let interval_duration = Duration::from_secs(10);
@@ -479,9 +481,9 @@ mod tests {
             .build()
             .await;
 
-        let mut bifrost = node_env
+        let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init())
+            .run_in_scope("init", None, Bifrost::init(metadata))
             .await;
 
         node_env.tc.spawn(
