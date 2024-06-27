@@ -34,7 +34,9 @@ use crate::network::{
     Handler, MessageHandler, MessageRouter, MessageRouterBuilder, NetworkError, NetworkSender,
     ProtocolError,
 };
-use crate::{cancellation_watcher, metadata, spawn_metadata_manager, ShutdownError, TaskId};
+use crate::{
+    cancellation_watcher, metadata, spawn_metadata_manager, MetadataBuilder, ShutdownError, TaskId,
+};
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
 
@@ -170,9 +172,13 @@ where
 
         let my_node_id = GenerationalNodeId::new(1, 1);
         let metadata_store_client = MetadataStoreClient::new_in_memory();
-        let metadata_manager =
-            MetadataManager::build(network_sender.clone(), metadata_store_client.clone());
-        let metadata = metadata_manager.metadata();
+        let metadata_builder = MetadataBuilder::default();
+        let metadata = metadata_builder.to_metadata();
+        let metadata_manager = MetadataManager::new(
+            metadata_builder,
+            network_sender.clone(),
+            metadata_store_client.clone(),
+        );
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());

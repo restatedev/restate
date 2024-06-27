@@ -12,13 +12,17 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
 use crate::net::AdvertisedAddress;
 use crate::{flexbuffers_storage_encode_decode, GenerationalNodeId, NodeId, PlainNodeId};
 use crate::{Version, Versioned};
+
+pub type UpdateableNodesConfiguration = Arc<ArcSwap<NodesConfiguration>>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodesConfigError {

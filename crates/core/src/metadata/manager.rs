@@ -35,7 +35,8 @@ use crate::metadata_store::{MetadataStoreClient, ReadError};
 use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
 use crate::task_center;
 
-use super::{Metadata, MetadataContainer, MetadataInner, MetadataKind, MetadataWriter};
+use super::MetadataBuilder;
+use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -197,8 +198,7 @@ where
 /// - NodesConfiguration
 /// - Partition table
 pub struct MetadataManager<N> {
-    self_sender: CommandSender,
-    inner: Arc<MetadataInner>,
+    metadata: Metadata,
     inbound: CommandReceiver,
     networking: N,
     metadata_store_client: MetadataStoreClient,
@@ -208,12 +208,14 @@ impl<N> MetadataManager<N>
 where
     N: NetworkSender + 'static + Clone,
 {
-    pub fn build(networking: N, metadata_store_client: MetadataStoreClient) -> Self {
-        let (self_sender, inbound) = mpsc::unbounded_channel();
+    pub fn new(
+        metadata_builder: MetadataBuilder,
+        networking: N,
+        metadata_store_client: MetadataStoreClient,
+    ) -> Self {
         Self {
-            inner: Arc::new(MetadataInner::default()),
-            inbound,
-            self_sender,
+            metadata: metadata_builder.metadata,
+            inbound: metadata_builder.receiver,
             networking,
             metadata_store_client,
         }
@@ -221,17 +223,17 @@ where
 
     pub fn register_in_message_router(&self, sr_builder: &mut MessageRouterBuilder) {
         sr_builder.add_message_handler(MetadataMessageHandler {
-            sender: self.self_sender.clone(),
+            sender: self.metadata.sender.clone(),
             networking: self.networking.clone(),
         });
     }
 
-    pub fn metadata(&self) -> Metadata {
-        Metadata::new(self.inner.clone(), self.self_sender.clone())
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     pub fn writer(&self) -> MetadataWriter {
-        MetadataWriter::new(self.self_sender.clone(), self.inner.clone())
+        MetadataWriter::new(self.metadata.sender.clone(), self.metadata.inner.clone())
     }
 
     /// Start and wait for shutdown signal.
@@ -330,26 +332,27 @@ where
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
-        let maybe_new_version = Self::update_option_internal(&self.inner.nodes_config, config);
+        let maybe_new_version =
+            Self::update_option_internal(&self.metadata.inner.nodes_config, config);
 
         self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
         let maybe_new_version =
-            Self::update_option_internal(&self.inner.partition_table, partition_table);
+            Self::update_option_internal(&self.metadata.inner.partition_table, partition_table);
 
         self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
     fn update_logs(&mut self, logs: Logs) {
-        let maybe_new_version = Self::update_option_internal(&self.inner.logs, logs);
+        let maybe_new_version = Self::update_option_internal(&self.metadata.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
     fn update_schema(&mut self, schema: Schema) {
-        let maybe_new_version = Self::update_internal(&self.inner.schema, schema);
+        let maybe_new_version = Self::update_internal(&self.metadata.inner.schema, schema);
 
         self.notify_watches(maybe_new_version, MetadataKind::Schema);
     }
@@ -399,14 +402,16 @@ where
 
     fn notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
         // notify watches.
-        self.inner.write_watches[kind].sender.send_if_modified(|v| {
-            if maybe_new_version > *v {
-                *v = maybe_new_version;
-                true
-            } else {
-                false
-            }
-        });
+        self.metadata.inner.write_watches[kind]
+            .sender
+            .send_if_modified(|v| {
+                if maybe_new_version > *v {
+                    *v = maybe_new_version;
+                    true
+                } else {
+                    false
+                }
+            });
     }
 }
 
@@ -460,9 +465,11 @@ mod tests {
         tc.block_on("test", None, async move {
             let network_sender = MockNetworkSender::default();
             let metadata_store_client = MetadataStoreClient::new_in_memory();
-            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+            let metadata_builder = MetadataBuilder::default();
+            let metadata = metadata_builder.to_metadata();
+            let metadata_manager =
+                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
-            let metadata = metadata_manager.metadata();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
 
@@ -541,9 +548,12 @@ mod tests {
         tc.block_on("test", None, async move {
             let network_sender = MockNetworkSender::default();
             let metadata_store_client = MetadataStoreClient::new_in_memory();
-            let metadata_manager = MetadataManager::build(network_sender, metadata_store_client);
+
+            let metadata_builder = MetadataBuilder::default();
+            let metadata = metadata_builder.to_metadata();
+            let metadata_manager =
+                MetadataManager::new(metadata_builder, network_sender, metadata_store_client);
             let metadata_writer = metadata_manager.writer();
-            let metadata = metadata_manager.metadata();
 
             assert_eq!(Version::INVALID, config_version(&metadata));
 
