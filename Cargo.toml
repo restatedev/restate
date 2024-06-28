@@ -105,6 +105,7 @@ futures-util = "0.3.25"
 googletest = "0.10"
 hostname = { version = "0.4.0" }
 http = "0.2.9"
+http-serde = { version = "1.1.2" }
 humantime = "2.1.0"
 hyper = { version = "0.14.24", default-features = false }
 hyper-rustls = { version = "0.24.1", features = ["http2"] }
