@@ -65,7 +65,8 @@ pub struct DeploymentMetadata {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "DeploymentTypeShadow")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum DeploymentType {
     Http {
@@ -73,6 +74,9 @@ pub enum DeploymentType {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         address: Uri,
         protocol_type: ProtocolType,
+        #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        http_version: http::Version,
     },
     Lambda {
         arn: LambdaARN,
@@ -81,7 +85,125 @@ pub enum DeploymentType {
     },
 }
 
+#[derive(serde::Deserialize)]
+enum DeploymentTypeShadow {
+    Http {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        address: Uri,
+        protocol_type: ProtocolType,
+        #[serde(
+            default,
+            with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
+        )]
+        // this field did not used to be stored, so we must consider it optional when deserialising
+        http_version: Option<http::Version>,
+    },
+    Lambda {
+        arn: LambdaARN,
+        assume_role_arn: Option<ByteString>,
+    },
+}
+
+impl From<DeploymentTypeShadow> for DeploymentType {
+    fn from(value: DeploymentTypeShadow) -> Self {
+        match value {
+            DeploymentTypeShadow::Http {
+                address,
+                protocol_type,
+                http_version,
+            } => Self::Http {
+                address,
+                protocol_type,
+                http_version: match http_version {
+                    Some(v) => v,
+                    None => Self::backfill_http_version(protocol_type),
+                },
+            },
+            DeploymentTypeShadow::Lambda {
+                arn,
+                assume_role_arn,
+            } => Self::Lambda {
+                arn,
+                assume_role_arn,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use crate::{identifiers::LambdaARN, storage::StorageCodec};
+    use bytestring::ByteString;
+    use http::Uri;
+
+    use super::{DeploymentType, ProtocolType};
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    enum OldDeploymentType {
+        Http {
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            address: Uri,
+            protocol_type: ProtocolType,
+        },
+        Lambda {
+            arn: LambdaARN,
+            assume_role_arn: Option<ByteString>,
+        },
+    }
+
+    crate::flexbuffers_storage_encode_decode!(OldDeploymentType);
+    crate::flexbuffers_storage_encode_decode!(DeploymentType);
+
+    #[test]
+    fn can_deserialise_without_http_version() {
+        let mut buf = bytes::BytesMut::default();
+        StorageCodec::encode(
+            &OldDeploymentType::Http {
+                address: Uri::from_static("google.com"),
+                protocol_type: ProtocolType::BidiStream,
+            },
+            &mut buf,
+        )
+        .unwrap();
+        let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
+        assert_eq!(
+            DeploymentType::Http {
+                address: Uri::from_static("google.com"),
+                protocol_type: ProtocolType::BidiStream,
+                http_version: http::Version::HTTP_2,
+            },
+            dt
+        );
+
+        let mut buf = bytes::BytesMut::default();
+        StorageCodec::encode(
+            &OldDeploymentType::Http {
+                address: Uri::from_static("google.com"),
+                protocol_type: ProtocolType::RequestResponse,
+            },
+            &mut buf,
+        )
+        .unwrap();
+        let dt: DeploymentType = StorageCodec::decode(&mut buf).unwrap();
+        assert_eq!(
+            DeploymentType::Http {
+                address: Uri::from_static("google.com"),
+                protocol_type: ProtocolType::RequestResponse,
+                http_version: http::Version::HTTP_11,
+            },
+            dt
+        );
+    }
+}
+
 impl DeploymentType {
+    pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
+        match protocol_type {
+            ProtocolType::BidiStream => http::Version::HTTP_2,
+            ProtocolType::RequestResponse => http::Version::HTTP_11,
+        }
+    }
+
     pub fn protocol_type(&self) -> ProtocolType {
         match self {
             DeploymentType::Http { protocol_type, .. } => *protocol_type,
@@ -108,6 +230,7 @@ impl DeploymentMetadata {
     pub fn new_http(
         address: Uri,
         protocol_type: ProtocolType,
+        http_version: http::Version,
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
     ) -> Self {
@@ -115,6 +238,7 @@ impl DeploymentMetadata {
             ty: DeploymentType::Http {
                 address,
                 protocol_type,
+                http_version,
             },
             delivery_options,
             created_at: MillisSinceEpoch::now(),
@@ -190,6 +314,7 @@ pub mod test_util {
             let metadata = DeploymentMetadata::new_http(
                 "http://localhost:9080".parse().unwrap(),
                 ProtocolType::BidiStream,
+                http::Version::HTTP_2,
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
             );
@@ -202,6 +327,7 @@ pub mod test_util {
             let metadata = DeploymentMetadata::new_http(
                 uri.parse().unwrap(),
                 ProtocolType::BidiStream,
+                http::Version::HTTP_2,
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
             );
