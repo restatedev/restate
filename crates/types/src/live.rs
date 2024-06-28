@@ -59,6 +59,9 @@ impl<T: 'static> Live<T, ()> {
 }
 
 impl<T> Live<T, ()> {
+    pub fn from_value(value: T) -> Self {
+        Self::from(Arc::new(ArcSwap::from_pointee(value)))
+    }
     /// Potentially fast access to a snapshot, should be used if using live_load()
     /// isn't possible (requires mutablility to call load()).
     ///

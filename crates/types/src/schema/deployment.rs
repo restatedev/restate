@@ -21,7 +21,7 @@ use serde_with::serde_as;
 
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::service::ServiceMetadata;
-use crate::schema::{Schema, UpdateableSchema};
+use crate::schema::Schema;
 use crate::time::MillisSinceEpoch;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -346,31 +346,5 @@ impl DeploymentResolver for Schema {
                 )
             })
             .collect()
-    }
-}
-
-impl DeploymentResolver for UpdateableSchema {
-    fn resolve_latest_deployment_for_service(
-        &self,
-        service_name: impl AsRef<str>,
-    ) -> Option<Deployment> {
-        self.0
-            .load()
-            .resolve_latest_deployment_for_service(service_name)
-    }
-
-    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        self.0.load().get_deployment(deployment_id)
-    }
-
-    fn get_deployment_and_services(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        self.0.load().get_deployment_and_services(deployment_id)
-    }
-
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
-        self.0.load().get_deployments()
     }
 }

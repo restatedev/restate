@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
+use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -16,6 +16,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use restate_types::live::Live;
 use tokio::sync::mpsc::Sender;
 
 use restate_types::identifiers::ServiceRevision;
@@ -29,7 +30,7 @@ use crate::table_util::Builder;
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
-    resolver: impl DeploymentResolver + Send + Sync + Debug + 'static,
+    resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
     let deployment_table = GenericTableProvider::new(
         SysDeploymentBuilder::schema(),
@@ -41,12 +42,16 @@ pub(crate) fn register_self(
         .map(|_| ())
 }
 
-#[derive(Debug, Clone)]
-struct DeploymentMetadataScanner<DMR>(DMR);
+#[derive(Clone)]
+struct DeploymentMetadataScanner<DMR>(Live<DMR>);
 
-impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> Scan
-    for DeploymentMetadataScanner<DMR>
-{
+impl<T> fmt::Debug for DeploymentMetadataScanner<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DeploymentMetadataScanner")
+    }
+}
+
+impl<DMR: DeploymentResolver + Sync + Send + 'static> Scan for DeploymentMetadataScanner<DMR> {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -57,7 +62,7 @@ impl<DMR: DeploymentResolver + Debug + Sync + Send + 'static> Scan
         let mut stream_builder = RecordBatchReceiverStream::builder(projection, 16);
         let tx = stream_builder.tx();
 
-        let rows = self.0.get_deployments();
+        let rows = self.0.pinned().get_deployments();
         stream_builder.spawn(async move {
             for_each_state(schema, tx, rows).await;
             Ok(())

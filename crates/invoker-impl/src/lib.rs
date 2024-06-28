@@ -36,7 +36,7 @@ use restate_types::identifiers::{EntryIndex, PartitionLeaderEpoch};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::Completion;
-use restate_types::live::LiveLoad;
+use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::deployment::DeploymentResolver;
 use status_store::InvocationStatusStore;
@@ -88,11 +88,10 @@ trait InvocationTaskRunner<SR> {
     ) -> AbortHandle;
 }
 
-#[derive(Debug)]
 struct DefaultInvocationTaskRunner<EE, DMR> {
     client: ServiceClient,
     entry_enricher: EE,
-    deployment_metadata_resolver: DMR,
+    deployment_metadata_resolver: Live<DMR>,
 }
 
 impl<SR, EE, DMR> InvocationTaskRunner<SR> for DefaultInvocationTaskRunner<EE, DMR>
@@ -101,7 +100,7 @@ where
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    DMR: DeploymentResolver + Clone + Send + 'static,
+    DMR: DeploymentResolver + Clone + Send + Sync + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -139,8 +138,6 @@ where
 }
 
 // -- Service implementation
-
-#[derive(Debug)]
 pub struct Service<SR, EntryEnricher, DeploymentRegistry> {
     // Used for constructing the invoker sender and status reader
     input_tx: mpsc::UnboundedSender<InputCommand<SR>>,
@@ -161,7 +158,7 @@ impl<SR, EE, DMR> Service<SR, EE, DMR> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new<JS>(
         options: &InvokerOptions,
-        deployment_metadata_resolver: DMR,
+        deployment_metadata_resolver: Live<DMR>,
         client: ServiceClient,
         entry_enricher: EE,
     ) -> Service<SR, EE, DMR>
@@ -202,7 +199,7 @@ impl<SR, EE, DMR> Service<SR, EE, DMR> {
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
         entry_enricher: EE,
-        deployment_registry: DMR,
+        deployment_registry: Live<DMR>,
     ) -> Result<Service<SR, EE, DMR>, BuildError>
     where
         SR: JournalReader<JournalStream = JS> + StateReader + Clone + Send + Sync + 'static,
@@ -235,7 +232,7 @@ where
     <SR as JournalReader>::JournalStream: Unpin + Send + 'static,
     <SR as StateReader>::StateIter: Send,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    EMR: DeploymentResolver + Clone + Send + 'static,
+    EMR: DeploymentResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<SR> {
         InvokerHandle {
@@ -1158,7 +1155,7 @@ mod tests {
         let service = Service::new(
             &invoker_options,
             // all invocations are unknown leading to immediate retries
-            MockDeploymentMetadataRegistry::default(),
+            Live::from_value(MockDeploymentMetadataRegistry::default()),
             ServiceClient::from_options(
                 &ServiceClientOptions::default(),
                 restate_service_client::AssumeRoleCacheMode::None,

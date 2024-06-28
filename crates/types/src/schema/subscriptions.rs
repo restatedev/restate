@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
-use super::{Schema, UpdateableSchema};
+use super::Schema;
 use crate::config::IngressOptions;
 use crate::errors::GenericError;
 use crate::identifiers::SubscriptionId;
@@ -160,16 +160,6 @@ impl SubscriptionResolver for Schema {
             })
             .cloned()
             .collect()
-    }
-}
-
-impl SubscriptionResolver for UpdateableSchema {
-    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
-        self.0.load().get_subscription(id)
-    }
-
-    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        self.0.load().list_subscriptions(filters)
     }
 }
 

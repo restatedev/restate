@@ -125,6 +125,7 @@ where
             response.idempotency_expiry_time.as_deref(),
             move |invocation_target| {
                 self.schemas
+                    .pinned()
                     .resolve_latest_invocation_target(
                         invocation_target.service_name(),
                         invocation_target.handler_name(),
@@ -172,6 +173,7 @@ where
             None,
             move |invocation_target| {
                 self.schemas
+                    .pinned()
                     .resolve_latest_invocation_target(
                         invocation_target.service_name(),
                         invocation_target.handler_name(),

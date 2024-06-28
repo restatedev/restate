@@ -14,9 +14,7 @@ pub mod service;
 pub mod subscriptions;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use serde_with::serde_as;
 
 use self::deployment::DeploymentSchemas;
@@ -26,13 +24,6 @@ use self::subscriptions::Subscription;
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::Version;
 use crate::Versioned;
-
-/// Schema information which automatically loads the latest version when accessing it.
-///
-/// Temporary bridge until users are migrated to directly using the metadata
-/// provided schema information.
-#[derive(Debug, Default, Clone, derive_more::From)]
-pub struct UpdateableSchema(Arc<ArcSwap<Schema>>);
 
 /// The schema information
 #[serde_as]

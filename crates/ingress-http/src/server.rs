@@ -21,6 +21,7 @@ use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
 use restate_ingress_dispatcher::{DispatchIngressRequest, IngressDispatcher};
 use restate_types::config::IngressOptions;
+use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use std::convert::Infallible;
@@ -56,7 +57,7 @@ pub struct HyperServerIngress<Schemas, Dispatcher, StorageReader> {
     concurrency_limit: usize,
 
     // Parameters to build the layers
-    schemas: Schemas,
+    schemas: Live<Schemas>,
     dispatcher: Dispatcher,
     storage_reader: StorageReader,
 
@@ -72,7 +73,7 @@ where
     pub fn from_options(
         ingress_options: &IngressOptions,
         dispatcher: IngressDispatcher,
-        schemas: Schemas,
+        schemas: Live<Schemas>,
         storage_reader: StorageReader,
     ) -> HyperServerIngress<Schemas, IngressDispatcher, StorageReader> {
         crate::metric_definitions::describe_metrics();
@@ -97,7 +98,7 @@ where
     pub(crate) fn new(
         listening_addr: SocketAddr,
         concurrency_limit: usize,
-        schemas: Schemas,
+        schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         storage_reader: StorageReader,
     ) -> (Self, StartSignal) {
@@ -346,7 +347,7 @@ mod tests {
         let (ingress, start_signal) = HyperServerIngress::new(
             "0.0.0.0:0".parse().unwrap(),
             Semaphore::MAX_PERMITS,
-            mock_schemas(),
+            Live::from_value(mock_schemas()),
             MockDispatcher::new(ingress_request_tx),
             MockStorageReader::default(),
         );

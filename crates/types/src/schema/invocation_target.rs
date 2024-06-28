@@ -17,7 +17,7 @@ use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use super::{Schema, UpdateableSchema};
+use super::Schema;
 use crate::invocation::InvocationTargetType;
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
@@ -71,18 +71,6 @@ impl InvocationTargetResolver for Schema {
                 .map(|handler_schemas| handler_schemas.target_meta.clone())
         })
         .flatten()
-    }
-}
-
-impl InvocationTargetResolver for UpdateableSchema {
-    fn resolve_latest_invocation_target(
-        &self,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationTargetMetadata> {
-        self.0
-            .load()
-            .resolve_latest_invocation_target(service_name, handler_name)
     }
 }
 

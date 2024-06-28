@@ -27,7 +27,7 @@ use restate_types::config::{CommonOptions, QueryEngineOptions, WorkerOptions};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::invocation::ServiceType;
-use restate_types::live::Constant;
+use restate_types::live::{Constant, Live};
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
@@ -134,7 +134,7 @@ impl MockQueryEngine {
                 MockPartitionSelector,
                 manager,
                 status,
-                schemas,
+                Live::from_value(schemas),
             )
             .await
             .unwrap(),

@@ -28,17 +28,18 @@ use restate_types::journal::enriched::{
 use restate_types::journal::raw::{PlainEntryHeader, PlainRawEntry, RawEntry, RawEntryCodec};
 use restate_types::journal::{CompleteAwakeableEntry, Entry, InvokeEntry, OneWayCallEntry};
 use restate_types::journal::{EntryType, InvokeRequest};
+use restate_types::live::Live;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct EntryEnricher<Schemas, Codec> {
-    schemas: Schemas,
+    schemas: Live<Schemas>,
 
     _codec: PhantomData<Codec>,
 }
 
 impl<Schemas, Codec> EntryEnricher<Schemas, Codec> {
-    pub(super) fn new(schemas: Schemas) -> Self {
+    pub(super) fn new(schemas: Live<Schemas>) -> Self {
         Self {
             schemas,
             _codec: Default::default(),
@@ -52,7 +53,7 @@ where
     Codec: RawEntryCodec,
 {
     fn resolve_service_invocation_target(
-        &self,
+        &mut self,
         entry_type: EntryType,
         serialized_entry: &Bytes,
         request_extractor: impl Fn(Entry) -> InvokeRequest,
@@ -64,6 +65,7 @@ where
 
         let meta = self
             .schemas
+            .live_load()
             .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
             .ok_or_else(|| {
                 InvocationError::service_handler_not_found(
@@ -118,7 +120,7 @@ where
     Codec: RawEntryCodec,
 {
     fn enrich_entry(
-        &self,
+        &mut self,
         entry: PlainRawEntry,
         current_invocation_target: &InvocationTarget,
         current_invocation_span_context: &ServiceInvocationSpanContext,

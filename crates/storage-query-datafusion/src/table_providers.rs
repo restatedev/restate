@@ -189,7 +189,7 @@ where
 
 // Generic-based table provider that provides node-level or global data rather than
 // partition-keyed data.
-pub(crate) trait Scan: Send + Sync + Debug + 'static {
+pub(crate) trait Scan: Debug + Send + Sync + 'static {
     fn scan(
         &self,
         projection: SchemaRef,

@@ -229,11 +229,12 @@ where
     StorageReader: InvocationStorageReader + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
-    pub(crate) fn parse_path(&self, uri: &Uri) -> Result<RequestType, HandlerError> {
+    pub(crate) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {
         let mut path_parts = uri.path().split('/').skip(1);
 
         let first_segment = path_parts.next().ok_or(HandlerError::NotFound)?;
 
+        let schema = self.schemas.live_load();
         match first_segment {
             "restate" => match path_parts.next().ok_or(HandlerError::NotFound)? {
                 "health" => Ok(RequestType::Health),
@@ -241,7 +242,7 @@ where
                     AwakeableRequestType::from_path_chunks(path_parts)?,
                 )),
                 "invocation" => Ok(RequestType::Invocation(
-                    InvocationRequestType::from_path_chunks(path_parts, &self.schemas)?,
+                    InvocationRequestType::from_path_chunks(path_parts, schema)?,
                 )),
                 "workflow" => Ok(RequestType::Workflow(
                     WorkflowRequestType::from_path_chunks(path_parts)?,
@@ -252,7 +253,7 @@ where
             segment => Ok(RequestType::Service(ServiceRequestType::from_path_chunks(
                 path_parts,
                 segment.to_owned(),
-                &self.schemas,
+                schema,
             )?)),
         }
     }
