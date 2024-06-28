@@ -16,6 +16,7 @@ proto = ["dep:prost", "dep:bytes"]
 bytes = { workspace = true, optional = true }
 bytesize = { version = "1.3.0" }
 http = { workspace = true }
+http-serde = { workspace = true }
 humantime = { workspace = true }
 iso8601 = "0.6.1"
 prost = { workspace = true, optional = true }

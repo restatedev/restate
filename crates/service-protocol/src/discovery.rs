@@ -17,7 +17,7 @@ use hyper::http::{HeaderName, HeaderValue};
 use hyper::{Body, HeaderMap, StatusCode};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use restate_errors::{META0003, META0012, META0013, META0014};
+use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_schema_api::deployment::ProtocolType;
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
@@ -130,6 +130,8 @@ pub enum DiscoveryError {
     Client(#[from] ServiceClientError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
+    #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported")]
+    BidirectionalNotSupported,
 }
 
 impl CodedError for DiscoveryError {
@@ -144,6 +146,7 @@ impl CodedError for DiscoveryError {
             )) => Some(&META0014),
             DiscoveryError::Client(_) => Some(&META0003),
             DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),
+            DiscoveryError::BidirectionalNotSupported => Some(&META0015),
         }
     }
 }
@@ -165,7 +168,8 @@ impl DiscoveryError {
             DiscoveryError::Client(client_error) => client_error.is_retryable(),
             DiscoveryError::BadResponse(_)
             | DiscoveryError::Decode(_, _)
-            | DiscoveryError::UnsupportedServiceProtocol { .. } => false,
+            | DiscoveryError::UnsupportedServiceProtocol { .. }
+            | DiscoveryError::BidirectionalNotSupported => false,
         }
     }
 }
@@ -214,7 +218,7 @@ impl ServiceDiscovery {
             }
         };
 
-        Self::create_discovered_metadata_from_endpoint_response(response)
+        Self::create_discovered_metadata_from_endpoint_response(endpoint.address(), response)
     }
 
     fn retrieve_service_discovery_protocol_version(
@@ -258,6 +262,7 @@ impl ServiceDiscovery {
     }
 
     fn create_discovered_metadata_from_endpoint_response(
+        endpoint: &Endpoint,
         endpoint_response: endpoint_manifest::Endpoint,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
@@ -267,6 +272,23 @@ impl ServiceDiscovery {
                 return Err(DiscoveryError::BadResponse("missing protocol mode".into()));
             }
         };
+
+        match (protocol_type, endpoint) {
+            // all endpoints support request response
+            (ProtocolType::RequestResponse, _) => {}
+            // http2 upwards supports bidi
+            (
+                ProtocolType::BidiStream,
+                Endpoint::Http(_, hyper::Version::HTTP_2 | hyper::Version::HTTP_3),
+            ) => {}
+            // http1.1 *can* support bidi depending on server implementation (and load balancers)
+            // trust the user if this is what they advertise
+            (ProtocolType::BidiStream, Endpoint::Http(_, hyper::Version::HTTP_11)) => {}
+            // lambda client and HTTP < 1.1 do not support bidi
+            (ProtocolType::BidiStream, _) => {
+                return Err(DiscoveryError::BidirectionalNotSupported);
+            }
+        }
 
         // Sanity checks for the service protocol version
         if endpoint_response.min_protocol_version <= 0
@@ -378,6 +400,7 @@ mod tests {
         parse_service_discovery_protocol_version_from_content_type, DiscoveryError,
         ServiceDiscovery, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
     };
+    use restate_service_client::Endpoint;
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
     use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
@@ -392,8 +415,34 @@ mod tests {
         };
 
         assert!(matches!(
-            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                response
+            ),
             Err(DiscoveryError::BadResponse(_))
+        ));
+    }
+
+    #[test]
+    fn fail_on_bidirectional_with_lambda() {
+        let response = endpoint_manifest::Endpoint {
+            min_protocol_version: 0,
+            max_protocol_version: 1,
+            services: Vec::new(),
+            protocol_mode: Some(ProtocolMode::BidiStream),
+        };
+
+        assert!(matches!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                &Endpoint::Lambda(
+                    "arn:partition:lambda:region:account_id:function:name:version"
+                        .parse()
+                        .unwrap(),
+                    None
+                ),
+                response
+            ),
+            Err(DiscoveryError::BidirectionalNotSupported)
         ));
     }
 
@@ -407,7 +456,10 @@ mod tests {
         };
 
         assert!(matches!(
-            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                response
+            ),
             Err(DiscoveryError::BadResponse(_))
         ));
     }
@@ -422,7 +474,10 @@ mod tests {
         };
 
         assert!(matches!(
-            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response),
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                response
+            ),
             Err(DiscoveryError::BadResponse(_))
         ));
     }
@@ -438,7 +493,10 @@ mod tests {
         };
 
         assert!(
-            matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(response), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
+            matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                response
+            ), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
         );
     }
 

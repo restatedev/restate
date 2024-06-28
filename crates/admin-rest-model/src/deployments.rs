@@ -10,7 +10,7 @@
 
 use http::Uri;
 use restate_schema_api::service::ServiceMetadata;
-use restate_serde_util::SerdeableHeaderHashMap;
+use restate_serde_util::{SerdeableHeaderHashMap, VersionSerde};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::time::SystemTime;
@@ -24,6 +24,7 @@ pub use restate_types::identifiers::{DeploymentId, LambdaARN};
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "DeploymentShadow")]
 #[serde(untagged)]
 pub enum Deployment {
     Http {
@@ -31,6 +32,9 @@ pub enum Deployment {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
         protocol_type: ProtocolType,
+        #[serde(with = "serde_with::As::<VersionSerde>")]
+        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        http_version: http::Version,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
@@ -56,15 +60,117 @@ pub enum Deployment {
     },
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DeploymentShadow {
+    Http {
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        uri: Uri,
+        protocol_type: ProtocolType,
+        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+        #[serde(default)]
+        // this field did not used to be provided; to provide backwards compatibility with old restate, we must consider it optional when deserialising
+        http_version: Option<http::Version>,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+    },
+    Lambda {
+        arn: LambdaARN,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        assume_role_arn: Option<String>,
+        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
+        #[serde(default)]
+        additional_headers: SerdeableHeaderHashMap,
+        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        created_at: humantime::Timestamp,
+        min_protocol_version: i32,
+        max_protocol_version: i32,
+    },
+}
+
+impl From<DeploymentShadow> for Deployment {
+    fn from(value: DeploymentShadow) -> Self {
+        match value {
+            DeploymentShadow::Http {
+                uri,
+                protocol_type,
+                http_version,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Http {
+                uri,
+                protocol_type,
+                http_version: http_version
+                    .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            },
+            DeploymentShadow::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            } => Self::Lambda {
+                arn,
+                assume_role_arn,
+                additional_headers,
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn can_deserialise_without_http_version() {
+        let dt: super::Deployment = serde_json::from_str(
+            r#"{"uri":"google.com","protocol_type":"BidiStream","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+        )
+        .unwrap();
+        let serialised = serde_json::to_string(&dt).unwrap();
+        assert_eq!(
+            r#"{"uri":"google.com","protocol_type":"BidiStream","http_version":"HTTP/2.0","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            serialised
+        );
+
+        let dt: super::Deployment = serde_json::from_str(
+            r#"{"uri":"google.com","protocol_type":"RequestResponse","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+        )
+        .unwrap();
+        let serialised = serde_json::to_string(&dt).unwrap();
+        assert_eq!(
+            r#"{"uri":"google.com","protocol_type":"RequestResponse","http_version":"HTTP/1.1","created_at":"2018-02-14T00:28:07Z","min_protocol_version":1,"max_protocol_version":1}"#,
+            serialised
+        );
+    }
+}
+
 impl From<DeploymentMetadata> for Deployment {
     fn from(value: DeploymentMetadata) -> Self {
         match value.ty {
             DeploymentType::Http {
                 address,
                 protocol_type,
+                http_version,
             } => Self::Http {
                 uri: address,
                 protocol_type,
+                http_version,
                 additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),

@@ -219,14 +219,9 @@ where
             } => Endpoint::Lambda(arn, assume_role_arn),
             DeploymentType::Http {
                 address,
-                protocol_type,
-            } => Endpoint::Http(
-                address,
-                match protocol_type {
-                    ProtocolType::RequestResponse => http::Version::default(),
-                    ProtocolType::BidiStream => http::Version::HTTP_2,
-                },
-            ),
+                http_version,
+                ..
+            } => Endpoint::Http(address, http_version),
         };
 
         headers.extend(deployment_metadata.delivery_options.additional_headers);
