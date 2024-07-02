@@ -412,4 +412,16 @@ mod test_util {
             }
         }
     }
+
+    impl CompletedInvocation {
+        pub fn mock() -> Self {
+            Self {
+                invocation_target: InvocationTarget::mock_service(),
+                source: Source::Ingress,
+                idempotency_key: None,
+                timestamps: StatusTimestamps::now(),
+                response_result: ResponseResult::Success(Bytes::new()),
+            }
+        }
+    }
 }
