@@ -12,11 +12,13 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use dyn_clone::DynClone;
 use serde::Serialize;
 
+pub type BoxedLiveLoad<T> = Box<dyn LiveLoad<T> + Send + 'static>;
 /// A trait to use in cases where a projection is applied on an updateable since it's impossible to
 /// spell out the closure type in Live<T, ...>.
-pub trait LiveLoad<T> {
+pub trait LiveLoad<T>: DynClone {
     /// Instead of loading the updateable on every request from the shared storage, this keeps
     /// another copy inside itself. Upon request it only cheaply revalidates it is up to
     /// date. If it is, access is significantly faster. If it is stale, a full load is performed and the
@@ -24,6 +26,9 @@ pub trait LiveLoad<T> {
     /// depending on the architecture.
     fn live_load(&mut self) -> &T;
 }
+
+// Implements Clone over BoxedLiveLoad.
+dyn_clone::clone_trait_object!(<T> LiveLoad<T>);
 
 /// A live view into a shared object
 ///
@@ -37,23 +42,25 @@ pub struct Live<T, F = ()> {
     projection: F,
 }
 
-impl<U, T: 'static, F> LiveLoad<U> for Live<T, F>
+impl<U, T, F> LiveLoad<U> for Live<T, F>
 where
-    F: FnMut(&T) -> &U + 'static,
+    F: FnMut(&T) -> &U + 'static + Clone,
+    T: Clone + 'static,
+    U: Clone,
 {
     fn live_load(&mut self) -> &U {
         self.live_load()
     }
 }
 
-impl<T> LiveLoad<T> for Live<T, ()> {
+impl<T: Clone> LiveLoad<T> for Live<T, ()> {
     fn live_load(&mut self) -> &T {
         self.live_load()
     }
 }
 
-impl<T: 'static> Live<T, ()> {
-    pub fn boxed(self) -> Box<dyn LiveLoad<T>> {
+impl<T: 'static + Send + Sync + Clone> Live<T, ()> {
+    pub fn boxed(self) -> BoxedLiveLoad<T> {
         Box::new(self)
     }
 }
@@ -99,7 +106,7 @@ impl<T> Live<T, ()> {
     /// Creates an updateable projection into the original updateable.
     pub fn map<F, U>(self, f: F) -> Live<T, F>
     where
-        F: FnMut(&T) -> &U,
+        F: FnMut(&T) -> &U + Clone,
     {
         Live {
             inner: self.inner,
@@ -133,12 +140,14 @@ where
     }
 }
 
-impl<T: 'static, F, U> Live<T, F>
+impl<T, F, U> Live<T, F>
 where
-    F: FnMut(&T) -> &U + 'static,
+    F: FnMut(&T) -> &U + 'static + Send + Clone,
+    T: Clone + Send + Sync + 'static,
+    U: Clone + Send,
 {
     // Can be used for type-erasing a projection
-    pub fn boxed(self) -> Box<dyn LiveLoad<U>> {
+    pub fn boxed(self) -> BoxedLiveLoad<U> {
         Box::new(self)
     }
 }
@@ -184,9 +193,18 @@ impl<T> Constant<T> {
     pub fn new(value: T) -> Self {
         Self(Arc::new(value))
     }
+    pub fn boxed(self) -> Box<Self> {
+        Box::new(self)
+    }
 }
 
-impl<T> LiveLoad<T> for Constant<T> {
+impl<T: Clone> LiveLoad<T> for Constant<T> {
+    fn live_load(&mut self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> LiveLoad<T> for Box<Constant<T>> {
     fn live_load(&mut self) -> &T {
         &self.0
     }

@@ -9,44 +9,76 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{hash_map, HashMap};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use restate_types::config::{Configuration, LocalLogletOptions, RocksDbOptions};
+use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::live::LiveLoad;
-use restate_types::logs::metadata::LogletParams;
+use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{metric_definitions, LocalLoglet};
-use crate::loglet::{Loglet, LogletOffset, LogletProvider};
-use crate::Error;
+use crate::loglet::{Loglet, LogletOffset};
 use crate::ProviderError;
+use crate::{Error, LogletProvider};
 
-pub struct LocalLogletProvider {
+pub struct Factory<T>
+where
+    T: LiveLoad<LocalLogletOptions> + Send + 'static,
+{
     log_store: RocksDbLogStore,
-    active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
-    log_writer: OnceLock<RocksDbLogWriterHandle>,
+    options: T,
 }
 
-impl LocalLogletProvider {
+impl<T> Factory<T>
+where
+    T: LiveLoad<LocalLogletOptions> + Send + 'static,
+{
     pub fn new(
-        options: &LocalLogletOptions,
+        mut options: T,
         updateable_rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + 'static,
-    ) -> Result<Arc<Self>, ProviderError> {
-        let log_store = RocksDbLogStore::new(options, updateable_rocksdb_options)
-            .context("RocksDb LogStore")?;
+    ) -> Self {
+        let log_store = RocksDbLogStore::new(options.live_load(), updateable_rocksdb_options)
+            .context("RocksDb LogStore")
+            .unwrap();
+        Self { log_store, options }
+    }
+}
 
+#[async_trait]
+impl<T> crate::LogletProviderFactory for Factory<T>
+where
+    T: LiveLoad<LocalLogletOptions> + Send + 'static,
+{
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Local
+    }
+
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
         metric_definitions::describe_metrics();
-        Ok(Arc::new(Self {
+        let Factory {
+            log_store,
+            options,
+            // updateable_rocksdb_options,
+        } = *self;
+        let log_writer = log_store.create_writer().start(options)?;
+        debug!("Started a bifrost local loglet provider");
+        Ok(Arc::new(LocalLogletProvider {
             log_store,
             active_loglets: Default::default(),
-            log_writer: OnceLock::new(),
+            log_writer,
         }))
     }
+}
+
+pub(crate) struct LocalLogletProvider {
+    log_store: RocksDbLogStore,
+    active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
+    log_writer: RocksDbLogWriterHandle,
 }
 
 #[async_trait]
@@ -56,11 +88,6 @@ impl LogletProvider for LocalLogletProvider {
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
         let mut guard = self.active_loglets.lock().await;
-        let log_writer = self
-            .log_writer
-            .get()
-            .cloned()
-            .expect("local loglet properly started");
         let loglet = match guard.entry(params.id().to_owned()) {
             hash_map::Entry::Vacant(entry) => {
                 // Create loglet
@@ -76,7 +103,7 @@ impl LogletProvider for LocalLogletProvider {
                         .parse()
                         .expect("loglet params can be converted into u64"),
                     self.log_store.clone(),
-                    log_writer,
+                    self.log_writer.clone(),
                 )
                 .await?;
                 let loglet = entry.insert(Arc::new(loglet));
@@ -86,16 +113,6 @@ impl LogletProvider for LocalLogletProvider {
         };
 
         Ok(loglet as Arc<dyn Loglet>)
-    }
-
-    fn start(&self) -> Result<(), ProviderError> {
-        let updateable = Configuration::mapped_updateable(|c| &c.bifrost.local);
-        let log_writer = self.log_store.create_writer().start(updateable)?;
-        self.log_writer
-            .set(log_writer)
-            .expect("local loglet started once");
-        debug!("Started a bifrost local loglet provider");
-        Ok(())
     }
 
     async fn shutdown(&self) -> Result<(), ProviderError> {
