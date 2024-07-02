@@ -7,8 +7,3 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-
-pub(crate) mod metric_definitions;
-mod provider;
-
-pub use provider::Factory;
