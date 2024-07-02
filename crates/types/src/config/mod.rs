@@ -192,7 +192,8 @@ impl Configuration {
     /// Create an updateable that projects a part of the config
     pub fn mapped_updateable<F, U>(f: F) -> impl LiveLoad<U>
     where
-        F: FnMut(&Configuration) -> &U + 'static,
+        F: FnMut(&Configuration) -> &U + 'static + Clone,
+        U: Clone,
     {
         Configuration::updateable().map(f)
     }

@@ -379,7 +379,7 @@ mod tests {
 
         let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init(metadata))
+            .run_in_scope("init", None, Bifrost::init_in_memory(metadata))
             .await;
 
         node_env.tc.spawn(
@@ -483,7 +483,7 @@ mod tests {
 
         let bifrost = node_env
             .tc
-            .run_in_scope("init", None, Bifrost::init(metadata))
+            .run_in_scope("init", None, Bifrost::init_in_memory(metadata))
             .await;
 
         node_env.tc.spawn(
