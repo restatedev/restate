@@ -151,9 +151,23 @@ impl Node {
         metadata_manager.register_in_message_router(&mut router_builder);
         let updating_schema_information = metadata.updateable_schema();
 
-        // Setup bifrost.
+        // Setup bifrost
+        // replicated-loglet
+        #[cfg(feature = "replicated-loglet")]
+        let replicated_loglet_factory = restate_bifrost::loglets::replicated_loglet::Factory::new(
+            updateable_config
+                .clone()
+                .map(|c| &c.bifrost.replicated_loglet)
+                .boxed(),
+            metadata_store_client.clone(),
+            metadata.clone(),
+            networking.clone(),
+            &mut router_builder,
+        );
         let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
             .enable_local_loglet(&updateable_config);
+        #[cfg(feature = "replicated-loglet")]
+        let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
 
         let log_server = if config.has_role(Role::LogServer) {
             Some(
