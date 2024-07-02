@@ -16,6 +16,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use codederror::CodedError;
+#[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_types::live::Live;
 use tokio::time::Instant;
@@ -75,12 +76,7 @@ pub enum BuildError {
         #[code]
         roles::AdminRoleBuildError,
     ),
-    #[error("building metadata store failed: {0}")]
-    MetadataStore(
-        #[from]
-        #[code]
-        restate_metadata_store::local::BuildError,
-    ),
+    #[cfg(feature = "replicated-loglet")]
     #[error("building log-server failed: {0}")]
     LogServer(
         #[from]
@@ -105,12 +101,14 @@ pub struct Node {
     metadata_store_role: Option<LocalMetadataStoreService>,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
+    #[cfg(feature = "replicated-loglet")]
     log_server: Option<LogServerService>,
     server: NetworkServer,
 }
 
 impl Node {
     pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
+        let tc = task_center();
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
@@ -130,11 +128,12 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
-                &config.metadata_store,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
                     .clone()
-                    .map(|config| &config.metadata_store.rocksdb),
-            )?)
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            ))
         } else {
             None
         };
@@ -154,9 +153,26 @@ impl Node {
         );
         metadata_manager.register_in_message_router(&mut router_builder);
         let updating_schema_information = metadata.updateable_schema();
-        let bifrost = BifrostService::new(metadata.clone());
 
-        let tc = task_center();
+        // Setup bifrost
+        // replicated-loglet
+        #[cfg(feature = "replicated-loglet")]
+        let replicated_loglet_factory = restate_bifrost::loglets::replicated_loglet::Factory::new(
+            updateable_config
+                .clone()
+                .map(|c| &c.bifrost.replicated_loglet)
+                .boxed(),
+            metadata_store_client.clone(),
+            metadata.clone(),
+            networking.clone(),
+            &mut router_builder,
+        );
+        let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
+            .enable_local_loglet(&updateable_config);
+        #[cfg(feature = "replicated-loglet")]
+        let bifrost_svc = bifrost_svc.with_factory(replicated_loglet_factory);
+
+        #[cfg(feature = "replicated-loglet")]
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
@@ -193,7 +209,7 @@ impl Node {
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
-                    bifrost.handle(),
+                    bifrost_svc.handle(),
                     metadata_store_client,
                     updating_schema_information,
                 )
@@ -228,10 +244,11 @@ impl Node {
         Ok(Node {
             updateable_config,
             metadata_manager,
-            bifrost,
+            bifrost: bifrost_svc,
             metadata_store_role,
             admin_role,
             worker_role,
+            #[cfg(feature = "replicated-loglet")]
             log_server,
             server,
         })
@@ -340,6 +357,7 @@ impl Node {
         tc.run_in_scope("bifrost-init", None, self.bifrost.start())
             .await?;
 
+        #[cfg(feature = "replicated-loglet")]
         if let Some(log_server) = self.log_server {
             tc.spawn(
                 TaskKind::SystemBoot,

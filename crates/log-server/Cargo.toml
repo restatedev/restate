@@ -15,7 +15,7 @@ test-util = []
 [dependencies]
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-types = { workspace = true }
+restate-types = { workspace = true, features = ["replicated-loglet"] }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

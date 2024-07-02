@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_serde_util::ByteCount;
 use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StatisticsLevel};
-use restate_types::live::LiveLoad;
+use restate_types::live::{BoxedLiveLoad, LiveLoad};
 
 use crate::background::ReadyStorageTask;
 use crate::{metric_definitions, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError};
@@ -140,10 +140,9 @@ impl RocksDbManager {
         self.dbs.read().get(&name).cloned()
     }
 
-    // todo: move this to async after allowing bifrost to async-create providers.
-    pub fn open_db<T: RocksAccess + Send + Sync + 'static>(
+    pub async fn open_db<T: RocksAccess + Send + Sync + 'static>(
         &'static self,
-        mut updateable_opts: impl LiveLoad<RocksDbOptions> + Send + 'static,
+        mut updateable_opts: BoxedLiveLoad<RocksDbOptions>,
         mut db_spec: DbSpec<T>,
     ) -> Result<Arc<T>, RocksError> {
         if self
@@ -159,6 +158,7 @@ impl RocksDbManager {
         // use the spec default options as base then apply the config from the updateable.
         self.amend_db_options(&mut db_spec.db_options, &options);
 
+        // todo: move to bg thread pool
         let db = Arc::new(RocksAccess::open_db(
             &db_spec,
             self.default_cf_options(&options),
@@ -173,7 +173,7 @@ impl RocksDbManager {
             .watchdog_tx
             .send(WatchdogCommand::Register(ConfigSubscription {
                 name: name.clone(),
-                updateable_rocksdb_opts: Box::new(updateable_opts),
+                updateable_rocksdb_opts: updateable_opts,
                 last_applied_opts: options,
             }))
         {
@@ -410,7 +410,7 @@ impl RocksDbManager {
 #[allow(dead_code)]
 struct ConfigSubscription {
     name: DbName,
-    updateable_rocksdb_opts: Box<dyn LiveLoad<RocksDbOptions> + Send + 'static>,
+    updateable_rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
     last_applied_opts: RocksDbOptions,
 }
 

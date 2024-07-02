@@ -46,6 +46,7 @@ pub enum Role {
     Admin,
     /// Serves the metadata store
     MetadataStore,
+    #[cfg(feature = "replicated-loglet")]
     /// Serves a log server for replicated loglets
     LogServer,
 }

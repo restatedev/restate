@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 pub use log_store::LogStoreError;
 use metrics::{counter, histogram, Histogram};
-pub use provider::LocalLogletProvider;
+pub use provider::Factory;
 use restate_core::ShutdownError;
 use restate_types::logs::SequenceNumber;
 use tokio::sync::Mutex;
@@ -43,7 +43,7 @@ use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATI
 use self::read_stream::LocalLogletReadStream;
 use self::utils::OffsetWatch;
 
-pub struct LocalLoglet {
+struct LocalLoglet {
     log_id: u64,
     log_store: RocksDbLogStore,
     log_writer: RocksDbLogWriterHandle,

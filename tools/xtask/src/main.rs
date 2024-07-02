@@ -110,7 +110,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         .run_in_scope(
             "bifrost init",
             None,
-            Bifrost::init(node_env.metadata.clone()),
+            Bifrost::init_in_memory(node_env.metadata.clone()),
         )
         .await;
 

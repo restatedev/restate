@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 
+replicated-loglet = []
 schemars = ["dep:schemars", "restate-serde-util/schema"]
 test-util = ["dep:tempfile", "dep:restate-test-util"]
 
@@ -27,6 +28,7 @@ bytestring = { workspace = true }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
+dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
 flexbuffers = { workspace = true }

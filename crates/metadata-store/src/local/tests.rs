@@ -22,16 +22,15 @@ use restate_core::network::grpc_util::create_grpc_channel_from_advertised_addres
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    reset_base_temp_dir_and_retain, CommonOptions, MetadataStoreOptions, RocksDbOptions,
+    reset_base_temp_dir_and_retain, Configuration, MetadataStoreOptions, RocksDbOptions,
 };
-use restate_types::live::{Constant, LiveLoad};
+use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 use crate::local::service::LocalMetadataStoreService;
-use crate::local::store::LocalMetadataStore;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
@@ -264,7 +263,20 @@ async fn durable_storage() -> anyhow::Result<()> {
         .await;
     // reset RocksDbManager to allow restarting the metadata store
     RocksDbManager::get().reset().await?;
-    let client = start_metadata_store(&opts, Constant::new(opts.rocksdb.clone()), &env.tc).await?;
+
+    let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
+    let bind_address = BindAddress::Uds(uds_path.clone());
+    let advertised_address = AdvertisedAddress::Uds(uds_path);
+    let mut metadata_store_opts = opts.clone();
+    metadata_store_opts.bind_address = bind_address;
+    let metadata_store_opts = Live::from_value(metadata_store_opts);
+    let client = start_metadata_store(
+        advertised_address,
+        metadata_store_opts.clone().boxed(),
+        metadata_store_opts.map(|c| &c.rocksdb).boxed(),
+        &env.tc,
+    )
+    .await?;
 
     // validate data
     env.tc
@@ -296,31 +308,43 @@ async fn durable_storage() -> anyhow::Result<()> {
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
 ) -> anyhow::Result<(MetadataStoreClient, TestCoreEnv<MockNetworkSender>)> {
+    // Setup metadata store on unix domain socket.
+    let mut config = Configuration::default();
+    let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
+    let bind_address = BindAddress::Uds(uds_path.clone());
+    let advertised_address = AdvertisedAddress::Uds(uds_path);
+    config.metadata_store = opts.clone();
+    config.metadata_store.bind_address = bind_address;
+    config.common.metadata_store_address = advertised_address.clone();
+
+    restate_types::config::set_current_config(config.clone());
+    let config = Live::from_value(config);
     let env = TestCoreEnvBuilder::new_with_mock_network().build().await;
 
     let task_center = &env.tc;
 
     task_center.run_in_scope_sync("db-manager-init", None, || {
-        RocksDbManager::init(Constant::new(CommonOptions::default()))
+        RocksDbManager::init(config.clone().map(|c| &c.common))
     });
 
-    let client =
-        start_metadata_store(opts, Constant::new(opts.rocksdb.clone()), task_center).await?;
+    let client = start_metadata_store(
+        advertised_address,
+        config.clone().map(|c| &c.metadata_store).boxed(),
+        config.clone().map(|c| &c.metadata_store.rocksdb).boxed(),
+        task_center,
+    )
+    .await?;
 
     Ok((client, env))
 }
 
 async fn start_metadata_store(
-    opts: &MetadataStoreOptions,
-    updateables_rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + Sync + Clone + 'static,
+    advertised_address: AdvertisedAddress,
+    opts: BoxedLiveLoad<MetadataStoreOptions>,
+    updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
-    let store = LocalMetadataStore::new(opts, updateables_rocksdb_options)?;
-
-    let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
-    let bind_address = BindAddress::Uds(uds_path.clone());
-    let advertised_address = AdvertisedAddress::Uds(uds_path);
-    let service = LocalMetadataStoreService::new(store, bind_address);
+    let service = LocalMetadataStoreService::from_options(opts, updateables_rocksdb_options);
     let grpc_service_name = service.grpc_service_name().to_owned();
 
     task_center.spawn(

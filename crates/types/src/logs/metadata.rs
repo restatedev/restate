@@ -75,11 +75,17 @@ pub struct LogletParams(String);
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
     Local,
     /// An in-memory loglet, primarily for testing.
     InMemory,
+    #[cfg(feature = "replicated-loglet")]
+    /// [IN DEVELOPMENT]
+    /// Replicated loglet implementation. This requires log-server role to run on
+    /// enough nodes in the cluster.
+    Replicated,
 }
 
 impl LogletConfig {

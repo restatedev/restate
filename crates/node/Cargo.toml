@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+replicated-loglet = ["restate-bifrost/replicated-loglet", "restate-log-server"]
 options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
@@ -20,7 +21,7 @@ restate-admin = { workspace = true, features = ["servers"] }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
-restate-log-server = { workspace = true }
+restate-log-server = { workspace = true, optional = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }

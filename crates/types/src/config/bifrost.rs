@@ -35,12 +35,18 @@ pub struct BifrostOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
     pub local: LocalLogletOptions,
+    #[cfg(feature = "replicated-loglet")]
+    /// [IN DEVELOPMENT]
+    /// Configuration of replicated loglet provider
+    pub replicated_loglet: ReplicatedLogletOptions,
 }
 
 impl Default for BifrostOptions {
     fn default() -> Self {
         Self {
             default_provider: ProviderKind::Local,
+            #[cfg(feature = "replicated-loglet")]
+            replicated_loglet: ReplicatedLogletOptions::default(),
             local: LocalLogletOptions::default(),
         }
     }
@@ -143,3 +149,12 @@ impl Default for LocalLogletOptions {
         }
     }
 }
+
+#[cfg(feature = "replicated-loglet")]
+#[serde_as]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ReplicatedLoglet", default))]
+#[serde(rename_all = "kebab-case")]
+#[builder(default)]
+pub struct ReplicatedLogletOptions {}
