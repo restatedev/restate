@@ -58,8 +58,8 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         // setup
         //
         let manager = PartitionStoreManager::create(
-            Constant::new(worker_options.storage.clone()),
-            Constant::new(worker_options.storage.rocksdb.clone()),
+            Constant::new(worker_options.storage.clone()).boxed(),
+            Constant::new(worker_options.storage.rocksdb.clone()).boxed(),
             &[(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX))],
         )
         .await

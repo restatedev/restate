@@ -16,7 +16,6 @@ mod service;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_types::net::AdvertisedAddress;
 pub use service::LocalMetadataStoreService;
-pub use store::BuildError;
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 

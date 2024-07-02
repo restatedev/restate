@@ -11,14 +11,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use enum_map::Enum;
-use restate_core::cancellation_watcher;
+use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::logs::metadata::ProviderKind;
 use tokio::task::JoinSet;
 use tracing::{debug, trace, warn};
 
 use crate::bifrost::BifrostInner;
-use crate::loglet::LogletProvider;
+use crate::provider::LogletProvider;
 
 pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
 type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
@@ -29,15 +30,24 @@ type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
 /// Tasks are expected to check for the cancellation token when appropriate and finalize their
 /// work before termination.
 pub struct Watchdog {
+    task_center: TaskCenter,
     inner: Arc<BifrostInner>,
+    sender: WatchdogSender,
     inbound: WatchdogReceiver,
     live_providers: Vec<Arc<dyn LogletProvider>>,
 }
 
 impl Watchdog {
-    pub fn new(inner: Arc<BifrostInner>, inbound: WatchdogReceiver) -> Self {
+    pub fn new(
+        task_center: TaskCenter,
+        inner: Arc<BifrostInner>,
+        sender: WatchdogSender,
+        inbound: WatchdogReceiver,
+    ) -> Self {
         Self {
+            task_center,
             inner,
+            sender,
             inbound,
             live_providers: Vec::with_capacity(ProviderKind::LENGTH),
         }
@@ -46,19 +56,38 @@ impl Watchdog {
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
             WatchdogCommand::ScheduleMetadataSync => {
-                // TODO: Convert to a managed background task
-                tokio::spawn({
-                    let bifrost = self.inner.clone();
+                let bifrost = self.inner.clone();
+                let _ = self.task_center.spawn(
+                    TaskKind::MetadataBackgroundSync,
+                    "bifrost-metadata-sync",
+                    None,
                     async move {
-                        let _ = bifrost.sync_metadata().await;
-                    }
-                });
+                        bifrost
+                            .sync_metadata()
+                            .await
+                            .context("Bifrost background metadata sync")
+                    },
+                );
             }
 
             WatchdogCommand::WatchProvider(provider) => {
                 self.live_providers.push(provider.clone());
+                // TODO: Convert to a managed background task
+                let _ = self.task_center.spawn(
+                    TaskKind::BifrostBackgroundHighPriority,
+                    "bifrost-provider-on-start",
+                    None,
+                    async move {
+                        provider.post_start().await;
+                        Ok(())
+                    },
+                );
             }
         }
+    }
+
+    pub fn sender(&self) -> WatchdogSender {
+        self.sender.clone()
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {

@@ -19,36 +19,47 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
-use restate_types::logs::metadata::LogletParams;
+use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::SequenceNumber;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info, warn};
 
-use crate::loglet::{
-    Loglet, LogletBase, LogletOffset, LogletProvider, LogletReadStream, SendableLogletReadStream,
-};
-use crate::LogRecord;
+use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletReadStream, SendableLogletReadStream};
+use crate::{LogRecord, LogletProvider};
 use crate::{ProviderError, Result};
 
 #[derive(Default)]
-pub struct MemoryLogletProvider {
-    store: AsyncMutex<HashMap<LogletParams, Arc<MemoryLoglet>>>,
+pub struct Factory {
     init_delay: Option<Duration>,
 }
 
-#[allow(dead_code)]
-impl MemoryLogletProvider {
-    pub fn new() -> Result<Arc<Self>, ProviderError> {
-        Ok(Arc::default())
+impl Factory {
+    pub fn with_init_delay(init_delay: Duration) -> Self {
+        Self {
+            init_delay: Some(init_delay),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::LogletProviderFactory for Factory {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::InMemory
     }
 
-    pub fn with_init_delay(init_delay: Duration) -> Arc<Self> {
-        Arc::new(Self {
-            init_delay: Some(init_delay),
-            ..Default::default()
-        })
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
+        Ok(Arc::new(MemoryLogletProvider {
+            store: Default::default(),
+            init_delay: self.init_delay.unwrap_or_default(),
+        }))
     }
+}
+
+#[derive(Default)]
+struct MemoryLogletProvider {
+    store: AsyncMutex<HashMap<LogletParams, Arc<MemoryLoglet>>>,
+    init_delay: Duration,
 }
 
 #[async_trait]
@@ -58,13 +69,13 @@ impl LogletProvider for MemoryLogletProvider {
 
         let loglet = match guard.entry(params.clone()) {
             hash_map::Entry::Vacant(entry) => {
-                if let Some(init_delay) = self.init_delay {
+                if !self.init_delay.is_zero() {
                     // Artificial delay to simulate slow loglet creation
                     info!(
                         "Simulating slow loglet creation, delaying for {:?}",
-                        init_delay
+                        self.init_delay
                     );
-                    tokio::time::sleep(init_delay).await;
+                    tokio::time::sleep(self.init_delay).await;
                 }
 
                 // Create loglet
@@ -75,11 +86,6 @@ impl LogletProvider for MemoryLogletProvider {
         };
 
         Ok(loglet as Arc<dyn Loglet>)
-    }
-
-    fn start(&self) -> Result<(), ProviderError> {
-        info!("Starting in-memory loglet provider");
-        Ok(())
     }
 
     async fn shutdown(&self) -> Result<(), ProviderError> {

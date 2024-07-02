@@ -8,22 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::network::grpc_util;
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::LiveLoad;
-use restate_types::net::BindAddress;
 use tonic::server::NamedService;
 
-use super::BuildError;
+use restate_core::network::grpc_util;
+use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
+use restate_rocksdb::RocksError;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::live::BoxedLiveLoad;
+
 use crate::grpc_svc;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::grpc::handler::LocalMetadataStoreHandler;
 use crate::local::store::LocalMetadataStore;
 
 pub struct LocalMetadataStoreService {
-    metadata_store: LocalMetadataStore,
-    bind_address: BindAddress,
+    opts: BoxedLiveLoad<MetadataStoreOptions>,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,24 +34,19 @@ pub enum Error {
     GrpcReflection(#[from] tonic_reflection::server::Error),
     #[error("system is shutting down")]
     Shutdown(#[from] ShutdownError),
+    #[error("rocksdb error: {0}")]
+    RocksDB(#[from] RocksError),
 }
 
 impl LocalMetadataStoreService {
-    pub fn new(metadata_store: LocalMetadataStore, bind_address: BindAddress) -> Self {
-        Self {
-            metadata_store,
-            bind_address,
-        }
-    }
     pub fn from_options(
-        opts: &MetadataStoreOptions,
-        rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + Sync + Clone + 'static,
-    ) -> Result<Self, BuildError> {
-        let store = LocalMetadataStore::new(opts, rocksdb_options)?;
-        Ok(LocalMetadataStoreService::new(
-            store,
-            opts.bind_address.clone(),
-        ))
+        opts: BoxedLiveLoad<MetadataStoreOptions>,
+        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    ) -> Self {
+        Self {
+            opts,
+            rocksdb_options,
+        }
     }
 
     pub fn grpc_service_name(&self) -> &str {
@@ -59,6 +54,13 @@ impl LocalMetadataStoreService {
     }
 
     pub async fn run(self) -> Result<(), Error> {
+        let LocalMetadataStoreService {
+            mut opts,
+            rocksdb_options,
+        } = self;
+        let options = opts.live_load();
+        let bind_address = options.bind_address.clone();
+        let store = LocalMetadataStore::create(options, rocksdb_options).await?;
         // Trace layer
         let span_factory = tower_http::trace::DefaultMakeSpan::new()
             .include_headers(true)
@@ -76,7 +78,7 @@ impl LocalMetadataStoreService {
             .layer(tower_http::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(health_service)
             .add_service(MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(
-                self.metadata_store.request_sender(),
+                store.request_sender(),
             )))
             .add_service(reflection_service_builder.build()?);
 
@@ -88,7 +90,7 @@ impl LocalMetadataStoreService {
             None,
             async move {
                 grpc_util::run_hyper_server(
-                    &self.bind_address,
+                    &bind_address,
                     service,
                     cancellation_watcher(),
                     "metadata-store-grpc",
@@ -98,7 +100,7 @@ impl LocalMetadataStoreService {
             },
         )?;
 
-        self.metadata_store.run().await;
+        store.run().await;
 
         Ok(())
     }

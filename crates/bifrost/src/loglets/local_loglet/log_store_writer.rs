@@ -24,7 +24,7 @@ use tracing::{debug, error, trace, warn};
 
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_types::config::LocalLogletOptions;
-use restate_types::live::LiveLoad;
+use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::SequenceNumber;
 
 use crate::loglet::LogletOffset;
@@ -76,7 +76,7 @@ impl LogStoreWriter {
     /// Must be called from task_center context
     pub fn start(
         mut self,
-        mut updateable: impl LiveLoad<LocalLogletOptions> + Send + 'static,
+        mut updateable: BoxedLiveLoad<LocalLogletOptions>,
     ) -> Result<RocksDbLogWriterHandle, ShutdownError> {
         // big enough to allows a second full batch to queue up while the existing one is being processed
         let batch_size = std::cmp::max(1, updateable.live_load().writer_batch_commit_count);

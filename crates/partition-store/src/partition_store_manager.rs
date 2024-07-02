@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use restate_types::live::BoxedLiveLoad;
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -54,7 +55,7 @@ struct PartitionLookup {
 impl PartitionStoreManager {
     pub async fn create(
         mut storage_opts: impl LiveLoad<StorageOptions> + Send + 'static,
-        updateable_opts: impl LiveLoad<RocksDbOptions> + Send + 'static,
+        updateable_opts: BoxedLiveLoad<RocksDbOptions>,
         initial_partition_set: &[(PartitionId, RangeInclusive<PartitionKey>)],
     ) -> std::result::Result<Self, RocksError> {
         let options = storage_opts.live_load();
@@ -71,10 +72,10 @@ impl PartitionStoreManager {
             .build_as_optimistic_db();
 
         let manager = RocksDbManager::get();
-        // todo remove this when open_db is async
-        let raw_db = tokio::task::spawn_blocking(move || manager.open_db(updateable_opts, db_spec))
+        let raw_db = manager
+            .open_db(updateable_opts, db_spec)
             .await
-            .map_err(|_| ShutdownError)??;
+            .map_err(|_| ShutdownError)?;
 
         let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 

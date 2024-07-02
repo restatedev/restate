@@ -23,7 +23,7 @@ use restate_storage_api::StorageError;
 use restate_types::config::{CommonOptions, WorkerOptions};
 use restate_types::identifiers::{InvocationId, PartitionId, PartitionKey, ServiceId};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
-use restate_types::live::Constant;
+use restate_types::live::{Constant, Live};
 use restate_types::state_mut::ExternalStateMutation;
 
 mod idempotency_table_test;
@@ -47,10 +47,10 @@ async fn storage_test_environment() -> PartitionStore {
     tc.run_in_scope_sync("db-manager-init", None, || {
         RocksDbManager::init(Constant::new(CommonOptions::default()))
     });
-    let worker_options = WorkerOptions::default();
+    let worker_options = Live::from_value(WorkerOptions::default());
     let manager = PartitionStoreManager::create(
-        Constant::new(worker_options.storage.clone()),
-        Constant::new(worker_options.storage.rocksdb.clone()),
+        worker_options.clone().map(|c| &c.storage),
+        worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
         &[],
     )
     .await
@@ -61,7 +61,7 @@ async fn storage_test_environment() -> PartitionStore {
             PartitionId::MIN,
             RangeInclusive::new(0, PartitionKey::MAX - 1),
             OpenMode::CreateIfMissing,
-            &worker_options.storage.rocksdb,
+            &worker_options.pinned().storage.rocksdb,
         )
         .await
         .expect("DB storage creation succeeds")
