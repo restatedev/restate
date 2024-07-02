@@ -10,7 +10,6 @@
 
 use bytes::{BufMut, BytesMut};
 use bytestring::ByteString;
-use codederror::CodedError;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_rocksdb::{
@@ -18,7 +17,7 @@ use restate_rocksdb::{
     RocksError,
 };
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::LiveLoad;
+use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{
     StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
@@ -88,13 +87,6 @@ impl Error {
     }
 }
 
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum BuildError {
-    #[error("failed opening rocksdb: {0}")]
-    #[code(unknown)]
-    RocksDB(#[from] RocksError),
-}
-
 /// Single node metadata store which stores the key value pairs in RocksDB.
 ///
 /// In order to avoid issues arising from concurrency, we run the metadata
@@ -102,7 +94,7 @@ pub enum BuildError {
 pub struct LocalMetadataStore {
     db: Arc<DB>,
     rocksdb: Arc<RocksDb>,
-    rocksdb_options: Box<dyn LiveLoad<RocksDbOptions> + Send + Sync>,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     request_rx: RequestReceiver,
     buffer: BytesMut,
 
@@ -111,10 +103,10 @@ pub struct LocalMetadataStore {
 }
 
 impl LocalMetadataStore {
-    pub fn new(
+    pub async fn create(
         options: &MetadataStoreOptions,
-        updateable_rocksdb_options: impl LiveLoad<RocksDbOptions> + Clone + Send + Sync + 'static,
-    ) -> std::result::Result<Self, BuildError> {
+        updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    ) -> std::result::Result<Self, RocksError> {
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
@@ -128,7 +120,9 @@ impl LocalMetadataStore {
             .ensure_column_families(cfs)
             .build_as_db();
 
-        let db = db_manager.open_db(updateable_rocksdb_options.clone(), db_spec)?;
+        let db = db_manager
+            .open_db(updateable_rocksdb_options.clone(), db_spec)
+            .await?;
         let rocksdb = db_manager
             .get_db(db_name)
             .expect("metadata store db is open");
@@ -136,7 +130,7 @@ impl LocalMetadataStore {
         Ok(Self {
             db,
             rocksdb,
-            rocksdb_options: Box::new(updateable_rocksdb_options),
+            rocksdb_options: updateable_rocksdb_options,
             buffer: BytesMut::default(),
             request_rx,
             request_tx,

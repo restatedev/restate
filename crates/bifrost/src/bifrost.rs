@@ -11,15 +11,15 @@
 // TODO: Remove after fleshing the code out.
 #![allow(dead_code)]
 
-use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use bytes::BytesMut;
 use enum_map::EnumMap;
-use once_cell::sync::OnceCell;
+
 use smallvec::SmallVec;
-use tracing::{error, instrument};
+use tracing::instrument;
 
 use restate_core::{Metadata, MetadataKind};
 use restate_types::logs::metadata::{ProviderKind, Segment};
@@ -27,10 +27,11 @@ use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
 
-use crate::loglet::{LogletBase, LogletProvider, LogletWrapper};
-use crate::watchdog::{WatchdogCommand, WatchdogSender};
+use crate::loglet::{LogletBase, LogletWrapper};
+use crate::watchdog::WatchdogSender;
 use crate::{
-    Error, FindTailAttributes, LogReadStream, LogRecord, Result, SMALL_BATCH_THRESHOLD_COUNT,
+    Error, FindTailAttributes, LogReadStream, LogRecord, LogletProvider, Result,
+    SMALL_BATCH_THRESHOLD_COUNT,
 };
 
 /// Bifrost is Restate's durable interconnect system
@@ -50,10 +51,40 @@ impl Bifrost {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn init(metadata: Metadata) -> Self {
+    pub async fn init_in_memory(metadata: Metadata) -> Self {
+        use crate::loglets::memory_loglet;
+
+        Self::init_with_factory(metadata, memory_loglet::Factory::default()).await
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn init_local(metadata: Metadata) -> Self {
+        use restate_types::config::Configuration;
+
         use crate::BifrostService;
 
-        let bifrost_svc = BifrostService::new(metadata);
+        let config = Configuration::updateable();
+        let bifrost_svc =
+            BifrostService::new(restate_core::task_center(), metadata).enable_local_loglet(&config);
+        let bifrost = bifrost_svc.handle();
+
+        // start bifrost service in the background
+        bifrost_svc
+            .start()
+            .await
+            .expect("in memory loglet must start");
+        bifrost
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn init_with_factory(
+        metadata: Metadata,
+        factory: impl crate::LogletProviderFactory,
+    ) -> Self {
+        use crate::BifrostService;
+
+        let bifrost_svc =
+            BifrostService::new(restate_core::task_center(), metadata).with_factory(factory);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
@@ -170,7 +201,8 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 pub struct BifrostInner {
     metadata: Metadata,
     watchdog: WatchdogSender,
-    providers: EnumMap<ProviderKind, OnceCell<Arc<dyn LogletProvider>>>,
+    // Initialized after BifrostService::start completes.
+    pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
 }
 
@@ -322,36 +354,17 @@ impl BifrostInner {
     }
 
     // --- Helper functions --- //
+    /// Get the provider for a given kind. A provider must be enabled and BifrostService **must**
+    /// be started before calling this.
+    fn provider_for(&self, kind: ProviderKind) -> Result<&Arc<dyn LogletProvider>> {
+        let providers = self
+            .providers
+            .get()
+            .expect("BifrostService must be started prior to using Bifrost");
 
-    /// Get the provider for a given kind. If the provider is not yet initialized, it will be
-    /// lazily initialized by the watchdog.
-    fn provider_for(&self, kind: ProviderKind) -> &dyn LogletProvider {
-        self.providers[kind]
-            .get_or_init(|| {
-                let provider =
-                    crate::loglet::create_provider(kind).expect("provider is able to get created");
-                if let Err(e) = provider.start() {
-                    error!("Failed to start loglet provider {}: {}", kind, e);
-                    // todo: Handle provider errors by a graceful system shutdown
-                    // task_center().shutdown_node("Bifrost loglet provider startup error", 1);
-                    panic!("Failed to start loglet provider {}: {}", kind, e);
-                }
-                // tell watchdog about it.
-                let _ = self
-                    .watchdog
-                    .send(WatchdogCommand::WatchProvider(provider.clone()));
-                provider
-            })
-            .deref()
-    }
-
-    /// Injects a provider for testing purposes. The call is responsible for starting the provider
-    /// and that it's monitored by watchdog if necessary.
-    /// This will only work if the provider was never accessed by bifrost before this call.
-    #[cfg(test)]
-    #[track_caller]
-    fn inject_provider(&self, kind: ProviderKind, provider: Arc<dyn LogletProvider>) {
-        assert!(self.providers[kind].try_insert(provider).is_ok());
+        providers[kind]
+            .as_ref()
+            .ok_or_else(|| Error::Disabled(kind.to_string()))
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
@@ -377,7 +390,7 @@ impl BifrostInner {
     }
 
     async fn get_loglet(&self, segment: &Segment) -> Result<LogletWrapper, Error> {
-        let provider = self.provider_for(segment.config.kind);
+        let provider = self.provider_for(segment.config.kind)?;
         let loglet = provider.get_loglet(&segment.config.params).await?;
         Ok(LogletWrapper::new(segment.base_lsn, loglet))
     }
@@ -389,7 +402,7 @@ mod tests {
 
     use super::*;
 
-    use crate::loglets::memory_loglet::MemoryLogletProvider;
+    use crate::loglets::memory_loglet::{self};
     use googletest::prelude::*;
 
     use crate::{Record, TrimGap};
@@ -414,7 +427,7 @@ mod tests {
             .await;
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            let bifrost = Bifrost::init(metadata()).await;
+            let bifrost = Bifrost::init_in_memory(metadata()).await;
 
             let clean_bifrost_clone = bifrost.clone();
 
@@ -471,7 +484,6 @@ mod tests {
             let res = bifrost.append(LogId::from(0), Payload::default()).await;
             assert!(matches!(res, Err(Error::Shutdown(_))));
             // Validate the watchdog has called the provider::start() function.
-            assert!(logs_contain("Starting in-memory loglet provider"));
             assert!(logs_contain("Shutting down in-memory loglet provider"));
             assert!(logs_contain("Bifrost watchdog shutdown complete"));
             Ok(())
@@ -487,14 +499,8 @@ mod tests {
             let delay = Duration::from_secs(5);
             // This memory provider adds a delay to its loglet initialization, we want
             // to ensure that appends do not fail while waiting for the loglet;
-            let memory_provider = MemoryLogletProvider::with_init_delay(delay);
-
-            let bifrost = Bifrost::init(metadata()).await;
-
-            // Inject out preconfigured memory provider
-            bifrost
-                .inner()
-                .inject_provider(ProviderKind::InMemory, memory_provider);
+            let factory = memory_loglet::Factory::with_init_delay(delay);
+            let bifrost = Bifrost::init_with_factory(metadata(), factory).await;
 
             let start = tokio::time::Instant::now();
             let lsn = bifrost.append(LogId::from(0), Payload::default()).await?;
@@ -518,7 +524,7 @@ mod tests {
                 RocksDbManager::init(Constant::new(CommonOptions::default()));
 
                 let log_id = LogId::from(0);
-                let bifrost = Bifrost::init(metadata()).await;
+                let bifrost = Bifrost::init_local(metadata()).await;
 
                 assert!(bifrost.get_trim_point(log_id).await?.is_none());
 

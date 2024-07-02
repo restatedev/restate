@@ -14,25 +14,13 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use async_trait::async_trait;
-
 use bytes::Bytes;
 use futures::Stream;
-use restate_types::config::Configuration;
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
+
 use restate_types::logs::{Lsn, SequenceNumber};
 
 use crate::Result;
-use crate::{LogRecord, LsnExt, ProviderError};
-
-pub fn create_provider(kind: ProviderKind) -> Result<Arc<dyn LogletProvider>, ProviderError> {
-    match kind {
-        ProviderKind::Local => Ok(crate::loglets::local_loglet::LocalLogletProvider::new(
-            &Configuration::pinned().bifrost.local,
-            Configuration::mapped_updateable(|c| &c.bifrost.local.rocksdb),
-        )?),
-        ProviderKind::InMemory => Ok(crate::loglets::memory_loglet::MemoryLogletProvider::new()?),
-    }
-}
+use crate::{LogRecord, LsnExt};
 
 // Inner loglet offset
 #[derive(
@@ -72,20 +60,6 @@ impl SequenceNumber for LogletOffset {
         } else {
             Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
         }
-    }
-}
-
-#[async_trait]
-pub trait LogletProvider: Send + Sync {
-    /// Create a loglet client for a given segment and configuration.
-    async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>>;
-
-    // Hook for handling lazy initialization
-    fn start(&self) -> Result<(), ProviderError>;
-
-    // Hook for handling graceful shutdown
-    async fn shutdown(&self) -> Result<(), ProviderError> {
-        Ok(())
     }
 }
 

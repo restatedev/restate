@@ -34,6 +34,9 @@ pub enum Error {
     #[error("failed syncing logs metadata: {0}")]
     // unfortunately, we have to use Arc here, because the SyncError is not Clone.
     MetadataSync(#[from] Arc<SyncError>),
+    /// Provider is unknown or disabled
+    #[error("bifrost provider '{0}' is disabled or unrecognized")]
+    Disabled(String),
 }
 
 #[derive(Debug, thiserror::Error)]

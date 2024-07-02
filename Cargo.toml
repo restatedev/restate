@@ -90,7 +90,7 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
-datafusion = { version = "35.0.0" }
+datafusion = { version = "35.0.0", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
 datafusion-expr = { version = "35.0.0" }
 derive-getters = {  version = "0.4.0" }
 derive_builder = "0.20.0"
@@ -105,6 +105,7 @@ futures-util = "0.3.25"
 googletest = "0.10"
 hostname = { version = "0.4.0" }
 http = "0.2.9"
+http-serde = { version = "1.1.2" }
 humantime = "2.1.0"
 hyper = { version = "0.14.24", default-features = false }
 hyper-rustls = { version = "0.24.1", features = ["http2"] }

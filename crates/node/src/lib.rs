@@ -75,12 +75,6 @@ pub enum BuildError {
         #[code]
         roles::AdminRoleBuildError,
     ),
-    #[error("building metadata store failed: {0}")]
-    MetadataStore(
-        #[from]
-        #[code]
-        restate_metadata_store::local::BuildError,
-    ),
     #[error("building log-server failed: {0}")]
     LogServer(
         #[from]
@@ -111,6 +105,7 @@ pub struct Node {
 
 impl Node {
     pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
+        let tc = task_center();
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
         if config.common.allow_bootstrap {
@@ -130,11 +125,12 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
-                &config.metadata_store,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
                     .clone()
-                    .map(|config| &config.metadata_store.rocksdb),
-            )?)
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            ))
         } else {
             None
         };
@@ -154,9 +150,11 @@ impl Node {
         );
         metadata_manager.register_in_message_router(&mut router_builder);
         let updating_schema_information = metadata.updateable_schema();
-        let bifrost = BifrostService::new(metadata.clone());
 
-        let tc = task_center();
+        // Setup bifrost.
+        let bifrost_svc = BifrostService::new(tc.clone(), metadata.clone())
+            .enable_local_loglet(&updateable_config);
+
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
@@ -193,7 +191,7 @@ impl Node {
                     updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
-                    bifrost.handle(),
+                    bifrost_svc.handle(),
                     metadata_store_client,
                     updating_schema_information,
                 )
@@ -228,7 +226,7 @@ impl Node {
         Ok(Node {
             updateable_config,
             metadata_manager,
-            bifrost,
+            bifrost: bifrost_svc,
             metadata_store_role,
             admin_role,
             worker_role,

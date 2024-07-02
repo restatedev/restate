@@ -28,7 +28,7 @@ use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
 use restate_types::config::{reset_base_temp_dir, reset_base_temp_dir_and_retain, Configuration};
-use restate_types::live::Constant;
+use restate_types::live::Live;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
 // Configure jemalloc similar to mimic restate server
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
     restate_types::config::set_current_config(config.clone());
 
     let recorder = PrometheusBuilder::new().install_recorder().unwrap();
-    let (tc, bifrost) = spawn_environment(config.clone(), 1);
+    let (tc, bifrost) = spawn_environment(Configuration::updateable(), 1);
     let task_center = tc.clone();
     let args = cli_args.clone();
     tc.block_on("benchpress", None, async move {
@@ -128,13 +128,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifrost) {
+fn spawn_environment(config: Live<Configuration>, num_logs: u64) -> (TaskCenter, Bifrost) {
     let tc = TaskCenterBuilder::default()
-        .options(config.common.clone())
+        .options(config.pinned().common.clone())
         .build()
         .expect("task_center builds");
 
-    restate_types::config::set_current_config(config.clone());
     let task_center = tc.clone();
     let bifrost = tc.block_on("spawn", None, async move {
         let metadata_builder = MetadataBuilder::default();
@@ -150,10 +149,10 @@ fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifro
         let metadata_writer = metadata_manager.writer();
         task_center.try_set_global_metadata(metadata.clone());
 
-        RocksDbManager::init(Constant::new(config.common));
+        RocksDbManager::init(config.clone().map(|c| &c.common));
 
         let logs = restate_types::logs::metadata::create_static_metadata(
-            config.bifrost.default_provider,
+            config.pinned().bifrost.default_provider,
             num_logs,
         );
 
@@ -164,7 +163,9 @@ fn spawn_environment(config: Configuration, num_logs: u64) -> (TaskCenter, Bifro
         metadata_writer.submit(logs);
         spawn_metadata_manager(&task_center, metadata_manager).expect("metadata manager starts");
 
-        let bifrost_svc = BifrostService::new(metadata);
+        let bifrost_svc = BifrostService::new(task_center, metadata)
+            .enable_in_memory_loglet()
+            .enable_local_loglet(&config);
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background

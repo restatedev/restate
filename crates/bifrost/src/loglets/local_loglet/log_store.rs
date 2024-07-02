@@ -14,7 +14,7 @@ use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::LiveLoad;
+use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
 use static_assertions::const_assert;
@@ -53,9 +53,9 @@ pub struct RocksDbLogStore {
 }
 
 impl RocksDbLogStore {
-    pub fn new(
+    pub async fn create(
         options: &LocalLogletOptions,
-        updateable_options: impl LiveLoad<RocksDbOptions> + Send + 'static,
+        updateable_options: BoxedLiveLoad<RocksDbOptions>,
     ) -> Result<Self, LogStoreError> {
         let db_manager = RocksDbManager::get();
 
@@ -79,7 +79,7 @@ impl RocksDbLogStore {
             .build_as_db();
         let db_name = db_spec.name().clone();
         // todo: use the returned rocksdb object when open_db returns Arc<RocksDb>
-        let _ = db_manager.open_db(updateable_options, db_spec)?;
+        let _ = db_manager.open_db(updateable_options, db_spec).await?;
         let rocksdb = db_manager.get_db(db_name).unwrap();
         Ok(Self { rocksdb })
     }

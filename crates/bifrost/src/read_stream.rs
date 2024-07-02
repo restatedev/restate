@@ -16,6 +16,7 @@ use std::task::Poll;
 use futures::stream::FusedStream;
 use futures::Stream;
 use pin_project::pin_project;
+
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 
 use crate::bifrost::BifrostInner;
@@ -156,15 +157,15 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
-    use crate::{Bifrost, Record, TrimGap};
+    use crate::{BifrostService, Record, TrimGap};
 
     use super::*;
     use googletest::prelude::*;
 
-    use restate_core::{metadata, TaskKind, TestCoreEnvBuilder};
+    use restate_core::{metadata, task_center, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::CommonOptions;
-    use restate_types::live::Constant;
+    use restate_types::config::{CommonOptions, Configuration};
+    use restate_types::live::{Constant, Live};
     use restate_types::logs::metadata::ProviderKind;
     use tokio_stream::StreamExt;
     use tracing::info;
@@ -190,10 +191,13 @@ mod tests {
 
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
+            let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
             let read_after = Lsn::from(5);
-            let bifrost = Bifrost::init(metadata()).await;
+            let svc = BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
+            let bifrost = svc.handle();
+            svc.start().await.expect("loglet must start");
 
             let log_id = LogId::from(0);
             let mut reader = bifrost.create_reader(log_id, read_after, Lsn::MAX).await?;
@@ -279,10 +283,14 @@ mod tests {
         node_env
             .tc
             .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
                 RocksDbManager::init(Constant::new(CommonOptions::default()));
 
                 let log_id = LogId::from(0);
-                let bifrost = Bifrost::init(metadata()).await;
+                let svc =
+                    BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
+                let bifrost = svc.handle();
+                svc.start().await.expect("loglet must start");
 
                 assert!(bifrost.get_trim_point(log_id).await?.is_none());
 

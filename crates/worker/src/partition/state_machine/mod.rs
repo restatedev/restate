@@ -125,7 +125,7 @@ mod tests {
     use restate_types::journal::enriched::EnrichedRawEntry;
     use restate_types::journal::{Completion, CompletionResult, EntryResult};
     use restate_types::journal::{Entry, EntryType};
-    use restate_types::live::Constant;
+    use restate_types::live::{Constant, Live};
     use restate_types::state_mut::ExternalStateMutation;
     use restate_types::{ingress, GenerationalNodeId};
     use std::collections::{HashMap, HashSet};
@@ -150,14 +150,14 @@ mod tests {
             task_center().run_in_scope_sync("db-manager-init", None, || {
                 RocksDbManager::init(Constant::new(CommonOptions::default()))
             });
-            let worker_options = WorkerOptions::default();
+            let worker_options = Live::from_value(WorkerOptions::default());
             info!(
                 "Using RocksDB temp directory {}",
-                worker_options.storage.data_dir().display()
+                worker_options.pinned().storage.data_dir().display()
             );
             let manager = PartitionStoreManager::create(
-                Constant::new(worker_options.storage.clone()),
-                Constant::new(worker_options.storage.rocksdb.clone()),
+                worker_options.clone().map(|c| &c.storage),
+                worker_options.clone().map(|c| &c.storage.rocksdb).boxed(),
                 &[],
             )
             .await
@@ -167,7 +167,7 @@ mod tests {
                     PartitionId::MIN,
                     RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
                     OpenMode::CreateIfMissing,
-                    &worker_options.storage.rocksdb,
+                    &worker_options.pinned().storage.rocksdb,
                 )
                 .await
                 .unwrap();
