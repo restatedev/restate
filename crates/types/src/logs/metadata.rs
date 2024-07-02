@@ -81,6 +81,11 @@ pub enum ProviderKind {
     Local,
     /// An in-memory loglet, primarily for testing.
     InMemory,
+    #[cfg(feature = "replicated-loglet")]
+    /// [IN DEVELOPMENT]
+    /// Replicated loglet implementation. This requires log-server role to run on
+    /// enough nodes in the cluster.
+    Replicated,
 }
 
 impl LogletConfig {
