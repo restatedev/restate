@@ -71,15 +71,18 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
     }
     table.set_styled_header(headers);
 
+    let mut row_count: usize = 0;
     if sql_opts.json {
         let mut writer = arrow::json::ArrayWriter::new(io::stdout());
         for batch in resp.batches {
+            row_count += batch.num_rows();
             writer.write_batches(&[&batch])?;
         }
         writer.finish()?;
     } else if sql_opts.jsonl {
         let mut writer = arrow::json::LineDelimitedWriter::new(io::stdout());
         for batch in resp.batches {
+            row_count += batch.num_rows();
             writer.write_batches(&[&batch])?;
         }
         writer.finish()?;
@@ -110,7 +113,11 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
 
     c_eprintln!(
         "{} rows. Query took {:?}",
-        table.row_count(),
+        if sql_opts.json || sql_opts.jsonl {
+            row_count
+        } else {
+            table.row_count()
+        },
         Styled(Style::Notice, start_time.elapsed())
     );
     Ok(())
