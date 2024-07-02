@@ -13,11 +13,12 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use restate_types::config::{LocalLogletOptions, RocksDbOptions};
-use restate_types::live::LiveLoad;
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
+
+use restate_types::config::{LocalLogletOptions, RocksDbOptions};
+use restate_types::live::BoxedLiveLoad;
+use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
@@ -26,34 +27,25 @@ use crate::loglet::{Loglet, LogletOffset};
 use crate::ProviderError;
 use crate::{Error, LogletProvider};
 
-pub struct Factory<T>
-where
-    T: LiveLoad<LocalLogletOptions> + Send + 'static,
-{
-    log_store: RocksDbLogStore,
-    options: T,
+pub struct Factory {
+    options: BoxedLiveLoad<LocalLogletOptions>,
+    rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
 }
 
-impl<T> Factory<T>
-where
-    T: LiveLoad<LocalLogletOptions> + Send + 'static,
-{
+impl Factory {
     pub fn new(
-        mut options: T,
-        updateable_rocksdb_options: impl LiveLoad<RocksDbOptions> + Send + 'static,
+        options: BoxedLiveLoad<LocalLogletOptions>,
+        rocksdb_opts: BoxedLiveLoad<RocksDbOptions>,
     ) -> Self {
-        let log_store = RocksDbLogStore::new(options.live_load(), updateable_rocksdb_options)
-            .context("RocksDb LogStore")
-            .unwrap();
-        Self { log_store, options }
+        Self {
+            options,
+            rocksdb_opts,
+        }
     }
 }
 
 #[async_trait]
-impl<T> crate::LogletProviderFactory for Factory<T>
-where
-    T: LiveLoad<LocalLogletOptions> + Send + 'static,
-{
+impl crate::LogletProviderFactory for Factory {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Local
     }
@@ -61,10 +53,14 @@ where
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
         metric_definitions::describe_metrics();
         let Factory {
-            log_store,
-            options,
+            mut options,
+            rocksdb_opts,
             // updateable_rocksdb_options,
         } = *self;
+        let opts = options.live_load();
+        let log_store = RocksDbLogStore::create(opts, rocksdb_opts)
+            .await
+            .context("RocksDb LogStore")?;
         let log_writer = log_store.create_writer().start(options)?;
         debug!("Started a bifrost local loglet provider");
         Ok(Arc::new(LocalLogletProvider {

@@ -66,8 +66,8 @@ impl BifrostService {
 
     pub fn enable_local_loglet(mut self, config: &Live<Configuration>) -> Self {
         let factory = local_loglet::Factory::new(
-            config.clone().map(|c| &c.bifrost.local),
-            config.clone().map(|c| &c.bifrost.local.rocksdb),
+            config.clone().map(|c| &c.bifrost.local).boxed(),
+            config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
         );
         self.factories.insert(factory.kind(), Box::new(factory));
         self

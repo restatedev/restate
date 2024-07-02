@@ -75,12 +75,6 @@ pub enum BuildError {
         #[code]
         roles::AdminRoleBuildError,
     ),
-    #[error("building metadata store failed: {0}")]
-    MetadataStore(
-        #[from]
-        #[code]
-        restate_metadata_store::local::BuildError,
-    ),
     #[error("building log-server failed: {0}")]
     LogServer(
         #[from]
@@ -131,11 +125,12 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(LocalMetadataStoreService::from_options(
-                &config.metadata_store,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
                 updateable_config
                     .clone()
-                    .map(|config| &config.metadata_store.rocksdb),
-            )?)
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            ))
         } else {
             None
         };

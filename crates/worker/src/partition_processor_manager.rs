@@ -653,8 +653,8 @@ mod tests {
 
         let all_partition_keys = RangeInclusive::new(0, PartitionKey::MAX);
         let partition_store_manager = PartitionStoreManager::create(
-            Constant::new(storage_options.clone()),
-            Constant::new(rocksdb_options.clone()),
+            Constant::new(storage_options.clone()).boxed(),
+            Constant::new(rocksdb_options.clone()).boxed(),
             &[(PartitionId::MIN, all_partition_keys.clone())],
         )
         .await?;

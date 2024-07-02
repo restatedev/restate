@@ -136,7 +136,10 @@ impl Worker {
 
         let partition_store_manager = PartitionStoreManager::create(
             updateable_config.clone().map(|c| &c.worker.storage),
-            updateable_config.clone().map(|c| &c.worker.storage.rocksdb),
+            updateable_config
+                .clone()
+                .map(|c| &c.worker.storage.rocksdb)
+                .boxed(),
             &[],
         )
         .await?;
