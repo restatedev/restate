@@ -13,6 +13,7 @@ use codederror::CodedError;
 use restate_core::network::MessageRouterBuilder;
 use restate_network::Networking;
 use std::time::Duration;
+use tokio::sync::oneshot;
 use tonic::transport::Channel;
 
 use restate_admin::service::AdminService;
@@ -96,6 +97,7 @@ impl AdminRole {
         self,
         _bootstrap_cluster: bool,
         bifrost: Bifrost,
+        all_partitions_started_tx: oneshot::Sender<()>,
     ) -> Result<(), anyhow::Error> {
         let tc = task_center();
 
@@ -103,7 +105,8 @@ impl AdminRole {
             TaskKind::SystemService,
             "cluster-controller-service",
             None,
-            self.controller.run(bifrost.clone()),
+            self.controller
+                .run(bifrost.clone(), Some(all_partitions_started_tx)),
         )?;
 
         // todo: Make address configurable

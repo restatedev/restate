@@ -11,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_network::rpc_router::RpcRouter;
 use restate_node_protocol::partition_processor_manager::GetProcessorsState;
@@ -19,7 +21,6 @@ use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::processors::PartitionProcessorStatus;
 use restate_types::time::MillisSinceEpoch;
-use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use restate_core::{Metadata, ShutdownError, TaskCenter};
@@ -43,26 +44,37 @@ impl ClusterState {
             .map(|last_refreshed| last_refreshed.elapsed().as_secs() < 10)
             .unwrap_or(false)
     }
+
+    pub fn alive_nodes(&self) -> impl Iterator<Item = &AliveNode> {
+        self.nodes.values().flat_map(|node| match node {
+            NodeState::Alive(alive_node) => Some(alive_node),
+            NodeState::Dead { .. } => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum NodeState {
-    Alive {
-        last_heartbeat_at: MillisSinceEpoch,
-        generation: GenerationalNodeId,
-        partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
-    },
+    Alive(AliveNode),
     Dead {
         last_seen_alive: Option<MillisSinceEpoch>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct AliveNode {
+    pub last_heartbeat_at: MillisSinceEpoch,
+    pub generation: GenerationalNodeId,
+    pub partitions: BTreeMap<PartitionId, PartitionProcessorStatus>,
 }
 
 pub struct ClusterStateRefresher<N> {
     task_center: TaskCenter,
     metadata: Metadata,
     get_state_router: RpcRouter<GetProcessorsState, N>,
-    updateable_cluster_state: Arc<ArcSwap<ClusterState>>,
     in_flight_refresh: Option<JoinHandle<()>>,
+    cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
+    cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
 }
 
 impl<N> ClusterStateRefresher<N>
@@ -83,19 +95,27 @@ where
             partition_table_version: Version::INVALID,
             nodes: BTreeMap::new(),
         };
-        let updateable_cluster_state = Arc::new(ArcSwap::from_pointee(initial_state));
+        let (cluster_state_update_tx, cluster_state_update_rx) =
+            watch::channel(Arc::from(initial_state));
 
         Self {
             task_center,
             metadata,
             get_state_router,
-            updateable_cluster_state,
             in_flight_refresh: None,
+            cluster_state_update_rx,
+            cluster_state_update_tx: Arc::new(cluster_state_update_tx),
         }
     }
 
     pub fn get_cluster_state(&self) -> Arc<ClusterState> {
-        self.updateable_cluster_state.load_full()
+        Arc::clone(&self.cluster_state_update_rx.borrow())
+    }
+
+    pub fn cluster_state_watcher(&self) -> ClusterStateWatcher {
+        ClusterStateWatcher {
+            cluster_state_watcher: self.cluster_state_update_rx.clone(),
+        }
     }
 
     pub fn schedule_refresh(&mut self) -> Result<(), ShutdownError> {
@@ -112,7 +132,7 @@ where
         self.in_flight_refresh = Self::start_refresh_task(
             self.task_center.clone(),
             self.get_state_router.clone(),
-            self.updateable_cluster_state.clone(),
+            Arc::clone(&self.cluster_state_update_tx),
             self.metadata.clone(),
         )?;
 
@@ -122,12 +142,12 @@ where
     fn start_refresh_task(
         tc: TaskCenter,
         get_state_router: RpcRouter<GetProcessorsState, N>,
-        updateable_cluster_state: Arc<ArcSwap<ClusterState>>,
+        cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
         metadata: Metadata,
     ) -> Result<Option<JoinHandle<()>>, ShutdownError> {
         let task_center = tc.clone();
         let refresh = async move {
-            let last_state = updateable_cluster_state.load();
+            let last_state = Arc::clone(&cluster_state_tx.borrow());
             // make sure we have a partition table that equals or newer than last refresh
             let partition_table = metadata
                 .wait_for_partition_table(last_state.partition_table_version)
@@ -184,9 +204,9 @@ where
                             .nodes
                             .get(&node_id)
                             .and_then(|state| match state {
-                                NodeState::Alive {
+                                NodeState::Alive(AliveNode {
                                     last_heartbeat_at, ..
-                                } => Some(*last_heartbeat_at),
+                                }) => Some(*last_heartbeat_at),
                                 NodeState::Dead { last_seen_alive } => *last_seen_alive,
                             });
 
@@ -198,11 +218,11 @@ where
 
                 nodes.insert(
                     node_id,
-                    NodeState::Alive {
+                    NodeState::Alive(AliveNode {
                         last_heartbeat_at: MillisSinceEpoch::now(),
                         generation: from,
                         partitions: msg.state,
-                    },
+                    }),
                 );
             }
 
@@ -214,7 +234,7 @@ where
             };
 
             // publish the new state
-            updateable_cluster_state.store(Arc::new(state));
+            cluster_state_tx.send(Arc::new(state))?;
             Ok(())
         };
 
@@ -228,5 +248,20 @@ where
         // If this returned None, it means that the task completed or has been
         // cancelled before we get to this point.
         Ok(task_center.take_task(task_id))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ClusterStateWatcher {
+    cluster_state_watcher: watch::Receiver<Arc<ClusterState>>,
+}
+
+impl ClusterStateWatcher {
+    pub async fn next_cluster_state(&mut self) -> Result<Arc<ClusterState>, ShutdownError> {
+        self.cluster_state_watcher
+            .changed()
+            .await
+            .map_err(|_| ShutdownError)?;
+        Ok(Arc::clone(&self.cluster_state_watcher.borrow_and_update()))
     }
 }

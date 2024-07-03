@@ -15,7 +15,10 @@ use std::sync::Arc;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
-use tokio::time::{Instant, Interval};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time;
+use tokio::time::{Instant, Interval, MissedTickBehavior};
+use tracing::{debug, warn};
 
 use restate_node_protocol::cluster_controller::{
     Action, AttachRequest, AttachResponse, RunPartition,
@@ -27,18 +30,17 @@ use restate_types::partition_table::FixedPartitionTable;
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskCenter};
+use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskCenter, TaskKind};
+use restate_node_protocol::metadata::MetadataKind;
 use restate_node_protocol::MessageEnvelope;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::processors::RunMode;
 use restate_types::{GenerationalNodeId, Version};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, warn};
 
-use crate::cluster_state::{ClusterState, ClusterStateRefresher, NodeState};
+use crate::cluster_state::{
+    AliveNode, ClusterState, ClusterStateRefresher, ClusterStateWatcher, NodeState,
+};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -181,12 +183,32 @@ where
         }
     }
 
-    pub async fn run(mut self, bifrost: Bifrost) -> anyhow::Result<()> {
+    pub async fn run(
+        mut self,
+        bifrost: Bifrost,
+        all_partitions_started_tx: Option<oneshot::Sender<()>>,
+    ) -> anyhow::Result<()> {
         // Make sure we have partition table before starting
         let _ = self.metadata.wait_for_partition_table(Version::MIN).await?;
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
+        let cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
+
+        // todo: This is a temporary band-aid for https://github.com/restatedev/restate/issues/1651
+        //  Remove once it is properly fixed.
+        if let Some(all_partition_started_tx) = all_partitions_started_tx {
+            self.task_center.spawn_child(
+                TaskKind::SystemBoot,
+                "signal-all-partitions-started",
+                None,
+                signal_all_partitions_started(
+                    cluster_state_watcher,
+                    self.metadata.clone(),
+                    all_partition_started_tx,
+                ),
+            )?;
+        }
 
         loop {
             tokio::select! {
@@ -236,11 +258,11 @@ where
 
         for node_state in cluster_state.nodes.values() {
             match node_state {
-                NodeState::Alive {
+                NodeState::Alive(AliveNode {
                     generation,
                     partitions,
                     ..
-                } => {
+                }) => {
                     for (partition_id, partition_processor_status) in partitions.iter() {
                         let lsn = partition_processor_status
                             .last_persisted_log_lsn
@@ -338,6 +360,48 @@ where
     }
 }
 
+async fn signal_all_partitions_started(
+    mut cluster_state_watcher: ClusterStateWatcher,
+    metadata: Metadata,
+    all_partitions_started_tx: oneshot::Sender<()>,
+) -> anyhow::Result<()> {
+    loop {
+        let cluster_state = cluster_state_watcher.next_cluster_state().await?;
+
+        if cluster_state.partition_table_version != metadata.partition_table_version()
+            || metadata.partition_table_version() == Version::INVALID
+        {
+            // syncing of PartitionTable since we obviously don't have up-to-date information
+            metadata.sync(MetadataKind::PartitionTable).await?;
+        } else {
+            let partition_table = metadata
+                .partition_table()
+                .expect("valid partition table must be present");
+
+            let mut pending_partitions_wo_leader = partition_table.num_partitions();
+
+            for alive_node in cluster_state.alive_nodes() {
+                alive_node
+                    .partitions
+                    .iter()
+                    .for_each(|(_, partition_state)| {
+                        // currently, there can only be a single leader per partition
+                        if partition_state.is_effective_leader() {
+                            pending_partitions_wo_leader =
+                                pending_partitions_wo_leader.saturating_sub(1);
+                        }
+                    })
+            }
+
+            if pending_partitions_wo_leader == 0 {
+                // send result can be ignored because rx should only go away in case of a shutdown
+                let _ = all_partitions_started_tx.send(());
+                return Ok(());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Service;
@@ -387,7 +451,7 @@ mod tests {
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(bifrost.clone()),
+            svc.run(bifrost.clone(), None),
         )?;
 
         let log_id = LogId::from(0);
@@ -490,7 +554,7 @@ mod tests {
             TaskKind::SystemService,
             "cluster-controller",
             None,
-            svc.run(bifrost.clone()),
+            svc.run(bifrost.clone(), None),
         )?;
 
         let log_id = LogId::from(0);

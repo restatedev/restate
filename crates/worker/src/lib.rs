@@ -29,6 +29,8 @@ pub use subscription_integration::SubscriptionControllerHandle;
 
 use crate::ingress_integration::InvocationStorageReaderImpl;
 use codederror::CodedError;
+use tokio::sync::oneshot;
+
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::{task_center, Metadata, TaskKind};
@@ -205,7 +207,7 @@ impl Worker {
         &self.storage_query_context
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, all_partitions_started_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
         let tc = task_center();
 
         // Ingress RPC server
@@ -213,7 +215,10 @@ impl Worker {
             TaskKind::IngressServer,
             "ingress-rpc-server",
             None,
-            self.external_client_ingress.run(),
+            async move {
+                all_partitions_started_rx.await?;
+                self.external_client_ingress.run().await
+            },
         )?;
 
         // Postgres external server

@@ -19,6 +19,7 @@ use restate_types::arc_util::ArcSwapExt;
 use restate_types::config::{CommonOptions, Configuration, UpdateableConfiguration};
 use std::future::Future;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 use codederror::CodedError;
 use tokio::time::Instant;
@@ -315,21 +316,35 @@ impl Node {
         tc.run_in_scope("bifrost-init", None, self.bifrost.start())
             .await?;
 
-        if let Some(admin_role) = self.admin_role {
+        let all_partitions_started_rx = if let Some(admin_role) = self.admin_role {
+            // todo: This is a temporary fix for https://github.com/restatedev/restate/issues/1651
+            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
             tc.spawn(
                 TaskKind::SystemBoot,
                 "admin-init",
                 None,
-                admin_role.start(config.common.allow_bootstrap, bifrost.clone()),
+                admin_role.start(
+                    config.common.allow_bootstrap,
+                    bifrost.clone(),
+                    all_partitions_started_tx,
+                ),
             )?;
-        }
+
+            all_partitions_started_rx
+        } else {
+            // We don't wait for all partitions being the leader if we are not co-located with the
+            // admin role which should not be the normal deployment today.
+            let (all_partitions_started_tx, all_partitions_started_rx) = oneshot::channel();
+            let _ = all_partitions_started_tx.send(());
+            all_partitions_started_rx
+        };
 
         if let Some(worker_role) = self.worker_role {
             tc.spawn(
                 TaskKind::SystemBoot,
                 "worker-init",
                 None,
-                worker_role.start(),
+                worker_role.start(all_partitions_started_rx),
             )?;
         }
 
