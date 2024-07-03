@@ -40,6 +40,8 @@ pub enum Error {
     AdminError(#[from] AdminError),
     #[error(transparent)]
     MetadataStoreError(#[from] restate_core::metadata_store::ReadWriteError),
+    #[error("generic error: {0}")]
+    Generic(Arc<anyhow::Error>),
 }
 
 #[derive(thiserror::Error, Debug)]

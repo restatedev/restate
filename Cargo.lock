@@ -5251,9 +5251,9 @@ dependencies = [
 
 [[package]]
 name = "rdkafka"
-version = "0.34.0"
+version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053adfa02fab06e86c01d586cc68aa47ee0ff4489a59469081dc12cbcde578bf"
+checksum = "1beea247b9a7600a81d4cc33f659ce1a77e1988323d7d2809c7ed1c21f4c316d"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -5535,6 +5535,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pin-project",
+ "rdkafka",
  "restate-core",
  "restate-metadata-store",
  "restate-rocksdb",

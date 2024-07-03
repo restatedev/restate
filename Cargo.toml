@@ -144,6 +144,7 @@ prost-dto = { version = "0.0.2" }
 prost-types = { version = "0.13.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
+rdkafka = { version = "0.36", features = ["libz-static", "cmake-build"] }
 regress = { version = "0.10" }
 reqwest = { version = "0.12.5", default-features = false, features = [
     "json",

@@ -151,6 +151,7 @@ pub enum ProviderKind {
     /// Replicated loglet implementation. This requires log-server role to run on
     /// enough nodes in the cluster.
     Replicated,
+    Kafka,
 }
 
 impl LogletConfig {
@@ -342,6 +343,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
             "replicated-loglet cannot be used as default-provider in a single-node setup.\
             To use replicated loglet, the node must be running in cluster-mode"
         ),
+        ProviderKind::Kafka => LogletParams::from(loglet_id),
     }
 }
 

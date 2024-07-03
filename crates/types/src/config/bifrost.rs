@@ -69,6 +69,8 @@ pub struct BifrostOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     append_retry_max_interval: humantime::Duration,
+
+    pub kafka_loglet: KafkaLogletOptions,
 }
 
 impl BifrostOptions {
@@ -104,6 +106,7 @@ impl Default for BifrostOptions {
             append_retry_min_interval: Duration::from_millis(10).into(),
             append_retry_max_interval: Duration::from_secs(1).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
+            kafka_loglet: KafkaLogletOptions::default(),
         }
     }
 }
@@ -214,3 +217,23 @@ impl Default for LocalLogletOptions {
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct ReplicatedLogletOptions {}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "KafkaLoglet", default))]
+#[serde(rename_all = "kebab-case")]
+#[builder(default)]
+pub struct KafkaLogletOptions {
+    pub topic: String,
+    pub brokers: Vec<String>,
+}
+
+impl Default for KafkaLogletOptions {
+    fn default() -> Self {
+        Self {
+            topic: "restate".to_owned(),
+            brokers: vec!["localhost:9092".to_owned()],
+        }
+    }
+}

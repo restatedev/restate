@@ -23,7 +23,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 derive_builder = { workspace = true }
 opentelemetry = { workspace = true }
-rdkafka = { version = "0.34", features = ["libz-static", "cmake-build"] }
+rdkafka = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
