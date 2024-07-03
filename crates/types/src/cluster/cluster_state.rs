@@ -41,6 +41,13 @@ impl ClusterState {
             .map(|last_refreshed| last_refreshed.elapsed().as_secs() < 10)
             .unwrap_or(false)
     }
+
+    pub fn alive_nodes(&self) -> impl Iterator<Item = &AliveNode> {
+        self.nodes.values().flat_map(|node| match node {
+            NodeState::Alive(alive_node) => Some(alive_node),
+            NodeState::Dead(_) => None,
+        })
+    }
 }
 
 fn instant_to_proto(t: Instant) -> prost_types::Duration {
