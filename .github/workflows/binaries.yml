@@ -99,6 +99,8 @@ jobs:
       - name: Compile Mac binaries
         if: ${{ matrix.build.os == 'macos-latest' }}
         env:
+          # Use the static version of the lzma library, instead of the path to lzma on the build host
+          LZMA_API_STATIC: true
           MACOSX_DEPLOYMENT_TARGET: 10.14.0
         run: cargo build --release --bins --target ${{ matrix.build.target }}
 
