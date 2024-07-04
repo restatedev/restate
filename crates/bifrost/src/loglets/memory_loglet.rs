@@ -8,26 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Reverse;
-use std::collections::{hash_map, BinaryHeap, HashMap};
-use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{hash_map, HashMap};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{ready, Poll};
+use std::task::Poll;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
+use pin_project::pin_project;
+use restate_core::ShutdownError;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio_stream::wrappers::WatchStream;
+use tokio_stream::StreamExt;
+use tracing::{debug, info};
+
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::SequenceNumber;
-use tokio::sync::oneshot::{Receiver, Sender};
-use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, info, warn};
 
 use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletReadStream, SendableLogletReadStream};
-use crate::{LogRecord, LogletProvider};
+use crate::{Error, LogRecord, LogletProvider, TailState};
 use crate::{ProviderError, Result};
+
+use super::util::OffsetWatch;
 
 #[derive(Default)]
 pub struct Factory {
@@ -95,42 +99,15 @@ impl LogletProvider for MemoryLogletProvider {
 }
 
 #[derive(Debug)]
-struct OffsetWatcher {
-    offset: LogletOffset,
-    channel: Sender<()>,
-}
-
-impl PartialEq for OffsetWatcher {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset
-    }
-}
-
-impl Eq for OffsetWatcher {}
-
-impl PartialOrd for OffsetWatcher {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.offset.cmp(&other.offset))
-    }
-}
-
-impl Ord for OffsetWatcher {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.offset.cmp(&other.offset)
-    }
-}
-
-#[derive(Debug)]
 pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
     log: Mutex<Vec<Bytes>>,
-    // internal offset of the first record (or slot available)
+    // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU64,
     last_committed_offset: AtomicU64,
-    // reversed comparator. The watcher with the lowest offset ranks
-    // higher in the binary heap.
-    watchers: Mutex<BinaryHeap<Reverse<OffsetWatcher>>>,
+    sealed: AtomicBool,
+    release_watch: OffsetWatch,
 }
 
 impl MemoryLoglet {
@@ -141,7 +118,8 @@ impl MemoryLoglet {
             // Trim point is 0 initially
             trim_point_offset: AtomicU64::new(0),
             last_committed_offset: AtomicU64::new(0),
-            watchers: Mutex::new(BinaryHeap::new()),
+            sealed: AtomicBool::new(false),
+            release_watch: OffsetWatch::new(LogletOffset::INVALID),
         })
     }
 
@@ -157,45 +135,27 @@ impl MemoryLoglet {
 
     pub fn advance_commit_offset(&self, offset: LogletOffset) {
         self.last_committed_offset
-            .store(offset.0, Ordering::Release);
-        self.notify_watchers();
+            .fetch_max(offset.into(), Ordering::Release);
+        self.notify_readers();
     }
 
-    pub fn watch_for_offset(&self, offset: LogletOffset) -> Receiver<()> {
-        let mut watchers = self.watchers.lock().unwrap();
-        let (snd, rcv) = tokio::sync::oneshot::channel();
-        watchers.push(Reverse(OffsetWatcher {
-            offset,
-            channel: snd,
-        }));
-        rcv
+    fn notify_readers(&self) {
+        let release_pointer = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+        self.release_watch.notify(release_pointer);
     }
 
-    pub fn notify_watchers(&self) {
-        // it's safe to not lock the logs mutex because commit offset increases monotonically.
-        let committed = LogletOffset(self.last_committed_offset.load(Ordering::Acquire));
-        let mut watchers = self.watchers.lock().unwrap();
-        // remove all watchers with offset <= committed and notify them
-        while let Some(Reverse(watcher)) = watchers.peek() {
-            if watcher.offset <= committed {
-                let Reverse(watcher) = watchers.pop().expect("watcher is present");
-                let _ = watcher.channel.send(());
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn read_after(&self, after: LogletOffset) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
+    fn read_from(
+        &self,
+        from_offset: LogletOffset,
+    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Acquire));
-        // are we reading after before the trim point? Note that if trim_point == after then we
-        // don't return a trim gap, the next record is potentially a data record.
-        if trim_point > after {
-            return Ok(Some(LogRecord::new_trim_gap(after.next(), trim_point)));
+        let head_offset = trim_point.next();
+        // Are we reading behind the loglet head?
+        if from_offset < head_offset {
+            return Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)));
         }
 
-        let from_offset = after.next();
         // are we reading after commit offset?
         let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire));
         if from_offset > commit_offset {
@@ -210,23 +170,47 @@ impl MemoryLoglet {
     }
 }
 
+#[pin_project]
 struct MemoryReadStream {
     loglet: Arc<MemoryLoglet>,
-    current_offset: LogletOffset,
-    offset_watcher: Option<Receiver<()>>,
+    /// The next offset to read from
+    read_pointer: LogletOffset,
+    #[pin]
+    release_watch: WatchStream<LogletOffset>,
+    // how far we are allowed to read in the loglet
+    release_pointer: LogletOffset,
+    #[pin]
+    terminated: bool,
 }
 
 impl MemoryReadStream {
-    fn new(loglet: Arc<MemoryLoglet>, after: LogletOffset) -> Self {
+    async fn create(loglet: Arc<MemoryLoglet>, from_offset: LogletOffset) -> Self {
+        let mut release_watch = loglet.release_watch.to_stream();
+        let release_pointer = release_watch
+            .next()
+            .await
+            .expect("loglet watch returns release pointer");
+
         Self {
             loglet,
-            current_offset: after,
-            offset_watcher: None,
+            read_pointer: from_offset,
+            release_watch,
+            release_pointer,
+            terminated: false,
         }
     }
 }
 
-impl LogletReadStream<LogletOffset> for MemoryReadStream {}
+impl LogletReadStream<LogletOffset> for MemoryReadStream {
+    /// Current read pointer. This points to the next offset to be read.
+    fn read_pointer(&self) -> LogletOffset {
+        self.read_pointer
+    }
+    /// Returns true if the stream is terminated.
+    fn is_terminated(&self) -> bool {
+        self.terminated
+    }
+}
 
 impl Stream for MemoryReadStream {
     type Item = Result<LogRecord<LogletOffset, Bytes>>;
@@ -235,25 +219,67 @@ impl Stream for MemoryReadStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
+        if self.terminated {
+            return Poll::Ready(None);
+        }
+
+        let next_offset = self.read_pointer;
         loop {
-            if let Some(watcher) = &mut self.offset_watcher {
-                let watcher = std::pin::pin!(watcher);
-                if ready!(watcher.poll(cx)).is_err() {
-                    warn!(
-                    "memory loglet: Watcher channel closed unexpectedly, system is probably shutting down"
-                );
-                    return Poll::Ready(None);
+            let mut this = self.as_mut().project();
+
+            // Are we reading after commit offset?
+            // We are at tail. We need to wait until new records have been released.
+            if next_offset > *this.release_pointer {
+                let updated_release_pointer = match this.release_watch.poll_next(cx) {
+                    Poll::Ready(t) => t,
+                    Poll::Pending => {
+                        return Poll::Pending;
+                    }
+                };
+
+                match updated_release_pointer {
+                    Some(updated_release_pointer) => {
+                        *this.release_pointer = updated_release_pointer;
+                        continue;
+                    }
+                    None => {
+                        // system shutdown. Or that the loglet has been unexpectedly shutdown.
+                        this.terminated.set(true);
+                        return Poll::Ready(Some(Err(Error::Shutdown(ShutdownError))));
+                    }
                 }
             }
-            self.offset_watcher = None;
 
-            let next_record = self.loglet.read_after(self.current_offset)?;
-            if let Some(next_record) = next_record {
-                self.current_offset = next_record.offset;
-                return Poll::Ready(Some(Ok(next_record)));
+            // release_pointer has been updated.
+            let release_pointer = *this.release_pointer;
+
+            // assert that we are newer
+            assert!(release_pointer >= next_offset);
+
+            // Trim point is the the slot **before** the first readable record (if it exists)
+            // trim point might have been updated since last time.
+            let trim_point = LogletOffset(this.loglet.trim_point_offset.load(Ordering::Relaxed));
+            let head_offset = trim_point.next();
+
+            // Are we reading behind the loglet head? -> TrimGap
+            assert!(next_offset > LogletOffset::from(0));
+            if next_offset < head_offset {
+                let trim_gap = LogRecord::new_trim_gap(next_offset, trim_point);
+                // next record should be beyond at the head
+                self.read_pointer = head_offset;
+                return Poll::Ready(Some(Ok(trim_gap)));
             }
-            // Wait and respond when available.
-            self.offset_watcher = Some(self.loglet.watch_for_offset(self.current_offset.next()));
+
+            let next_record = self
+                .loglet
+                .read_from(self.read_pointer)?
+                .expect("read_from reads after commit offset");
+            if next_record.record.is_trim_gap() {
+                self.read_pointer = next_record.record.try_as_trim_gap_ref().unwrap().to.next();
+            } else {
+                self.read_pointer = next_record.offset.next();
+            }
+            return Poll::Ready(Some(Ok(next_record)));
         }
     }
 }
@@ -264,9 +290,9 @@ impl LogletBase for MemoryLoglet {
 
     async fn create_read_stream(
         self: Arc<Self>,
-        after: Self::Offset,
+        from: Self::Offset,
     ) -> Result<SendableLogletReadStream<Self::Offset>> {
-        Ok(Box::pin(MemoryReadStream::new(self, after)))
+        Ok(Box::pin(MemoryReadStream::create(self, from).await))
     }
 
     async fn append(&self, payload: Bytes) -> Result<LogletOffset> {
@@ -300,14 +326,14 @@ impl LogletBase for MemoryLoglet {
         Ok(first_offset)
     }
 
-    async fn find_tail(&self) -> Result<Option<LogletOffset>> {
-        let log = self.log.lock().unwrap();
-        if log.is_empty() {
-            Ok(None)
+    async fn find_tail(&self) -> Result<TailState<LogletOffset>> {
+        let committed = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
+        let sealed = self.sealed.load(Ordering::Acquire);
+        Ok(if sealed {
+            TailState::Sealed(committed)
         } else {
-            let committed = LogletOffset(self.last_committed_offset.load(Ordering::Acquire));
-            Ok(Some(committed))
-        }
+            TailState::Open(committed)
+        })
     }
 
     /// Find the head (oldest) record in the loglet.
@@ -342,19 +368,14 @@ impl LogletBase for MemoryLoglet {
         Ok(())
     }
 
-    async fn read_next_single(
-        &self,
-        after: LogletOffset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>> {
+    async fn read_next_single(&self, from: LogletOffset) -> Result<LogRecord<Self::Offset, Bytes>> {
         loop {
-            let next_record = self.read_after(after)?;
+            let next_record = self.read_from(from)?;
             if let Some(next_record) = next_record {
                 break Ok(next_record);
             }
             // Wait and respond when available.
-            let receiver = self.watch_for_offset(after.next());
-            receiver.await.unwrap();
-            continue;
+            self.release_watch.wait_for(from).await?;
         }
     }
 
@@ -362,116 +383,31 @@ impl LogletBase for MemoryLoglet {
         &self,
         after: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
-        self.read_after(after)
+        self.read_from(after)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::loglet_tests::*;
+
     use super::*;
 
-    use restate_test_util::let_assert;
-    use tokio::task::JoinHandle;
-    use tracing_test::traced_test;
+    #[tokio::test(start_paused = true)]
+    async fn memory_loglet_smoke_test() -> googletest::Result<()> {
+        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+        gapless_loglet_smoke_test(loglet).await
+    }
 
     #[tokio::test(start_paused = true)]
-    #[traced_test]
-    async fn test_memory_loglet() -> googletest::Result<()> {
+    async fn memory_loglet_readstream_test() -> googletest::Result<()> {
         let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+        single_loglet_readstream_test(loglet).await
+    }
 
-        assert_eq!(None, loglet.get_trim_point().await?);
-        assert_eq!(None, loglet.find_tail().await?);
-
-        // Append 1
-        let offset = loglet.append(Bytes::from_static(b"record1")).await?;
-        assert_eq!(LogletOffset::OLDEST, offset);
-        assert_eq!(None, loglet.get_trim_point().await?);
-        assert_eq!(Some(LogletOffset::OLDEST), loglet.find_tail().await?);
-
-        // Append 2
-        let offset = loglet.append(Bytes::from_static(b"record2")).await?;
-        assert_eq!(LogletOffset(2), offset);
-        assert_eq!(None, loglet.get_trim_point().await?);
-        assert_eq!(Some(LogletOffset(2)), loglet.find_tail().await?);
-
-        // Append 3
-        let offset = loglet.append(Bytes::from_static(b"record3")).await?;
-        assert_eq!(LogletOffset(3), offset);
-        assert_eq!(None, loglet.get_trim_point().await?);
-        assert_eq!(Some(LogletOffset(3)), loglet.find_tail().await?);
-
-        // read record 1 (reading next after INVALID)
-        let_assert!(Some(log_record) = loglet.read_next_single_opt(LogletOffset::INVALID).await?);
-        let LogRecord { offset, record } = log_record;
-        assert_eq!(LogletOffset::OLDEST, offset);
-        assert!(record.is_data());
-        assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
-
-        // read record 2 (reading next after OLDEST)
-        let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
-        assert_eq!(LogletOffset(2), offset);
-        assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
-
-        // read record 3
-        let LogRecord { offset, record } = loglet.read_next_single(offset).await?;
-        assert_eq!(LogletOffset(3), offset);
-        assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
-
-        // read from the future returns None
-        assert!(loglet
-            .read_next_single_opt(LogletOffset(5))
-            .await?
-            .is_none());
-
-        let handle1: JoinHandle<googletest::Result<()>> = tokio::spawn({
-            let loglet = loglet.clone();
-            async move {
-                // read future record 4
-                let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(3)).await?;
-                assert_eq!(LogletOffset(4), offset);
-                assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
-                Ok(())
-            }
-        });
-
-        // Waiting for 10
-        let handle2: JoinHandle<googletest::Result<()>> = tokio::spawn({
-            let loglet = loglet.clone();
-            async move {
-                // read future record 10
-                let LogRecord { offset, record } = loglet.read_next_single(LogletOffset(9)).await?;
-                assert_eq!(LogletOffset(10), offset);
-                assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
-                Ok(())
-            }
-        });
-
-        // Giving a chance to other tasks to work.
-        tokio::task::yield_now().await;
-        assert!(!handle1.is_finished());
-
-        // Append 4
-        let offset = loglet.append(Bytes::from_static(b"record4")).await?;
-        assert_eq!(LogletOffset(4), offset);
-        assert_eq!(None, loglet.get_trim_point().await?);
-        assert_eq!(Some(LogletOffset(4)), loglet.find_tail().await?);
-
-        assert!(handle1.await.unwrap().is_ok());
-
-        tokio::task::yield_now().await;
-        // Only handle1 should have finished work.
-        assert!(!handle2.is_finished());
-
-        // test timeout future items
-        let start = tokio::time::Instant::now();
-        let res = tokio::time::timeout(Duration::from_secs(10), handle2).await;
-
-        // We have timedout waiting.
-        assert!(res.is_err());
-        assert_eq!(Duration::from_secs(10), start.elapsed());
-        // Tail didn't change.
-        assert_eq!(Some(LogletOffset(4)), loglet.find_tail().await?);
-
-        Ok(())
+    #[tokio::test(start_paused = true)]
+    async fn memory_loglet_readstream_test_with_trims() -> googletest::Result<()> {
+        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+        single_loglet_readstream_test_with_trims(loglet).await
     }
 }

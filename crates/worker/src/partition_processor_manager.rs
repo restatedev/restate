@@ -18,6 +18,7 @@ use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 use metrics::gauge;
 use restate_types::live::Live;
+use restate_types::logs::SequenceNumber;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
 use tokio::time::MissedTickBehavior;
@@ -41,7 +42,7 @@ use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::LiveLoad;
-use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
@@ -602,7 +603,11 @@ impl PersistedLogLsnWatchdog {
                 if applied_lsn >= previously_applied_lsn + self.persist_lsn_threshold {
                     // since we cannot be sure that we have read the applied lsn from disk, we need
                     // to flush the memtables to be sure that it is persisted
-                    trace!(partition_id = %partition_id, "Flush partition store to persist applied lsn");
+                    trace!(
+                        partition_id = %partition_id,
+                        applied_lsn = %applied_lsn,
+                        "Flush partition store to persist applied lsn"
+                    );
                     let partition_store = partition_storage.into_inner();
                     partition_store.flush_memtables(true).await?;
                     new_persisted_lsns.insert(partition_id, applied_lsn);

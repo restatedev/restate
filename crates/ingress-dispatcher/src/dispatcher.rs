@@ -325,7 +325,7 @@ mod tests {
                     .unwrap()
                     .find_partition_id(invocation_id.partition_key())?;
                 let log_id = LogId::from(partition_id);
-                let log_record = bifrost.read_next_single(log_id, Lsn::INVALID).await?;
+                let log_record = bifrost.read_next_single(log_id, Lsn::OLDEST).await?;
 
                 let output_message =
                     Envelope::from_bytes(log_record.record.into_payload_unchecked().into_body())?;
