@@ -41,6 +41,10 @@ pub struct Chain {
 
 #[derive(Debug, Clone)]
 pub struct Segment {
+    /// The offset of the first record in the segment (if exists).
+    /// A segment on a clean chain is created with Lsn::OLDEST but this doesn't mean that this
+    /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
+    /// Loglet::Offset::OLDEST.
     pub base_lsn: Lsn,
     pub config: Arc<LogletConfig>,
 }

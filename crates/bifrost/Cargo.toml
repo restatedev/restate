@@ -55,7 +55,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
-googletest = { workspace = true }
+googletest = { workspace = true, features = ["anyhow"] }
 test-log = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

@@ -681,7 +681,7 @@ mod tests {
             )?;
             let reader = shuffle_env
                 .bifrost
-                .create_reader(LogId::from(partition_id), Lsn::INVALID, Lsn::MAX)
+                .create_reader(LogId::from(partition_id), Lsn::OLDEST, Lsn::MAX)
                 .await?;
 
             let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
@@ -725,7 +725,7 @@ mod tests {
             )?;
             let reader = shuffle_env
                 .bifrost
-                .create_reader(LogId::from(partition_id), Lsn::INVALID, Lsn::MAX)
+                .create_reader(LogId::from(partition_id), Lsn::OLDEST, Lsn::MAX)
                 .await?;
 
             let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
