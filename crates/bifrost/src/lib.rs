@@ -11,6 +11,8 @@
 mod bifrost;
 mod error;
 mod loglet;
+#[cfg(test)]
+mod loglet_tests;
 pub mod loglets;
 mod provider;
 mod read_stream;

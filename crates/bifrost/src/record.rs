@@ -15,7 +15,7 @@ use restate_types::storage::{StorageCodec, StorageDecodeError};
 use crate::{LsnExt, SealReason};
 
 /// A single entry in the log.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord<S: SequenceNumber = Lsn, D = Payload> {
     pub offset: S,
     pub record: Record<S, D>,
@@ -29,17 +29,18 @@ impl<S: SequenceNumber, D> LogRecord<S, D> {
         }
     }
 
-    pub(crate) fn new_trim_gap(offset: S, until: S) -> Self {
+    /// `to` is inclusive
+    pub(crate) fn new_trim_gap(offset: S, to: S) -> Self {
         LogRecord {
             offset,
-            record: Record::TrimGap(TrimGap { until }),
+            record: Record::TrimGap(TrimGap { to }),
         }
     }
 
     pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogRecord<Lsn, D> {
         let record = match self.record {
-            Record::TrimGap(TrimGap { until }) => Record::TrimGap(TrimGap {
-                until: base_lsn.offset_by(until),
+            Record::TrimGap(TrimGap { to }) => Record::TrimGap(TrimGap {
+                to: base_lsn.offset_by(to),
             }),
             Record::Data(payload) => Record::Data(payload),
             Record::Seal(reason) => Record::Seal(reason),
@@ -66,7 +67,7 @@ impl<S: SequenceNumber> LogRecord<S, Bytes> {
     }
 }
 
-#[derive(Debug, Clone, strum_macros::EnumIs)]
+#[derive(Debug, Clone, PartialEq, strum_macros::EnumIs, strum_macros::EnumTryAs)]
 pub enum Record<S: SequenceNumber = Lsn, D = Payload> {
     TrimGap(TrimGap<S>),
     Data(D),
@@ -92,7 +93,8 @@ impl<S: SequenceNumber> Record<S, Payload> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TrimGap<S: SequenceNumber> {
-    pub until: S,
+    /// to is inclusive
+    pub to: S,
 }

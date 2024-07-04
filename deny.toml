@@ -111,9 +111,6 @@ skip = [
     # Clash between datafusion and arrow
     { name = "hashbrown"},
 
-    # Clash between datafusion and opentelemetry
-    { name = "thrift"},
-
     # Clash between datafusion and invoker
     { name = "tokio-rustls"},
 

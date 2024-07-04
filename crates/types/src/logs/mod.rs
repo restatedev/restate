@@ -102,21 +102,18 @@ impl SequenceNumber for Lsn {
     const OLDEST: Self = Lsn(1);
 
     fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
     }
 
     fn prev(self) -> Self {
-        if self == Self::INVALID {
-            Self::INVALID
-        } else {
-            Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
-        }
+        Self(self.0.saturating_sub(1))
     }
 }
 
 pub trait SequenceNumber
 where
-    Self: Sized + Into<u64> + From<u64> + Eq + PartialEq + Ord + PartialOrd,
+    Self:
+        Copy + std::fmt::Debug + Sized + Into<u64> + From<u64> + Eq + PartialEq + Ord + PartialOrd,
 {
     /// The maximum possible sequence number, this is useful when creating a read stream
     const MAX: Self;

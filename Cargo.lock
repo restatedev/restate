@@ -2856,6 +2856,7 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09213705c85aa0e4b4fff44a3a826a556979a34a266df6bcda703a49c69fb61e"
 dependencies = [
+ "anyhow",
  "googletest_macro",
  "num-traits",
  "regex",
