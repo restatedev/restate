@@ -11,3 +11,4 @@
 pub mod local_loglet;
 pub mod memory_loglet;
 pub mod replicated_loglet;
+pub(crate) mod util;

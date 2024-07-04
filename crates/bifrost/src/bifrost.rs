@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO: Remove after fleshing the code out.
-#![allow(dead_code)]
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -30,7 +27,7 @@ use restate_types::Version;
 use crate::loglet::{LogletBase, LogletWrapper};
 use crate::watchdog::WatchdogSender;
 use crate::{
-    Error, FindTailAttributes, LogReadStream, LogRecord, LogletProvider, Result,
+    Error, FindTailAttributes, LogReadStream, LogRecord, LogletProvider, Result, TailState,
     SMALL_BATCH_THRESHOLD_COUNT,
 };
 
@@ -110,56 +107,83 @@ impl Bifrost {
         self.inner.append_batch(log_id, payloads).await
     }
 
-    /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
-    /// read after. This means that the record returned will have a LSN strictly greater than
-    /// `after`. If no records are committed yet after this LSN, this read operation will "wait"
+    /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
+    /// start reading from. This means that the record returned will have a LSN that is equal or greater than
+    /// `from`. If no records are committed yet at this LSN, this read operation will "wait"
     /// for such records to appear.
-    pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord> {
-        self.inner.read_next_single(log_id, after).await
+    pub async fn read_next_single(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
+        self.inner.read_next_single(log_id, from).await
     }
 
-    /// Read the next record after the LSN provided. The `start` indicates the LSN where we will
-    /// read after. This means that the record returned will have a LSN strictly greater than
-    /// `after`. If no records are committed after the LSN, this read operation will return None.
+    /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
+    /// start reading from. This means that the record returned will have a LSN that is equal or greater than
+    /// `from`. If no records are committed yet at this LSN, this read operation will "wait"
+    /// for such records to appear.
     pub async fn read_next_single_opt(
         &self,
         log_id: LogId,
-        after: Lsn,
+        from: Lsn,
     ) -> Result<Option<LogRecord>> {
-        self.inner.read_next_single_opt(log_id, after).await
+        self.inner.read_next_single_opt(log_id, from).await
     }
 
-    /// Create a read stream. Until is inclusive. Pass [[`Lsn::Max`]] for a tailing stream. Use
-    /// Lsn::INVALID in _after_ to read from the start (head) of the log.
+    /// Create a read stream. `end_lsn` is inclusive. Pass [[`Lsn::Max`]] for a tailing stream. Use
+    /// Lsn::OLDEST in `from` to read from the start (head) of the log.
+    ///
+    /// When using this in conjunction with `find_tail()` or `get_trim_point()`, note that
+    /// you'll need to offset start and end to ensure you are reading within the bounds of the log.
+    ///
+    /// For instance, if you intend to read all records from a log
+    ///
+    /// ```no_run
+    /// let reader = bifrost.create_reader(
+    ///        log_id,
+    ///        bifrost.get_trim_point(log_id).await.next(),
+    ///        bifrost.find_tail(log_id).await().offset().prev(),
+    ///     ).await;
+    /// ```
     pub async fn create_reader(
         &self,
         log_id: LogId,
-        after: Lsn,
-        until: Lsn,
+        start_lsn: Lsn,
+        end_lsn: Lsn,
     ) -> Result<LogReadStream> {
-        LogReadStream::create(self.inner.clone(), log_id, after, until).await
+        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn).await
     }
 
-    /// Finds the current readable tail LSN of a log.
-    /// Returns `None` if there are no readable records in the log (e.g. trimmed or empty)
+    /// The tail is *the first unwritten LSN* in the log
+    ///
+    /// Finds the first available LSN after the durable tail of the log.
+    ///
+    /// If the log is empty, it return TailState::Open(Lsn::OLDEST).
+    /// This should never return Err(Error::LogSealed). Sealed state is represented as
+    /// TailState::Sealed(..)
     pub async fn find_tail(
         &self,
         log_id: LogId,
         attributes: FindTailAttributes,
-    ) -> Result<Option<Lsn>> {
+    ) -> Result<TailState> {
         Ok(self.inner.find_tail(log_id, attributes).await?.1)
     }
 
     /// The lsn of the slot **before** the first readable record (if it exists), or the offset
-    /// before the next slot that will be written to.
-    pub async fn get_trim_point(&self, log_id: LogId) -> Result<Option<Lsn>, Error> {
+    /// before the next slot that will be written to. Another way to think about `get_trim_point`
+    /// is that it points to the last lsn that was trimmed/deleted.
+    ///
+    /// Returns Lsn::INVALID if the log was never trimmed
+    pub async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         self.inner.get_trim_point(log_id).await
     }
 
-    /// Trims the given log to the minimum of the provided trim point or the current tail.
+    /// Trims the given log prefix `before_lsn` (exclusive). Set `before_lsn` to the value
+    /// returned from `find_tail()` or `Lsn::MAX` to trim everything in the log.
+    ///
+    /// Note that trim does not promise that the log will be trimmed immediately and atomically,
+    /// but they are promise to trim prefixes, earlier segments in the log will be trimmed
+    /// before later segments.
     #[instrument(level = "debug", skip(self), err)]
-    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
-        self.inner.trim(log_id, trim_point).await
+    pub async fn trim_prefix(&self, log_id: LogId, before_lsn: Lsn) -> Result<(), Error> {
+        self.inner.trim_prefix(log_id, before_lsn).await
     }
 
     /// The version of the currently loaded logs metadata
@@ -182,12 +206,13 @@ impl Bifrost {
         let current_tail = self
             .find_tail(log_id, FindTailAttributes::default())
             .await?;
-        let Some(current_tail) = current_tail else {
+
+        if current_tail.offset() <= Lsn::OLDEST {
             return Ok(Vec::default());
-        };
+        }
 
         let reader = self
-            .create_reader(log_id, Lsn::INVALID, current_tail)
+            .create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())
             .await?;
         reader.try_collect().await
     }
@@ -200,6 +225,7 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // held across an async boundary.
 pub struct BifrostInner {
     metadata: Metadata,
+    #[allow(unused)]
     watchdog: WatchdogSender,
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
@@ -261,12 +287,12 @@ impl BifrostInner {
     pub async fn read_next_single_opt(
         &self,
         log_id: LogId,
-        after: Lsn,
+        from: Lsn,
     ) -> Result<Option<LogRecord>> {
         self.fail_if_shutting_down()?;
 
-        let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
-        Ok(loglet.read_next_single_opt(after).await?.map(|record| {
+        let loglet = self.find_loglet_for_lsn(log_id, from).await?;
+        Ok(loglet.read_next_single_opt(from).await?.map(|record| {
             record
                 .decode()
                 .expect("decoding a bifrost envelope succeeds")
@@ -277,14 +303,14 @@ impl BifrostInner {
         &self,
         log_id: LogId,
         _attributes: FindTailAttributes,
-    ) -> Result<(LogletWrapper, Option<Lsn>)> {
+    ) -> Result<(LogletWrapper, TailState)> {
         self.fail_if_shutting_down()?;
         let loglet = self.writeable_loglet(log_id).await?;
         let tail = loglet.find_tail().await?;
         Ok((loglet, tail))
     }
 
-    async fn get_trim_point(&self, log_id: LogId) -> Result<Option<Lsn>, Error> {
+    async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
 
         let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
@@ -292,8 +318,10 @@ impl BifrostInner {
 
         let mut trim_point = None;
 
-        // iterate over the chain until we find the first missing trim point, return value before
+        // Iterate over the chain until we find the first missing trim point, return value before
         // todo: maybe update configuration to remember trim point for the whole chain
+        // todo: support multiple segments.
+        // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
             let loglet = self.get_loglet(&segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
@@ -306,10 +334,10 @@ impl BifrostInner {
             trim_point = loglet_specific_trim_point;
         }
 
-        Ok(trim_point)
+        Ok(trim_point.unwrap_or(Lsn::INVALID))
     }
 
-    async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+    async fn trim_prefix(&self, log_id: LogId, before_lsn: Lsn) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
         let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
@@ -318,19 +346,14 @@ impl BifrostInner {
         for segment in log_chain.iter() {
             let loglet = self.get_loglet(&segment).await?;
 
-            if loglet.base_lsn > trim_point {
+            if loglet.base_lsn >= before_lsn {
                 break;
             }
 
-            if let Some(local_trim_point) =
-                loglet.find_tail().await?.map(|tail| tail.min(trim_point))
-            {
-                loglet.trim(local_trim_point).await?;
-            }
+            // loglet trims are inclusive.
+            loglet.trim(before_lsn.prev()).await?;
         }
-
         // todo: Update logs configuration to remove sealed and empty loglets
-
         Ok(())
     }
 
@@ -476,7 +499,7 @@ mod tests {
             let tail = bifrost
                 .find_tail(LogId::from(0), FindTailAttributes::default())
                 .await?;
-            assert_eq!(max_lsn, tail.unwrap());
+            assert_eq!(max_lsn.next(), tail.offset());
 
             // Initiate shutdown
             task_center().shutdown_node("completed", 0).await;
@@ -526,60 +549,86 @@ mod tests {
                 let log_id = LogId::from(0);
                 let bifrost = Bifrost::init_local(metadata()).await;
 
-                assert!(bifrost.get_trim_point(log_id).await?.is_none());
+                assert_eq!(
+                    Lsn::OLDEST,
+                    bifrost
+                        .find_tail(log_id, FindTailAttributes::default())
+                        .await?
+                        .offset()
+                );
 
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+
+                // append 10 records
                 for _ in 1..=10 {
                     bifrost.append(log_id, Payload::default()).await?;
                 }
 
-                bifrost.trim(log_id, Lsn::from(5)).await?;
+                bifrost.trim_prefix(log_id, Lsn::from(6)).await?;
 
-                assert_eq!(
-                    bifrost
-                        .find_tail(log_id, FindTailAttributes::default())
-                        .await?,
-                    Some(Lsn::from(10))
-                );
-                assert_eq!(bifrost.get_trim_point(log_id).await?, Some(Lsn::from(5)));
+                let tail = bifrost
+                    .find_tail(log_id, FindTailAttributes::default())
+                    .await?;
+                assert_eq!(tail.offset(), Lsn::from(11));
+                assert!(!tail.is_sealed());
+                assert_eq!(Lsn::from(5), bifrost.get_trim_point(log_id).await?);
 
-                for lsn in 0..5 {
+                // 5 itself is trimmed
+                for lsn in 1..=5 {
                     let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
-                            offset: eq(Lsn::from(lsn + 1)),
+                            offset: eq(Lsn::from(lsn)),
                             record: pat!(Record::TrimGap(pat!(TrimGap {
-                                until: eq(Lsn::from(5)),
+                                to: eq(Lsn::from(5)),
                             })))
                         })))
                     )
                 }
 
-                for lsn in 5..10 {
+                for lsn in 6..=10 {
                     let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
-                            offset: eq(Lsn::from(lsn + 1)),
+                            offset: eq(Lsn::from(lsn)),
                             record: pat!(Record::Data(_))
                         })))
                     );
                 }
 
                 // trimming beyond the release point will fall back to the release point
-                bifrost.trim(log_id, Lsn::from(u64::MAX)).await?;
-                assert_eq!(bifrost.get_trim_point(log_id).await?, Some(Lsn::from(10)));
+                bifrost.trim_prefix(log_id, Lsn::MAX).await?;
 
+                assert_eq!(
+                    Lsn::from(11),
+                    bifrost
+                        .find_tail(log_id, FindTailAttributes::default())
+                        .await?
+                        .offset()
+                );
+                let new_trim_point = bifrost.get_trim_point(log_id).await?;
+                assert_eq!(Lsn::from(10), new_trim_point);
+
+                let record = bifrost
+                    .read_next_single_opt(log_id, Lsn::from(10))
+                    .await?
+                    .unwrap();
+                assert!(record.record.is_trim_gap());
+                assert_eq!(Lsn::from(10), record.record.try_as_trim_gap().unwrap().to);
+
+                // Add 10 more records
                 for _ in 0..10 {
                     bifrost.append(log_id, Payload::default()).await?;
                 }
 
-                for lsn in 10..20 {
+                for lsn in 11..20 {
                     let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
-                            offset: eq(Lsn::from(lsn + 1)),
+                            offset: eq(Lsn::from(lsn)),
                             record: pat!(Record::Data(_))
                         })))
                     );
