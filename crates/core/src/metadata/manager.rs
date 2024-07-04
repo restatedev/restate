@@ -91,7 +91,7 @@ where
     }
 
     fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(logs) = self.metadata.logs() {
+        if let Some(logs) = self.metadata.logs().as_ref() {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
