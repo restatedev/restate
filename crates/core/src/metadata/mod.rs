@@ -127,8 +127,8 @@ impl Metadata {
         Ok(self.partition_table().unwrap())
     }
 
-    pub fn logs(&self) -> Option<Arc<Logs>> {
-        self.inner.logs.load_full()
+    pub fn logs(&self) -> arc_swap::Guard<Option<Arc<Logs>>> {
+        self.inner.logs.load()
     }
 
     /// Returns Version::INVALID if logs has not been loaded yet.
