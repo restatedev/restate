@@ -15,6 +15,7 @@ use crate::flexbuffers_storage_encode_decode;
 use crate::identifiers::PartitionId;
 use crate::time::NanosSinceEpoch;
 
+pub mod builder;
 pub mod metadata;
 
 #[derive(

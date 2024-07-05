@@ -16,15 +16,17 @@ use serde_with::serde_as;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use super::builder::LogsBuilder;
+
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logs {
-    version: Version,
+    pub(super) version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    logs: HashMap<LogId, Chain>,
+    pub(super) logs: HashMap<LogId, Chain>,
 }
 
 impl Default for Logs {
@@ -67,6 +69,12 @@ pub struct LogletConfig {
 /// parameters to be shared between segments and logs if needed.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From, Serialize, Deserialize)]
 pub struct LogletParams(String);
+
+impl From<&'static str> for LogletParams {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
 
 /// An enum with the list of supported loglet providers.
 #[derive(
@@ -129,6 +137,10 @@ impl Logs {
     pub fn chain(&self, log_id: &LogId) -> Option<&Chain> {
         self.logs.get(log_id)
     }
+
+    pub fn into_builder(self) -> LogsBuilder {
+        self.into()
+    }
 }
 
 impl Versioned for Logs {
@@ -140,26 +152,30 @@ impl Versioned for Logs {
 flexbuffers_storage_encode_decode!(Logs);
 
 /// Result of a segment lookup in the chain
+#[derive(Debug)]
 pub enum MaybeSegment<'a> {
     /// Segment is not found in the chain.
     Some(Segment<'a>),
-    /// No segment was found, the log is trimmed until (at least) the next_base_lsn
+    /// No segment was found, the log is trimmed until (at least) the next_base_lsn. When
+    /// generating trim gaps, this value should be considered exclusive (next_base_lsn doesn't
+    /// necessarily point to a gap)
     Trim { next_base_lsn: Lsn },
 }
 
 impl Chain {
     /// Creates a new chain starting from Lsn(1) with a given loglet config.
     pub fn new(kind: ProviderKind, config: LogletParams) -> Self {
-        Self::with_base_lsn(kind, Lsn::OLDEST, config)
+        Self::with_base_lsn(Lsn::OLDEST, kind, config)
     }
 
     /// Create a chain with `base_lsn` as its oldest Lsn.
-    pub fn with_base_lsn(kind: ProviderKind, base_lsn: Lsn, config: LogletParams) -> Self {
+    pub fn with_base_lsn(base_lsn: Lsn, kind: ProviderKind, config: LogletParams) -> Self {
         let mut chain = BTreeMap::new();
         chain.insert(base_lsn, Arc::new(LogletConfig::new(kind, config)));
         Self { chain }
     }
 
+    #[track_caller]
     pub fn tail(&self) -> Segment<'_> {
         self.chain
             .last_key_value()
@@ -170,28 +186,45 @@ impl Chain {
             .expect("Chain must have at least one segment")
     }
 
+    #[track_caller]
+    pub fn head(&self) -> Segment<'_> {
+        self.chain
+            .first_key_value()
+            .map(|(base_lsn, config)| Segment {
+                base_lsn: *base_lsn,
+                config,
+            })
+            .expect("Chain must have at least one segment")
+    }
+
+    pub fn num_segments(&self) -> usize {
+        self.chain.len()
+    }
+
     /// Finds the segment that potentially contains the given Lsn.
     /// Returns `None` if the Lsn is behind the oldest segment (trimmed).
-    pub fn find_segment_for_lsn(&self, _lsn: Lsn) -> Option<Segment<'_>> {
-        debug_assert!(
-            !self.chain.is_empty(),
-            "Chain should always have at least one segment"
-        );
-        // [Temporary implementation] At the moment, we have the hard assumption
-        // that the chain contains a single segment so we always return this segment.
-        //
+    pub fn find_segment_for_lsn(&self, lsn: Lsn) -> MaybeSegment<'_> {
+        // Ensure we we don't actually consider INVALID as INVALID.
+        let lsn = lsn.max(Lsn::OLDEST);
         // NOTE: Hopefully at some point we will use the nightly Cursor API for
         // effecient cursor seeks in the chain (or use nightly channel)
         // Reference: https://github.com/rust-lang/rust/issues/107540
         //
-        let config = self
-            .chain
-            .get(&Lsn::OLDEST)
-            .expect("Chain should always have one segment");
-        Some(Segment {
-            base_lsn: Lsn::OLDEST,
-            config,
-        })
+
+        let mut range = self.chain.range(..=lsn);
+        // walking backwards.
+        while let Some((base_lsn, config)) = range.next_back() {
+            if lsn >= *base_lsn {
+                return MaybeSegment::Some(Segment {
+                    base_lsn: *base_lsn,
+                    config,
+                });
+            }
+        }
+
+        MaybeSegment::Trim {
+            next_base_lsn: self.head().base_lsn,
+        }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
@@ -206,16 +239,18 @@ impl Chain {
 /// with a chain of the default loglet provider kind.
 pub fn create_static_metadata(default_provider: ProviderKind, num_partitions: u64) -> Logs {
     // Get metadata from somewhere
-    let mut log_chain: HashMap<LogId, Chain> = HashMap::with_capacity(num_partitions as usize);
+    let mut builder = LogsBuilder::default();
 
     // pre-fill with all possible logs up to `num_partitions`
     (0..num_partitions).for_each(|i| {
         // fixed config that uses the log-id as loglet identifier/config
         let config = LogletParams::from(i.to_string());
-        log_chain.insert(LogId::from(i), Chain::new(default_provider, config));
+        builder
+            .add_log(LogId::from(i), Chain::new(default_provider, config))
+            .unwrap();
     });
 
-    Logs::new(Version::MIN, log_chain)
+    builder.build()
 }
 
 #[cfg(test)]
