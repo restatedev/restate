@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO: Remove after fleshing the code out.
-#![allow(dead_code)]
-
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use enum_map::Enum;
@@ -40,13 +37,13 @@ pub struct Chain {
 }
 
 #[derive(Debug, Clone)]
-pub struct Segment {
+pub struct SegmentRef<'a> {
     /// The offset of the first record in the segment (if exists).
     /// A segment on a clean chain is created with Lsn::OLDEST but this doesn't mean that this
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub base_lsn: Lsn,
-    pub config: Arc<LogletConfig>,
+    pub config: &'a Arc<LogletConfig>,
 }
 
 /// A segment in the chain of loglet instances.
@@ -117,17 +114,17 @@ impl Logs {
         }
     }
 
-    pub fn tail_segment(&self, log_id: LogId) -> Option<Segment> {
+    pub fn tail_segment(&self, log_id: LogId) -> Option<SegmentRef> {
         self.logs
             .get(&log_id)
             .and_then(|chain| chain.tail())
-            .map(|(base_lsn, config)| Segment {
+            .map(|(base_lsn, config)| SegmentRef {
                 base_lsn: *base_lsn,
-                config: Arc::clone(config),
+                config,
             })
     }
 
-    pub fn find_segment_for_lsn(&self, log_id: LogId, _lsn: Lsn) -> Option<Segment> {
+    pub fn find_segment_for_lsn(&self, log_id: LogId, _lsn: Lsn) -> Option<SegmentRef<'_>> {
         // [Temporary implementation] At the moment, we have the hard assumption
         // that the chain contains a single segment so we always return this segment.
         //
@@ -140,9 +137,9 @@ impl Logs {
                 .chain
                 .get(&Lsn::OLDEST)
                 .expect("Chain should always have one segment");
-            Segment {
+            SegmentRef {
                 base_lsn: Lsn::OLDEST,
-                config: Arc::clone(config),
+                config,
             }
         })
     }
@@ -169,10 +166,10 @@ impl Chain {
         self.chain.last_key_value()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Segment> + '_ {
-        self.chain.iter().map(|(lsn, loglet_config)| Segment {
+    pub fn iter(&self) -> impl Iterator<Item = SegmentRef<'_>> + '_ {
+        self.chain.iter().map(|(lsn, loglet_config)| SegmentRef {
             base_lsn: *lsn,
-            config: Arc::clone(loglet_config),
+            config: loglet_config,
         })
     }
 }

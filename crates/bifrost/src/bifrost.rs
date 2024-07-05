@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 use tracing::instrument;
 
 use restate_core::{Metadata, MetadataKind};
-use restate_types::logs::metadata::{ProviderKind, Segment};
+use restate_types::logs::metadata::{ProviderKind, SegmentRef};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
@@ -314,8 +314,12 @@ impl BifrostInner {
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
 
-        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
-        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+        let logs_ref = self.metadata.logs();
+
+        let log_chain = logs_ref
+            .as_ref()
+            .and_then(|logs| logs.logs.get(&log_id))
+            .ok_or(Error::UnknownLogId(log_id))?;
 
         let mut trim_point = None;
 
@@ -324,7 +328,7 @@ impl BifrostInner {
         // todo: support multiple segments.
         // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(&segment).await?;
+            let loglet = self.get_loglet(segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
 
             // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
@@ -341,11 +345,15 @@ impl BifrostInner {
     async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
-        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
-        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+        let logs_ref = self.metadata.logs();
+
+        let log_chain = logs_ref
+            .as_ref()
+            .and_then(|logs| logs.logs.get(&log_id))
+            .ok_or(Error::UnknownLogId(log_id))?;
 
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(&segment).await?;
+            let loglet = self.get_loglet(segment).await?;
 
             if loglet.base_lsn >= trim_point {
                 break;
@@ -391,12 +399,12 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        let tail_segment = self
-            .metadata
-            .logs()
+        let logs_ref = self.metadata.logs();
+        let tail_segment = logs_ref
+            .as_ref()
             .and_then(|logs| logs.tail_segment(log_id))
             .ok_or(Error::UnknownLogId(log_id))?;
-        self.get_loglet(&tail_segment).await
+        self.get_loglet(tail_segment).await
     }
 
     pub(crate) async fn find_loglet_for_lsn(
@@ -404,15 +412,15 @@ impl BifrostInner {
         log_id: LogId,
         lsn: Lsn,
     ) -> Result<LogletWrapper> {
-        let segment = self
-            .metadata
-            .logs()
+        let logs_ref = self.metadata.logs();
+        let segment = logs_ref
+            .as_ref()
             .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
             .ok_or(Error::UnknownLogId(log_id))?;
-        self.get_loglet(&segment).await
+        self.get_loglet(segment).await
     }
 
-    async fn get_loglet(&self, segment: &Segment) -> Result<LogletWrapper, Error> {
+    async fn get_loglet(&self, segment: SegmentRef<'_>) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind)?;
         let loglet = provider.get_loglet(&segment.config.params).await?;
         Ok(LogletWrapper::new(segment.base_lsn, loglet))
