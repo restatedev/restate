@@ -57,16 +57,6 @@ pub(crate) struct LeaderState {
     actions_effects_tx: mpsc::Sender<ActionEffect>,
 }
 
-pub(crate) struct FollowerState<I> {
-    partition_id: PartitionId,
-    num_timers_in_memory_limit: Option<usize>,
-    channel_size: usize,
-    invoker_tx: I,
-    networking: Networking,
-    partition_key_range: RangeInclusive<PartitionKey>,
-    bifrost: Bifrost,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
@@ -77,13 +67,21 @@ pub(crate) enum Error {
     Shutdown(#[from] ShutdownError),
 }
 
-pub(crate) enum LeadershipState<InvokerInputSender> {
-    Follower(FollowerState<InvokerInputSender>),
+pub enum State {
+    Follower,
+    Leader(LeaderState),
+}
 
-    Leader {
-        follower_state: FollowerState<InvokerInputSender>,
-        leader_state: LeaderState,
-    },
+pub(crate) struct LeadershipState<InvokerInputSender> {
+    state: State,
+
+    partition_id: PartitionId,
+    num_timers_in_memory_limit: Option<usize>,
+    channel_size: usize,
+    invoker_tx: InvokerInputSender,
+    networking: Networking,
+    partition_key_range: RangeInclusive<PartitionKey>,
+    bifrost: Bifrost,
 }
 
 impl<InvokerInputSender> LeadershipState<InvokerInputSender>
@@ -101,7 +99,8 @@ where
         networking: Networking,
     ) -> (Self, ActionEffectStream) {
         (
-            Self::Follower(FollowerState {
+            Self {
+                state: State::Follower,
                 partition_id,
                 partition_key_range,
                 num_timers_in_memory_limit,
@@ -109,13 +108,13 @@ where
                 invoker_tx,
                 bifrost,
                 networking,
-            }),
+            },
             ActionEffectStream::Follower,
         )
     }
 
     pub(crate) fn is_leader(&self) -> bool {
-        matches!(self, LeadershipState::Leader { .. })
+        matches!(self.state, State::Leader(_))
     }
 
     pub(crate) async fn become_leader(
@@ -123,7 +122,7 @@ where
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
     ) -> Result<(Self, ActionEffectStream), Error> {
-        if let LeadershipState::Follower { .. } = self {
+        if let State::Follower = &self.state {
             self.unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         } else {
@@ -136,41 +135,41 @@ where
     }
 
     async fn unchecked_become_leader(
-        self,
+        mut self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
     ) -> Result<(Self, ActionEffectStream), Error> {
-        if let LeadershipState::Follower(mut follower_state) = self {
+        if let State::Follower = self.state {
             let leader_epoch = epoch_sequence_number.leader_epoch;
             let metadata = metadata();
 
             let invoker_rx = Self::resume_invoked_invocations(
-                &mut follower_state.invoker_tx,
-                (follower_state.partition_id, leader_epoch),
-                follower_state.partition_key_range.clone(),
+                &mut self.invoker_tx,
+                (self.partition_id, leader_epoch),
+                self.partition_key_range.clone(),
                 partition_storage,
-                follower_state.channel_size,
+                self.channel_size,
             )
             .await?;
 
             let timer_service = Box::pin(TimerService::new(
                 TokioClock,
-                follower_state.num_timers_in_memory_limit,
+                self.num_timers_in_memory_limit,
                 partition_storage.clone(),
             ));
 
-            let (shuffle_tx, shuffle_rx) = mpsc::channel(follower_state.channel_size);
+            let (shuffle_tx, shuffle_rx) = mpsc::channel(self.channel_size);
 
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(
-                    follower_state.partition_id,
+                    self.partition_id,
                     leader_epoch,
                     metadata.my_node_id().into(),
                 ),
                 partition_storage.clone(),
                 shuffle_tx,
-                follower_state.channel_size,
-                follower_state.bifrost.clone(),
+                self.channel_size,
+                self.bifrost.clone(),
             );
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
@@ -178,33 +177,31 @@ where
             let shuffle_task_id = task_center().spawn_child(
                 TaskKind::Shuffle,
                 "shuffle",
-                Some(follower_state.partition_id),
+                Some(self.partition_id),
                 shuffle.run(),
             )?;
 
             let action_effect_handler = ActionEffectHandler::new(
-                follower_state.partition_id,
+                self.partition_id,
                 epoch_sequence_number,
-                follower_state.partition_key_range.clone(),
-                follower_state.bifrost.clone(),
+                self.partition_key_range.clone(),
+                self.bifrost.clone(),
                 metadata,
             );
 
-            let (actions_effects_tx, actions_effects_rx) =
-                mpsc::channel(follower_state.channel_size);
+            let (actions_effects_tx, actions_effects_rx) = mpsc::channel(self.channel_size);
+
+            self.state = State::Leader(LeaderState {
+                leader_epoch,
+                shuffle_task_id,
+                shuffle_hint_tx,
+                timer_service,
+                action_effect_handler,
+                actions_effects_tx,
+            });
 
             Ok((
-                LeadershipState::Leader {
-                    follower_state,
-                    leader_state: LeaderState {
-                        leader_epoch,
-                        shuffle_task_id,
-                        shuffle_hint_tx,
-                        timer_service,
-                        action_effect_handler,
-                        actions_effects_tx,
-                    },
-                },
+                self,
                 ActionEffectStream::leader(invoker_rx, shuffle_rx, actions_effects_rx),
             ))
         } else {
@@ -256,31 +253,19 @@ where
         Ok(invoker_rx)
     }
 
-    pub(crate) async fn become_follower(self) -> Result<(Self, ActionEffectStream), Error> {
-        if let LeadershipState::Leader {
-            follower_state:
-                FollowerState {
-                    partition_id,
-                    partition_key_range,
-                    channel_size,
-                    num_timers_in_memory_limit,
-                    mut invoker_tx,
-                    bifrost,
-                    networking,
-                },
-            leader_state:
-                LeaderState {
-                    leader_epoch,
-                    shuffle_task_id,
-                    ..
-                },
-        } = self
+    pub(crate) async fn become_follower(mut self) -> Result<(Self, ActionEffectStream), Error> {
+        if let State::Leader(LeaderState {
+            leader_epoch,
+            shuffle_task_id,
+            ..
+        }) = self.state
         {
             let shuffle_handle = OptionFuture::from(task_center().cancel_task(shuffle_task_id));
 
             let (shuffle_result, abort_result) = tokio::join!(
                 shuffle_handle,
-                invoker_tx.abort_all_partition((partition_id, leader_epoch)),
+                self.invoker_tx
+                    .abort_all_partition((self.partition_id, leader_epoch)),
             );
 
             abort_result.map_err(Error::Invoker)?;
@@ -289,27 +274,17 @@ where
                 shuffle_result.expect("graceful termination of shuffle task");
             }
 
-            Ok(Self::follower(
-                partition_id,
-                partition_key_range,
-                num_timers_in_memory_limit,
-                channel_size,
-                invoker_tx,
-                bifrost,
-                networking,
-            ))
-        } else {
-            Ok((self, ActionEffectStream::Follower))
+            self.state = State::Follower;
         }
+        Ok((self, ActionEffectStream::Follower))
     }
 
     pub(crate) async fn run_timer(&mut self) -> TimerKeyValue {
-        match self {
-            LeadershipState::Follower { .. } => future::pending().await,
-            LeadershipState::Leader {
-                leader_state: LeaderState { timer_service, .. },
-                ..
-            } => timer_service.as_mut().next_timer().await,
+        match &mut self.state {
+            State::Follower => future::pending().await,
+            State::Leader(LeaderState { timer_service, .. }) => {
+                timer_service.as_mut().next_timer().await
+            }
         }
     }
 
@@ -317,14 +292,11 @@ where
         &mut self,
         actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
-        match self {
-            LeadershipState::Follower(_) => {
+        match &mut self.state {
+            State::Follower => {
                 // nothing to do :-)
             }
-            LeadershipState::Leader {
-                follower_state,
-                leader_state,
-            } => {
+            State::Leader(leader_state) => {
                 for action in actions {
                     trace!(?action, "Apply action");
                     counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" =>
@@ -332,12 +304,12 @@ where
                     .increment(1);
                     Self::handle_action(
                         action,
-                        (follower_state.partition_id, leader_state.leader_epoch),
-                        &mut follower_state.invoker_tx,
+                        (self.partition_id, leader_state.leader_epoch),
+                        &mut self.invoker_tx,
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
                         &mut leader_state.actions_effects_tx,
-                        &follower_state.networking,
+                        &self.networking,
                     )
                     .await?;
                 }
@@ -435,11 +407,11 @@ where
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
-        match self {
-            LeadershipState::Follower(_) => {
+        match &mut self.state {
+            State::Follower => {
                 // nothing to do :-)
             }
-            LeadershipState::Leader { leader_state, .. } => {
+            State::Leader(leader_state) => {
                 leader_state
                     .action_effect_handler
                     .handle(action_effects)
