@@ -41,7 +41,7 @@ impl Default for Logs {
 pub struct Chain {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub chain: BTreeMap<Lsn, Arc<LogletConfig>>,
+    pub(super) chain: BTreeMap<Lsn, Arc<LogletConfig>>,
 }
 
 #[derive(Debug, Clone)]
