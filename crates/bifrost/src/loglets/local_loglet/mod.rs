@@ -15,7 +15,6 @@ mod log_store_writer;
 mod metric_definitions;
 mod provider;
 mod read_stream;
-mod utils;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -34,20 +33,20 @@ use crate::loglet::{LogletBase, LogletOffset, SendableLogletReadStream};
 use crate::loglets::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{Error, LogRecord, Result, SealReason};
+use crate::{Error, LogRecord, Result, SealReason, TailState};
 
 use self::keys::RecordKey;
 use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
-use self::utils::OffsetWatch;
+use super::util::OffsetWatch;
 
 struct LocalLoglet {
     log_id: u64,
     log_store: RocksDbLogStore,
     log_writer: RocksDbLogWriterHandle,
-    // internal offset of the first record (or slot available)
+    // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU64,
     // used to order concurrent trim operations :-(
     trim_point_lock: Mutex<()>,
@@ -118,16 +117,18 @@ impl LocalLoglet {
         self.release_watch.notify(release_pointer);
     }
 
-    fn read_after(&self, after: LogletOffset) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
+    fn read_from(
+        &self,
+        from_offset: LogletOffset,
+    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
+        debug_assert_ne!(LogletOffset::INVALID, from_offset);
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
-        // Are we reading after before the trim point? Note that if `trim_point` == `after`
-        // then we don't return a trim gap, because the next record is potentially a data
-        // record.
-        if trim_point > after {
-            return Ok(Some(LogRecord::new_trim_gap(after.next(), trim_point)));
+        let head_offset = trim_point.next();
+        // Are we reading behind the loglet head?
+        if from_offset < head_offset {
+            return Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)));
         }
 
-        let from_offset = after.next();
         // Are we reading after commit offset?
         let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
         if from_offset > commit_offset {
@@ -146,10 +147,9 @@ impl LocalLoglet {
             let record = iter.next().transpose().map_err(LogStoreError::Rocksdb)?;
             let Some(record) = record else {
                 let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
-
                 // we might not have been able to read the next record because of a concurrent trim operation
-                return if trim_point > after {
-                    Ok(Some(LogRecord::new_trim_gap(after.next(), trim_point)))
+                return if trim_point >= from_offset {
+                    Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)))
                 } else {
                     Ok(None)
                 };
@@ -161,7 +161,7 @@ impl LocalLoglet {
             if key.log_id != self.log_id {
                 warn!(
                     log_id = self.log_id,
-                    "read_after moved to the adjacent log {}, that should not happen.\
+                    "read_from moved to the adjacent log {}, that should not happen.\
                     This is harmless but needs to be investigated!",
                     key.log_id,
                 );
@@ -179,9 +179,9 @@ impl LogletBase for LocalLoglet {
 
     async fn create_read_stream(
         self: Arc<Self>,
-        after: Self::Offset,
+        from: Self::Offset,
     ) -> Result<SendableLogletReadStream<Self::Offset>> {
-        Ok(Box::pin(LocalLogletReadStream::create(self, after).await?))
+        Ok(Box::pin(LocalLogletReadStream::create(self, from).await?))
     }
 
     async fn append(&self, payload: Bytes) -> Result<LogletOffset> {
@@ -253,14 +253,14 @@ impl LogletBase for LocalLoglet {
         Ok(offset)
     }
 
-    async fn find_tail(&self) -> Result<Option<LogletOffset>> {
-        let last_committed = LogletOffset::from(self.last_committed_offset.load(Ordering::Relaxed));
-        let current_trim_point = LogletOffset::from(self.trim_point_offset.load(Ordering::Relaxed));
-        if last_committed == LogletOffset::INVALID || current_trim_point >= last_committed {
-            Ok(None)
+    async fn find_tail(&self) -> Result<TailState<LogletOffset>> {
+        let last_committed =
+            LogletOffset::from(self.last_committed_offset.load(Ordering::Relaxed)).next();
+        Ok(if self.seal.is_some() {
+            TailState::Sealed(last_committed)
         } else {
-            Ok(Some(last_committed))
-        }
+            TailState::Open(last_committed)
+        })
     }
 
     async fn get_trim_point(&self) -> Result<Option<Self::Offset>> {
@@ -274,6 +274,7 @@ impl LogletBase for LocalLoglet {
     }
 
     /// Trim the log to the minimum of new_trim_point and last_committed_offset
+    /// new_trim_point is inclusive (will be trimmed)
     async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), Error> {
         let effective_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),
@@ -309,24 +310,160 @@ impl LogletBase for LocalLoglet {
         Ok(())
     }
 
-    async fn read_next_single(
-        &self,
-        after: Self::Offset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>> {
+    async fn read_next_single(&self, from: Self::Offset) -> Result<LogRecord<Self::Offset, Bytes>> {
         loop {
-            let next_record = self.read_after(after)?;
+            let next_record = self.read_from(from)?;
             if let Some(next_record) = next_record {
                 break Ok(next_record);
             }
             // Wait and respond when available.
-            self.release_watch.wait_for(after.next()).await?;
+            self.release_watch.wait_for(from).await?;
         }
     }
 
     async fn read_next_single_opt(
         &self,
-        after: Self::Offset,
+        from: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
-        self.read_after(after)
+        self.read_from(from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_core::TestCoreEnvBuilder;
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::config::Configuration;
+    use restate_types::live::Live;
+    use restate_types::logs::metadata::{LogletParams, ProviderKind};
+
+    use crate::loglet_tests::*;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn local_loglet_smoke_test() -> googletest::Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+                let params = LogletParams::from("42".to_string());
+
+                let log_store = RocksDbLogStore::create(
+                    &config.pinned().bifrost.local,
+                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+                )
+                .await?;
+
+                let log_writer = log_store
+                    .create_writer()
+                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+
+                let loglet = Arc::new(
+                    LocalLoglet::create(
+                        params
+                            .id()
+                            .parse()
+                            .expect("loglet params can be converted into u64"),
+                        log_store,
+                        log_writer,
+                    )
+                    .await?,
+                );
+
+                gapless_loglet_smoke_test(loglet).await?;
+                Ok(())
+            })
+            .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn local_loglet_readstream_test() -> googletest::Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+                let params = LogletParams::from("42".to_string());
+
+                let log_store = RocksDbLogStore::create(
+                    &config.pinned().bifrost.local,
+                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+                )
+                .await?;
+
+                let log_writer = log_store
+                    .create_writer()
+                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+
+                let loglet = Arc::new(
+                    LocalLoglet::create(
+                        params
+                            .id()
+                            .parse()
+                            .expect("loglet params can be converted into u64"),
+                        log_store,
+                        log_writer,
+                    )
+                    .await?,
+                );
+
+                single_loglet_readstream_test(loglet).await?;
+                Ok(())
+            })
+            .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn local_loglet_readstream_test_with_trims() -> googletest::Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+                let params = LogletParams::from("99".to_string());
+
+                let log_store = RocksDbLogStore::create(
+                    &config.pinned().bifrost.local,
+                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+                )
+                .await?;
+
+                let log_writer = log_store
+                    .create_writer()
+                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+
+                let loglet = Arc::new(
+                    LocalLoglet::create(
+                        params
+                            .id()
+                            .parse()
+                            .expect("loglet params can be converted into u64"),
+                        log_store,
+                        log_writer,
+                    )
+                    .await?,
+                );
+
+                single_loglet_readstream_test_with_trims(loglet).await?;
+                Ok(())
+            })
+            .await
     }
 }

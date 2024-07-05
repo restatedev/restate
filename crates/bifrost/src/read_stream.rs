@@ -17,7 +17,8 @@ use futures::stream::FusedStream;
 use futures::Stream;
 use pin_project::pin_project;
 
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::logs::SequenceNumber;
+use restate_types::logs::{LogId, Lsn};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::LogletReadStreamWrapper;
@@ -35,10 +36,10 @@ pub struct LogReadStream {
     _last_known_tail: Lsn,
     log_id: LogId,
     // inclusive max lsn to read to
-    until_lsn: Lsn,
+    end_lsn: Lsn,
     terminated: bool,
-    /// Represents the _current_ record (or the last lsn that was returned from this stream).
-    //  This is akin to the lsn that can be passed to `read_next_single(after)` to read the
+    /// Represents the next possible record to be read.
+    //  This is akin to the lsn that can be passed to `read_next_single(from)` to read the
     //  next record in the log.
     read_pointer: Lsn,
 }
@@ -47,33 +48,33 @@ impl LogReadStream {
     pub(crate) async fn create(
         inner: Arc<BifrostInner>,
         log_id: LogId,
-        after: Lsn,
+        start_lsn: Lsn,
         // Inclusive. Use Lsn::MAX for a tailing stream. Once reached, stream will terminate
         // (return Ready(None)).
-        until_lsn: Lsn,
+        end_lsn: Lsn,
     ) -> Result<Self> {
         // todo: support switching loglets. At the moment, this is hard-wired to a single loglet
         // implementation.
         let current_loglet = inner
             // find the loglet where the _next_ lsn resides.
-            .find_loglet_for_lsn(log_id, after.next())
+            .find_loglet_for_lsn(log_id, start_lsn)
             .await?;
         let (last_loglet, last_known_tail) = inner
             .find_tail(log_id, FindTailAttributes::default())
             .await?;
         debug_assert_eq!(last_loglet, current_loglet);
 
-        let current_loglet_stream = current_loglet.create_wrapped_read_stream(after).await?;
+        let current_loglet_stream = current_loglet.create_wrapped_read_stream(start_lsn).await?;
         Ok(Self {
             current_loglet_stream,
             // reserved for future use
             current_loglet: last_loglet,
             // reserved for future use
-            _last_known_tail: last_known_tail.unwrap_or(Lsn::INVALID),
+            _last_known_tail: last_known_tail.offset(),
             inner,
             log_id,
-            read_pointer: after,
-            until_lsn,
+            read_pointer: start_lsn,
+            end_lsn,
             terminated: false,
         })
     }
@@ -82,25 +83,23 @@ impl LogReadStream {
         self.terminated
     }
 
+    /// Current read pointer. This is the next (possible) record to be read.
     pub fn read_pointer(&self) -> Lsn {
         self.read_pointer
     }
 
+    /// The read pointer will point to the potential next LSN that we will read from on the next
+    /// poll_next() call.
     fn calculate_read_pointer(record: &LogRecord) -> Lsn {
         match &record.record {
-            // On trim gaps, we fast-forward the read pointer to the end of the gap. We do
+            // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
             // this after delivering a TrimGap record. This means that the next read operation
             // skips over the boundary of the gap.
-            crate::Record::TrimGap(trim_gap) => trim_gap.until,
+            crate::Record::TrimGap(trim_gap) => trim_gap.to,
             crate::Record::Data(_) => record.offset,
             crate::Record::Seal(_) => record.offset,
         }
-    }
-
-    /// Current read pointer. This is the LSN of the last read record, or the
-    /// LSN that we will read "after" if we call `read_next`.
-    pub fn current_read_pointer(&self) -> Lsn {
-        self.read_pointer
+        .next()
     }
 }
 
@@ -120,7 +119,7 @@ impl Stream for LogReadStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if self.read_pointer >= self.until_lsn {
+        if self.read_pointer > self.end_lsn {
             self.as_mut().terminated = true;
             return Poll::Ready(None);
         }
@@ -160,6 +159,7 @@ mod tests {
     use crate::{BifrostService, Record, TrimGap};
 
     use super::*;
+    use bytes::Bytes;
     use googletest::prelude::*;
 
     use restate_core::{metadata, task_center, TaskKind, TestCoreEnvBuilder};
@@ -171,11 +171,11 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_types::logs::Payload;
+    use restate_types::logs::{Payload, SequenceNumber};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
-    async fn test_basic_readstream() -> anyhow::Result<()> {
+    async fn test_readstream_one_loglet() -> anyhow::Result<()> {
         // Make sure that panics exits the process.
         let orig_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
@@ -191,39 +191,43 @@ mod tests {
 
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
+            let log_id = LogId::from(0);
+            let read_from = Lsn::from(6);
+
             let config = Live::from_value(Configuration::default());
             RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-            let read_after = Lsn::from(5);
             let svc = BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
 
-            let log_id = LogId::from(0);
-            let mut reader = bifrost.create_reader(log_id, read_after, Lsn::MAX).await?;
+            let mut reader = bifrost.create_reader(log_id, read_from, Lsn::MAX).await?;
 
             let tail = bifrost
                 .find_tail(log_id, FindTailAttributes::default())
                 .await?;
             // no records have been written
-            assert!(tail.is_none());
-            assert_eq!(read_after, reader.current_read_pointer());
+            assert!(!tail.is_sealed());
+            assert_eq!(Lsn::OLDEST, tail.offset());
+            assert_eq!(read_from, reader.read_pointer());
+
+            // Nothing is trimmed
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
 
             let read_counter = Arc::new(AtomicUsize::new(0));
             // spawn a reader that reads 5 records and exits.
             let counter_clone = read_counter.clone();
             let id = tc.spawn(TaskKind::TestRunner, "read-records", None, async move {
-                for i in 1..=5 {
+                for i in 6..=10 {
                     let record = reader.next().await.expect("to never terminate")?;
-                    let expected_lsn = Lsn::from(i) + read_after;
-                    assert_eq!(expected_lsn, reader.current_read_pointer());
+                    let expected_lsn = Lsn::from(i);
                     counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     assert_eq!(expected_lsn, record.offset);
+                    assert!(reader.read_pointer() > record.offset);
                     assert_eq!(
                         Payload::new(format!("record{}", expected_lsn)).body(),
                         record.record.into_payload_unchecked().body()
                     );
-                    assert_eq!(expected_lsn, reader.current_read_pointer());
                 }
                 Ok(())
             })?;
@@ -237,9 +241,10 @@ mod tests {
             // append 5 records to the log
             for i in 1..=5 {
                 let lsn = bifrost
-                    .append(LogId::from(0), Payload::new(format!("record{}", i)))
+                    .append(log_id, Payload::new(format!("record{}", i)))
                     .await?;
                 info!(?lsn, "appended record");
+                assert_eq!(Lsn::from(i), lsn);
             }
 
             // Written records are not enough for the reader to finish.
@@ -251,13 +256,13 @@ mod tests {
             // write 5 more records.
             for i in 6..=10 {
                 bifrost
-                    .append(LogId::from(0), Payload::new(format!("record{}", i)))
+                    .append(log_id, Payload::new(format!("record{}", i)))
                     .await?;
             }
 
             // reader has finished
             reader_bg_handle.await?;
-            assert!(read_counter.load(std::sync::atomic::Ordering::Relaxed) == 5);
+            assert_eq!(5, read_counter.load(std::sync::atomic::Ordering::Relaxed));
 
             anyhow::Ok(())
         })
@@ -292,25 +297,27 @@ mod tests {
                 let bifrost = svc.handle();
                 svc.start().await.expect("loglet must start");
 
-                assert!(bifrost.get_trim_point(log_id).await?.is_none());
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
 
-                for _ in 1..=10 {
-                    bifrost.append(log_id, Payload::default()).await?;
+                // append 10 records [1..10]
+                for i in 1..=10 {
+                    let lsn = bifrost.append(log_id, Payload::default()).await?;
+                    assert_eq!(Lsn::from(i), lsn);
                 }
 
+                // [1..5] trimmed. trim_point = 5
                 bifrost.trim(log_id, Lsn::from(5)).await?;
 
                 assert_eq!(
-                    Some(Lsn::from(10)),
+                    Lsn::from(11),
                     bifrost
                         .find_tail(log_id, FindTailAttributes::default())
-                        .await?,
+                        .await?
+                        .offset(),
                 );
-                assert_eq!(Some(Lsn::from(5)), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(5), bifrost.get_trim_point(log_id).await?);
 
-                let mut read_stream = bifrost
-                    .create_reader(log_id, Lsn::INVALID, Lsn::MAX)
-                    .await?;
+                let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX).await?;
 
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
@@ -318,30 +325,42 @@ mod tests {
                     pat!(LogRecord {
                         offset: eq(Lsn::from(1)),
                         record: pat!(Record::TrimGap(pat!(TrimGap {
-                            until: eq(Lsn::from(5)),
+                            to: eq(Lsn::from(5)),
                         })))
                     })
                 );
 
-                for lsn in 5..7 {
+                for lsn in 6..=7 {
                     let record = read_stream.next().await.unwrap()?;
                     assert_that!(
                         record,
                         pat!(LogRecord {
-                            offset: eq(Lsn::from(lsn + 1)),
+                            offset: eq(Lsn::from(lsn)),
                             record: pat!(Record::Data(_))
                         })
                     );
                 }
                 assert!(!read_stream.is_terminated());
-                assert_eq!(Lsn::from(7), read_stream.read_pointer());
+                assert_eq!(Lsn::from(8), read_stream.read_pointer());
 
+                let tail = bifrost
+                    .find_tail(log_id, FindTailAttributes::default())
+                    .await?
+                    .offset();
                 // trimming beyond the release point will fall back to the release point
                 bifrost.trim(log_id, Lsn::from(u64::MAX)).await?;
-                assert_eq!(bifrost.get_trim_point(log_id).await?, Some(Lsn::from(10)));
+                let trim_point = bifrost.get_trim_point(log_id).await?;
+                assert_eq!(Lsn::from(10), bifrost.get_trim_point(log_id).await?);
+                // trim point becomes the point before the next slot available for writes (aka. the
+                // tail)
+                assert_eq!(tail.prev(), trim_point);
 
-                for _ in 0..10 {
-                    bifrost.append(log_id, Payload::default()).await?;
+                // append lsns [11..20]
+                for i in 11..=20 {
+                    let lsn = bifrost
+                        .append(log_id, Payload::new(format!("record{}", i)))
+                        .await?;
+                    assert_eq!(Lsn::from(i), lsn);
                 }
 
                 // read stream should send a gap from 8->10
@@ -351,19 +370,23 @@ mod tests {
                     pat!(LogRecord {
                         offset: eq(Lsn::from(8)),
                         record: pat!(Record::TrimGap(pat!(TrimGap {
-                            until: eq(Lsn::from(10)),
+                            to: eq(Lsn::from(10)),
                         })))
                     })
                 );
 
-                for lsn in 10..20 {
+                // read pointer is at 11
+                assert_eq!(Lsn::from(11), read_stream.read_pointer());
+
+                // read the rest of the records
+                for lsn in 11..=20 {
+                    let expected_body = Bytes::from(format!("record{}", lsn));
                     let record = read_stream.next().await.unwrap()?;
+                    assert_that!(record.offset, eq(Lsn::from(lsn)));
+                    assert!(record.record.is_data());
                     assert_that!(
-                        record,
-                        pat!(LogRecord {
-                            offset: eq(Lsn::from(lsn + 1)),
-                            record: pat!(Record::Data(_))
-                        })
+                        record.record.try_as_data_ref().unwrap().body(),
+                        eq(expected_body)
                     );
                 }
                 // we are at tail. polling should return pending.

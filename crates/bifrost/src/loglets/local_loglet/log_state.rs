@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use restate_types::flexbuffers_storage_encode_decode;
-use restate_types::logs::SequenceNumber;
 use restate_types::storage::StorageCodec;
 use rocksdb::MergeOperands;
 use serde::{Deserialize, Serialize};
@@ -55,7 +54,6 @@ impl LogStateUpdates {
         self
     }
 
-    #[allow(dead_code)]
     pub fn update_trim_point(mut self, trim_point: LogletOffset) -> Self {
         self.updates
             .push(LogStateUpdate::TrimPoint(trim_point.into()));
@@ -87,21 +85,11 @@ impl LogStateUpdates {
 
 flexbuffers_storage_encode_decode!(LogStateUpdates);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LogState {
     pub release_pointer: u64,
     pub trim_point: u64,
     pub seal: Option<SealReason>,
-}
-
-impl Default for LogState {
-    fn default() -> Self {
-        Self {
-            release_pointer: LogletOffset::INVALID.into(),
-            trim_point: LogletOffset::INVALID.into(),
-            seal: None,
-        }
-    }
 }
 
 impl LogState {
