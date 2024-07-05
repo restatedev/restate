@@ -16,12 +16,13 @@ use std::task::Poll;
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use pin_project::pin_project;
-use restate_core::ShutdownError;
-use restate_rocksdb::RocksDbPerfGuard;
-use restate_types::logs::SequenceNumber;
 use rocksdb::{DBRawIteratorWithThreadMode, DB};
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
+
+use restate_core::ShutdownError;
+use restate_rocksdb::RocksDbPerfGuard;
+use restate_types::logs::SequenceNumber;
 
 use crate::loglet::{LogletOffset, LogletReadStream};
 use crate::loglets::local_loglet::LogStoreError;
@@ -34,7 +35,7 @@ use super::LocalLoglet;
 pub(crate) struct LocalLogletReadStream {
     log_id: u64,
     loglet: Arc<LocalLoglet>,
-    // the last record this stream has returned
+    // the next record this stream will attempt to read
     read_pointer: LogletOffset,
     release_pointer: LogletOffset,
     #[pin]
@@ -58,14 +59,24 @@ unsafe fn ignore_iterator_lifetime<'a>(
 }
 
 impl LocalLogletReadStream {
-    pub(crate) async fn create(loglet: Arc<LocalLoglet>, after: LogletOffset) -> Result<Self> {
-        let key = RecordKey::new(loglet.log_id, after.next());
+    pub(crate) async fn create(
+        loglet: Arc<LocalLoglet>,
+        from_offset: LogletOffset,
+    ) -> Result<Self> {
+        // Reading from INVALID resets to OLDEST.
+        let from_offset = from_offset.max(LogletOffset::OLDEST);
+        // We seek to next key on every iteration, we need to setup the iterator to be
+        // at the previous key within the same prefix if from_offset > 0 (saturating to
+        // LogletOffset::INVALID)
+        let key = RecordKey::new(loglet.log_id, from_offset.prev());
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_tailing(true);
-        // In some cases, the underlying ForwardIterator will fail it hits a RangeDelete tombstone.
-        // For our puroses, we can ignore these tombstones. TL;DR if loglet reader started before a
-        // trim point and data is readable, we should continue reading them. It's the
-        // responsibility of the upper layer to decide on a sane value of _after_.
+        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
+        // For our purposes, we can ignore these tombstones, meaning that we will return those records
+        // instead of a gap.
+        // In summary, if loglet reader started before a trim point and data is readable, we should
+        // continue reading them. It's the responsibility of the upper layer to decide on a sane
+        // value of _from_offset_.
         read_opts.set_ignore_range_deletions(true);
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
@@ -78,7 +89,7 @@ impl LocalLogletReadStream {
             .next()
             .await
             .expect("loglet watch returns release pointer");
-        //
+
         // ## Safety:
         // the iterator is guaranteed to be dropped before the loglet is dropped, we hold to the
         // loglet in this struct for as long as the stream is alive.
@@ -95,7 +106,7 @@ impl LocalLogletReadStream {
         Ok(Self {
             log_id: loglet.log_id,
             loglet,
-            read_pointer: after,
+            read_pointer: from_offset,
             iterator: iter,
             terminated: false,
             release_watch,
@@ -104,7 +115,16 @@ impl LocalLogletReadStream {
     }
 }
 
-impl LogletReadStream<LogletOffset> for LocalLogletReadStream {}
+impl LogletReadStream<LogletOffset> for LocalLogletReadStream {
+    /// Current read pointer. This points to the next offset to be read.
+    fn read_pointer(&self) -> LogletOffset {
+        self.read_pointer
+    }
+    /// Returns true if the stream is terminated.
+    fn is_terminated(&self) -> bool {
+        self.terminated
+    }
+}
 
 impl Stream for LocalLogletReadStream {
     type Item = Result<LogRecord<LogletOffset, Bytes>>;
@@ -117,7 +137,7 @@ impl Stream for LocalLogletReadStream {
             return Poll::Ready(None);
         }
 
-        let next_offset = self.read_pointer.next();
+        let next_offset = self.read_pointer;
 
         let perf_guard = RocksDbPerfGuard::new("local-loglet-next");
         loop {
@@ -142,7 +162,6 @@ impl Stream for LocalLogletReadStream {
                     None => {
                         // system shutdown. Or that the loglet has been unexpectedly shutdown.
                         this.terminated.set(true);
-                        println!("Shutdown error");
                         return Poll::Ready(Some(Err(Error::Shutdown(ShutdownError))));
                     }
                 }
@@ -153,20 +172,19 @@ impl Stream for LocalLogletReadStream {
             // assert that we are newer
             assert!(release_pointer >= next_offset);
 
+            // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
             let trim_point = LogletOffset(this.loglet.trim_point_offset.load(Ordering::Relaxed));
-
-            // Trim point is the the slot **before** the first readable record (if it exists), or the offset
-            // before the next slot that will be written to.
-            //
-            // Are we reading after before the trim point? Note that if `trim_point` ==
-            // `next_offset` then we don't return a trim gap, because the next record
-            // is potentially a data record.
+            let head_offset = trim_point.next();
+            // Are we reading behind the loglet head? -> TrimGap
             assert!(next_offset > LogletOffset::from(0));
-            if trim_point >= next_offset {
+
+            if next_offset < head_offset {
                 let trim_gap = LogRecord::new_trim_gap(next_offset, trim_point);
-                self.read_pointer = trim_point;
+                // next record should be beyond at the head
+                self.read_pointer = head_offset;
                 let key = RecordKey::new(self.log_id, trim_point);
+                // park the iterator at the trim point, next iteration will seek it forward.
                 self.iterator.seek(key.to_bytes());
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
@@ -223,7 +241,7 @@ impl Stream for LocalLogletReadStream {
             let raw_value = this.iterator.value().expect("log record exists");
             let mut buf = BytesMut::with_capacity(raw_value.len());
             buf.put_slice(raw_value);
-            *this.read_pointer = loaded_key.offset;
+            *this.read_pointer = loaded_key.offset.next();
 
             return Poll::Ready(Some(Ok(LogRecord::new_data(key.offset, buf.freeze()))));
         }
