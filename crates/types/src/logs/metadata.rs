@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// TODO: Remove after fleshing the code out.
-#![allow(dead_code)]
-
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 use enum_map::Enum;
@@ -24,12 +21,20 @@ use std::sync::Arc;
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logs {
-    pub version: Version,
+    version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub logs: HashMap<LogId, Chain>,
+    logs: HashMap<LogId, Chain>,
 }
 
+impl Default for Logs {
+    fn default() -> Self {
+        Self {
+            version: Version::INVALID,
+            logs: Default::default(),
+        }
+    }
+}
 /// the chain is a list of segments in (from Lsn) order.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,13 +45,13 @@ pub struct Chain {
 }
 
 #[derive(Debug, Clone)]
-pub struct Segment {
+pub struct Segment<'a> {
     /// The offset of the first record in the segment (if exists).
     /// A segment on a clean chain is created with Lsn::OLDEST but this doesn't mean that this
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub base_lsn: Lsn,
-    pub config: Arc<LogletConfig>,
+    pub config: &'a Arc<LogletConfig>,
 }
 
 /// A segment in the chain of loglet instances.
@@ -123,28 +128,16 @@ impl Logs {
             .and_then(|chain| chain.tail())
             .map(|(base_lsn, config)| Segment {
                 base_lsn: *base_lsn,
-                config: Arc::clone(config),
+                config,
             })
     }
 
-    pub fn find_segment_for_lsn(&self, log_id: LogId, _lsn: Lsn) -> Option<Segment> {
-        // [Temporary implementation] At the moment, we have the hard assumption
-        // that the chain contains a single segment so we always return this segment.
-        //
-        // NOTE: Hopefully at some point we will use the nightly Cursor API for
-        // effecient cursor seeks in the chain (or use nightly channel)
-        // Reference: https://github.com/rust-lang/rust/issues/107540
-        //
-        self.logs.get(&log_id).map(|chain| {
-            let config = chain
-                .chain
-                .get(&Lsn::OLDEST)
-                .expect("Chain should always have one segment");
-            Segment {
-                base_lsn: Lsn::OLDEST,
-                config: Arc::clone(config),
-            }
-        })
+    pub fn num_logs(&self) -> usize {
+        self.logs.len()
+    }
+
+    pub fn chain(&self, log_id: LogId) -> Option<&Chain> {
+        self.logs.get(&log_id)
     }
 }
 
@@ -159,9 +152,13 @@ flexbuffers_storage_encode_decode!(Logs);
 impl Chain {
     /// Creates a new chain starting from Lsn(1) with a given loglet config.
     pub fn new(kind: ProviderKind, config: LogletParams) -> Self {
+        Self::with_base_lsn(kind, Lsn::OLDEST, config)
+    }
+
+    /// Create a chain with `base_lsn` as its oldest Lsn.
+    pub fn with_base_lsn(kind: ProviderKind, base_lsn: Lsn, config: LogletParams) -> Self {
         let mut chain = BTreeMap::new();
-        let from_lsn = Lsn::OLDEST;
-        chain.insert(from_lsn, Arc::new(LogletConfig::new(kind, config)));
+        chain.insert(base_lsn, Arc::new(LogletConfig::new(kind, config)));
         Self { chain }
     }
 
@@ -169,10 +166,34 @@ impl Chain {
         self.chain.last_key_value()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Segment> + '_ {
+    /// Finds the segment that potentially contains the given Lsn.
+    /// Returns `None` if the Lsn is behind the oldest segment (trimmed).
+    pub fn find_segment_for_lsn(&self, _lsn: Lsn) -> Option<Segment<'_>> {
+        debug_assert!(
+            !self.chain.is_empty(),
+            "Chain should always have at least one segment"
+        );
+        // [Temporary implementation] At the moment, we have the hard assumption
+        // that the chain contains a single segment so we always return this segment.
+        //
+        // NOTE: Hopefully at some point we will use the nightly Cursor API for
+        // effecient cursor seeks in the chain (or use nightly channel)
+        // Reference: https://github.com/rust-lang/rust/issues/107540
+        //
+        let config = self
+            .chain
+            .get(&Lsn::OLDEST)
+            .expect("Chain should always have one segment");
+        Some(Segment {
+            base_lsn: Lsn::OLDEST,
+            config,
+        })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
         self.chain.iter().map(|(lsn, loglet_config)| Segment {
             base_lsn: *lsn,
-            config: Arc::clone(loglet_config),
+            config: loglet_config,
         })
     }
 }

@@ -127,17 +127,13 @@ impl Metadata {
         Ok(self.partition_table().unwrap())
     }
 
-    pub fn logs(&self) -> Option<Arc<Logs>> {
-        self.inner.logs.load_full()
+    pub fn logs(&self) -> Pinned<Logs> {
+        Pinned::new(&self.inner.logs)
     }
 
     /// Returns Version::INVALID if logs has not been loaded yet.
     pub fn logs_version(&self) -> Version {
-        let c = self.inner.logs.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
+        self.inner.logs.load().version()
     }
 
     pub fn schema(&self) -> Arc<Schema> {
@@ -154,6 +150,10 @@ impl Metadata {
 
     pub fn updateable_schema(&self) -> Live<Schema> {
         Live::from(self.inner.schema.clone())
+    }
+
+    pub fn updateable_logs_metadata(&self) -> Live<Logs> {
+        Live::from(self.inner.logs.clone())
     }
 
     // Returns when the metadata kind is at the provided version (or newer)
@@ -192,7 +192,7 @@ struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: Arc<ArcSwap<NodesConfiguration>>,
     partition_table: ArcSwapOption<FixedPartitionTable>,
-    logs: ArcSwapOption<Logs>,
+    logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
 }
