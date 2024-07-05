@@ -425,9 +425,9 @@ impl Node {
 
         // sanity check
         if partition_table.num_partitions()
-            != u64::try_from(logs.logs.len()).expect("usize fits into u64")
+            != u64::try_from(logs.num_logs()).expect("usize fits into u64")
         {
-            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.logs.len())))?;
+            return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
         }
 
         Ok((partition_table, logs))
