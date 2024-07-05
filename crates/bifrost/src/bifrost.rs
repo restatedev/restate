@@ -19,7 +19,7 @@ use smallvec::SmallVec;
 use tracing::instrument;
 
 use restate_core::{Metadata, MetadataKind};
-use restate_types::logs::metadata::{ProviderKind, Segment};
+use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
@@ -410,13 +410,15 @@ impl BifrostInner {
         lsn: Lsn,
     ) -> Result<LogletWrapper> {
         let log_metadata = self.metadata.logs();
-        let segment = log_metadata
+        let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
-            .find_segment_for_lsn(lsn)
+            .find_segment_for_lsn(lsn);
+        match maybe_segment {
+            MaybeSegment::Some(segment) => self.get_loglet(segment).await,
             // todo: handle trimmed segments
-            .ok_or(Error::UnknownLogId(log_id))?;
-        self.get_loglet(segment).await
+            MaybeSegment::Trim { .. } => todo!("trimmed segments is not supported yet"),
+        }
     }
 
     async fn get_loglet(&self, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
