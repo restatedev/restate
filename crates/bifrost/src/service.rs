@@ -37,7 +37,7 @@ impl BifrostService {
     pub fn new(task_center: TaskCenter, metadata: Metadata) -> Self {
         let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(BifrostInner::new(metadata.clone(), watchdog_sender.clone()));
-        let bifrost = Bifrost::new(inner.clone(), metadata);
+        let bifrost = Bifrost::new(inner.clone());
         let watchdog = Watchdog::new(
             task_center.clone(),
             inner.clone(),
