@@ -1,4 +1,4 @@
-// Copyright (c) 2023 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023-2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod action_collector;
-
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
+use std::time::Duration;
 
 use futures::future::OptionFuture;
-use futures::{future, StreamExt};
+use futures::{future, stream, StreamExt};
 use metrics::counter;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_bifrost::Bifrost;
@@ -43,10 +44,19 @@ use crate::partition::action_effect_handler::ActionEffectHandler;
 use crate::partition::shuffle::{HintSender, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::Action;
 use crate::partition::{shuffle, storage};
-pub(crate) use action_collector::{ActionEffect, ActionEffectStream};
+
+const BATCH_READY_UP_TO: usize = 10;
 
 type PartitionStorage = storage::PartitionStorage<PartitionStore>;
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, PartitionStorage>;
+
+#[derive(Debug)]
+pub(crate) enum ActionEffect {
+    Invoker(restate_invoker_api::Effect),
+    Shuffle(shuffle::OutboxTruncation),
+    Timer(TimerKeyValue),
+    ScheduleCleanupTimer(InvocationId, Duration),
+}
 
 pub(crate) struct LeaderState {
     leader_epoch: LeaderEpoch,
@@ -54,7 +64,10 @@ pub(crate) struct LeaderState {
     shuffle_task_id: TaskId,
     timer_service: Pin<Box<TimerService>>,
     action_effect_handler: ActionEffectHandler,
-    actions_effects_tx: mpsc::Sender<ActionEffect>,
+    action_effects: VecDeque<ActionEffect>,
+
+    invoker_stream: ReceiverStream<restate_invoker_api::Effect>,
+    shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -97,20 +110,17 @@ where
         invoker_tx: InvokerInputSender,
         bifrost: Bifrost,
         networking: Networking,
-    ) -> (Self, ActionEffectStream) {
-        (
-            Self {
-                state: State::Follower,
-                partition_id,
-                partition_key_range,
-                num_timers_in_memory_limit,
-                channel_size,
-                invoker_tx,
-                bifrost,
-                networking,
-            },
-            ActionEffectStream::Follower,
-        )
+    ) -> Self {
+        Self {
+            state: State::Follower,
+            partition_id,
+            partition_key_range,
+            num_timers_in_memory_limit,
+            channel_size,
+            invoker_tx,
+            bifrost,
+            networking,
+        }
     }
 
     pub(crate) fn is_leader(&self) -> bool {
@@ -121,12 +131,12 @@ where
         self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-    ) -> Result<(Self, ActionEffectStream), Error> {
+    ) -> Result<Self, Error> {
         if let State::Follower = &self.state {
             self.unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         } else {
-            let (follower_state, _) = self.become_follower().await?;
+            let follower_state = self.become_follower().await?;
 
             follower_state
                 .unchecked_become_leader(epoch_sequence_number, partition_storage)
@@ -138,7 +148,7 @@ where
         mut self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-    ) -> Result<(Self, ActionEffectStream), Error> {
+    ) -> Result<Self, Error> {
         if let State::Follower = self.state {
             let leader_epoch = epoch_sequence_number.leader_epoch;
             let metadata = metadata();
@@ -189,21 +199,18 @@ where
                 metadata,
             );
 
-            let (actions_effects_tx, actions_effects_rx) = mpsc::channel(self.channel_size);
-
             self.state = State::Leader(LeaderState {
                 leader_epoch,
                 shuffle_task_id,
                 shuffle_hint_tx,
                 timer_service,
                 action_effect_handler,
-                actions_effects_tx,
+                action_effects: VecDeque::default(),
+                invoker_stream: ReceiverStream::new(invoker_rx),
+                shuffle_stream: ReceiverStream::new(shuffle_rx),
             });
 
-            Ok((
-                self,
-                ActionEffectStream::leader(invoker_rx, shuffle_rx, actions_effects_rx),
-            ))
+            Ok(self)
         } else {
             unreachable!("This method should only be called if I am a follower!");
         }
@@ -253,7 +260,7 @@ where
         Ok(invoker_rx)
     }
 
-    pub(crate) async fn become_follower(mut self) -> Result<(Self, ActionEffectStream), Error> {
+    pub(crate) async fn become_follower(mut self) -> Result<Self, Error> {
         if let State::Leader(LeaderState {
             leader_epoch,
             shuffle_task_id,
@@ -276,14 +283,38 @@ where
 
             self.state = State::Follower;
         }
-        Ok((self, ActionEffectStream::Follower))
+        Ok(self)
     }
 
-    pub(crate) async fn run_timer(&mut self) -> TimerKeyValue {
+    pub async fn next_action_effects(&mut self) -> Option<Vec<ActionEffect>> {
         match &mut self.state {
-            State::Follower => future::pending().await,
-            State::Leader(LeaderState { timer_service, .. }) => {
-                timer_service.as_mut().next_timer().await
+            State::Follower => None,
+            State::Leader(leader_state) => {
+                let timer_stream = std::pin::pin!(stream::unfold(
+                    &mut leader_state.timer_service,
+                    |timer_service| async {
+                        let timer_value = timer_service.as_mut().next_timer().await;
+                        Some((ActionEffect::Timer(timer_value), timer_service))
+                    }
+                ));
+
+                let invoker_stream = (&mut leader_state.invoker_stream).map(ActionEffect::Invoker);
+                let shuffle_stream = (&mut leader_state.shuffle_stream).map(ActionEffect::Shuffle);
+                let action_effects_stream =
+                    stream::unfold(&mut leader_state.action_effects, |action_effects| {
+                        let result = action_effects.pop_front();
+                        future::ready(result.map(|r| (r, action_effects)))
+                    })
+                    .fuse();
+
+                let all_streams = futures::stream_select!(
+                    invoker_stream,
+                    shuffle_stream,
+                    timer_stream,
+                    action_effects_stream
+                );
+                let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
+                all_streams.next().await
             }
         }
     }
@@ -308,7 +339,7 @@ where
                         &mut self.invoker_tx,
                         &leader_state.shuffle_hint_tx,
                         leader_state.timer_service.as_mut(),
-                        &mut leader_state.actions_effects_tx,
+                        &mut leader_state.action_effects,
                         &self.networking,
                     )
                     .await?;
@@ -326,7 +357,7 @@ where
         invoker_tx: &mut InvokerInputSender,
         shuffle_hint_tx: &HintSender,
         mut timer_service: Pin<&mut TimerService>,
-        actions_effects_tx: &mut mpsc::Sender<ActionEffect>,
+        actions_effects: &mut VecDeque<ActionEffect>,
         networking: &Networking,
     ) -> Result<(), Error> {
         match action {
@@ -393,10 +424,8 @@ where
                 invocation_id,
                 retention,
             } => {
-                // We can ignore this error. It means the PP is shutting down.
-                let _ = actions_effects_tx
-                    .send(ActionEffect::ScheduleCleanupTimer(invocation_id, retention))
-                    .await;
+                actions_effects
+                    .push_back(ActionEffect::ScheduleCleanupTimer(invocation_id, retention));
             }
         }
 

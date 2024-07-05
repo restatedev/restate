@@ -14,7 +14,6 @@ use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command.seconds";
 pub const PARTITION_ACTUATOR_HANDLED: &str = "restate.partition.actuator_handled.total";
-pub const PARTITION_TIMER_DUE_HANDLED: &str = "restate.partition.timer_due_handled.total";
 pub const PARTITION_STORAGE_TX_CREATED: &str = "restate.partition.storage_tx_created.total";
 pub const PARTITION_STORAGE_TX_COMMITTED: &str = "restate.partition.storage_tx_committed.total";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
@@ -46,11 +45,6 @@ pub(crate) fn describe_metrics() {
         PARTITION_ACTUATOR_HANDLED,
         Unit::Count,
         "Number of actuator operation outputs processed"
-    );
-    describe_counter!(
-        PARTITION_TIMER_DUE_HANDLED,
-        Unit::Count,
-        "Number of due timer instances processed"
     );
     describe_counter!(
         PARTITION_STORAGE_TX_CREATED,

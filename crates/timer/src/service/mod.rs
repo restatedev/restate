@@ -330,7 +330,7 @@ where
         trace!("Updated current timer batch to {timer_batch:?}.");
     }
 
-    pub(crate) fn poll_next_timer(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Timer> {
+    pub fn poll_next_timer(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Timer> {
         let this = self.project();
         let timer_queue = this.timer_queue;
         let max_fired_timer = this.max_fired_timer;

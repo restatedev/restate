@@ -40,9 +40,9 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header};
 use self::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::{
     PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
-    PARTITION_TIMER_DUE_HANDLED, PP_APPLY_RECORD_DURATION,
+    PP_APPLY_RECORD_DURATION,
 };
-use crate::partition::leadership::{ActionEffect, LeadershipState};
+use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
@@ -169,7 +169,7 @@ where
         let mut action_collector = ActionCollector::default();
         let mut effects = Effects::default();
 
-        let (mut state, mut action_effect_stream) = LeadershipState::follower(
+        let mut state = LeadershipState::follower(
             partition_id,
             partition_key_range.clone(),
             num_timers_in_memory_limit,
@@ -190,7 +190,6 @@ where
             histogram!(PP_APPLY_RECORD_DURATION, PARTITION_LABEL => partition_id_str);
         let record_actions_latency = histogram!(PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION);
         let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
-        let timer_events_handled = counter!(PARTITION_TIMER_DUE_HANDLED);
         loop {
             tokio::select! {
                 _ = &mut cancellation => break,
@@ -245,7 +244,7 @@ where
 
                         if announce_leader.node_id == metadata().my_node_id() {
                             let was_follower = !state.is_leader();
-                            (state, action_effect_stream) = state.become_leader(new_esn, &mut partition_storage).await?;
+                            state = state.become_leader(new_esn, &mut partition_storage).await?;
                             self.status.effective_mode = Some(RunMode::Leader);
                             if was_follower {
                                 Span::current().record("is_leader", state.is_leader());
@@ -253,7 +252,7 @@ where
                             }
                         } else {
                             let was_leader = state.is_leader();
-                            (state, action_effect_stream) = state.become_follower().await?;
+                            state = state.become_follower().await?;
                             self.status.effective_mode = Some(RunMode::Follower);
                             if was_leader {
                                 Span::current().record("is_leader", state.is_leader());
@@ -270,14 +269,9 @@ where
                         record_actions_latency.record(actions_start.elapsed());
                     }
                 },
-                action_effects = action_effect_stream.next() => {
-                    let action_effects = action_effects.ok_or_else(|| anyhow::anyhow!("action effect stream is closed"))?;
+                Some(action_effects) = state.next_action_effects() => {
                     actuator_effects_handled.increment(action_effects.len() as u64);
                     state.handle_action_effect(action_effects).await?;
-                },
-                timer = state.run_timer() => {
-                    timer_events_handled.increment(1);
-                    state.handle_action_effect([ActionEffect::Timer(timer)]).await?;
                 },
             }
         }
