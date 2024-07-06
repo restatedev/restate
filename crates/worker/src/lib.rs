@@ -52,8 +52,7 @@ use crate::invoker_integration::EntryEnricher;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
 
-type PartitionProcessor = partition::PartitionProcessor<
-    ProtobufRawEntryCodec,
+type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;
 

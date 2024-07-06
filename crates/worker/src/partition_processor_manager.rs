@@ -35,6 +35,7 @@ use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskId, TaskKi
 use restate_invoker_impl::InvokerHandle;
 use restate_metadata_store::{MetadataStoreClient, ReadModifyWriteError};
 use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
@@ -66,7 +67,7 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::partition::storage::invoker::InvokerStorageReader;
 use crate::partition::storage::PartitionStorage;
 use crate::partition::PartitionProcessorControlCommand;
-use crate::PartitionProcessor;
+use crate::PartitionProcessorBuilder;
 
 pub struct PartitionProcessorManager {
     task_center: TaskCenter,
@@ -368,7 +369,7 @@ impl PartitionProcessorManager {
         let options = &config.worker;
 
         let planned_mode = status.planned_mode;
-        let processor = PartitionProcessor::new(
+        let pp_builder = PartitionProcessorBuilder::new(
             partition_id,
             key_range.clone(),
             status,
@@ -393,7 +394,7 @@ impl PartitionProcessorManager {
         self.task_center.spawn_child(
             TaskKind::PartitionProcessor,
             task_name,
-            Some(processor.partition_id),
+            Some(pp_builder.partition_id),
             {
                 let storage_manager = self.partition_store_manager.clone();
                 let options = options.clone();
@@ -418,7 +419,11 @@ impl PartitionProcessorManager {
                         .await?;
                     }
 
-                    processor.run(networking, bifrost, partition_store).await
+                    pp_builder
+                        .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)
+                        .await?
+                        .run()
+                        .await
                 }
             },
         )
