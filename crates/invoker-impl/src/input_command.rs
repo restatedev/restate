@@ -9,9 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_errors::NotRunningError;
-use restate_invoker_api::{
-    Effect, InvocationStatusReport, InvokeInputJournal, ServiceHandle, StatusHandle,
-};
+use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
@@ -70,101 +68,91 @@ pub struct InvokerHandle<SR> {
     pub(super) input: mpsc::UnboundedSender<InputCommand<SR>>,
 }
 
-impl<SR> ServiceHandle<SR> for InvokerHandle<SR> {
-    type Future = futures::future::Ready<Result<(), NotRunningError>>;
-    fn invoke(
+impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
+    async fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::Invoke(InvokeCommand {
-                    partition,
-                    invocation_id,
-                    invocation_target,
-                    journal,
-                }))
-                .map_err(|_| NotRunningError),
-        )
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::Invoke(InvokeCommand {
+                partition,
+                invocation_id,
+                invocation_target,
+                journal,
+            }))
+            .map_err(|_| NotRunningError)
     }
 
-    fn notify_completion(
+    async fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         completion: Completion,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::Completion {
-                    partition,
-                    invocation_id,
-                    completion,
-                })
-                .map_err(|_| NotRunningError),
-        )
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::Completion {
+                partition,
+                invocation_id,
+                completion,
+            })
+            .map_err(|_| NotRunningError)
     }
 
-    fn notify_stored_entry_ack(
+    async fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::StoredEntryAck {
-                    partition,
-                    invocation_id,
-                    entry_index,
-                })
-                .map_err(|_| NotRunningError),
-        )
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::StoredEntryAck {
+                partition,
+                invocation_id,
+                entry_index,
+            })
+            .map_err(|_| NotRunningError)
     }
 
-    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::AbortAllPartition { partition })
-                .map_err(|_| NotRunningError),
-        )
+    async fn abort_all_partition(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::AbortAllPartition { partition })
+            .map_err(|_| NotRunningError)
     }
 
-    fn abort_invocation(
+    async fn abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::Abort {
-                    partition,
-                    invocation_id,
-                })
-                .map_err(|_| NotRunningError),
-        )
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::Abort {
+                partition,
+                invocation_id,
+            })
+            .map_err(|_| NotRunningError)
     }
 
-    fn register_partition(
+    async fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
         sender: mpsc::Sender<Effect>,
-    ) -> Self::Future {
-        futures::future::ready(
-            self.input
-                .send(InputCommand::RegisterPartition {
-                    partition,
-                    partition_key_range,
-                    sender,
-                    storage_reader,
-                })
-                .map_err(|_| NotRunningError),
-        )
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::RegisterPartition {
+                partition,
+                partition_key_range,
+                sender,
+                storage_reader,
+            })
+            .map_err(|_| NotRunningError)
     }
 }
 

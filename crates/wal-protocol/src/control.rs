@@ -16,8 +16,56 @@ use restate_types::GenerationalNodeId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnnounceLeader {
-    /// The "generational" node id of the processor that is being announced as leader.
-    /// This is used because the header only contains the plain id.
-    pub node_id: GenerationalNodeId,
+    // todo: Remove once we no longer need to support rolling back to 1.0
+    pub node_id: Option<GenerationalNodeId>,
     pub leader_epoch: LeaderEpoch,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::control::AnnounceLeader;
+    use bytes::BytesMut;
+    use restate_types::identifiers::LeaderEpoch;
+    use restate_types::storage::StorageCodec;
+    use restate_types::{flexbuffers_storage_encode_decode, GenerationalNodeId};
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+    struct OldAnnounceLeader {
+        pub node_id: GenerationalNodeId,
+        pub leader_epoch: LeaderEpoch,
+    }
+
+    flexbuffers_storage_encode_decode!(AnnounceLeader);
+    flexbuffers_storage_encode_decode!(OldAnnounceLeader);
+
+    #[test]
+    fn ensure_compatibility() -> anyhow::Result<()> {
+        let node_id = GenerationalNodeId::new(1, 2);
+        let leader_epoch = LeaderEpoch::from(1337);
+
+        let expected_announce_leader = AnnounceLeader {
+            node_id: Some(node_id),
+            leader_epoch,
+        };
+
+        let old_announce_leader = OldAnnounceLeader {
+            node_id,
+            leader_epoch,
+        };
+
+        let mut buf = BytesMut::default();
+        StorageCodec::encode(&old_announce_leader, &mut buf)?;
+
+        let new_announce_leader = StorageCodec::decode::<AnnounceLeader, _>(&mut buf)?;
+
+        assert_eq!(new_announce_leader, expected_announce_leader);
+
+        buf.clear();
+        StorageCodec::encode(new_announce_leader, &mut buf)?;
+
+        let announce_leader = StorageCodec::decode::<OldAnnounceLeader, _>(&mut buf)?;
+        assert_eq!(announce_leader, old_announce_leader);
+
+        Ok(())
+    }
 }

@@ -199,7 +199,7 @@ impl PartialEq<NodeId> for PlainNodeId {
 }
 
 impl GenerationalNodeId {
-    pub fn new(id: u32, generation: u32) -> GenerationalNodeId {
+    pub const fn new(id: u32, generation: u32) -> GenerationalNodeId {
         Self(PlainNodeId(id), generation)
     }
 

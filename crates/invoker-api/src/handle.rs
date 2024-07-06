@@ -28,38 +28,39 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<PlainRawEntry>),
 }
 
-pub trait ServiceHandle<SR> {
-    type Future: Future<Output = Result<(), NotRunningError>>;
-
+pub trait InvokerHandle<SR> {
     fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
-    ) -> Self::Future;
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         completion: Completion,
-    ) -> Self::Future;
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn notify_stored_entry_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
-    ) -> Self::Future;
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
-    fn abort_all_partition(&mut self, partition: PartitionLeaderEpoch) -> Self::Future;
+    fn abort_all_partition(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn abort_invocation(
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-    ) -> Self::Future;
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
     fn register_partition(
         &mut self,
@@ -67,5 +68,5 @@ pub trait ServiceHandle<SR> {
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
         sender: mpsc::Sender<Effect>,
-    ) -> Self::Future;
+    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 }

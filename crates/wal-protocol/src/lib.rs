@@ -26,7 +26,7 @@ use crate::timer::TimerKeyValue;
 use restate_types::logs::{LogId, Lsn, Payload};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
-use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_types::GenerationalNodeId;
 
 pub mod control;
 pub mod timer;
@@ -80,7 +80,7 @@ pub enum Source {
         /// epochs lower than the max observed for a given partition id.
         leader_epoch: LeaderEpoch,
         /// Which node is this message from?
-        node_id: PlainNodeId,
+        node_id: GenerationalNodeId,
     },
     /// Message is sent from an ingress node
     Ingress {

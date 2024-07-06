@@ -43,7 +43,7 @@ use restate_types::config::{Configuration, StorageOptions};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::LiveLoad;
-use restate_types::logs::{LogId, Lsn, Payload};
+use restate_types::logs::Lsn;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::cluster_controller::AttachRequest;
 use restate_types::net::cluster_controller::{Action, AttachResponse};
@@ -53,8 +53,6 @@ use restate_types::net::MessageEnvelope;
 use restate_types::net::RpcMessage;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
-use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command as WalCommand, Destination, Envelope, Header, Source};
 
 use crate::metric_definitions::NUM_ACTIVE_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_ACTIVE;
@@ -198,8 +196,7 @@ impl PartitionProcessorManager {
             .context("Timeout waiting to attach to a cluster controller")??;
 
         let (from, msg) = response.split();
-        // We ignore errors due to shutdown
-        let _ = self.apply_plan(&msg.actions);
+        self.apply_plan(&msg.actions).await?;
         self.latest_attach_response = Some((from, msg));
         info!("Plan applied from attaching to controller {}", from);
 
@@ -314,7 +311,7 @@ impl PartitionProcessorManager {
         }
     }
 
-    pub fn apply_plan(&mut self, actions: &[Action]) -> Result<(), ShutdownError> {
+    pub async fn apply_plan(&mut self, actions: &[Action]) -> anyhow::Result<()> {
         for action in actions {
             match action {
                 Action::RunPartition(action) => {
@@ -324,7 +321,7 @@ impl PartitionProcessorManager {
                         .contains_key(&action.partition_id)
                     {
                         let (control_tx, control_rx) = mpsc::channel(2);
-                        let status = PartitionProcessorStatus::new(action.mode);
+                        let status = PartitionProcessorStatus::new();
                         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
                         let _task_id = self.spawn_partition_processor(
@@ -334,6 +331,19 @@ impl PartitionProcessorManager {
                             control_rx,
                             watch_tx,
                         )?;
+
+                        if RunMode::Leader == action.mode {
+                            let leader_epoch = Self::obtain_next_epoch(
+                                self.metadata_store_client.clone(),
+                                action.partition_id,
+                                self.metadata.my_node_id(),
+                            )
+                            .await?;
+                            let _ = control_tx
+                                .send(PartitionProcessorControlCommand::RunForLeader(leader_epoch))
+                                .await;
+                        }
+
                         let state = State {
                             _created_at: MillisSinceEpoch::now(),
                             _key_range: action.key_range_inclusive.clone().into(),
@@ -368,8 +378,12 @@ impl PartitionProcessorManager {
         let config = self.updateable_config.pinned();
         let options = &config.worker;
 
-        let planned_mode = status.planned_mode;
+        let networking = self.networking.clone();
+        let bifrost = self.bifrost.clone();
+        let node_id = self.metadata.my_node_id();
+
         let pp_builder = PartitionProcessorBuilder::new(
+            node_id,
             partition_id,
             key_range.clone(),
             status,
@@ -379,10 +393,6 @@ impl PartitionProcessorManager {
             watch_tx,
             self.invoker_handle.clone(),
         );
-        let networking = self.networking.clone();
-        let mut bifrost = self.bifrost.clone();
-        let metadata_store_client = self.metadata_store_client.clone();
-        let node_id = self.metadata.my_node_id();
 
         // the name is also used as thread names for the corresponding tokio runtimes, let's keep
         // it short.
@@ -408,17 +418,6 @@ impl PartitionProcessorManager {
                         )
                         .await?;
 
-                    if planned_mode == RunMode::Leader {
-                        Self::claim_leadership(
-                            &mut bifrost,
-                            metadata_store_client,
-                            partition_id,
-                            key_range,
-                            node_id,
-                        )
-                        .await?;
-                    }
-
                     pp_builder
                         .build::<ProtobufRawEntryCodec>(networking, bifrost, partition_store)
                         .await?
@@ -427,28 +426,6 @@ impl PartitionProcessorManager {
                 }
             },
         )
-    }
-
-    async fn claim_leadership(
-        bifrost: &mut Bifrost,
-        metadata_store_client: MetadataStoreClient,
-        partition_id: PartitionId,
-        partition_range: RangeInclusive<PartitionKey>,
-        node_id: GenerationalNodeId,
-    ) -> anyhow::Result<()> {
-        let leader_epoch =
-            Self::obtain_next_epoch(metadata_store_client, partition_id, node_id).await?;
-
-        Self::announce_leadership(
-            bifrost,
-            node_id,
-            partition_id,
-            partition_range,
-            leader_epoch,
-        )
-        .await?;
-
-        Ok(())
     }
 
     async fn obtain_next_epoch(
@@ -466,38 +443,6 @@ impl PartitionProcessorManager {
             })
             .await?;
         Ok(epoch.epoch())
-    }
-
-    async fn announce_leadership(
-        bifrost: &mut Bifrost,
-        node_id: GenerationalNodeId,
-        partition_id: PartitionId,
-        partition_key_range: RangeInclusive<PartitionKey>,
-        leader_epoch: LeaderEpoch,
-    ) -> anyhow::Result<()> {
-        let header = Header {
-            dest: Destination::Processor {
-                partition_key: *partition_key_range.start(),
-                dedup: None,
-            },
-            source: Source::ControlPlane {},
-        };
-
-        let envelope = Envelope::new(
-            header,
-            WalCommand::AnnounceLeader(AnnounceLeader {
-                node_id,
-                leader_epoch,
-            }),
-        );
-        let payload = Payload::new(envelope.to_bytes()?);
-
-        bifrost
-            .append(LogId::from(partition_id), payload)
-            .await
-            .context("failed to write AnnounceLeader record to bifrost")?;
-
-        Ok(())
     }
 }
 

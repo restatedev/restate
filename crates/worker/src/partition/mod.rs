@@ -8,41 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Context;
+use assert2::let_assert;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use assert2::let_assert;
 use futures::TryStreamExt as _;
 use metrics::{counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tokio_stream::StreamExt;
-use tracing::{debug, instrument, trace, Span};
+use tracing::{debug, instrument, trace, warn, Span};
 
 use restate_bifrost::{Bifrost, FindTailAttributes, LogRecord, Record};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
 use restate_core::network::Networking;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
-use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
-};
+use restate_storage_api::deduplication_table::{DedupInformation, DedupSequenceNumber, ProducerId};
 use restate_storage_api::StorageError;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
-use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use self::storage::invoker::InvokerStorageReader;
 use crate::metric_definitions::{
     PARTITION_ACTUATOR_HANDLED, PARTITION_LABEL, PARTITION_LEADER_HANDLE_ACTION_BATCH_DURATION,
     PP_APPLY_RECORD_DURATION,
 };
-use crate::partition::leadership::LeadershipState;
+use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
 use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
@@ -54,10 +54,15 @@ pub mod storage;
 pub mod types;
 
 /// Control messages from Manager to individual partition processor instances.
-pub enum PartitionProcessorControlCommand {}
+#[allow(dead_code)]
+pub enum PartitionProcessorControlCommand {
+    RunForLeader(LeaderEpoch),
+    StepDown,
+}
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
+    node_id: GenerationalNodeId,
     pub partition_id: PartitionId,
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
@@ -73,10 +78,11 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
 impl<InvokerInputSender> PartitionProcessorBuilder<InvokerInputSender>
 where
     InvokerInputSender:
-        restate_invoker_api::ServiceHandle<InvokerStorageReader<PartitionStore>> + Clone,
+        restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
+        node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
@@ -87,6 +93,7 @@ where
         invoker_tx: InvokerInputSender,
     ) -> Self {
         Self {
+            node_id,
             partition_id,
             partition_key_range,
             status,
@@ -125,14 +132,29 @@ where
         )
         .await?;
 
-        let leadership_state = LeadershipState::follower(
-            partition_id,
-            partition_key_range.clone(),
+        let last_seen_leader_epoch = partition_storage
+            .get_dedup_sequence_number(&ProducerId::self_producer())
+            .await?
+            .map(|dedup| {
+                let_assert!(
+                    DedupSequenceNumber::Esn(esn) = dedup,
+                    "self producer must store epoch sequence numbers!"
+                );
+                esn.leader_epoch
+            });
+
+        let leadership_state = LeadershipState::new(
+            PartitionProcessorMetadata::new(
+                self.node_id,
+                partition_id,
+                partition_key_range.clone(),
+            ),
             num_timers_in_memory_limit,
             channel_size,
             invoker_tx,
             bifrost.clone(),
             networking,
+            last_seen_leader_epoch,
         );
 
         Ok(PartitionProcessor {
@@ -168,7 +190,7 @@ where
 pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
-    leadership_state: LeadershipState<InvokerSender>,
+    leadership_state: LeadershipState<InvokerSender, Networking>,
     state_machine: StateMachine<Codec>,
     bifrost: Bifrost,
     control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
@@ -182,7 +204,7 @@ pub struct PartitionProcessor<Codec, InvokerSender> {
 impl<Codec, InvokerSender> PartitionProcessor<Codec, InvokerSender>
 where
     Codec: RawEntryCodec + Default + Debug,
-    InvokerSender: restate_invoker_api::ServiceHandle<InvokerStorageReader<PartitionStore>> + Clone,
+    InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -258,8 +280,10 @@ where
         loop {
             tokio::select! {
                 _ = &mut cancellation => break,
-                _command = self.control_rx.recv() => {
-                    // todo: handle leadership change requests here
+                Some(command) = self.control_rx.recv() => {
+                    if let Err(err) = self.on_command(command).await {
+                        warn!("Failed executing command: {err}");
+                    }
                 }
                 _ = status_update_timer.tick() => {
                     self.status_watch_tx.send_modify(|old| {
@@ -288,13 +312,7 @@ where
                         &mut effects,
                         &mut action_collector).await?;
 
-                    if let Some(announce_leader) = leadership_change {
-                        let new_esn = EpochSequenceNumber::new(announce_leader.leader_epoch);
-
-                        self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                        self.status.last_observed_leader_node = Some(announce_leader.node_id);
-                        // update our own epoch sequence number to filter out messages from previous leaders
-                        transaction.store_dedup_sequence_number(ProducerId::self_producer(), DedupSequenceNumber::Esn(new_esn)).await;
+                    if let Some((header, announce_leader)) = leadership_change {
                         // commit all changes so far, this is important so that the actuators see all changes
                         // when becoming leader.
                         transaction.commit().await?;
@@ -303,23 +321,25 @@ where
                         // actuators afresh.
                         action_collector.clear();
 
-                        if announce_leader.node_id == metadata().my_node_id() {
-                            let was_follower = !self.leadership_state.is_leader();
-                            self.leadership_state.become_leader(new_esn, &mut partition_storage).await?;
-                            self.status.effective_mode = Some(RunMode::Leader);
-                            if was_follower {
-                                Span::current().record("is_leader", self.leadership_state.is_leader());
-                                debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership acquired");
-                            }
-                        } else {
-                            let was_leader = self.leadership_state.is_leader();
-                            self.leadership_state.become_follower().await?;
-                            self.status.effective_mode = Some(RunMode::Follower);
-                            if was_leader {
-                                Span::current().record("is_leader", self.leadership_state.is_leader());
-                                debug!(leader_epoch = %new_esn.leader_epoch, "Partition leadership lost to {}", announce_leader.node_id);
-                            }
+                        self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
+                        if let Source::Processor { node_id, .. } = header.source {
+                            // all new AnnounceLeader messages should come from a PartitionProcessor
+                            self.status.last_observed_leader_node = Some(node_id);
+                        } else if announce_leader.node_id.is_some() {
+                            // older AnnounceLeader messages have the announce_leader.node_id set
+                            self.status.last_observed_leader_node = announce_leader.node_id;
                         }
+
+                        let is_leader = self.leadership_state.on_announce_leader(announce_leader, &mut partition_storage).await?;
+
+                        Span::current().record("is_leader", is_leader);
+
+                        if is_leader {
+                            self.status.effective_mode = RunMode::Leader;
+                        } else {
+                            self.status.effective_mode = RunMode::Follower;
+                        }
+
                         apply_record_latency.record(command_start.elapsed());
                     } else {
                         // Commit our changes and notify actuators about actions if we are the leader
@@ -338,7 +358,32 @@ where
         }
 
         debug!(restate.node = %metadata().my_node_id(), %self.partition_id, "Shutting partition processor down.");
-        self.leadership_state.become_follower().await?;
+        // ignore errors that happen during shut down
+        let _ = self.leadership_state.step_down().await;
+
+        Ok(())
+    }
+
+    async fn on_command(
+        &mut self,
+        command: PartitionProcessorControlCommand,
+    ) -> anyhow::Result<()> {
+        match command {
+            PartitionProcessorControlCommand::RunForLeader(leader_epoch) => {
+                self.status.planned_mode = RunMode::Leader;
+                self.leadership_state
+                    .run_for_leader(leader_epoch)
+                    .await
+                    .context("failed handling RunForLeader command")?;
+            }
+            PartitionProcessorControlCommand::StepDown => {
+                self.status.planned_mode = RunMode::Follower;
+                self.leadership_state
+                    .step_down()
+                    .await
+                    .context("failed handling StepDown command")?;
+            }
+        }
 
         Ok(())
     }
@@ -349,7 +394,7 @@ where
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
         effects: &mut Effects,
         action_collector: &mut ActionCollector,
-    ) -> Result<Option<AnnounceLeader>, state_machine::Error> {
+    ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
         let (lsn, envelope) = record;
         transaction.store_applied_lsn(lsn).await?;
 
@@ -385,32 +430,8 @@ where
             }
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
-                let last_known_esn = transaction
-                    .get_dedup_sequence_number(&ProducerId::self_producer())
-                    .await?
-                    .map(|dedup_sn| {
-                        let_assert!(
-                            DedupSequenceNumber::Esn(esn) = dedup_sn,
-                            "self producer must store epoch sequence numbers!"
-                        );
-                        esn
-                    });
-
-                if last_known_esn
-                    .map(|last_known_esn| {
-                        last_known_esn.leader_epoch < announce_leader.leader_epoch
-                    })
-                    .unwrap_or(true)
-                {
-                    // leadership change detected, let's finish our transaction here
-                    return Ok(Some(announce_leader));
-                }
-                debug!(
-                    last_known_esn = %last_known_esn.as_ref().unwrap().leader_epoch,
-                    announce_esn = %announce_leader.leader_epoch,
-                    node_id = %announce_leader.node_id,
-                    "Ignoring outdated leadership announcement."
-                );
+                // leadership change detected, let's finish our transaction here
+                return Ok(Some((envelope.header, announce_leader)));
             } else {
                 self.state_machine
                     .apply(

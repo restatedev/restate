@@ -20,7 +20,7 @@ use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
-use restate_types::NodeId;
+use restate_types::GenerationalNodeId;
 use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
 
 use crate::partition::shuffle::state_machine::StateMachine;
@@ -75,7 +75,7 @@ fn create_header(
             partition_id: shuffle_metadata.partition_id,
             partition_key: None,
             leader_epoch: shuffle_metadata.leader_epoch,
-            node_id: shuffle_metadata.node_id.id(),
+            node_id: shuffle_metadata.node_id,
         },
         dest: Destination::Processor {
             partition_key: dest_partition_key,
@@ -151,14 +151,14 @@ impl HintSender {
 pub(crate) struct ShuffleMetadata {
     partition_id: PartitionId,
     leader_epoch: LeaderEpoch,
-    node_id: NodeId,
+    node_id: GenerationalNodeId,
 }
 
 impl ShuffleMetadata {
     pub(crate) fn new(
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        node_id: NodeId,
+        node_id: GenerationalNodeId,
     ) -> Self {
         ShuffleMetadata {
             partition_id,
@@ -453,7 +453,7 @@ mod tests {
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::FixedPartitionTable;
     use restate_types::storage::StorageCodec;
-    use restate_types::{NodeId, Version};
+    use restate_types::{GenerationalNodeId, Version};
     use restate_wal_protocol::{Command, Envelope};
 
     use crate::partition::shuffle::{OutboxReader, OutboxReaderError, Shuffle, ShuffleMetadata};
@@ -632,7 +632,7 @@ mod tests {
         let metadata = ShuffleMetadata::new(
             PartitionId::from(0),
             LeaderEpoch::from(0),
-            NodeId::new(0, Some(0)),
+            GenerationalNodeId::new(0, 0),
         );
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
