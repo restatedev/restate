@@ -305,7 +305,7 @@ where
 
                         if announce_leader.node_id == metadata().my_node_id() {
                             let was_follower = !self.leadership_state.is_leader();
-                            self.leadership_state = self.leadership_state.become_leader(new_esn, &mut partition_storage).await?;
+                            self.leadership_state.become_leader(new_esn, &mut partition_storage).await?;
                             self.status.effective_mode = Some(RunMode::Leader);
                             if was_follower {
                                 Span::current().record("is_leader", self.leadership_state.is_leader());
@@ -313,7 +313,7 @@ where
                             }
                         } else {
                             let was_leader = self.leadership_state.is_leader();
-                            self.leadership_state = self.leadership_state.become_follower().await?;
+                            self.leadership_state.become_follower().await?;
                             self.status.effective_mode = Some(RunMode::Follower);
                             if was_leader {
                                 Span::current().record("is_leader", self.leadership_state.is_leader());
@@ -338,7 +338,7 @@ where
         }
 
         debug!(restate.node = %metadata().my_node_id(), %self.partition_id, "Shutting partition processor down.");
-        self.leadership_state = self.leadership_state.become_follower().await?;
+        self.leadership_state.become_follower().await?;
 
         Ok(())
     }

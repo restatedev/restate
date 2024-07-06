@@ -128,27 +128,25 @@ where
     }
 
     pub(crate) async fn become_leader(
-        self,
+        &mut self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-    ) -> Result<Self, Error> {
+    ) -> Result<(), Error> {
         if let State::Follower = &self.state {
             self.unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         } else {
-            let follower_state = self.become_follower().await?;
-
-            follower_state
-                .unchecked_become_leader(epoch_sequence_number, partition_storage)
+            self.become_follower().await?;
+            self.unchecked_become_leader(epoch_sequence_number, partition_storage)
                 .await
         }
     }
 
     async fn unchecked_become_leader(
-        mut self,
+        &mut self,
         epoch_sequence_number: EpochSequenceNumber,
         partition_storage: &mut PartitionStorage,
-    ) -> Result<Self, Error> {
+    ) -> Result<(), Error> {
         if let State::Follower = self.state {
             let leader_epoch = epoch_sequence_number.leader_epoch;
             let metadata = metadata();
@@ -210,7 +208,7 @@ where
                 shuffle_stream: ReceiverStream::new(shuffle_rx),
             });
 
-            Ok(self)
+            Ok(())
         } else {
             unreachable!("This method should only be called if I am a follower!");
         }
@@ -260,7 +258,7 @@ where
         Ok(invoker_rx)
     }
 
-    pub(crate) async fn become_follower(mut self) -> Result<Self, Error> {
+    pub(crate) async fn become_follower(&mut self) -> Result<(), Error> {
         if let State::Leader(LeaderState {
             leader_epoch,
             shuffle_task_id,
@@ -283,7 +281,7 @@ where
 
             self.state = State::Follower;
         }
-        Ok(self)
+        Ok(())
     }
 
     pub async fn next_action_effects(&mut self) -> Option<Vec<ActionEffect>> {
