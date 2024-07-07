@@ -43,9 +43,34 @@ pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {}
 
+#[derive(Debug)]
+pub enum TargetVersion {
+    Latest,
+    Version(Version),
+}
+
+impl Default for TargetVersion {
+    fn default() -> Self {
+        Self::Latest
+    }
+}
+
+impl From<Option<Version>> for TargetVersion {
+    fn from(value: Option<Version>) -> Self {
+        match value {
+            Some(version) => TargetVersion::Version(version),
+            None => TargetVersion::Latest,
+        }
+    }
+}
+
 pub(super) enum Command {
     UpdateMetadata(MetadataContainer, Option<oneshot::Sender<()>>),
-    SyncMetadata(MetadataKind, oneshot::Sender<Result<(), ReadError>>),
+    SyncMetadata(
+        MetadataKind,
+        TargetVersion,
+        oneshot::Sender<Result<(), ReadError>>,
+    ),
 }
 
 /// A handler for processing network messages targeting metadata manager
@@ -260,8 +285,8 @@ where
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::UpdateMetadata(value, callback) => self.update_metadata(value, callback),
-            Command::SyncMetadata(kind, callback) => {
-                let result = self.sync_metadata(kind).await;
+            Command::SyncMetadata(kind, target_version, callback) => {
+                let result = self.sync_metadata(kind, target_version).await;
                 if callback.send(result).is_err() {
                     trace!("Couldn't send synce metadata reply back. System is probably shutting down.");
                 }
@@ -290,7 +315,15 @@ where
         }
     }
 
-    async fn sync_metadata(&mut self, metadata_kind: MetadataKind) -> Result<(), ReadError> {
+    async fn sync_metadata(
+        &mut self,
+        metadata_kind: MetadataKind,
+        target_version: TargetVersion,
+    ) -> Result<(), ReadError> {
+        if self.has_target_version(metadata_kind, target_version) {
+            return Ok(());
+        }
+
         match metadata_kind {
             MetadataKind::NodesConfiguration => {
                 if let Some(nodes_config) = self
@@ -331,6 +364,26 @@ where
         }
 
         Ok(())
+    }
+
+    fn has_target_version(
+        &self,
+        metadata_kind: MetadataKind,
+        target_version: TargetVersion,
+    ) -> bool {
+        match target_version {
+            TargetVersion::Latest => false,
+            TargetVersion::Version(target_version) => {
+                let version = match metadata_kind {
+                    MetadataKind::NodesConfiguration => self.metadata.nodes_config_version(),
+                    MetadataKind::Schema => self.metadata.schema_version(),
+                    MetadataKind::PartitionTable => self.metadata.partition_table_version(),
+                    MetadataKind::Logs => self.metadata.logs_version(),
+                };
+
+                version >= target_version
+            }
+        }
     }
 
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {

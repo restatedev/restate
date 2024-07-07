@@ -28,7 +28,9 @@ use restate_types::partition_table::{FixedPartitionTable, KeyRange};
 
 use restate_bifrost::Bifrost;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
-use restate_core::{cancellation_watcher, Metadata, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{
+    cancellation_watcher, Metadata, ShutdownError, TargetVersion, TaskCenter, TaskKind,
+};
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
@@ -370,7 +372,12 @@ async fn signal_all_partitions_started(
             || metadata.partition_table_version() == Version::INVALID
         {
             // syncing of PartitionTable since we obviously don't have up-to-date information
-            metadata.sync(MetadataKind::PartitionTable).await?;
+            metadata
+                .sync(
+                    MetadataKind::PartitionTable,
+                    TargetVersion::Version(cluster_state.partition_table_version.max(Version::MIN)),
+                )
+                .await?;
         } else {
             let partition_table = metadata
                 .partition_table()

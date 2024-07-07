@@ -27,7 +27,9 @@ use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
-use restate_core::{spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager};
+use restate_core::{
+    spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
+};
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
@@ -296,8 +298,12 @@ impl Node {
             metadata_writer.update(logs).await?;
         } else {
             // otherwise, just sync the required metadata
-            metadata.sync(MetadataKind::PartitionTable).await?;
-            metadata.sync(MetadataKind::Logs).await?;
+            metadata
+                .sync(MetadataKind::PartitionTable, TargetVersion::Latest)
+                .await?;
+            metadata
+                .sync(MetadataKind::Logs, TargetVersion::Latest)
+                .await?;
 
             // safety check until we can tolerate missing partition table and logs configuration
             if metadata.partition_table_version() == Version::INVALID
@@ -312,7 +318,9 @@ impl Node {
         }
 
         // fetch the latest schema information
-        metadata.sync(MetadataKind::Schema).await?;
+        metadata
+            .sync(MetadataKind::Schema, TargetVersion::Latest)
+            .await?;
 
         let nodes_config = metadata.nodes_config_ref();
 

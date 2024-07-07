@@ -21,7 +21,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
+use restate_types::live::Pinned;
+use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::message::{self, ConnectionControl};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
 use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
@@ -36,8 +39,8 @@ use super::metric_definitions::{
 };
 use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use super::{Handler, MessageRouter};
-use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
+use crate::{Metadata, TargetVersion};
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
@@ -136,7 +139,7 @@ impl ConnectionManager {
         // The client can retry with an exponential backoff on handshake timeout.
         debug!("Accepting incoming connection");
         let (header, hello) = wait_for_hello(&mut incoming).await?;
-        let nodes_config = self.metadata.nodes_config_snapshot();
+        let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
         // NodeId **must** be generational at this layer
         let peer_node_id = hello
@@ -176,33 +179,9 @@ impl ConnectionManager {
             selected_protocol_version
         );
 
-        // If nodeId is unrecognized and peer is at higher nodes configuration version,
-        // TODO: issue a sync to the higher version
-        let peer_is_in_the_future = header
-            .my_nodes_config_version
-            .as_ref()
-            .is_some_and(|v| v.value > nodes_config.version().into());
-
-        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
-            if peer_is_in_the_future {
-                info!(
-                    "Rejecting a connection from an unrecognized node v{}, the peer is at a higher \
-                    nodes configuration version {:?}, mine is {}",
-                    peer_node_id,
-                    header.my_nodes_config_version,
-                    nodes_config.version()
-                );
-                // TODO: notify metadata about higher version.
-                // let _ = self
-                //     .metadata
-                //     .notify_observed_version(
-                //         MetadataKind::NodesConfiguration,
-                //         header.my_nodes_config_version.unwrap().into(),
-                //     )
-                //     .await?;
-            }
-            return Err(NetworkError::UnknownNode(e));
-        }
+        let nodes_config = self
+            .verify_node_id(peer_node_id, header, nodes_config)
+            .await?;
 
         let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
         // Enqueue the welcome message
@@ -228,6 +207,44 @@ impl ConnectionManager {
         let transformed = ReceiverStream::new(rx).map(Ok);
 
         Ok(Box::pin(transformed))
+    }
+
+    async fn verify_node_id(
+        &self,
+        peer_node_id: GenerationalNodeId,
+        header: Header,
+        mut nodes_config: Pinned<NodesConfiguration>,
+    ) -> Result<Pinned<NodesConfiguration>, NetworkError> {
+        if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
+            // If nodeId is unrecognized and peer is at higher nodes configuration version,
+            // then we have to update our NodesConfiguration
+            let peer_is_in_the_future = header
+                .my_nodes_config_version
+                .as_ref()
+                .is_some_and(|v| v.value > nodes_config.version().into());
+
+            if peer_is_in_the_future {
+                // don't keep pinned nodes configuration beyond await point
+                drop(nodes_config);
+                // todo: Replace with notifying metadata manager about newer version
+                self.metadata
+                    .sync(
+                        MetadataKind::NodesConfiguration,
+                        TargetVersion::from(header.my_nodes_config_version.clone().map(Into::into)),
+                    )
+                    .await?;
+                nodes_config = self.metadata.nodes_config_ref();
+
+                if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
+                    warn!("Could not find remote node {} after syncing nodes configuration. Local version '{}', remote version '{:?}'.", peer_node_id, nodes_config.version(), header.my_nodes_config_version.expect("must be present"));
+                    return Err(NetworkError::UnknownNode(e));
+                }
+            } else {
+                return Err(NetworkError::UnknownNode(e));
+            }
+        }
+
+        Ok(nodes_config)
     }
 
     /// Always attempts to create a new connection with peer

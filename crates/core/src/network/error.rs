@@ -12,7 +12,7 @@ use restate_types::net::{CodecError, MIN_SUPPORTED_PROTOCOL_VERSION};
 use restate_types::nodes_config::NodesConfigError;
 use restate_types::NodeId;
 
-use crate::ShutdownError;
+use crate::{ShutdownError, SyncError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
@@ -42,6 +42,8 @@ pub enum NetworkError {
     ConnectionClosed,
     #[error("cannot send messages to this node: {0}")]
     Unavailable(String),
+    #[error("failed syncing metadata: {0}")]
+    Metadata(#[from] SyncError),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -18,7 +18,7 @@ pub mod worker_api;
 
 pub use metadata::{
     spawn_metadata_manager, Metadata, MetadataBuilder, MetadataKind, MetadataManager,
-    MetadataWriter, SyncError,
+    MetadataWriter, SyncError, TargetVersion,
 };
 pub use task_center::*;
 pub use task_center_types::*;

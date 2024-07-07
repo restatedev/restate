@@ -18,7 +18,7 @@ use enum_map::EnumMap;
 use smallvec::SmallVec;
 use tracing::instrument;
 
-use restate_core::{Metadata, MetadataKind};
+use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
@@ -377,7 +377,7 @@ impl BifrostInner {
     pub async fn sync_metadata(&self) -> Result<()> {
         self.fail_if_shutting_down()?;
         self.metadata
-            .sync(MetadataKind::Logs)
+            .sync(MetadataKind::Logs, TargetVersion::Latest)
             .await
             .map_err(Arc::new)?;
         Ok(())

@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 mod manager;
-pub use manager::MetadataManager;
+pub use manager::{MetadataManager, TargetVersion};
 use restate_types::live::{Live, Pinned};
 use restate_types::schema::Schema;
 
@@ -175,11 +175,23 @@ impl Metadata {
         self.inner.write_watches[metadata_kind].receive.clone()
     }
 
-    /// Syncs the given metadata_kind from the underlying metadata store.
-    pub async fn sync(&self, metadata_kind: MetadataKind) -> Result<(), SyncError> {
+    /// Syncs the given metadata_kind from the underlying metadata store if the current version is
+    /// lower than target version.
+    ///
+    /// Note: If the target version does not exist, then a lower version will be available after
+    /// this call completes.
+    pub async fn sync(
+        &self,
+        metadata_kind: MetadataKind,
+        target_version: TargetVersion,
+    ) -> Result<(), SyncError> {
         let (result_tx, result_rx) = oneshot::channel();
         self.sender
-            .send(Command::SyncMetadata(metadata_kind, result_tx))
+            .send(Command::SyncMetadata(
+                metadata_kind,
+                target_version,
+                result_tx,
+            ))
             .map_err(|_| ShutdownError)?;
         result_rx.await.map_err(|_| ShutdownError)??;
 
