@@ -12,13 +12,14 @@
 #![allow(dead_code)]
 
 mod manager;
+
 pub use manager::{MetadataManager, TargetVersion};
 use restate_types::live::{Live, Pinned};
 use restate_types::schema::Schema;
 
 use std::sync::{Arc, OnceLock};
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::{ArcSwap, ArcSwapOption, AsRaw};
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -27,7 +28,7 @@ use restate_types::net::metadata::MetadataContainer;
 pub use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::FixedPartitionTable;
-use restate_types::{GenerationalNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
 use crate::metadata_store::ReadError;
@@ -108,6 +109,15 @@ impl Metadata {
         match c.as_deref() {
             Some(c) => c.version(),
             None => Version::INVALID,
+        }
+    }
+
+    pub fn version(&self, metadata_kind: MetadataKind) -> Version {
+        match metadata_kind {
+            MetadataKind::NodesConfiguration => self.nodes_config_version(),
+            MetadataKind::Schema => self.schema_version(),
+            MetadataKind::PartitionTable => self.partition_table_version(),
+            MetadataKind::Logs => self.logs_version(),
         }
     }
 
@@ -197,6 +207,57 @@ impl Metadata {
 
         Ok(())
     }
+
+    /// Notifies the metadata manager about a newly observed metadata version for the given kind.
+    /// If the metadata can be retrieved from a node, then the [`NodeId`] can be included as well.
+    pub fn notify_observed_version(
+        &self,
+        metadata_kind: MetadataKind,
+        version: Version,
+        remote_location: Option<NodeId>,
+    ) {
+        // check whether the version is newer than what we know
+        if version > self.version(metadata_kind) {
+            let mut guard = self.inner.observed_versions[metadata_kind].load();
+
+            // check whether it is even newer than the latest observed version
+            if version > guard.version {
+                // Create the arc outside of loop to avoid reallocations in case of contention;
+                // maybe this is guarding too much against the contended case.
+                let new_version_information =
+                    Arc::new(VersionInformation::new(version, remote_location));
+
+                // maybe a simple Arc<Mutex<VersionInformation>> works better? Needs a benchmark.
+                loop {
+                    let cas_guard = self.inner.observed_versions[metadata_kind]
+                        .compare_and_swap(&guard, Arc::clone(&new_version_information));
+
+                    if std::ptr::eq(cas_guard.as_raw(), guard.as_raw()) {
+                        break;
+                    }
+
+                    guard = cas_guard;
+
+                    // stop trying to update the observed value if a newer one was reported before
+                    if guard.version >= version {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the [`VersionInformation`] for the metadata kind if a newer version than the local
+    /// version has been observed.
+    fn observed_version(&self, metadata_kind: MetadataKind) -> Option<VersionInformation> {
+        let guard = self.inner.observed_versions[metadata_kind].load();
+
+        if guard.version > self.version(metadata_kind) {
+            Some((**guard).clone())
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Default)]
@@ -207,6 +268,9 @@ struct MetadataInner {
     logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,
+    // might be subject to false sharing if independent sources want to update different metadata
+    // kinds concurrently.
+    observed_versions: EnumMap<MetadataKind, ArcSwap<VersionInformation>>,
 }
 
 /// Can send updates to metadata manager. This should be accessible by the rpc handler layer to
@@ -284,4 +348,28 @@ where
         None,
         metadata_manager.run(),
     )
+}
+
+#[derive(Debug, Clone)]
+struct VersionInformation {
+    version: Version,
+    remote_node: Option<NodeId>,
+}
+
+impl Default for VersionInformation {
+    fn default() -> Self {
+        Self {
+            version: Version::INVALID,
+            remote_node: None,
+        }
+    }
+}
+
+impl VersionInformation {
+    fn new(version: Version, remote_location: Option<NodeId>) -> Self {
+        Self {
+            version,
+            remote_node: remote_location,
+        }
+    }
 }

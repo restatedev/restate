@@ -9,39 +9,49 @@
 // by the Apache License, Version 2.0.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use enum_map::EnumMap;
 use std::ops::Deref;
 use std::sync::Arc;
-
+use strum::IntoEnumIterator;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
-
-use restate_types::logs::metadata::Logs;
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
-};
-use restate_types::net::metadata::{MetadataMessage, MetadataUpdate};
-use restate_types::net::MessageEnvelope;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::FixedPartitionTable;
-use restate_types::schema::Schema;
-use restate_types::GenerationalNodeId;
-use restate_types::{Version, Versioned};
 
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
-use crate::network::{MessageHandler, MessageRouterBuilder, NetworkSender};
+use crate::network::{MessageHandler, MessageRouterBuilder, NetworkError, NetworkSender};
 use crate::task_center;
+use restate_types::config::Configuration;
+use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEMA_INFORMATION_KEY,
+};
+use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
+use restate_types::net::MessageEnvelope;
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::FixedPartitionTable;
+use restate_types::schema::Schema;
+use restate_types::{GenerationalNodeId, NodeId};
+use restate_types::{Version, Versioned};
 
-use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
+use super::{MetadataBuilder, VersionInformation};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {}
+
+#[derive(Debug, thiserror::Error)]
+enum UpdateError {
+    #[error("failed reading metadata from the metadata store: {0}")]
+    MetadataStore(#[from] ReadError),
+    #[error(transparent)]
+    Network(#[from] NetworkError),
+}
 
 #[derive(Debug)]
 pub enum TargetVersion {
@@ -228,6 +238,7 @@ pub struct MetadataManager<N> {
     inbound: CommandReceiver,
     networking: N,
     metadata_store_client: MetadataStoreClient,
+    update_tasks: EnumMap<MetadataKind, Option<UpdateTask>>,
 }
 
 impl<N> MetadataManager<N>
@@ -244,6 +255,7 @@ where
             inbound: metadata_builder.receiver,
             networking,
             metadata_store_client,
+            update_tasks: EnumMap::default(),
         }
     }
 
@@ -267,6 +279,13 @@ where
     pub async fn run(mut self) -> anyhow::Result<()> {
         debug!("Metadata manager started");
 
+        let update_interval = Configuration::pinned()
+            .common
+            .metadata_update_interval
+            .into();
+        let mut update_interval = tokio::time::interval(update_interval);
+        update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 biased;
@@ -276,6 +295,11 @@ where
                 }
                 Some(cmd) = self.inbound.recv() => {
                     self.handle_command(cmd).await;
+                }
+                _ = update_interval.tick() => {
+                    if let Err(err) = self.check_for_observed_updates().await {
+                        warn!("Failed checking for metadata updates: {err}");
+                    }
                 }
             }
         }
@@ -389,26 +413,26 @@ where
     fn update_nodes_configuration(&mut self, config: NodesConfiguration) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.nodes_config, config);
 
-        self.notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
+        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
         let maybe_new_version =
             Self::update_option_internal(&self.metadata.inner.partition_table, partition_table);
 
-        self.notify_watches(maybe_new_version, MetadataKind::PartitionTable);
+        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
 
     fn update_logs(&mut self, logs: Logs) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.logs, logs);
 
-        self.notify_watches(maybe_new_version, MetadataKind::Logs);
+        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Logs);
     }
 
     fn update_schema(&mut self, schema: Schema) {
         let maybe_new_version = Self::update_internal(&self.metadata.inner.schema, schema);
 
-        self.notify_watches(maybe_new_version, MetadataKind::Schema);
+        self.update_task_and_notify_watches(maybe_new_version, MetadataKind::Schema);
     }
 
     fn update_internal<T: Versioned>(container: &ArcSwap<T>, new_value: T) -> Version {
@@ -454,7 +478,15 @@ where
         maybe_new_version
     }
 
-    fn notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
+    fn update_task_and_notify_watches(&mut self, maybe_new_version: Version, kind: MetadataKind) {
+        // update tasks if they are no longer needed
+        if self.update_tasks[kind]
+            .as_ref()
+            .is_some_and(|task| maybe_new_version >= task.version)
+        {
+            self.update_tasks[kind] = None;
+        }
+
         // notify watches.
         self.metadata.inner.write_watches[kind]
             .sender
@@ -466,6 +498,86 @@ where
                     false
                 }
             });
+    }
+
+    async fn check_for_observed_updates(&mut self) -> Result<(), UpdateError> {
+        for kind in MetadataKind::iter() {
+            if let Some(version_information) = self.metadata.observed_version(kind) {
+                if version_information.version
+                    > self.update_tasks[kind]
+                        .as_ref()
+                        .map(|task| task.version)
+                        .unwrap_or(Version::INVALID)
+                {
+                    self.update_tasks[kind] = Some(UpdateTask::from(version_information));
+                }
+            }
+        }
+
+        for metadata_kind in MetadataKind::iter() {
+            let mut update_task = self.update_tasks[metadata_kind].take();
+
+            if let Some(mut task) = update_task {
+                match task.state {
+                    UpdateTaskState::FromRemoteNode(node_id) => {
+                        debug!(
+                            "Send GetMetadataRequest to {} from {}",
+                            node_id,
+                            self.metadata.my_node_id()
+                        );
+                        // todo: Move to dedicated task if this is blocking the MetadataManager too much
+                        self.networking
+                            .send(
+                                node_id,
+                                &MetadataMessage::GetMetadataRequest(GetMetadataRequest {
+                                    metadata_kind,
+                                    min_version: Some(task.version),
+                                }),
+                            )
+                            .await?;
+                        // on the next tick try to sync if no update was received
+                        task.state = UpdateTaskState::Sync;
+                        update_task = Some(task);
+                    }
+                    UpdateTaskState::Sync => {
+                        // todo: Move to dedicated task if this is blocking the MetadataManager too much
+                        self.sync_metadata(metadata_kind, TargetVersion::Version(task.version))
+                            .await?;
+                        // syncing will give us >= task.version so let's stop here
+                        update_task = None;
+                    }
+                }
+
+                self.update_tasks[metadata_kind] = update_task;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+enum UpdateTaskState {
+    FromRemoteNode(NodeId),
+    Sync,
+}
+
+struct UpdateTask {
+    version: Version,
+    state: UpdateTaskState,
+}
+
+impl UpdateTask {
+    fn from(version_information: VersionInformation) -> Self {
+        let state = if let Some(node_id) = version_information.remote_node {
+            UpdateTaskState::FromRemoteNode(node_id)
+        } else {
+            UpdateTaskState::Sync
+        };
+
+        Self {
+            version: version_information.version,
+            state,
+        }
     }
 }
 

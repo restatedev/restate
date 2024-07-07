@@ -13,22 +13,22 @@ use std::sync::Weak;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::instrument;
-
-use restate_types::live::Live;
-use restate_types::net::codec::Targeted;
-use restate_types::net::codec::{serialize_message, WireEncode};
-use restate_types::net::ProtocolVersion;
-use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::node::message;
-use restate_types::protobuf::node::Header;
-use restate_types::protobuf::node::Message;
-use restate_types::GenerationalNodeId;
 
 use super::metric_definitions::CONNECTION_SEND_DURATION;
 use super::metric_definitions::MESSAGE_SENT;
 use super::NetworkError;
 use super::ProtocolError;
+use crate::Metadata;
+use restate_types::net::codec::Targeted;
+use restate_types::net::codec::{serialize_message, WireEncode};
+use restate_types::net::ProtocolVersion;
+use restate_types::protobuf::node::message;
+use restate_types::protobuf::node::message::Body;
+use restate_types::protobuf::node::Header;
+use restate_types::protobuf::node::Message;
+use restate_types::GenerationalNodeId;
 
 /// A single streaming connection with a channel to the peer. A connection can be
 /// opened by either ends of the connection and has no direction. Any connection
@@ -43,8 +43,8 @@ pub(crate) struct Connection {
     pub(crate) peer: GenerationalNodeId,
     pub(crate) protocol_version: ProtocolVersion,
     pub(crate) sender: mpsc::Sender<Message>,
-    pub(crate) created: std::time::Instant,
-    updateable_nodes_config: Live<NodesConfiguration>,
+    pub(crate) created: Instant,
+    pub(crate) metadata: Metadata,
 }
 
 impl Connection {
@@ -52,7 +52,7 @@ impl Connection {
         peer: GenerationalNodeId,
         protocol_version: ProtocolVersion,
         sender: mpsc::Sender<Message>,
-        updateable_nodes_config: Live<NodesConfiguration>,
+        metadata: Metadata,
     ) -> Self {
         Self {
             cid: rand::random(),
@@ -60,7 +60,7 @@ impl Connection {
             protocol_version,
             sender,
             created: std::time::Instant::now(),
-            updateable_nodes_config,
+            metadata,
         }
     }
 
@@ -82,31 +82,10 @@ impl Connection {
     /// wire protocol from the user and guarantees order of messages.
     pub fn sender(self: &Arc<Self>) -> ConnectionSender {
         ConnectionSender {
-            peer: self.peer,
             connection: Arc::downgrade(self),
-            protocol_version: self.protocol_version,
-            nodes_config: self.updateable_nodes_config.clone(),
         }
     }
-}
 
-impl PartialEq for Connection {
-    fn eq(&self, other: &Self) -> bool {
-        self.cid == other.cid && self.peer == other.peer
-    }
-}
-
-/// A handle to send messages through a connection. It's safe and cheap to hold
-/// and clone objects of this even if the connection has been dropped.
-#[derive(Clone)]
-pub struct ConnectionSender {
-    peer: GenerationalNodeId,
-    connection: Weak<Connection>,
-    protocol_version: ProtocolVersion,
-    nodes_config: Live<NodesConfiguration>,
-}
-
-impl ConnectionSender {
     /// Send a message on this connection. This returns Ok(()) when the message is:
     /// - Successfully serialized to the wire format based on the negotiated protocol
     /// - Serialized message was enqueued on the send buffer of the socket
@@ -122,25 +101,102 @@ impl ConnectionSender {
     /// This doesn't auto-retry connection resets or send errors, this is up to the user
     /// for retrying externally.
     #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
-    pub async fn send<M>(&mut self, message: M) -> Result<(), NetworkError>
+    pub async fn send<M>(&self, message: M) -> Result<(), NetworkError>
     where
         M: WireEncode + Targeted,
     {
         let send_start = Instant::now();
-        let header = Header::new(self.nodes_config.live_load().version());
-        let body =
-            serialize_message(message, self.protocol_version).map_err(ProtocolError::Codec)?;
+        let (header, body) = self.create_message(message)?;
         let res = self
-            .connection
-            .upgrade()
-            .ok_or(NetworkError::ConnectionClosed)?
             .sender
             .send(Message::new(header, body))
             .await
             .map_err(|_| NetworkError::ConnectionClosed);
-        MESSAGE_SENT.increment(1);
-        CONNECTION_SEND_DURATION.record(send_start.elapsed());
+
+        if res.is_ok() {
+            MESSAGE_SENT.increment(1);
+            CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        }
+
         res
+    }
+
+    fn create_message<M>(&self, message: M) -> Result<(Header, Body), NetworkError>
+    where
+        M: WireEncode + Targeted,
+    {
+        let header = Header::new(
+            self.metadata.nodes_config_version(),
+            self.metadata.logs_version(),
+            self.metadata.schema_version(),
+            self.metadata.partition_table_version(),
+        );
+        let body =
+            serialize_message(message, self.protocol_version).map_err(ProtocolError::Codec)?;
+        Ok((header, body))
+    }
+
+    /// Tries sending a message on this connection. If there is no capacity, it will fail. Apart
+    /// from this, the method behaves similarly to [`Connection::send`].
+    #[instrument(skip_all, fields(peer_node_id = %self.peer, target_service = ?message.target(), msg = ?message.kind()))]
+    pub fn try_send<M>(&self, message: M) -> Result<(), NetworkError>
+    where
+        M: WireEncode + Targeted,
+    {
+        let send_start = Instant::now();
+        let (header, body) = self.create_message(message)?;
+        let res = self
+            .sender
+            .try_send(Message::new(header, body))
+            .map_err(|err| match err {
+                TrySendError::Full(_) => NetworkError::Full,
+                TrySendError::Closed(_) => NetworkError::ConnectionClosed,
+            });
+
+        if res.is_ok() {
+            MESSAGE_SENT.increment(1);
+            CONNECTION_SEND_DURATION.record(send_start.elapsed());
+        }
+
+        res
+    }
+}
+
+impl PartialEq for Connection {
+    fn eq(&self, other: &Self) -> bool {
+        self.cid == other.cid && self.peer == other.peer
+    }
+}
+
+/// A handle to send messages through a connection. It's safe and cheap to hold
+/// and clone objects of this even if the connection has been dropped.
+#[derive(Clone)]
+pub struct ConnectionSender {
+    connection: Weak<Connection>,
+}
+
+impl ConnectionSender {
+    /// See [`Connection::send`].
+    pub async fn send<M>(&self, message: M) -> Result<(), NetworkError>
+    where
+        M: WireEncode + Targeted,
+    {
+        self.connection
+            .upgrade()
+            .ok_or(NetworkError::ConnectionClosed)?
+            .send(message)
+            .await
+    }
+
+    /// See [`Connection::try_send`].
+    pub fn try_send<M>(&self, message: M) -> Result<(), NetworkError>
+    where
+        M: WireEncode + Targeted,
+    {
+        self.connection
+            .upgrade()
+            .ok_or(NetworkError::ConnectionClosed)?
+            .try_send(message)
     }
 }
 

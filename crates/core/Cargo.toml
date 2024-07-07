@@ -59,6 +59,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
+test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
