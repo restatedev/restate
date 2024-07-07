@@ -15,9 +15,10 @@ use serde_with::serde_as;
 
 use crate::cluster::cluster_state::PartitionProcessorStatus;
 use crate::identifiers::PartitionId;
-use crate::net::{RequestId, TargetName};
+use crate::net::{define_message, RequestId, TargetName};
 
 use crate::net::define_rpc;
+use crate::Version;
 
 define_rpc! {
     @request = GetProcessorsState,
@@ -37,4 +38,28 @@ pub struct ProcessorsStateResponse {
     pub request_id: RequestId,
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub state: BTreeMap<PartitionId, PartitionProcessorStatus>,
+}
+
+define_message! {
+    @message = ControlProcessors,
+    @target = TargetName::ControlProcessors,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlProcessors {
+    pub min_partition_table_version: Version,
+    pub commands: Vec<ControlProcessor>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ControlProcessor {
+    pub partition_id: PartitionId,
+    pub command: ProcessorCommand,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ProcessorCommand {
+    Stop,
+    Follower,
+    Leader,
 }
