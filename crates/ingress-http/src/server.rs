@@ -38,7 +38,7 @@ pub type StartSignal = oneshot::Receiver<SocketAddr>;
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum IngressServerError {
     #[error(
-        "failed binding to address '{address}' specified in 'worker.ingress_http.bind_address'"
+        "failed binding to address '{address}'"
     )]
     #[code(restate_errors::RT0004)]
     Binding {
