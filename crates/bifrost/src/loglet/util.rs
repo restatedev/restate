@@ -13,7 +13,7 @@ use tokio_stream::wrappers::WatchStream;
 
 use restate_core::ShutdownError;
 
-use crate::loglet::LogletOffset;
+use super::LogletOffset;
 
 #[derive(Debug)]
 pub struct OffsetWatch {

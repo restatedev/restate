@@ -14,8 +14,7 @@ use async_trait::async_trait;
 
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
-use crate::loglet::Loglet;
-use crate::ProviderError;
+use super::{Loglet, ProviderError};
 use crate::Result;
 
 #[async_trait]
