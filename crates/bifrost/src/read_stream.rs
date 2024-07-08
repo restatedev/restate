@@ -21,8 +21,8 @@ use restate_types::logs::SequenceNumber;
 use restate_types::logs::{LogId, Lsn};
 
 use crate::bifrost::BifrostInner;
-use crate::loglet::LogletReadStreamWrapper;
-use crate::loglet::LogletWrapper;
+use crate::loglet_wrapper::LogletReadStreamWrapper;
+use crate::loglet_wrapper::LogletWrapper;
 use crate::FindTailAttributes;
 use crate::LogRecord;
 use crate::Result;
@@ -141,7 +141,7 @@ impl Stream for LogReadStream {
                 self.read_pointer = new_pointer;
                 Poll::Ready(Some(Ok(record)))
             }
-            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            Some(Err(e)) => Poll::Ready(Some(Err(e.into()))),
             None => {
                 // todo: check if we should switch the loglet.
                 self.as_mut().terminated = true;

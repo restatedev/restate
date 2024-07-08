@@ -14,8 +14,7 @@ use async_trait::async_trait;
 
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
-use crate::loglet::Loglet;
-use crate::ProviderError;
+use super::{Loglet, OperationError};
 use crate::Result;
 
 #[async_trait]
@@ -24,7 +23,7 @@ pub trait LogletProviderFactory: Send + 'static {
     /// Factory creates providers of `kind`.
     fn kind(&self) -> ProviderKind;
     /// Initialize provider.
-    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider + 'static>, ProviderError>;
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider + 'static>, OperationError>;
 }
 
 #[async_trait]
@@ -36,7 +35,7 @@ pub trait LogletProvider: Send + Sync {
     async fn post_start(&self) {}
 
     /// Hook for handling graceful shutdown
-    async fn shutdown(&self) -> Result<(), ProviderError> {
+    async fn shutdown(&self) -> Result<(), OperationError> {
         Ok(())
     }
 }

@@ -24,9 +24,9 @@ use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::{LogletOffset, LogletReadStream};
-use crate::loglets::local_loglet::LogStoreError;
-use crate::{Error, LogRecord, Result};
+use crate::loglet::{LogletOffset, LogletReadStream, OperationError};
+use crate::providers::local_loglet::LogStoreError;
+use crate::{LogRecord, Result};
 
 use super::keys::RecordKey;
 use super::LocalLoglet;
@@ -127,7 +127,7 @@ impl LogletReadStream<LogletOffset> for LocalLogletReadStream {
 }
 
 impl Stream for LocalLogletReadStream {
-    type Item = Result<LogRecord<LogletOffset, Bytes>>;
+    type Item = Result<LogRecord<LogletOffset, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -162,7 +162,7 @@ impl Stream for LocalLogletReadStream {
                     None => {
                         // system shutdown. Or that the loglet has been unexpectedly shutdown.
                         this.terminated.set(true);
-                        return Poll::Ready(Some(Err(Error::Shutdown(ShutdownError))));
+                        return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
                     }
                 }
             }
@@ -199,7 +199,7 @@ impl Stream for LocalLogletReadStream {
             //  todo: If status is not ok(), we should retry
             if let Err(e) = this.iterator.status() {
                 this.terminated.set(true);
-                return Poll::Ready(Some(Err(Error::LogStoreError(LogStoreError::Rocksdb(e)))));
+                return Poll::Ready(Some(Err(OperationError::other(LogStoreError::Rocksdb(e)))));
             }
 
             if !this.iterator.valid() || this.iterator.key().is_none() {

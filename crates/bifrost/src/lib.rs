@@ -10,11 +10,9 @@
 
 mod bifrost;
 mod error;
-mod loglet;
-#[cfg(test)]
-mod loglet_tests;
-pub mod loglets;
-mod provider;
+pub mod loglet;
+mod loglet_wrapper;
+mod providers;
 mod read_stream;
 mod record;
 mod service;
@@ -22,8 +20,7 @@ mod types;
 mod watchdog;
 
 pub use bifrost::Bifrost;
-pub use error::{Error, ProviderError, Result};
-pub use provider::*;
+pub use error::{Error, Result};
 pub use read_stream::LogReadStream;
 pub use record::*;
 pub use service::BifrostService;

@@ -27,18 +27,17 @@ use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::LogletOffset;
-use crate::{Error, SMALL_BATCH_THRESHOLD_COUNT};
-
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
 use super::log_store::{DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
+use crate::loglet::{AppendError, LogletOffset};
+use crate::SMALL_BATCH_THRESHOLD_COUNT;
 
-type Ack = oneshot::Sender<Result<(), Error>>;
-type AckRecv = oneshot::Receiver<Result<(), Error>>;
+type Ack = oneshot::Sender<Result<(), AppendError>>;
+type AckRecv = oneshot::Receiver<Result<(), AppendError>>;
 
 pub struct LogStoreWriteCommand {
     log_id: u64,
@@ -267,14 +266,14 @@ impl LogStoreWriter {
 
         if let Err(e) = result {
             error!("Failed to commit local loglet write batch: {}", e);
-            self.send_acks(Err(Error::LogStoreError(e.into())));
+            self.send_acks(Err(AppendError::terminal(e)));
             return;
         }
 
         self.send_acks(Ok(()));
     }
 
-    fn send_acks(&mut self, result: Result<(), Error>) {
+    fn send_acks(&mut self, result: Result<(), AppendError>) {
         self.batch_acks_buf.drain(..).for_each(|a| {
             let _ = a.send(result.clone());
         });

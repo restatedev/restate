@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use bytes::{BufMut, Bytes, BytesMut};
 use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::storage::StorageCodec;
@@ -18,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tracing::{error, trace, warn};
 
+use super::keys::{MetadataKey, MetadataKind};
 use crate::loglet::LogletOffset;
-use crate::loglets::local_loglet::keys::{MetadataKey, MetadataKind};
 use crate::SealReason;
 
 use super::LogStoreError;
@@ -75,11 +73,11 @@ impl LogStateUpdates {
     }
 
     pub fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), LogStoreError> {
-        StorageCodec::encode(self, buf).map_err(|err| LogStoreError::Encode(Arc::new(err)))
+        Ok(StorageCodec::encode(self, buf)?)
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
-        StorageCodec::decode(&mut data).map_err(|err| LogStoreError::Decode(Arc::new(err)))
+        Ok(StorageCodec::decode(&mut data)?)
     }
 }
 
@@ -95,12 +93,12 @@ pub struct LogState {
 impl LogState {
     pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
         let mut buf = BytesMut::default();
-        StorageCodec::encode(self, &mut buf).map_err(Arc::new)?;
+        StorageCodec::encode(self, &mut buf)?;
         Ok(buf.freeze())
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
-        StorageCodec::decode(&mut data).map_err(|err| LogStoreError::Decode(Arc::new(err)))
+        Ok(StorageCodec::decode(&mut data)?)
     }
 }
 

@@ -27,11 +27,13 @@ use tracing::{debug, info};
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletReadStream, SendableLogletReadStream};
-use crate::{Error, LogRecord, LogletProvider, TailState};
-use crate::{ProviderError, Result};
-
-use super::util::OffsetWatch;
+use crate::loglet::util::OffsetWatch;
+use crate::loglet::{
+    AppendError, Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory,
+    LogletReadStream, OperationError, SendableLogletReadStream,
+};
+use crate::Result;
+use crate::{LogRecord, TailState};
 
 #[derive(Default)]
 pub struct Factory {
@@ -39,6 +41,7 @@ pub struct Factory {
 }
 
 impl Factory {
+    #[cfg(test)]
     pub fn with_init_delay(init_delay: Duration) -> Self {
         Self {
             init_delay: Some(init_delay),
@@ -47,12 +50,12 @@ impl Factory {
 }
 
 #[async_trait]
-impl crate::LogletProviderFactory for Factory {
+impl LogletProviderFactory for Factory {
     fn kind(&self) -> ProviderKind {
         ProviderKind::InMemory
     }
 
-    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         Ok(Arc::new(MemoryLogletProvider {
             store: Default::default(),
             init_delay: self.init_delay.unwrap_or_default(),
@@ -92,7 +95,7 @@ impl LogletProvider for MemoryLogletProvider {
         Ok(loglet as Arc<dyn Loglet>)
     }
 
-    async fn shutdown(&self) -> Result<(), ProviderError> {
+    async fn shutdown(&self) -> Result<(), OperationError> {
         info!("Shutting down in-memory loglet provider");
         Ok(())
     }
@@ -147,7 +150,7 @@ impl MemoryLoglet {
     fn read_from(
         &self,
         from_offset: LogletOffset,
-    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>> {
+    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, OperationError> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Acquire));
         let head_offset = trim_point.next();
@@ -213,7 +216,7 @@ impl LogletReadStream<LogletOffset> for MemoryReadStream {
 }
 
 impl Stream for MemoryReadStream {
-    type Item = Result<LogRecord<LogletOffset, Bytes>>;
+    type Item = Result<LogRecord<LogletOffset, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -245,7 +248,7 @@ impl Stream for MemoryReadStream {
                     None => {
                         // system shutdown. Or that the loglet has been unexpectedly shutdown.
                         this.terminated.set(true);
-                        return Poll::Ready(Some(Err(Error::Shutdown(ShutdownError))));
+                        return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
                     }
                 }
             }
@@ -295,7 +298,7 @@ impl LogletBase for MemoryLoglet {
         Ok(Box::pin(MemoryReadStream::create(self, from).await))
     }
 
-    async fn append(&self, payload: Bytes) -> Result<LogletOffset> {
+    async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         let offset = self.index_to_offset(log.len());
         debug!(
@@ -309,7 +312,7 @@ impl LogletBase for MemoryLoglet {
         Ok(offset)
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset> {
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         let offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
         let first_offset = offset;
@@ -326,7 +329,7 @@ impl LogletBase for MemoryLoglet {
         Ok(first_offset)
     }
 
-    async fn find_tail(&self) -> Result<TailState<LogletOffset>> {
+    async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
         let committed = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
         let sealed = self.sealed.load(Ordering::Acquire);
         Ok(if sealed {
@@ -337,7 +340,7 @@ impl LogletBase for MemoryLoglet {
     }
 
     /// Find the head (oldest) record in the loglet.
-    async fn get_trim_point(&self) -> Result<Option<LogletOffset>> {
+    async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
@@ -347,7 +350,7 @@ impl LogletBase for MemoryLoglet {
         }
     }
 
-    async fn trim(&self, new_trim_point: Self::Offset) -> Result<()> {
+    async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
         let actual_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
@@ -368,7 +371,10 @@ impl LogletBase for MemoryLoglet {
         Ok(())
     }
 
-    async fn read_next_single(&self, from: LogletOffset) -> Result<LogRecord<Self::Offset, Bytes>> {
+    async fn read_next_single(
+        &self,
+        from: LogletOffset,
+    ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError> {
         loop {
             let next_record = self.read_from(from)?;
             if let Some(next_record) = next_record {
@@ -382,14 +388,14 @@ impl LogletBase for MemoryLoglet {
     async fn read_next_single_opt(
         &self,
         after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
         self.read_from(after)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::loglet_tests::*;
+    use crate::loglet::loglet_tests::*;
 
     use super::*;
 
