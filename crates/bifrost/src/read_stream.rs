@@ -141,7 +141,7 @@ impl Stream for LogReadStream {
                 self.read_pointer = new_pointer;
                 Poll::Ready(Some(Ok(record)))
             }
-            Some(Err(e)) => Poll::Ready(Some(Err(e))),
+            Some(Err(e)) => Poll::Ready(Some(Err(e.into()))),
             None => {
                 // todo: check if we should switch the loglet.
                 self.as_mut().terminated = true;
