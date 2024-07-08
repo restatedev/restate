@@ -27,4 +27,7 @@ pub use task_center_types::*;
 mod test_env;
 
 #[cfg(any(test, feature = "test-util"))]
-pub use test_env::{create_mock_nodes_config, MockNetworkSender, TestCoreEnv, TestCoreEnvBuilder};
+pub use test_env::{
+    create_mock_nodes_config, MockNetworkSender, NoOpMessageHandler, TestCoreEnv,
+    TestCoreEnvBuilder,
+};

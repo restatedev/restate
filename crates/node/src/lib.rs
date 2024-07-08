@@ -17,31 +17,33 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use codederror::CodedError;
-#[cfg(feature = "replicated-loglet")]
-use restate_log_server::LogServerService;
-use restate_types::live::Live;
-use tokio::time::Instant;
-use tracing::{debug, error, info, trace};
-
 use restate_bifrost::BifrostService;
-use restate_core::metadata_store::{MetadataStoreClientError, ReadWriteError};
+use restate_core::metadata_store::{
+    MetadataStoreClientError, Precondition, ReadWriteError, WriteError,
+};
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::{
     spawn_metadata_manager, MetadataBuilder, MetadataKind, MetadataManager, TargetVersion,
 };
 use restate_core::{task_center, TaskKind};
+#[cfg(feature = "replicated-loglet")]
+use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::cluster_controller::SchedulingPlan;
 use restate_types::config::{CommonOptions, Configuration};
+use restate_types::live::Live;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
 use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
 };
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
+use tokio::time::Instant;
+use tracing::{debug, error, info, trace};
 
 use crate::cluster_marker::ClusterValidationError;
 use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
@@ -192,15 +194,18 @@ impl Node {
         };
 
         let admin_role = if config.has_role(Role::Admin) {
-            Some(AdminRole::new(
-                tc.clone(),
-                updateable_config.clone(),
-                metadata.clone(),
-                networking.clone(),
-                metadata_manager.writer(),
-                &mut router_builder,
-                metadata_store_client.clone(),
-            )?)
+            Some(
+                AdminRole::create(
+                    tc.clone(),
+                    updateable_config.clone(),
+                    metadata.clone(),
+                    networking.clone(),
+                    metadata_manager.writer(),
+                    &mut router_builder,
+                    metadata_store_client.clone(),
+                )
+                .await?,
+            )
         } else {
             None
         };
@@ -425,6 +430,8 @@ impl Node {
     ) -> Result<(PartitionTable, Logs), Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
+        Self::try_insert_initial_scheduling_plan(metadata_store_client, options, &partition_table)
+            .await?;
         let logs = Self::fetch_or_insert_logs_configuration(
             metadata_store_client,
             options,
@@ -453,6 +460,39 @@ impl Node {
                     config.common.bootstrap_num_partitions(),
                 )
             })
+        })
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Tries to insert an initial scheduling plan which is aligned with the given
+    /// [`PartitionTable`]. If a scheduling plan already exists, then this method does nothing.
+    async fn try_insert_initial_scheduling_plan(
+        metadata_store_client: &MetadataStoreClient,
+        config: &Configuration,
+        partition_table: &PartitionTable,
+    ) -> Result<(), Error> {
+        let scheduling_plan =
+            SchedulingPlan::from(partition_table, config.admin.default_replication_strategy);
+
+        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || async {
+            let result = metadata_store_client
+                .put(
+                    SCHEDULING_PLAN_KEY.clone(),
+                    scheduling_plan.clone(),
+                    Precondition::DoesNotExist,
+                )
+                .await;
+
+            if let Err(err) = result {
+                match err {
+                    // This means a scheduling plan already exists
+                    WriteError::FailedPrecondition(_) => Ok(()),
+                    err => Err(ReadWriteError::from(err)),
+                }
+            } else {
+                Ok(())
+            }
         })
         .await
         .map_err(Into::into)

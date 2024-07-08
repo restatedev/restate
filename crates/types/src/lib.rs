@@ -18,6 +18,8 @@ mod version;
 
 pub mod art;
 pub mod cluster;
+
+pub mod cluster_controller;
 pub mod config;
 pub mod deployment;
 pub mod endpoint_manifest;
@@ -46,6 +48,7 @@ pub mod storage;
 pub mod subscription;
 pub mod time;
 pub mod timer;
+
 pub use id_util::{IdDecoder, IdEncoder, IdResourceType, IdStrCursor};
 pub use node_id::*;
 pub use version::*;

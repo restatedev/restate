@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use codederror::CodedError;
-use tokio::sync::oneshot;
-use tonic::transport::Channel;
-
+use restate_admin::cluster_controller;
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -29,6 +27,8 @@ use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::live::Live;
 use restate_types::retries::RetryPolicy;
+use tokio::sync::oneshot;
+use tonic::transport::Channel;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -45,12 +45,12 @@ pub enum AdminRoleBuildError {
 
 pub struct AdminRole {
     updateable_config: Live<Configuration>,
-    controller: restate_admin::cluster_controller::Service<Networking>,
+    controller: cluster_controller::Service<Networking>,
     admin: AdminService<IngressOptions>,
 }
 
 impl AdminRole {
-    pub fn new(
+    pub async fn create(
         task_center: TaskCenter,
         updateable_config: Live<Configuration>,
         metadata: Metadata,
@@ -74,14 +74,14 @@ impl AdminRole {
             service_discovery,
         );
 
-        let controller = restate_admin::cluster_controller::Service::new(
+        let controller = cluster_controller::Service::new(
             updateable_config.clone(),
-            metadata_writer,
-            metadata_store_client,
             task_center,
             metadata,
             networking,
             router_builder,
+            metadata_writer,
+            metadata_store_client,
         );
 
         Ok(AdminRole {

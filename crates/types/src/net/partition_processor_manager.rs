@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::cluster::cluster_state::PartitionProcessorStatus;
+use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use crate::identifiers::PartitionId;
 use crate::net::{define_message, RequestId, TargetName};
 
@@ -62,4 +62,13 @@ pub enum ProcessorCommand {
     Stop,
     Follower,
     Leader,
+}
+
+impl From<RunMode> for ProcessorCommand {
+    fn from(value: RunMode) -> Self {
+        match value {
+            RunMode::Leader => ProcessorCommand::Leader,
+            RunMode::Follower => ProcessorCommand::Follower,
+        }
+    }
 }

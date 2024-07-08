@@ -43,6 +43,7 @@ okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
 prost = { workspace = true }
 prost-dto = { workspace = true }
 prost-types = { workspace = true }
+rand = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }

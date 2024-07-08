@@ -8,26 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::marker::PhantomData;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
-
-use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
-use restate_types::metadata_store::keys::{
-    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
-};
-use restate_types::net::codec::{
-    serialize_message, try_unwrap_binary_message, Targeted, WireEncode,
-};
-use restate_types::net::metadata::MetadataKind;
-use restate_types::net::AdvertisedAddress;
-use restate_types::net::CURRENT_PROTOCOL_VERSION;
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::PartitionTable;
-use restate_types::protobuf::node::{Header, Message};
-use restate_types::{GenerationalNodeId, NodeId, Version};
-use tracing::info;
 
 use crate::metadata_store::{MetadataStoreClient, Precondition};
 use crate::network::{
@@ -39,6 +24,22 @@ use crate::{
 };
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
+use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
+};
+use restate_types::net::codec::{
+    serialize_message, try_unwrap_binary_message, Targeted, WireDecode, WireEncode,
+};
+use restate_types::net::metadata::MetadataKind;
+use restate_types::net::CURRENT_PROTOCOL_VERSION;
+use restate_types::net::{AdvertisedAddress, MessageEnvelope};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::PartitionTable;
+use restate_types::protobuf::node::{Header, Message};
+use restate_types::{GenerationalNodeId, NodeId, Version};
+use tracing::info;
 
 #[derive(Clone)]
 pub struct MockNetworkSender {
@@ -155,6 +156,7 @@ pub struct TestCoreEnvBuilder<N> {
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
     pub partition_table: PartitionTable,
+    pub scheduling_plan: SchedulingPlan,
     pub metadata_store_client: MetadataStoreClient,
 }
 
@@ -199,6 +201,8 @@ where
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
+        let scheduling_plan =
+            SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
         tc.try_set_global_metadata(metadata.clone());
         TestCoreEnvBuilder {
             tc,
@@ -211,6 +215,7 @@ where
             nodes_config,
             router_builder,
             partition_table,
+            scheduling_plan,
             metadata_store_client,
             provider_kind: ProviderKind::InMemory,
         }
@@ -223,6 +228,11 @@ where
 
     pub fn with_partition_table(mut self, partition_table: PartitionTable) -> Self {
         self.partition_table = partition_table;
+        self
+    }
+
+    pub fn with_scheduling_plan(mut self, scheduling_plan: SchedulingPlan) -> Self {
+        self.scheduling_plan = scheduling_plan;
         self
     }
 
@@ -305,6 +315,15 @@ where
             .expect("to store partition table in metadata store");
         self.metadata_writer.submit(self.partition_table);
 
+        self.metadata_store_client
+            .put(
+                SCHEDULING_PLAN_KEY.clone(),
+                self.scheduling_plan,
+                Precondition::None,
+            )
+            .await
+            .expect("sot store scheduling plan in metadata store");
+
         self.tc
             .run_in_scope("test-env", None, async {
                 let _ = self
@@ -372,4 +391,29 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
     let my_node = NodeConfig::new(format!("MyNode-{}", node_id), node_id, address, roles);
     nodes_config.upsert_node(my_node);
     nodes_config
+}
+
+/// No-op message handler which simply drops the received messages. Useful if you don't want to
+/// react to network messages.
+pub struct NoOpMessageHandler<M> {
+    phantom_data: PhantomData<M>,
+}
+
+impl<M> Default for NoOpMessageHandler<M> {
+    fn default() -> Self {
+        NoOpMessageHandler {
+            phantom_data: PhantomData,
+        }
+    }
+}
+
+impl<M> MessageHandler for NoOpMessageHandler<M>
+where
+    M: WireDecode + Targeted + Send + Sync,
+{
+    type MessageType = M;
+
+    async fn on_message(&self, _msg: MessageEnvelope<Self::MessageType>) {
+        // no-op
+    }
 }

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::QueryEngineOptions;
+use crate::cluster_controller::ReplicationStrategy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;
@@ -15,8 +17,6 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-
-use super::QueryEngineOptions;
 
 /// # Admin server options
 #[serde_as]
@@ -58,6 +58,12 @@ pub struct AdminOptions {
     /// can remove equal or more entries than this threshold. This prevents too many small trim
     /// operations.
     pub log_trim_threshold: u64,
+
+    /// # Default replication strategy
+    ///
+    /// The default replication strategy to be used by the cluster controller to schedule partition
+    /// processors.
+    pub default_replication_strategy: ReplicationStrategy,
 }
 
 impl AdminOptions {
@@ -86,6 +92,7 @@ impl Default for AdminOptions {
             // try to trim the log every hour
             log_trim_interval: Some(Duration::from_secs(60 * 60).into()),
             log_trim_threshold: 1000,
+            default_replication_strategy: ReplicationStrategy::OnAllNodes,
         }
     }
 }

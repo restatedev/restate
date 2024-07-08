@@ -48,6 +48,13 @@ impl ClusterState {
             NodeState::Dead(_) => None,
         })
     }
+
+    pub fn dead_nodes(&self) -> impl Iterator<Item = &PlainNodeId> {
+        self.nodes.iter().flat_map(|(node_id, state)| match state {
+            NodeState::Alive(_) => None,
+            NodeState::Dead(_) => Some(node_id),
+        })
+    }
 }
 
 fn instant_to_proto(t: Instant) -> prost_types::Duration {
