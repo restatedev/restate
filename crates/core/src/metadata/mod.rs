@@ -24,7 +24,7 @@ use restate_types::logs::metadata::Logs;
 use restate_types::net::metadata::MetadataContainer;
 pub use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, NodeId, Version, Versioned};
 
 use crate::metadata::manager::Command;
@@ -96,16 +96,16 @@ impl Metadata {
         self.inner.nodes_config.load().version()
     }
 
-    pub fn partition_table_snapshot(&self) -> Arc<FixedPartitionTable> {
+    pub fn partition_table_snapshot(&self) -> Arc<PartitionTable> {
         self.inner.partition_table.load_full()
     }
 
     #[inline(always)]
-    pub fn partition_table_ref(&self) -> Pinned<FixedPartitionTable> {
+    pub fn partition_table_ref(&self) -> Pinned<PartitionTable> {
         Pinned::new(&self.inner.partition_table)
     }
 
-    pub fn updateable_partition_table(&self) -> Live<FixedPartitionTable> {
+    pub fn updateable_partition_table(&self) -> Live<PartitionTable> {
         Live::from(self.inner.partition_table.clone())
     }
 
@@ -127,7 +127,7 @@ impl Metadata {
     pub async fn wait_for_partition_table(
         &self,
         min_version: Version,
-    ) -> Result<Arc<FixedPartitionTable>, ShutdownError> {
+    ) -> Result<Arc<PartitionTable>, ShutdownError> {
         let partition_table = self.partition_table_ref();
         if partition_table.version() >= min_version {
             return Ok(partition_table.into_arc());
@@ -278,7 +278,7 @@ impl Metadata {
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: Arc<ArcSwap<NodesConfiguration>>,
-    partition_table: Arc<ArcSwap<FixedPartitionTable>>,
+    partition_table: Arc<ArcSwap<PartitionTable>>,
     logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,

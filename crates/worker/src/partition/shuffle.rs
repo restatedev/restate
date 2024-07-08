@@ -451,7 +451,7 @@ mod tests {
     use restate_types::invocation::ServiceInvocation;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
-    use restate_types::partition_table::FixedPartitionTable;
+    use restate_types::partition_table::PartitionTable;
     use restate_types::storage::StorageCodec;
     use restate_types::{GenerationalNodeId, Version};
     use restate_wal_protocol::{Command, Envelope};
@@ -625,7 +625,10 @@ mod tests {
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
         let env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1))
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ))
             .build()
             .await;
         let tc = &env.tc;

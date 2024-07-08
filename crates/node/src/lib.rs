@@ -39,7 +39,7 @@ use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::partition_table::PartitionTable;
 use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 
@@ -295,7 +295,8 @@ impl Node {
         if config.common.allow_bootstrap {
             // only try to insert static configuration if in bootstrap mode
             let (partition_table, logs) =
-                Self::fetch_or_insert_static_configuration(&metadata_store_client, &config).await?;
+                Self::fetch_or_insert_initial_configuration(&metadata_store_client, &config)
+                    .await?;
 
             metadata_writer.update(partition_table).await?;
             metadata_writer.update(logs).await?;
@@ -421,10 +422,10 @@ impl Node {
         Ok(())
     }
 
-    async fn fetch_or_insert_static_configuration(
+    async fn fetch_or_insert_initial_configuration(
         metadata_store_client: &MetadataStoreClient,
         options: &Configuration,
-    ) -> Result<(FixedPartitionTable, Logs), Error> {
+    ) -> Result<(PartitionTable, Logs), Error> {
         let partition_table =
             Self::fetch_or_insert_partition_table(metadata_store_client, options).await?;
         let logs = Self::fetch_or_insert_logs_configuration(
@@ -447,10 +448,13 @@ impl Node {
     async fn fetch_or_insert_partition_table(
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
-    ) -> Result<FixedPartitionTable, Error> {
+    ) -> Result<PartitionTable, Error> {
         Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
-                FixedPartitionTable::new(Version::MIN, config.common.bootstrap_num_partitions())
+                PartitionTable::with_equally_sized_partitions(
+                    Version::MIN,
+                    config.common.bootstrap_num_partitions(),
+                )
             })
         })
         .await

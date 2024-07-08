@@ -24,7 +24,7 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::net::CURRENT_PROTOCOL_VERSION;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::{Header, Message};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 use tracing::info;
@@ -154,7 +154,7 @@ pub struct TestCoreEnvBuilder<N> {
     pub provider_kind: ProviderKind,
     pub router_builder: MessageRouterBuilder,
     pub network_sender: N,
-    pub partition_table: FixedPartitionTable,
+    pub partition_table: PartitionTable,
     pub metadata_store_client: MetadataStoreClient,
 }
 
@@ -198,7 +198,7 @@ where
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
         let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
-        let partition_table = FixedPartitionTable::new(Version::MIN, 10);
+        let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
         tc.try_set_global_metadata(metadata.clone());
         TestCoreEnvBuilder {
             tc,
@@ -221,7 +221,7 @@ where
         self
     }
 
-    pub fn with_partition_table(mut self, partition_table: FixedPartitionTable) -> Self {
+    pub fn with_partition_table(mut self, partition_table: PartitionTable) -> Self {
         self.partition_table = partition_table;
         self
     }

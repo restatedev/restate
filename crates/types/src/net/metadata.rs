@@ -15,7 +15,7 @@ use strum_macros::EnumIter;
 use crate::logs::metadata::Logs;
 use crate::net::TargetName;
 use crate::nodes_config::NodesConfiguration;
-use crate::partition_table::FixedPartitionTable;
+use crate::partition_table::PartitionTable;
 use crate::schema::Schema;
 
 use crate::net::define_message;
@@ -64,7 +64,7 @@ pub enum MetadataKind {
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 pub enum MetadataContainer {
     NodesConfiguration(NodesConfiguration),
-    PartitionTable(FixedPartitionTable),
+    PartitionTable(PartitionTable),
     Logs(Logs),
     Schema(Schema),
 }

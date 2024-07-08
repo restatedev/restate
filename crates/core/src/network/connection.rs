@@ -30,7 +30,7 @@ use restate_types::net::codec::{serialize_message, WireEncode};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::ProtocolVersion;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::node::message;
 use restate_types::protobuf::node::message::Body;
 use restate_types::protobuf::node::Header;
@@ -212,7 +212,7 @@ pub struct ConnectionSender {
     nodes_config: Live<NodesConfiguration>,
     schema: Live<Schema>,
     logs: Live<Logs>,
-    partition_table: Live<FixedPartitionTable>,
+    partition_table: Live<PartitionTable>,
     metadata_versions: MetadataVersions,
 }
 

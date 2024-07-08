@@ -619,7 +619,7 @@ mod tests {
     use restate_types::config::CommonOptions;
     use restate_types::live::Constant;
     use restate_types::logs::SequenceNumber;
-    use restate_types::partition_table::FixedPartitionTable;
+    use restate_types::partition_table::PartitionTable;
     use test_log::test;
     use tracing::info;
     use tracing_test::traced_test;
@@ -629,7 +629,10 @@ mod tests {
     async fn test_append_smoke() -> googletest::Result<()> {
         let num_partitions = 5;
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, num_partitions))
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                num_partitions,
+            ))
             .build()
             .await;
         let tc = node_env.tc;
@@ -829,7 +832,10 @@ mod tests {
     async fn test_read_across_segments() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1))
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ))
             .build()
             .await;
         let tc = node_env.tc;
@@ -1031,7 +1037,10 @@ mod tests {
     async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1))
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ))
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;

@@ -262,7 +262,7 @@ mod tests {
         ServiceInvocationResponseSink, VirtualObjectHandlerType,
     };
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
-    use restate_types::partition_table::{FindPartition, FixedPartitionTable};
+    use restate_types::partition_table::{FindPartition, PartitionTable};
     use restate_types::Version;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
@@ -274,7 +274,10 @@ mod tests {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
         let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
             .add_mock_nodes_config()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1));
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ));
 
         let bifrost_svc = restate_bifrost::BifrostService::new(
             env_builder.tc.clone(),
@@ -386,7 +389,10 @@ mod tests {
         // set it to 1 partition so that we know where the invocation for the IdempotentInvoker goes to
         let mut env_builder = TestCoreEnvBuilder::new_with_mock_network()
             .add_mock_nodes_config()
-            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1));
+            .with_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ));
 
         let bifrost_svc = restate_bifrost::BifrostService::new(
             env_builder.tc.clone(),

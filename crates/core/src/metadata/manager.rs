@@ -18,6 +18,8 @@ use tokio::sync::oneshot;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
+use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
+use super::{MetadataBuilder, VersionInformation};
 use crate::cancellation_watcher;
 use crate::is_cancellation_requested;
 use crate::metadata_store::{MetadataStoreClient, ReadError};
@@ -31,13 +33,10 @@ use restate_types::metadata_store::keys::{
 use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage, MetadataUpdate};
 use restate_types::net::MessageEnvelope;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::partition_table::FixedPartitionTable;
+use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, NodeId};
 use restate_types::{Version, Versioned};
-
-use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
-use super::{MetadataBuilder, VersionInformation};
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
@@ -367,7 +366,7 @@ where
             MetadataKind::PartitionTable => {
                 if let Some(partition_table) = self
                     .metadata_store_client
-                    .get::<FixedPartitionTable>(PARTITION_TABLE_KEY.clone())
+                    .get::<PartitionTable>(PARTITION_TABLE_KEY.clone())
                     .await?
                 {
                     self.update_partition_table(partition_table);
@@ -422,7 +421,7 @@ where
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::NodesConfiguration);
     }
 
-    fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
+    fn update_partition_table(&mut self, partition_table: PartitionTable) {
         let maybe_new_version =
             Self::update_internal(&self.metadata.inner.partition_table, partition_table);
 
@@ -594,7 +593,7 @@ mod tests {
     #[test]
     fn test_partition_table_updates() -> Result<()> {
         test_updates(
-            FixedPartitionTable::new(Version::MIN, 42),
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 42),
             MetadataKind::PartitionTable,
             |metadata| metadata.partition_table_version(),
             |value, version| value.set_version(version),
@@ -667,7 +666,7 @@ mod tests {
     #[test]
     fn test_partition_table_watchers() -> Result<()> {
         test_watchers(
-            FixedPartitionTable::new(Version::MIN, 42),
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 42),
             MetadataKind::PartitionTable,
             |metadata| metadata.partition_table_version(),
             |value| value.increment_version(),
