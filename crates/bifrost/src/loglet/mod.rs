@@ -116,11 +116,11 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     ) -> Result<SendableLogletReadStream<Self::Offset>>;
 
     /// Append a record to the loglet.
-    async fn append(&self, data: Bytes) -> Result<Self::Offset>;
+    async fn append(&self, data: Bytes) -> Result<Self::Offset, AppendError>;
 
     /// Append a batch of records to the loglet. The returned offset (on success) if the offset of
     /// the first record in the batch)
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Self::Offset>;
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Self::Offset, AppendError>;
 
     /// The tail is *the first unwritten position* in the loglet.
     ///
@@ -129,14 +129,12 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// after the next `append()` call.
     ///
     /// If the loglet is empty, the loglet should return TailState::Open(Offset::OLDEST).
-    /// This should never return Err(Error::LogSealed). Sealed state is represented as
-    /// TailState::Sealed(..)
-    async fn find_tail(&self) -> Result<TailState<Self::Offset>>;
+    async fn find_tail(&self) -> Result<TailState<Self::Offset>, OperationError>;
 
     /// The offset of the slot **before** the first readable record (if it exists), or the offset
     /// before the next slot that will be written to. Must not return Self::INVALID. If the loglet
     /// is never trimmed, this must return `None`.
-    async fn get_trim_point(&self) -> Result<Option<Self::Offset>>;
+    async fn get_trim_point(&self) -> Result<Option<Self::Offset>, OperationError>;
 
     /// Trim the loglet prefix up to and including the `trim_point`.
     /// If trim_point equal or higher than the loglet tail, the loglet trims its data until the tail.
@@ -146,21 +144,26 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     ///
     /// Passing `Offset::INVALID` is a no-op. (success)
     /// Passing `Offset::OLDEST` trims the first record in the loglet (if exists).
-    async fn trim(&self, trim_point: Self::Offset) -> Result<()>;
+    async fn trim(&self, trim_point: Self::Offset) -> Result<(), OperationError>;
 
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
     /// defined for the loglet.
-    async fn read_next_single(&self, from: Self::Offset) -> Result<LogRecord<Self::Offset, Bytes>>;
+    async fn read_next_single(
+        &self,
+        from: Self::Offset,
+    ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError>;
 
     /// Read the next record if it's been committed, otherwise, return None without waiting.
     async fn read_next_single_opt(
         &self,
         from: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>>;
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError>;
 }
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
-pub trait LogletReadStream<S: SequenceNumber>: Stream<Item = Result<LogRecord<S, Bytes>>> {
+pub trait LogletReadStream<S: SequenceNumber>:
+    Stream<Item = Result<LogRecord<S, Bytes>, OperationError>>
+{
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> S;
     /// Returns true if the stream is terminated.

@@ -24,7 +24,7 @@ use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
 
-use crate::loglet::{LogletBase, LogletProvider};
+use crate::loglet::{AppendError, LogletBase, LogletProvider};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
 use crate::{
@@ -257,7 +257,14 @@ impl BifrostInner {
         let loglet = self.writeable_loglet(log_id).await?;
         let mut buf = BytesMut::default();
         StorageCodec::encode(payload, &mut buf).expect("serialization to bifrost is infallible");
-        loglet.append(buf.freeze()).await
+
+        let res = loglet.append(buf.freeze()).await;
+        // todo: Handle retries, segment seals and other recoverable errors.
+        res.map_err(|e| match e {
+            AppendError::Sealed => todo!(),
+            AppendError::Shutdown(e) => Error::Shutdown(e),
+            AppendError::Other(e) => Error::LogletError(e),
+        })
     }
 
     pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn> {
@@ -271,7 +278,13 @@ impl BifrostInner {
                 buf.freeze()
             })
             .collect();
-        loglet.append_batch(&raw_payloads).await
+        let res = loglet.append_batch(&raw_payloads).await;
+        // todo: Handle retries, segment seals and other recoverable errors.
+        res.map_err(|e| match e {
+            AppendError::Sealed => todo!(),
+            AppendError::Shutdown(e) => Error::Shutdown(e),
+            AppendError::Other(e) => Error::LogletError(e),
+        })
     }
 
     pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord> {
@@ -375,10 +388,7 @@ impl BifrostInner {
     /// Immediately fetch new metadata from metadata store.
     pub async fn sync_metadata(&self) -> Result<()> {
         self.fail_if_shutting_down()?;
-        self.metadata
-            .sync(MetadataKind::Logs)
-            .await
-            .map_err(Arc::new)?;
+        self.metadata.sync(MetadataKind::Logs).await?;
         Ok(())
     }
 

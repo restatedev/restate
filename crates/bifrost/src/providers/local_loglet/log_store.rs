@@ -19,6 +19,8 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
 use static_assertions::const_assert;
 
+use crate::loglet::LogletError;
+
 use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
@@ -33,18 +35,27 @@ const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum LogStoreError {
     #[error(transparent)]
-    // unfortunately, we have to use Arc here, because the storage encode error is not Clone.
-    Encode(#[from] Arc<StorageEncodeError>),
+    Encode(#[from] StorageEncodeError),
     #[error(transparent)]
-    // unfortunately, we have to use Arc here, because the storage decode error is not Clone.
-    Decode(#[from] Arc<StorageDecodeError>),
+    Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Rocksdb(#[from] rocksdb::Error),
     #[error(transparent)]
     RocksDbManager(#[from] RocksError),
+}
+
+impl LogletError for LogStoreError {
+    fn retryable(&self) -> bool {
+        match self {
+            LogStoreError::Encode(_) => false,
+            LogStoreError::Decode(_) => false,
+            LogStoreError::Rocksdb(_) => true,
+            LogStoreError::RocksDbManager(_) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

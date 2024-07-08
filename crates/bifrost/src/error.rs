@@ -13,13 +13,13 @@ use std::sync::Arc;
 
 use restate_types::logs::{LogId, Lsn};
 
-use crate::providers::local_loglet::LogStoreError;
+use crate::loglet::{LogletError, OperationError};
 use crate::types::SealReason;
 
 /// Result type for bifrost operations.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(thiserror::Error, Debug, Clone)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
     LogSealed(LogId, SealReason),
@@ -30,11 +30,19 @@ pub enum Error {
     #[error("operation failed due to an ongoing shutdown")]
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
-    LogStoreError(#[from] LogStoreError),
+    LogletError(#[from] Arc<dyn LogletError + Send + Sync>),
     #[error("failed syncing logs metadata: {0}")]
-    // unfortunately, we have to use Arc here, because the SyncError is not Clone.
-    MetadataSync(#[from] Arc<SyncError>),
+    MetadataSync(#[from] SyncError),
     /// Provider is unknown or disabled
     #[error("bifrost provider '{0}' is disabled or unrecognized")]
     Disabled(String),
+}
+
+impl From<OperationError> for Error {
+    fn from(value: OperationError) -> Self {
+        match value {
+            OperationError::Shutdown(e) => Error::Shutdown(e),
+            OperationError::Other(e) => Error::LogletError(e),
+        }
+    }
 }
