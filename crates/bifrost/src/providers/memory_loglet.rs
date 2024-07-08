@@ -27,11 +27,13 @@ use tracing::{debug, info};
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::{Loglet, LogletBase, LogletOffset, LogletReadStream, SendableLogletReadStream};
-use crate::{Error, LogRecord, LogletProvider, TailState};
-use crate::{ProviderError, Result};
-
-use super::util::OffsetWatch;
+use crate::loglet::util::OffsetWatch;
+use crate::loglet::{
+    Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory, LogletReadStream,
+    ProviderError, SendableLogletReadStream,
+};
+use crate::Result;
+use crate::{Error, LogRecord, TailState};
 
 #[derive(Default)]
 pub struct Factory {
@@ -39,6 +41,7 @@ pub struct Factory {
 }
 
 impl Factory {
+    #[cfg(test)]
     pub fn with_init_delay(init_delay: Duration) -> Self {
         Self {
             init_delay: Some(init_delay),
@@ -47,7 +50,7 @@ impl Factory {
 }
 
 #[async_trait]
-impl crate::LogletProviderFactory for Factory {
+impl LogletProviderFactory for Factory {
     fn kind(&self) -> ProviderKind {
         ProviderKind::InMemory
     }
@@ -389,7 +392,7 @@ impl LogletBase for MemoryLoglet {
 
 #[cfg(test)]
 mod tests {
-    use crate::loglet_tests::*;
+    use crate::loglet::loglet_tests::*;
 
     use super::*;
 

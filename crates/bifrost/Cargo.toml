@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["replicated-loglet"]
+default = []
 options_schema = ["dep:schemars"]
 replicated-loglet = ["restate-types/replicated-loglet", "restate-metadata-store"]
 test-util = []

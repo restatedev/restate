@@ -21,7 +21,7 @@ use restate_test_util::let_assert;
 use restate_types::logs::SequenceNumber;
 use tracing::info;
 
-use crate::loglet::{Loglet, LogletOffset};
+use super::{Loglet, LogletOffset};
 use crate::{LogRecord, Record, TrimGap};
 
 fn setup() {
