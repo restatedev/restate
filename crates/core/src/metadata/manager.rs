@@ -91,7 +91,8 @@ where
     }
 
     fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(logs) = self.metadata.logs() {
+        let logs = self.metadata.logs();
+        if logs.version() != Version::INVALID {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
         }
     }
@@ -346,7 +347,7 @@ where
     }
 
     fn update_logs(&mut self, logs: Logs) {
-        let maybe_new_version = Self::update_option_internal(&self.metadata.inner.logs, logs);
+        let maybe_new_version = Self::update_internal(&self.metadata.inner.logs, logs);
 
         self.notify_watches(maybe_new_version, MetadataKind::Logs);
     }

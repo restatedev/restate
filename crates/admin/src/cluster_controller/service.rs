@@ -676,7 +676,6 @@ mod tests {
                     v.record.try_as_data().unwrap().body()
                 );
 
-                // increase by 4 more, this should not overcome the threshold
                 persisted_lsn.store(20, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;

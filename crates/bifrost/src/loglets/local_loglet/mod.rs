@@ -167,6 +167,14 @@ impl LocalLoglet {
                 );
                 return Ok(None);
             }
+            // Next record isn't what we expected to read. Issue a trim gap to fast-forward just
+            // before the next real record.
+            if key.offset != from_offset {
+                return Ok(Some(LogRecord::new_trim_gap(
+                    from_offset,
+                    key.offset.prev(),
+                )));
+            }
             let data = Bytes::from(data);
             Ok(Some(LogRecord::new_data(key.offset, data)))
         }
