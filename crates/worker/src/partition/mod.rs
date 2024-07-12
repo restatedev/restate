@@ -138,16 +138,17 @@ where
             current_log_tail = ?current_tail,
             "PartitionProcessor creating log reader",
         );
-        if current_tail.is_none() || current_tail.is_some_and(|tail| tail == last_applied_lsn) {
+        if current_tail.offset() == last_applied_lsn.next() {
             self.status.replay_status = ReplayStatus::Active;
         } else {
             // catching up.
-            self.status.target_tail_lsn = current_tail;
+            self.status.target_tail_lsn = Some(current_tail.offset());
             self.status.replay_status = ReplayStatus::CatchingUp;
         }
 
+        // Start reading after the last applied lsn
         let mut log_reader = bifrost
-            .create_reader(LogId::from(partition_id), last_applied_lsn, Lsn::MAX)
+            .create_reader(LogId::from(partition_id), last_applied_lsn.next(), Lsn::MAX)
             .await?
             .map_ok(|record| {
                 let LogRecord { record, offset } = record;
