@@ -18,41 +18,47 @@ use serde::{Deserialize, Serialize};
 // Only implemented for LSNs
 pub(crate) trait LsnExt: SequenceNumber {
     /// Converts a loglet offset into the virtual address (LSN).
+    ///
+    /// # Panics
+    ///
+    /// On conversion overflow this function will panic.
     #[track_caller]
     fn offset_by<S: SequenceNumber>(self, offset: S) -> Self {
-        // This assumes that this will not overflow. That's not guaranteed to always be the
-        // case but it should be extremely rare that it'd be okay to just wrap in this case.
-        //
         // We subtract from OLDEST because loglets might start offsets from a non-zero value.
         // 1 is the oldest valid offset within a loglet, 0 is an invalid offset.
-        debug_assert!(offset != S::INVALID);
+        debug_assert!(offset >= S::OLDEST);
         let self_raw: u64 = self.into();
         let offset_raw: u64 = offset.into();
 
-        Self::from(std::cmp::max(
-            Self::OLDEST.into(),
+        let offset_from_zero = offset_raw
+            .checked_sub(S::OLDEST.into())
+            .expect("offset is => OLDEST offset");
+
+        Self::from(
             self_raw
-                .wrapping_add(offset_raw)
-                .saturating_sub(S::OLDEST.into()),
-        ))
+                .checked_add(offset_from_zero)
+                .expect("offset to lsn conversion to not overflow"),
+        )
     }
 
     /// Convert an LSN back to a loglet offset given a base_lsn.
+    ///
+    /// # Panics
+    ///
+    /// On conversion overflow this function will panic. This also panics if
+    /// base_lsn is `Lsn::INVALID`.
     #[track_caller]
     fn into_offset(self, base_lsn: Lsn) -> LogletOffset {
+        assert!(base_lsn > Lsn::INVALID);
         let base_lsn_raw: u64 = base_lsn.into();
         let self_raw: u64 = self.into();
         let oldest_offset: u64 = LogletOffset::OLDEST.into();
+        assert!(self_raw >= base_lsn_raw);
 
-        if self_raw < base_lsn_raw {
-            return LogletOffset::OLDEST;
-        }
-        // We must first add the oldest_offset before subtracting base_lsn_raw because self_raw
-        // can be 0.
         LogletOffset(
-            self_raw
-                .saturating_sub(base_lsn_raw)
-                .saturating_add(oldest_offset),
+            (self_raw - base_lsn_raw)
+                .checked_add(oldest_offset)
+                .expect("offset+base_lsn within LSN bounds"),
         )
     }
 }
@@ -113,32 +119,18 @@ mod tests {
     use restate_types::logs::{Lsn, SequenceNumber};
 
     #[test]
-    fn lsn_to_offset_oldest() {
+    fn lsn_to_offset() {
         let lsn = Lsn::OLDEST;
         let offset = lsn.into_offset(Lsn::OLDEST);
         assert_eq!(offset, LogletOffset::OLDEST);
 
-        // should work if base_lsn is even zero
-        let lsn = Lsn::from(1);
-        let offset = lsn.into_offset(Lsn::from(0));
-        // offset would be 2 -- lsn(0), lsn(1) -->  offset(1), offset(2)
-        assert_eq!(offset, LogletOffset::from(2));
-    }
-
-    #[test]
-    fn lsn_to_offset() {
-        // validate we still return oldest if lsn is smaller than base_lsn.
+        // INVALID cannot be used as base_lsn
         let lsn = Lsn::INVALID;
-        let offset = lsn.into_offset(Lsn::from(100));
-        assert_eq!(offset, LogletOffset::OLDEST);
+        assert!(std::panic::catch_unwind(|| lsn.into_offset(Lsn::from(100))).is_err());
 
+        // base_lsn > lsn
         let lsn = Lsn::OLDEST;
-        let offset = lsn.into_offset(Lsn::from(100));
-        assert_eq!(offset, LogletOffset::OLDEST);
-
-        let lsn = Lsn::from(99);
-        let offset = lsn.into_offset(Lsn::from(100));
-        assert_eq!(offset, LogletOffset::OLDEST);
+        assert!(std::panic::catch_unwind(|| lsn.into_offset(Lsn::from(100))).is_err());
 
         // base_lsn -> oldest
         let lsn = Lsn::from(100);
@@ -148,20 +140,15 @@ mod tests {
         let lsn = Lsn::from(101);
         let offset = lsn.into_offset(Lsn::from(100));
         assert_eq!(offset, LogletOffset::OLDEST.next());
-
-        // validate we are saturating correctly
-        let lsn = Lsn::MAX;
-        let offset = lsn.into_offset(Lsn::OLDEST);
-        assert_eq!(offset, LogletOffset::MAX);
     }
 
     #[test]
     #[should_panic]
     fn invalid_offset_cannot_be_offsetted() {
-        // not acceptable.
+        // not acceptable. offset must be > oldest
         let offset = LogletOffset::INVALID;
         let base_lsn = Lsn::OLDEST;
-        assert_eq!(Lsn::OLDEST, base_lsn.offset_by(offset));
+        base_lsn.offset_by(offset);
     }
 
     #[test]
@@ -177,5 +164,9 @@ mod tests {
         let offset = LogletOffset::from(10);
         let base_lsn = Lsn::from(100);
         assert_eq!(Lsn::from(109), base_lsn.offset_by(offset));
+
+        // validate we panic on overflow
+        let offset = LogletOffset::MAX;
+        assert!(std::panic::catch_unwind(|| base_lsn.offset_by(offset)).is_err());
     }
 }

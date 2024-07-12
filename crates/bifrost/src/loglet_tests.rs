@@ -44,11 +44,15 @@ async fn wait_for_trim(
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         } else {
-            assert_eq!(Some(required_trim_point), trim_point);
-            break;
+            return Ok(());
         }
     }
-    Ok(())
+    let trim_point = loglet.get_trim_point().await?;
+    anyhow::bail!(
+        "Trim point didn't reach the required point, current = {:?}, waiting_for={}",
+        trim_point,
+        required_trim_point
+    )
 }
 
 /// Validates that high-level behaviour of the loglet is correct but it should not be considered
@@ -174,7 +178,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     // Tail didn't change.
     assert_eq!(LogletOffset(5), loglet.find_tail().await?.offset());
 
-    // trim the loglet to and including 4
+    // trim the loglet to and including 3
     loglet.trim(LogletOffset::from(3)).await?;
     assert_eq!(Some(LogletOffset::from(3)), loglet.get_trim_point().await?);
 
@@ -223,9 +227,7 @@ pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletes
     // We didn't perform any reads yet, read_pointer shouldn't have moved.
     assert_eq!(read_from_offset, reader.read_pointer());
 
-    // spawn a reader that reads 5 records and exits. The reader is expected to wait/block until
-    // records appear at offset 5 The reader is expected to wait/block until records appear at
-    // offset 6. It reads [6-10]
+    // The reader is expected to wait/block until records appear at offset 6. It then reads 5 records (offsets [6-10]).
     let read_counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = read_counter.clone();
     let reader_bg_handle: JoinHandle<googletest::Result<()>> = tokio::spawn(async move {
@@ -381,7 +383,6 @@ pub async fn single_loglet_readstream_test_with_trims(
             eq(LogRecord {
                 offset: LogletOffset::from(i),
                 record: Record::Data(expected_payload),
-                //record: pat!(Record::Data(_))
             })
         );
     }

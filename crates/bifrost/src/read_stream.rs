@@ -53,6 +53,8 @@ impl LogReadStream {
         // (return Ready(None)).
         end_lsn: Lsn,
     ) -> Result<Self> {
+        // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
+        let start_lsn = std::cmp::max(Lsn::OLDEST, start_lsn);
         // todo: support switching loglets. At the moment, this is hard-wired to a single loglet
         // implementation.
         let current_loglet = inner

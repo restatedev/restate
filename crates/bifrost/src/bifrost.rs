@@ -39,12 +39,11 @@ use crate::{
 #[derive(Clone)]
 pub struct Bifrost {
     inner: Arc<BifrostInner>,
-    metadata: Metadata,
 }
 
 impl Bifrost {
-    pub(crate) fn new(inner: Arc<BifrostInner>, metadata: Metadata) -> Self {
-        Self { inner, metadata }
+    pub(crate) fn new(inner: Arc<BifrostInner>) -> Self {
+        Self { inner }
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -117,8 +116,8 @@ impl Bifrost {
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
     /// start reading from. This means that the record returned will have a LSN that is equal or greater than
-    /// `from`. If no records are committed yet at this LSN, this read operation will "wait"
-    /// for such records to appear.
+    /// `from`. If no records are committed yet at this LSN, this read operation will return
+    /// `None`.
     pub async fn read_next_single_opt(
         &self,
         log_id: LogId,
@@ -176,7 +175,7 @@ impl Bifrost {
     }
 
     /// Trim the log prefix up to and including the `trim_point`.
-    /// Set `before_lsn` to the value returned from `find_tail()` or `Lsn::MAX` to
+    /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
     /// trim all records of the log.
     ///
     /// Note that trim does not promise that the log will be trimmed immediately and atomically,
@@ -189,7 +188,7 @@ impl Bifrost {
 
     /// The version of the currently loaded logs metadata
     pub fn version(&self) -> Version {
-        self.metadata.logs_version()
+        self.inner.metadata.logs_version()
     }
 
     #[cfg(test)]
@@ -274,12 +273,14 @@ impl BifrostInner {
         loglet.append_batch(&raw_payloads).await
     }
 
-    pub async fn read_next_single(&self, log_id: LogId, after: Lsn) -> Result<LogRecord> {
+    pub async fn read_next_single(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
         self.fail_if_shutting_down()?;
+        // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
+        let from = std::cmp::max(Lsn::OLDEST, from);
 
-        let loglet = self.find_loglet_for_lsn(log_id, after.next()).await?;
+        let loglet = self.find_loglet_for_lsn(log_id, from).await?;
         Ok(loglet
-            .read_next_single(after)
+            .read_next_single(from)
             .await?
             .decode()
             .expect("decoding a bifrost envelope succeeds"))
@@ -314,8 +315,11 @@ impl BifrostInner {
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         self.fail_if_shutting_down()?;
 
-        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
-        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+        let log_metadata = self.metadata.logs();
+
+        let log_chain = log_metadata
+            .chain(&log_id)
+            .ok_or(Error::UnknownLogId(log_id))?;
 
         let mut trim_point = None;
 
@@ -324,7 +328,7 @@ impl BifrostInner {
         // todo: support multiple segments.
         // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(&segment).await?;
+            let loglet = self.get_loglet(segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
 
             // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
@@ -341,11 +345,14 @@ impl BifrostInner {
     async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
-        let logs = self.metadata.logs().ok_or(Error::UnknownLogId(log_id))?;
-        let log_chain = logs.logs.get(&log_id).ok_or(Error::UnknownLogId(log_id))?;
+        let log_metadata = self.metadata.logs();
+
+        let log_chain = log_metadata
+            .chain(&log_id)
+            .ok_or(Error::UnknownLogId(log_id))?;
 
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(&segment).await?;
+            let loglet = self.get_loglet(segment).await?;
 
             if loglet.base_lsn > trim_point {
                 break;
@@ -391,12 +398,12 @@ impl BifrostInner {
     }
 
     async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        let tail_segment = self
-            .metadata
-            .logs()
-            .and_then(|logs| logs.tail_segment(log_id))
-            .ok_or(Error::UnknownLogId(log_id))?;
-        self.get_loglet(&tail_segment).await
+        let log_metadata = self.metadata.logs();
+        let tail_segment = log_metadata
+            .chain(&log_id)
+            .ok_or(Error::UnknownLogId(log_id))?
+            .tail();
+        self.get_loglet(tail_segment).await
     }
 
     pub(crate) async fn find_loglet_for_lsn(
@@ -404,15 +411,17 @@ impl BifrostInner {
         log_id: LogId,
         lsn: Lsn,
     ) -> Result<LogletWrapper> {
-        let segment = self
-            .metadata
-            .logs()
-            .and_then(|logs| logs.find_segment_for_lsn(log_id, lsn))
+        let log_metadata = self.metadata.logs();
+        let segment = log_metadata
+            .chain(&log_id)
+            .ok_or(Error::UnknownLogId(log_id))?
+            .find_segment_for_lsn(lsn)
+            // todo: handle trimmed segments
             .ok_or(Error::UnknownLogId(log_id))?;
-        self.get_loglet(&segment).await
+        self.get_loglet(segment).await
     }
 
-    async fn get_loglet(&self, segment: &Segment) -> Result<LogletWrapper, Error> {
+    async fn get_loglet(&self, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind)?;
         let loglet = provider.get_loglet(&segment.config.params).await?;
         Ok(LogletWrapper::new(segment.base_lsn, loglet))
