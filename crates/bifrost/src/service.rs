@@ -21,9 +21,9 @@ use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
-use crate::loglets::{local_loglet, memory_loglet};
+use crate::providers::{local_loglet, memory_loglet};
 use crate::watchdog::{Watchdog, WatchdogCommand};
-use crate::{Bifrost, LogletProviderFactory};
+use crate::{loglet::LogletProviderFactory, Bifrost};
 
 pub struct BifrostService {
     task_center: TaskCenter,

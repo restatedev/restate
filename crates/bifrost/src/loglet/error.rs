@@ -8,7 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod local_loglet;
-pub mod memory_loglet;
-pub mod replicated_loglet;
-pub(crate) mod util;
+use restate_core::ShutdownError;
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ProviderError {
+    Shutdown(#[from] ShutdownError),
+    Other(#[from] anyhow::Error),
+}

@@ -23,9 +23,8 @@ use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{metric_definitions, LocalLoglet};
-use crate::loglet::{Loglet, LogletOffset};
-use crate::ProviderError;
-use crate::{Error, LogletProvider};
+use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, ProviderError};
+use crate::Error;
 
 pub struct Factory {
     options: BoxedLiveLoad<LocalLogletOptions>,
@@ -45,7 +44,7 @@ impl Factory {
 }
 
 #[async_trait]
-impl crate::LogletProviderFactory for Factory {
+impl LogletProviderFactory for Factory {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Local
     }

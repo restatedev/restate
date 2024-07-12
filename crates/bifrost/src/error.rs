@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use restate_types::logs::{LogId, Lsn};
 
-use crate::loglets::local_loglet::LogStoreError;
+use crate::providers::local_loglet::LogStoreError;
 use crate::types::SealReason;
 
 /// Result type for bifrost operations.
@@ -37,11 +37,4 @@ pub enum Error {
     /// Provider is unknown or disabled
     #[error("bifrost provider '{0}' is disabled or unrecognized")]
     Disabled(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error(transparent)]
-pub enum ProviderError {
-    Shutdown(#[from] ShutdownError),
-    Other(#[from] anyhow::Error),
 }
