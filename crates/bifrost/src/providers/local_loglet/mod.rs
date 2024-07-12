@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::loglet::{LogletBase, LogletOffset, SendableLogletReadStream};
-use crate::loglets::local_loglet::metric_definitions::{
+use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
 use crate::{Error, LogRecord, Result, SealReason, TailState};
@@ -40,7 +40,7 @@ use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
-use super::util::OffsetWatch;
+use crate::loglet::util::OffsetWatch;
 
 struct LocalLoglet {
     log_id: u64,
@@ -345,7 +345,7 @@ mod tests {
     use restate_types::live::Live;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
-    use crate::loglet_tests::*;
+    use crate::loglet::loglet_tests::*;
 
     use super::*;
 
