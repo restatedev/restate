@@ -25,13 +25,13 @@ use base64::display::Base64Display;
 use base64::Engine;
 use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
-use futures::FutureExt;
-use hyper::body::Bytes;
+use futures::{FutureExt, TryFutureExt};
+use hyper::body::{Bytes, HttpBody};
 use hyper::client::HttpConnector;
 use hyper::http::request::Parts;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
-use hyper::{body, Body, HeaderMap, Method, Response};
+use hyper::{Body, HeaderMap, Method, Response};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use once_cell::sync::Lazy;
 use restate_types::config::AwsOptions;
@@ -182,7 +182,7 @@ impl LambdaClient {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
-        let body = body::to_bytes(body);
+        let body = body.collect().map_ok(|b| b.to_bytes());
 
         async move {
             let (body, inner): (Result<Bytes, hyper::Error>, Arc<LambdaClientInner>) =

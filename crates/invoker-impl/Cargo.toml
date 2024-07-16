@@ -28,9 +28,8 @@ bytes = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
-h2 = { version = "0.3.20" }
 humantime = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "stream", "runtime"] }
+hyper = { version = "0.14.30", features = ["http1", "http2", "client", "tcp", "stream", "runtime", "backports", "deprecated"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }

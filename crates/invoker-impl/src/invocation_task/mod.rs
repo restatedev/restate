@@ -37,7 +37,6 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use std::collections::HashSet;
-use std::error::Error;
 use std::future::Future;
 use std::iter;
 use std::ops::RangeInclusive;
@@ -184,32 +183,6 @@ impl InvocationTaskError {
             related_entry_type: maybe_related_entry.related_entry_type,
         }
     }
-}
-
-// Copy pasted from hyper::Error
-// https://github.com/hyperium/hyper/blob/40c01dfb4f87342a6f86f07564ddc482194c6240/src/error.rs#L229
-// TODO hopefully this code is not needed anymore with hyper 1.0,
-//  as we'll have more control on the h2 frames themselves.
-//  Revisit when upgrading to hyper 1.0.
-fn find_source<E: Error + 'static>(err: &hyper::Error) -> Option<&E> {
-    let mut cause = err.source();
-    while let Some(err) = cause {
-        if let Some(typed) = err.downcast_ref() {
-            return Some(typed);
-        }
-        cause = err.source();
-    }
-
-    // else
-    None
-}
-
-fn h2_reason(err: &hyper::Error) -> h2::Reason {
-    // Find an h2::Reason somewhere in the cause stack, if it exists,
-    // otherwise assume an INTERNAL_ERROR.
-    find_source::<h2::Error>(err)
-        .and_then(|h2_err| h2_err.reason())
-        .unwrap_or(h2::Reason::INTERNAL_ERROR)
 }
 
 pub(super) struct InvocationTaskOutput {
@@ -589,15 +562,9 @@ impl ResponseStreamState {
                     return Poll::Ready(match next_element.transpose() {
                         Ok(Some(val)) => Ok(ResponseChunk::Data(val)),
                         Ok(None) => Ok(ResponseChunk::End),
-                        Err(err) => {
-                            if h2_reason(&err) == h2::Reason::NO_ERROR {
-                                Ok(ResponseChunk::End)
-                            } else {
-                                Err(InvocationTaskError::Client(ServiceClientError::Http(
-                                    err.into(),
-                                )))
-                            }
-                        }
+                        Err(err) => Err(InvocationTaskError::Client(ServiceClientError::Http(
+                            err.into(),
+                        ))),
                     });
                 }
             }

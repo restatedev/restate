@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use codederror::CodedError;
+use hyper::body::HttpBody;
 use hyper::header::{ACCEPT, CONTENT_TYPE};
 use hyper::http::response::Parts as ResponseParts;
 use hyper::http::uri::PathAndQuery;
@@ -360,9 +361,12 @@ impl ServiceDiscovery {
 
                 Ok((
                     parts,
-                    hyper::body::to_bytes(body).await.map_err(|err| {
-                        DiscoveryError::Client(ServiceClientError::Http(err.into()))
-                    })?,
+                    body.collect()
+                        .await
+                        .map_err(|err| {
+                            DiscoveryError::Client(ServiceClientError::Http(err.into()))
+                        })?
+                        .to_bytes(),
                 ))
             };
 
