@@ -22,6 +22,7 @@ use arrow::record_batch::RecordBatch;
 use arrow_convert::deserialize::{arrow_array_deserialize_iterator, ArrowDeserialize};
 use arrow_convert::field::ArrowField;
 use bytes::Buf;
+use itertools::Itertools;
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{debug, info};
@@ -133,6 +134,24 @@ impl DataFusionHttpClient {
             .map(|v| **v)
             .unwrap_or(0))
     }
+
+    pub async fn check_columns_exists(&self, table: &str, columns: &[&str]) -> Result<bool, Error> {
+        let expected_count = columns.len();
+
+        let actual_count = self
+            .run_count_agg_query(format!(
+                "SELECT COUNT(*) FROM information_schema.columns
+            WHERE
+                table_name = '{table}'
+                AND column_name IN ({})",
+                columns.iter().map(|s| format!("'{s}'")).join(", ")
+            ))
+            .await?;
+
+        Ok(actual_count as usize == expected_count)
+    }
+
+    // check if column exists: SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'sys_invocation' AND column_name IN ('completion_result', 'completion_failure')
 }
 
 fn get_column_as<T>(
