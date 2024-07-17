@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tracing::{error, trace, warn};
 
+use super::keys::{MetadataKey, MetadataKind};
 use crate::loglet::LogletOffset;
-use crate::loglets::local_loglet::keys::{MetadataKey, MetadataKind};
 use crate::SealReason;
 
 use super::LogStoreError;

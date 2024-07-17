@@ -27,15 +27,14 @@ use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::LogletOffset;
-use crate::{Error, SMALL_BATCH_THRESHOLD_COUNT};
-
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
 use super::log_store::{DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
+use crate::loglet::LogletOffset;
+use crate::{Error, SMALL_BATCH_THRESHOLD_COUNT};
 
 type Ack = oneshot::Sender<Result<(), Error>>;
 type AckRecv = oneshot::Receiver<Result<(), Error>>;

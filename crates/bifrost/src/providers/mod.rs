@@ -8,22 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod bifrost;
-mod error;
-pub mod loglet;
-mod loglet_wrapper;
-pub mod providers;
-mod read_stream;
-mod record;
-mod service;
-mod types;
-mod watchdog;
-
-pub use bifrost::Bifrost;
-pub use error::{Error, Result};
-pub use read_stream::LogReadStream;
-pub use record::*;
-pub use service::BifrostService;
-pub use types::*;
-
-pub const SMALL_BATCH_THRESHOLD_COUNT: usize = 4;
+pub mod local_loglet;
+pub mod memory_loglet;
+#[cfg(feature = "replicated-loglet")]
+pub mod replicated_loglet;
