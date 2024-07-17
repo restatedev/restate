@@ -34,6 +34,7 @@ enumset = { workspace = true, features = ["serde"] }
 flexbuffers = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
+http-1 = { package = "http", version = "1.1.0" }
 humantime = { workspace = true }
 itertools = { workspace = true }
 num-traits = { version = "0.2.17" }

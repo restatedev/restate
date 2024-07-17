@@ -23,16 +23,16 @@ use aws_sdk_lambda::primitives::Blob;
 use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use base64::display::Base64Display;
 use base64::Engine;
+use bytes::Bytes;
 use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::{FutureExt, TryFutureExt};
-use hyper::body::{Bytes, HttpBody};
-use hyper::client::HttpConnector;
-use hyper::http::request::Parts;
-use hyper::http::uri::PathAndQuery;
-use hyper::http::HeaderValue;
-use hyper::{Body, HeaderMap, Method, Response};
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use http::uri::PathAndQuery;
+use http::{HeaderMap, HeaderValue, Method, Response};
+use http_body_util::{BodyExt, Full};
+use hyper::body::Body;
+use hyper_0_14::client::HttpConnector;
+use hyper_rustls_0_24::{ConfigBuilderExt, HttpsConnector, HttpsConnectorBuilder};
 use once_cell::sync::Lazy;
 use restate_types::config::AwsOptions;
 use restate_types::identifiers::LambdaARN;
@@ -40,6 +40,7 @@ use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
@@ -90,19 +91,19 @@ static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<HttpConnector>> = Lazy::new(|| {
     http.enforce_http(false);
     // Set SO_NODELAY, which we have found significantly improves Lambda invocation latency
     http.set_nodelay(true);
-    hyper_rustls::HttpsConnectorBuilder::new()
+    HttpsConnectorBuilder::new()
         .with_tls_config(
-            rustls::ClientConfig::builder()
+            rustls_0_21::ClientConfig::builder()
                 .with_cipher_suites(&[
                     // TLS1.3 suites
-                    rustls::cipher_suite::TLS13_AES_256_GCM_SHA384,
-                    rustls::cipher_suite::TLS13_AES_128_GCM_SHA256,
+                    rustls_0_21::cipher_suite::TLS13_AES_256_GCM_SHA384,
+                    rustls_0_21::cipher_suite::TLS13_AES_128_GCM_SHA256,
                     // TLS1.2 suites
-                    rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-                    rustls::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                    rustls::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+                    rustls_0_21::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                    rustls_0_21::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
                 ])
                 .with_safe_default_kx_groups()
                 .with_safe_default_protocol_versions()
@@ -170,22 +171,30 @@ impl LambdaClient {
         )
     }
 
-    pub fn invoke(
+    pub fn invoke<B>(
         &self,
         arn: LambdaARN,
         method: Method,
         assume_role_arn: Option<ByteString>,
-        body: Body,
+        body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> impl Future<Output = Result<Response<Body>, LambdaError>> + Send + 'static {
+    ) -> impl Future<Output = Result<Response<Full<Bytes>>, LambdaError>> + Send + 'static
+    where
+        B: Body + Send + Unpin + 'static,
+        <B as Body>::Data: Send,
+        <B as Body>::Error: Error + Send + Sync + 'static,
+    {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
-        let body = body.collect().map_ok(|b| b.to_bytes());
+        let body = body
+            .map_err(|e| LambdaError::Body(Box::new(e)))
+            .collect()
+            .map_ok(|b| b.to_bytes());
 
         async move {
-            let (body, inner): (Result<Bytes, hyper::Error>, Arc<LambdaClientInner>) =
+            let (body, inner): (Result<Bytes, LambdaError>, Arc<LambdaClientInner>) =
                 futures::future::join(body, inner).await;
 
             let payload = ApiGatewayProxyRequest {
@@ -285,7 +294,7 @@ impl LambdaClientInner {
 #[derive(Debug, thiserror::Error)]
 pub enum LambdaError {
     #[error("problem reading request body: {0}")]
-    Body(#[from] hyper::Error),
+    Body(#[from] Box<dyn Error + Send + Sync>),
     #[error("lambda service returned error: {}", DisplayErrorContext(&.0))]
     SdkError(#[from] SdkError<InvokeError>),
     #[error("function returned an error during execution: {0}")]
@@ -305,13 +314,8 @@ impl LambdaError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            LambdaError::Body(err) => err.is_retryable(),
             LambdaError::SdkError(err) => err.is_retryable(),
-            LambdaError::FunctionError(_) => false,
-            LambdaError::SerializationError(_) => false,
-            LambdaError::DeserializationError(_) => false,
-            LambdaError::Base64Error(_) => false,
-            LambdaError::MissingResponse => false,
+            _ => false,
         }
     }
 }
@@ -329,20 +333,6 @@ pub struct ApiGatewayProxyRequest {
     pub is_base64_encoded: bool,
 }
 
-impl From<(Parts, Bytes)> for ApiGatewayProxyRequest {
-    fn from((parts, body): (Parts, Bytes)) -> Self {
-        let uri_parts = parts.uri.into_parts();
-        let path = uri_parts.path_and_query.map(|pq| pq.path().to_string());
-        ApiGatewayProxyRequest {
-            path,
-            http_method: parts.method,
-            headers: parts.headers,
-            body,
-            is_base64_encoded: true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiGatewayProxyResponse {
@@ -354,22 +344,22 @@ pub struct ApiGatewayProxyResponse {
     pub is_base64_encoded: bool,
 }
 
-impl TryFrom<ApiGatewayProxyResponse> for Response<Body> {
+impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
     type Error = LambdaError;
 
     fn try_from(response: ApiGatewayProxyResponse) -> Result<Self, Self::Error> {
         let body = if let Some(body) = response.body {
             if response.is_base64_encoded {
-                Body::from(
+                Bytes::from(
                     base64::engine::general_purpose::STANDARD
                         .decode(body)
                         .map_err(LambdaError::Base64Error)?,
                 )
             } else {
-                Body::from(body)
+                Bytes::from(body)
             }
         } else {
-            Body::empty()
+            Bytes::default()
         };
 
         let builder = Response::builder().status(response.status_code);
@@ -378,7 +368,7 @@ impl TryFrom<ApiGatewayProxyResponse> for Response<Body> {
             .iter()
             .fold(builder, |builder, (k, v)| builder.header(k, v));
 
-        Ok(builder.body(body).expect("response must be created"))
+        Ok(builder.body(body.into()).expect("response must be created"))
     }
 }
 

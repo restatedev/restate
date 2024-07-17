@@ -19,15 +19,22 @@ schemars = { workspace = true, optional = true }
 
 arc-swap = { workspace = true }
 base64 = { workspace = true }
+bytes = { workspace = true }
 bytestring = { workspace = true }
 futures = { workspace = true }
-http-serde = { workspace = true }
 humantime = { workspace = true }
-hyper = { workspace = true }
-hyper-rustls = { workspace = true }
-h2 = { version = "0.3.20" }
+
+h2 = "0.4.5"
+hyper = { version = "1.4.1", features = ["http1", "http2", "client"] }
+hyper-util = { version = "0.1.6", features = ["client-legacy"]}
+http = "1.1.0"
+http-serde = "2.0.0"
+http-body-util = "0.1.2"
+hyper-rustls = { version = "0.27.2", features = ["http2"] }
+tower-service ={ version = "0.3" }
+rustls = "0.23.11"
+
 once_cell = { workspace = true }
-rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -45,6 +52,11 @@ aws-credential-types = "1.1.8"
 aws-sdk-lambda = "1.19.0"
 aws-sdk-sts = "1.18.0"
 aws-smithy-runtime = "1.1.8"
+
+# We need those for smithy
+hyper-0-14 = { package = "hyper", version = "0.14.30" }
+hyper-rustls-0-24 = { package = "hyper-rustls", version = "=0.24.1", features = ["http2"] }
+rustls_0_21 = { version = "0.21.11", package = "rustls" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
