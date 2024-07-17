@@ -15,16 +15,16 @@ use super::Notification;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
-use futures::{future, stream, FutureExt, StreamExt};
-use hyper::http::response::Parts as ResponseParts;
-use hyper::http::{HeaderName, HeaderValue};
-use hyper::{http, Body, Response};
+use futures::{future, stream, FutureExt};
+use http::response::Parts as ResponseParts;
+use http::{HeaderName, HeaderValue, Response};
+use http_body::{Body, Frame};
 use metrics::histogram;
 use restate_invoker_api::{
     EagerState, EntryEnricher, InvocationErrorReport, InvokeInputJournal, JournalReader,
     StateReader,
 };
-use restate_service_client::{Request, ServiceClient, ServiceClientError};
+use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
@@ -37,6 +37,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::service_protocol::{MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION};
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::future::Future;
 use std::iter;
 use std::ops::RangeInclusive;
@@ -46,6 +47,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::instrument;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -86,7 +88,7 @@ pub(crate) enum InvocationTaskError {
     WriteAfterEndOfStream,
     #[error("Bad header '{0}': {1}")]
     #[code(restate_errors::RT0012)]
-    BadHeader(HeaderName, #[source] hyper::header::ToStrError),
+    BadHeader(HeaderName, #[source] http::header::ToStrError),
     #[error("got bad SuspensionMessage without journal indexes")]
     #[code(restate_errors::RT0012)]
     EmptySuspensionMessage,
@@ -106,9 +108,15 @@ pub(crate) enum InvocationTaskError {
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
     Client(ServiceClientError),
+    #[error(transparent)]
+    #[code(restate_errors::RT0010)]
+    ClientBody(Box<dyn std::error::Error + Send + Sync>),
     #[error("unexpected join error, looks like hyper panicked: {0}")]
     #[code(restate_errors::RT0010)]
     UnexpectedJoinError(#[from] JoinError),
+    #[error("unexpected closed request stream")]
+    #[code(restate_errors::RT0010)]
+    UnexpectedClosedRequestStream,
 
     #[error("response timeout")]
     #[code(restate_errors::RT0001)]
@@ -215,6 +223,11 @@ impl From<InvocationTaskError> for InvocationTaskOutputInner {
         InvocationTaskOutputInner::Failed(value)
     }
 }
+
+type InvokerBodyStream =
+    http_body_util::StreamBody<ReceiverStream<Result<Frame<Bytes>, Infallible>>>;
+
+type InvokerRequestStreamSender = mpsc::Sender<Result<Frame<Bytes>, Infallible>>;
 
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<SR, JR, EE, DMR> {
@@ -479,12 +492,12 @@ enum ResponseChunk {
 }
 
 enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<Body>, ServiceClientError>>),
-    ReadingBody(Option<ResponseParts>, Body),
+    WaitingHeaders(AbortOnDrop<Result<Response<ResponseBody>, ServiceClientError>>),
+    ReadingBody(Option<ResponseParts>, ResponseBody),
 }
 
 impl ResponseStreamState {
-    fn initialize(client: &ServiceClient, req: Request<Body>) -> Self {
+    fn initialize(client: &ServiceClient, req: Request<InvokerBodyStream>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
@@ -558,13 +571,14 @@ impl ResponseStreamState {
                         return Poll::Ready(Ok(ResponseChunk::Parts(parts)));
                     };
 
-                    let next_element = ready!(b.poll_next_unpin(cx));
+                    let mut pinned = std::pin::pin!(b);
+                    let next_element = ready!(pinned.as_mut().poll_frame(cx));
                     return Poll::Ready(match next_element.transpose() {
-                        Ok(Some(val)) => Ok(ResponseChunk::Data(val)),
-                        Ok(None) => Ok(ResponseChunk::End),
-                        Err(err) => Err(InvocationTaskError::Client(ServiceClientError::Http(
-                            err.into(),
-                        ))),
+                        Ok(Some(f)) if f.is_data() => {
+                            Ok(ResponseChunk::Data(f.into_data().unwrap()))
+                        }
+                        Ok(_) => Ok(ResponseChunk::End),
+                        Err(err) => Err(InvocationTaskError::ClientBody(err)),
                     });
                 }
             }

@@ -29,7 +29,12 @@ codederror = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
-hyper = { version = "0.14.30", features = ["http1", "http2", "client", "tcp", "stream", "runtime", "backports", "deprecated"] }
+
+http = "1.1.0"
+http-body = "1.0.1"
+http-body-util = "0.1.2"
+tokio-stream = { workspace = true }
+
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
