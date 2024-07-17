@@ -12,7 +12,7 @@ default = []
 
 awakeable-id = ["dep:base64", "dep:restate-base64-util", "dep:restate-types"]
 codec = ["dep:restate-types", "dep:paste"]
-discovery = ["dep:serde", "dep:serde_json", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:hyper", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
+discovery = ["dep:serde", "dep:serde_json", "dep:regress", "dep:tracing", "dep:codederror", "dep:restate-errors", "dep:http", "dep:http-body-util", "dep:restate-service-client", "dep:restate-types", "dep:tokio"]
 message = ["dep:restate-types", "dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing"]
 test-util = ["awakeable-id"]
 
@@ -26,7 +26,8 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
-hyper = { workspace = true, features = ["http1", "http2", "client", "tcp", "runtime"], optional = true }
+http = {version = "1.1.0", optional = true}
+http-body-util = {version = "0.1.2", optional = true }
 itertools = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true, optional = true }
