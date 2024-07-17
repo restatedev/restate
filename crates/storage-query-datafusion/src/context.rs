@@ -67,7 +67,9 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
                 WHEN sis.in_flight THEN 'running'
                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
                 ELSE 'ready'
-            END AS status
+            END AS status,
+            ss.completion_result,
+            ss.completion_failure
         FROM sys_invocation_status ss
         LEFT JOIN sys_invocation_state sis ON ss.id = sis.id";
 

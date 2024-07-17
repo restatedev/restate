@@ -14,7 +14,7 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{ServiceType, Source, TraceId};
+use restate_types::invocation::{ResponseResult, ServiceType, Source, TraceId};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -77,6 +77,15 @@ pub(crate) fn append_invocation_status_row(
         InvocationStatus::Completed(completed) => {
             row.status("completed");
             fill_invoked_by(&mut row, output, completed.source);
+            match completed.response_result {
+                ResponseResult::Success(_) => {
+                    row.completion_result("success");
+                }
+                ResponseResult::Failure(failure) => {
+                    row.completion_result("failure");
+                    row.completion_failure(format_using(output, &failure));
+                }
+            }
         }
     };
 }
