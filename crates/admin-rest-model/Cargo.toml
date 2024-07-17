@@ -17,6 +17,8 @@ restate-serde-util = { workspace = true }
 
 bytes = { workspace = true }
 http = { workspace = true }
+http-1 = { version = "1.0", package = "http" }
+http-serde = "1.1.3"
 humantime = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

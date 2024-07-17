@@ -10,6 +10,7 @@
 
 use super::error::*;
 use crate::state::AdminServiceState;
+use std::collections::HashMap;
 
 use crate::rest_api::log_error;
 use crate::schema_registry::{ApplyMode, Force};
@@ -17,6 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use http::{HeaderName, HeaderValue};
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_service_client::Endpoint;
@@ -54,14 +56,14 @@ pub async fn create_deployment<V>(
         } => (
             DiscoverEndpoint::new(
                 Endpoint::Http(
-                    uri,
+                    uri.to_string().parse().unwrap(),
                     if use_http_11 {
-                        http::Version::HTTP_11
+                        http_1::Version::HTTP_11
                     } else {
-                        http::Version::HTTP_2
+                        http_1::Version::HTTP_2
                     },
                 ),
-                additional_headers.unwrap_or_default().into(),
+                header_map_http_01_to_http_1(additional_headers.unwrap_or_default().into()),
             ),
             force,
             dry_run,
@@ -80,7 +82,7 @@ pub async fn create_deployment<V>(
                     })?,
                     assume_role_arn.map(Into::into),
                 ),
-                additional_headers.unwrap_or_default().into(),
+                header_map_http_01_to_http_1(additional_headers.unwrap_or_default().into()),
             ),
             force,
             dry_run,
@@ -117,6 +119,19 @@ pub async fn create_deployment<V>(
         )],
         Json(response_body),
     ))
+}
+
+fn header_map_http_01_to_http_1(
+    hm: HashMap<HeaderName, HeaderValue>,
+) -> HashMap<http_1::HeaderName, http_1::HeaderValue> {
+    hm.into_iter()
+        .map(|(k, v)| {
+            (
+                http_1::HeaderName::try_from(k.as_str()).unwrap(),
+                http_1::HeaderValue::try_from(v.as_bytes()).unwrap(),
+            )
+        })
+        .collect()
 }
 
 /// Return deployment

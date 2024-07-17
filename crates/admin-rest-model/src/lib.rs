@@ -10,6 +10,7 @@
 
 pub mod deployments;
 pub mod handlers;
+mod serde_util_http_0_1;
 pub mod services;
 pub mod subscriptions;
 pub mod version;

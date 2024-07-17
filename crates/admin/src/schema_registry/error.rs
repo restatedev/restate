@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::header::InvalidHeaderValue;
 use http::Uri;
 
 use restate_core::metadata_store::ReadModifyWriteError;
@@ -90,7 +89,7 @@ pub enum ServiceError {
     BadInputContentType(String, BadInputContentType),
     #[error("the handler '{0}' output content-type is not valid: {1}")]
     #[code(unknown)]
-    BadOutputContentType(String, InvalidHeaderValue),
+    BadOutputContentType(String, http_1::header::InvalidHeaderValue),
     #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
     #[code(unknown)]
     BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),
