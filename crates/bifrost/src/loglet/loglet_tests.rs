@@ -8,21 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::StreamExt;
 use googletest::prelude::*;
-use tokio::task::JoinHandle;
+use tokio::sync::Barrier;
+use tokio::task::{JoinHandle, JoinSet};
 
 use restate_test_util::let_assert;
 use restate_types::logs::SequenceNumber;
+use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{Loglet, LogletOffset};
-use crate::{LogRecord, Record, TrimGap};
+use crate::loglet::AppendError;
+use crate::{LogRecord, Record, TailState, TrimGap};
 
 fn setup() {
     // Make sure that panics exits the process.
@@ -216,7 +219,10 @@ pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletes
     setup();
 
     let read_from_offset = LogletOffset::from(6);
-    let mut reader = loglet.clone().create_read_stream(read_from_offset).await?;
+    let mut reader = loglet
+        .clone()
+        .create_read_stream(read_from_offset, None)
+        .await?;
 
     {
         // no records have been written yet.
@@ -307,7 +313,7 @@ pub async fn single_loglet_readstream_test_with_trims(
 
     let mut read_stream = loglet
         .clone()
-        .create_read_stream(LogletOffset::OLDEST)
+        .create_read_stream(LogletOffset::OLDEST, None)
         .await?;
 
     let record = read_stream.next().await.unwrap()?;
@@ -390,6 +396,147 @@ pub async fn single_loglet_readstream_test_with_trims(
     let pinned = std::pin::pin!(read_stream.next());
     let next_is_pending = futures::poll!(pinned);
     assert!(matches!(next_is_pending, std::task::Poll::Pending));
+
+    Ok(())
+}
+
+/// Validates that appends fail after find_tail() returned Sealed()
+pub async fn loglet_test_append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
+    setup();
+
+    assert_eq!(None, loglet.get_trim_point().await?);
+    {
+        let tail = loglet.find_tail().await?;
+        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert!(!tail.is_sealed());
+    }
+
+    // append 10 records. Offsets [1..10]
+    for i in 1..=5 {
+        loglet.append(Bytes::from(format!("record{}", i))).await?;
+    }
+
+    loglet.seal().await?;
+
+    for i in 6..=10 {
+        let res = loglet.append(Bytes::from(format!("record{}", i))).await;
+        assert_that!(res, err(pat!(AppendError::Sealed)));
+    }
+
+    let tail = loglet.find_tail().await?;
+    // Seal must be applied after commit index 5 since it has been acknowledged (tail is 6 or higher)
+    assert_that!(tail, pat!(TailState::Sealed(gt(LogletOffset::from(5)))));
+
+    Ok(())
+}
+
+/// Validates that appends fail after find_tail() returned Sealed()
+pub async fn loglet_test_append_after_seal_concurrent(
+    loglet: Arc<dyn Loglet>,
+) -> googletest::Result<()> {
+    use futures::TryStreamExt as _;
+
+    setup();
+
+    assert_eq!(None, loglet.get_trim_point().await?);
+    {
+        let tail = loglet.find_tail().await?;
+        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert!(!tail.is_sealed());
+    }
+    let warmup_appends = 1000;
+    let concurrent_appenders = 20;
+    // +1 for the main task waiting on all concurrent appenders
+    let append_barrier = Arc::new(Barrier::new(concurrent_appenders + 1));
+
+    let mut appenders: JoinSet<googletest::Result<_>> = JoinSet::new();
+    for appender_id in 0..concurrent_appenders {
+        appenders.spawn({
+            let loglet = loglet.clone();
+            let append_barrier = append_barrier.clone();
+            async move {
+                let mut i = 1;
+                let mut committed = Vec::new();
+                let mut warmup = true;
+                loop {
+                    let res = loglet
+                        .append(Bytes::from(format!("appender-{}-record{}", appender_id, i)))
+                        .await;
+                    i += 1;
+                    if i > warmup_appends && warmup {
+                        println!("appender({}) - warmup complete....", appender_id);
+                        append_barrier.wait().await;
+                        warmup = false;
+                    }
+                    match res {
+                        Ok(offset) => {
+                            committed.push(offset);
+                        }
+                        Err(AppendError::Sealed) => {
+                            break;
+                        }
+                        Err(e) => fail!("unexpected error: {}", e)?,
+                    }
+                    // give a chance to other tasks to work
+                    tokio::task::yield_now().await;
+                }
+                Ok(committed)
+            }
+        });
+    }
+
+    // Wait for some warmup appends
+    println!(
+        "Awaiting all appenders to reach at least {} appends",
+        warmup_appends
+    );
+    append_barrier.wait().await;
+    loglet.seal().await?;
+    // fail immediately
+    assert_that!(
+        loglet.append(Bytes::from_static(b"failed-record")).await,
+        err(pat!(AppendError::Sealed))
+    );
+
+    let tail = loglet.find_tail().await?;
+    assert!(tail.is_sealed());
+    println!("Sealed tail: {:?}", tail);
+
+    let mut all_committed = BTreeSet::new();
+    while let Some(handle) = appenders.join_next().await {
+        let mut committed = handle??;
+        assert!(!committed.is_empty());
+        let committed_len = committed.len();
+        assert!(committed_len >= 1000);
+        let tail_record = committed.pop().unwrap();
+        // tail must be beyond seal point
+        assert!(tail.offset() > tail_record);
+        println!(
+            "Committed len: {}, last appended was {}",
+            committed_len, tail_record
+        );
+        // ensure that all committed records are unique
+        assert!(all_committed.insert(tail_record));
+        for offset in committed {
+            assert!(all_committed.insert(offset));
+        }
+    }
+
+    let reader = loglet
+        .clone()
+        .create_read_stream(LogletOffset::OLDEST, Some(tail.offset().prev()))
+        .await?;
+
+    let records: BTreeSet<LogletOffset> = reader
+        .try_take_while(|x| std::future::ready(Ok(x.offset < tail.offset())))
+        .try_filter_map(|x| std::future::ready(Ok(Some(x.offset))))
+        .try_collect()
+        .await?;
+
+    // every record committed must be observed in readstream, and it's acceptable for the
+    // readstream to include more records.
+    assert!(all_committed.len() <= records.len());
+    assert!(all_committed.is_subset(&records));
 
     Ok(())
 }
