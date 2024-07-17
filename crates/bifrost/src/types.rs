@@ -13,7 +13,6 @@
 
 use crate::loglet::LogletOffset;
 use restate_types::logs::{Lsn, SequenceNumber};
-use serde::{Deserialize, Serialize};
 
 // Only implemented for LSNs
 pub(crate) trait LsnExt: SequenceNumber {
@@ -64,15 +63,6 @@ pub(crate) trait LsnExt: SequenceNumber {
 }
 
 impl LsnExt for Lsn {}
-
-/// Details about why a log was sealed
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum SealReason {
-    /// Log was sealed to perform a repartitioning operation (split or unsplit).
-    /// The reader/writer need to figure out where to read/write next.
-    Resharding,
-    Other(String),
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct FindTailAttributes {

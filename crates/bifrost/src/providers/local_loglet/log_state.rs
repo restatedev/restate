@@ -18,7 +18,6 @@ use tracing::{error, trace, warn};
 
 use super::keys::{MetadataKey, MetadataKind};
 use crate::loglet::LogletOffset;
-use crate::SealReason;
 
 use super::LogStoreError;
 
@@ -36,7 +35,7 @@ pub struct LogStateUpdates {
 enum LogStateUpdate {
     ReleasePointer(u64),
     TrimPoint(u64),
-    Seal(SealReason),
+    Seal,
 }
 
 impl LogStateUpdates {
@@ -58,9 +57,8 @@ impl LogStateUpdates {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn seal(mut self, reason: SealReason) -> Self {
-        self.updates.push(LogStateUpdate::Seal(reason));
+    pub fn seal(mut self) -> Self {
+        self.updates.push(LogStateUpdate::Seal);
         self
     }
 }
@@ -87,7 +85,7 @@ flexbuffers_storage_encode_decode!(LogStateUpdates);
 pub struct LogState {
     pub release_pointer: u64,
     pub trim_point: u64,
-    pub seal: Option<SealReason>,
+    pub seal: bool,
 }
 
 impl LogState {
@@ -148,12 +146,8 @@ pub fn log_state_full_merge(
                     // trim point can only move forward
                     log_state.trim_point = log_state.trim_point.max(offset);
                 }
-                LogStateUpdate::Seal(reason) => {
-                    // A log cannot be sealed twice.
-                    if log_state.seal.is_none() {
-                        // trim point can only move forward
-                        log_state.seal = Some(reason);
-                    }
+                LogStateUpdate::Seal => {
+                    log_state.seal = true;
                 }
             }
         }
@@ -189,6 +183,7 @@ pub fn log_state_partial_merge(
             Ok(updates) => updates,
         };
 
+        // todo (asoli): actually merge updates
         merged.updates.append(&mut updates.updates);
     }
     match merged.to_bytes() {

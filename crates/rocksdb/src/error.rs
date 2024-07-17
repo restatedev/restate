@@ -27,7 +27,8 @@ pub enum RocksError {
     #[error("already open")]
     #[code(unknown)]
     AlreadyOpen,
-    #[error(transparent)]
+    //#[error(transparent)]
+    #[error("unknown rocksdb error: {0}")]
     #[code(unknown)]
     Other(#[from] rocksdb::Error),
 }
