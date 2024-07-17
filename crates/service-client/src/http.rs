@@ -59,6 +59,8 @@ impl HttpClient {
     pub fn from_options(options: &HttpOptions) -> HttpClient {
         let mut builder =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::default());
+        builder.timer(hyper_util::rt::TokioTimer::default());
+
         builder
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
