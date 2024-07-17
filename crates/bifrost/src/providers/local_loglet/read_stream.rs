@@ -38,6 +38,8 @@ pub(crate) struct LocalLogletReadStream {
     // the next record this stream will attempt to read
     read_pointer: LogletOffset,
     release_pointer: LogletOffset,
+    /// Last offset to read before terminating the stream. None means "tailing" reader.
+    read_to: Option<LogletOffset>,
     #[pin]
     iterator: DBRawIteratorWithThreadMode<'static, DB>,
     #[pin]
@@ -62,6 +64,7 @@ impl LocalLogletReadStream {
     pub(crate) async fn create(
         loglet: Arc<LocalLoglet>,
         from_offset: LogletOffset,
+        to: Option<LogletOffset>,
     ) -> Result<Self> {
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
@@ -111,6 +114,7 @@ impl LocalLogletReadStream {
             terminated: false,
             release_watch,
             release_pointer,
+            read_to: to,
         })
     }
 }
@@ -143,6 +147,11 @@ impl Stream for LocalLogletReadStream {
         loop {
             let mut this = self.as_mut().project();
 
+            // We have reached the limit we are allowed to read
+            if this.read_to.is_some_and(|read_to| next_offset > read_to) {
+                this.terminated.set(true);
+                return Poll::Ready(None);
+            }
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
             if next_offset > *this.release_pointer {

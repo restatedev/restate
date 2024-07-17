@@ -127,18 +127,18 @@ impl MemoryLoglet {
     }
 
     fn index_to_offset(&self, index: usize) -> LogletOffset {
-        let offset = self.trim_point_offset.load(Ordering::Acquire);
+        let offset = self.trim_point_offset.load(Ordering::Relaxed);
         LogletOffset::from(offset + 1 + index as u64)
     }
 
     fn saturating_offset_to_index(&self, offset: LogletOffset) -> usize {
-        let trim_point = self.trim_point_offset.load(Ordering::Acquire);
+        let trim_point = self.trim_point_offset.load(Ordering::Relaxed);
         (offset.0.saturating_sub(trim_point) - 1) as usize
     }
 
-    pub fn advance_commit_offset(&self, offset: LogletOffset) {
+    fn advance_commit_offset(&self, offset: LogletOffset) {
         self.last_committed_offset
-            .fetch_max(offset.into(), Ordering::Release);
+            .fetch_max(offset.into(), Ordering::Relaxed);
         self.notify_readers();
     }
 
@@ -152,7 +152,7 @@ impl MemoryLoglet {
         from_offset: LogletOffset,
     ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, OperationError> {
         let guard = self.log.lock().unwrap();
-        let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Acquire));
+        let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
         let head_offset = trim_point.next();
         // Are we reading behind the loglet head?
         if from_offset < head_offset {
@@ -160,7 +160,7 @@ impl MemoryLoglet {
         }
 
         // are we reading after commit offset?
-        let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire));
+        let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
         if from_offset > commit_offset {
             Ok(None)
         } else {
@@ -180,14 +180,20 @@ struct MemoryReadStream {
     read_pointer: LogletOffset,
     #[pin]
     release_watch: WatchStream<LogletOffset>,
-    // how far we are allowed to read in the loglet
+    /// how far we are allowed to read in the loglet
     release_pointer: LogletOffset,
+    /// Last offset to read before terminating the stream. None means "tailing" reader.
+    read_to: Option<LogletOffset>,
     #[pin]
     terminated: bool,
 }
 
 impl MemoryReadStream {
-    async fn create(loglet: Arc<MemoryLoglet>, from_offset: LogletOffset) -> Self {
+    async fn create(
+        loglet: Arc<MemoryLoglet>,
+        from_offset: LogletOffset,
+        to: Option<LogletOffset>,
+    ) -> Self {
         let mut release_watch = loglet.release_watch.to_stream();
         let release_pointer = release_watch
             .next()
@@ -199,6 +205,7 @@ impl MemoryReadStream {
             read_pointer: from_offset,
             release_watch,
             release_pointer,
+            read_to: to,
             terminated: false,
         }
     }
@@ -227,8 +234,15 @@ impl Stream for MemoryReadStream {
         }
 
         let next_offset = self.read_pointer;
+
         loop {
             let mut this = self.as_mut().project();
+
+            // We have reached the limit we are allowed to read
+            if this.read_to.is_some_and(|read_to| next_offset > read_to) {
+                this.terminated.set(true);
+                return Poll::Ready(None);
+            }
 
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
@@ -294,12 +308,16 @@ impl LogletBase for MemoryLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         from: Self::Offset,
+        to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>> {
-        Ok(Box::pin(MemoryReadStream::create(self, from).await))
+        Ok(Box::pin(MemoryReadStream::create(self, from, to).await))
     }
 
     async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
+        if self.sealed.load(Ordering::Relaxed) {
+            return Err(AppendError::Sealed);
+        }
         let offset = self.index_to_offset(log.len());
         debug!(
             "Appending record to in-memory loglet {:?} at offset {}",
@@ -307,14 +325,17 @@ impl LogletBase for MemoryLoglet {
         );
         log.push(payload);
         // mark as committed immediately.
-        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
+        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
         self.advance_commit_offset(offset);
         Ok(offset)
     }
 
     async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
-        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
+        if self.sealed.load(Ordering::Relaxed) {
+            return Err(AppendError::Sealed);
+        }
+        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
         let first_offset = offset;
         let num_payloads = payloads.len();
         for payload in payloads {
@@ -330,8 +351,9 @@ impl LogletBase for MemoryLoglet {
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        let committed = LogletOffset(self.last_committed_offset.load(Ordering::Acquire)).next();
-        let sealed = self.sealed.load(Ordering::Acquire);
+        let _guard = self.log.lock().unwrap();
+        let sealed = self.sealed.load(Ordering::Relaxed);
+        let committed = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
         Ok(if sealed {
             TailState::Sealed(committed)
         } else {
@@ -341,6 +363,7 @@ impl LogletBase for MemoryLoglet {
 
     /// Find the head (oldest) record in the loglet.
     async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
+        let _guard = self.log.lock().unwrap();
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
         if current_trim_point == LogletOffset::INVALID {
@@ -351,11 +374,10 @@ impl LogletBase for MemoryLoglet {
     }
 
     async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
+        let mut log = self.log.lock().unwrap();
         let actual_trim_point = new_trim_point.min(LogletOffset(
             self.last_committed_offset.load(Ordering::Relaxed),
         ));
-
-        let mut log = self.log.lock().unwrap();
 
         let current_trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
 
@@ -368,6 +390,13 @@ impl LogletBase for MemoryLoglet {
             .store(actual_trim_point.0, Ordering::Relaxed);
         log.drain(0..=trim_point_index);
 
+        Ok(())
+    }
+
+    async fn seal(&self) -> Result<(), OperationError> {
+        // Ensures no in-flight operations are taking place.
+        let _guard = self.log.lock().unwrap();
+        self.sealed.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -415,5 +444,18 @@ mod tests {
     async fn memory_loglet_readstream_test_with_trims() -> googletest::Result<()> {
         let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
         single_loglet_readstream_test_with_trims(loglet).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn memory_loglet_test_append_after_seal() -> googletest::Result<()> {
+        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+        loglet_test_append_after_seal(loglet).await
+    }
+
+    // multi-threaded to check correctness under parallel conditions
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn memory_loglet_test_append_after_seal_concurrent() -> googletest::Result<()> {
+        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+        loglet_test_append_after_seal_concurrent(loglet).await
     }
 }
