@@ -571,11 +571,11 @@ impl ResponseStreamState {
                         return Poll::Ready(Ok(ResponseChunk::Parts(parts)));
                     };
 
-                    let mut pinned = std::pin::pin!(b);
-                    let next_element = ready!(pinned.as_mut().poll_frame(cx));
+                    let mut pinned_body = std::pin::pin!(b);
+                    let next_element = ready!(pinned_body.as_mut().poll_frame(cx));
                     return Poll::Ready(match next_element.transpose() {
-                        Ok(Some(f)) if f.is_data() => {
-                            Ok(ResponseChunk::Data(f.into_data().unwrap()))
+                        Ok(Some(frame)) if frame.is_data() => {
+                            Ok(ResponseChunk::Data(frame.into_data().unwrap()))
                         }
                         Ok(_) => Ok(ResponseChunk::End),
                         Err(err) => Err(InvocationTaskError::ClientBody(err)),
