@@ -111,20 +111,16 @@ impl Bifrost {
     /// start reading from. This means that the record returned will have a LSN that is equal or greater than
     /// `from`. If no records are committed yet at this LSN, this read operation will "wait"
     /// for such records to appear.
-    pub async fn read_next_single(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
-        self.inner.read_next_single(log_id, from).await
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
+        self.inner.read(log_id, from).await
     }
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
     /// start reading from. This means that the record returned will have a LSN that is equal or greater than
     /// `from`. If no records are committed yet at this LSN, this read operation will return
     /// `None`.
-    pub async fn read_next_single_opt(
-        &self,
-        log_id: LogId,
-        from: Lsn,
-    ) -> Result<Option<LogRecord>> {
-        self.inner.read_next_single_opt(log_id, from).await
+    pub async fn read_opt(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
+        self.inner.read_opt(log_id, from).await
     }
 
     /// Create a read stream. `end_lsn` is inclusive. Pass [[`Lsn::Max`]] for a tailing stream. Use
@@ -287,28 +283,24 @@ impl BifrostInner {
         })
     }
 
-    pub async fn read_next_single(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
         self.fail_if_shutting_down()?;
         // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
         let from = std::cmp::max(Lsn::OLDEST, from);
 
         let loglet = self.find_loglet_for_lsn(log_id, from).await?;
         Ok(loglet
-            .read_next_single(from)
+            .read(from)
             .await?
             .decode()
             .expect("decoding a bifrost envelope succeeds"))
     }
 
-    pub async fn read_next_single_opt(
-        &self,
-        log_id: LogId,
-        from: Lsn,
-    ) -> Result<Option<LogRecord>> {
+    pub async fn read_opt(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
         self.fail_if_shutting_down()?;
 
         let loglet = self.find_loglet_for_lsn(log_id, from).await?;
-        Ok(loglet.read_next_single_opt(from).await?.map(|record| {
+        Ok(loglet.read_opt(from).await?.map(|record| {
             record
                 .decode()
                 .expect("decoding a bifrost envelope succeeds")
@@ -601,7 +593,7 @@ mod tests {
 
                 // 5 itself is trimmed
                 for lsn in 1..=5 {
-                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -614,7 +606,7 @@ mod tests {
                 }
 
                 for lsn in 6..=10 {
-                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -637,10 +629,7 @@ mod tests {
                 let new_trim_point = bifrost.get_trim_point(log_id).await?;
                 assert_eq!(Lsn::from(10), new_trim_point);
 
-                let record = bifrost
-                    .read_next_single_opt(log_id, Lsn::from(10))
-                    .await?
-                    .unwrap();
+                let record = bifrost.read_opt(log_id, Lsn::from(10)).await?.unwrap();
                 assert!(record.record.is_trim_gap());
                 assert_eq!(Lsn::from(10), record.record.try_as_trim_gap().unwrap().to);
 
@@ -650,7 +639,7 @@ mod tests {
                 }
 
                 for lsn in 11..20 {
-                    let record = bifrost.read_next_single_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -793,8 +782,7 @@ mod tests {
             );
 
             // Reading the log. (OLDEST)
-            let LogRecord { offset, record } =
-                bifrost.read_next_single(LOG_ID, Lsn::OLDEST).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?;
             assert_eq!(Lsn::from(1), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -802,8 +790,7 @@ mod tests {
                 record.payload().unwrap().body(),
             );
 
-            let LogRecord { offset, record } =
-                bifrost.read_next_single(LOG_ID, Lsn::new(2)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?;
             assert_eq!(Lsn::from(2), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -812,8 +799,7 @@ mod tests {
             );
 
             // border of segment 1
-            let LogRecord { offset, record } =
-                bifrost.read_next_single(LOG_ID, Lsn::new(4)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?;
             assert_eq!(Lsn::from(4), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -822,8 +808,7 @@ mod tests {
             );
 
             // start of segment 2
-            let LogRecord { offset, record } =
-                bifrost.read_next_single(LOG_ID, Lsn::new(5)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?;
             assert_eq!(Lsn::from(5), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -832,8 +817,7 @@ mod tests {
             );
 
             // last record
-            let LogRecord { offset, record } =
-                bifrost.read_next_single(LOG_ID, Lsn::new(7)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?;
             assert_eq!(Lsn::from(7), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -842,10 +826,7 @@ mod tests {
             );
 
             // 8 doesn't exist yet.
-            assert_eq!(
-                None,
-                bifrost.read_next_single_opt(LOG_ID, Lsn::new(8)).await?
-            );
+            assert_eq!(None, bifrost.read_opt(LOG_ID, Lsn::new(8)).await?);
 
             Ok(())
         })
