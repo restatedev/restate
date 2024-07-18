@@ -39,7 +39,7 @@ pub struct LogReadStream {
     end_lsn: Lsn,
     terminated: bool,
     /// Represents the next possible record to be read.
-    //  This is akin to the lsn that can be passed to `read_next_single(from)` to read the
+    //  This is akin to the lsn that can be passed to `read(from)` to read the
     //  next record in the log.
     read_pointer: Lsn,
 }
