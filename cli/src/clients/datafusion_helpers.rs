@@ -768,8 +768,6 @@ struct InvocationRowResult {
     target: Option<String>,
     target_service_ty: Option<String>,
     status: String,
-    completion_result: Option<String>,
-    completion_failure: Option<String>,
     created_at: Option<RestateDateTime>,
     modified_at: Option<RestateDateTime>,
     pinned_deployment_id: Option<String>,
@@ -787,6 +785,8 @@ struct InvocationRowResult {
     comp_latest_deployment: Option<String>,
     known_deployment_id: Option<String>,
     trace_id: Option<String>,
+    completion_result: Option<String>,
+    completion_failure: Option<String>,
     full_count: Option<i64>,
 }
 
@@ -808,7 +808,7 @@ pub async fn find_active_invocations(
     let select_completion_columns = if has_restate_1_1_completion_columns {
         "inv.completion_result, inv.completion_failure"
     } else {
-        "NULL AS completion_result, NULL AS completion_failure"
+        "CAST(NULL as STRING) AS completion_result, CAST(NULL as STRING) AS completion_failure"
     };
 
     let mut full_count = 0;
