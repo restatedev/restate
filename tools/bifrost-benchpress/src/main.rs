@@ -151,7 +151,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u64) -> (TaskCenter,
 
         RocksDbManager::init(config.clone().map(|c| &c.common));
 
-        let logs = restate_types::logs::metadata::create_static_metadata(
+        let logs = restate_types::logs::metadata::bootstrap_logs_metadata(
             config.pinned().bifrost.default_provider,
             num_logs,
         );

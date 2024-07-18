@@ -82,18 +82,13 @@ impl LogletProvider for LocalLogletProvider {
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
         let mut guard = self.active_loglets.lock().await;
-        let loglet = match guard.entry(params.id().to_owned()) {
+        let loglet = match guard.entry(params.as_str().to_owned()) {
             hash_map::Entry::Vacant(entry) => {
                 // Create loglet
-                //
-                // todo: Fix by making params richer config object.
-                //
-                // NOTE: We blatently assume that id() is a u64 unique id under the hood. Obviously
-                // this is a shortcut and should be fixed by making LogletParams a richer config
-                // object that can be used to create the loglet.
+                // NOTE: local-loglet expects params to be a `u64` string-encoded unique identifier under the hood.
                 let loglet = LocalLoglet::create(
                     params
-                        .id()
+                        .as_str()
                         .parse()
                         .expect("loglet params can be converted into u64"),
                     self.log_store.clone(),

@@ -8,15 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::logs::{LogId, Lsn, SequenceNumber};
-use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use bytes::Bytes;
+use bytestring::ByteString;
 use enum_map::Enum;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 use super::builder::LogsBuilder;
+use crate::logs::{LogId, Lsn, SequenceNumber};
+use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
@@ -43,7 +46,7 @@ impl Default for Logs {
 pub struct Chain {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    pub(super) chain: BTreeMap<Lsn, Arc<LogletConfig>>,
+    pub(super) chain: BTreeMap<Lsn, LogletConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +56,7 @@ pub struct Segment<'a> {
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub base_lsn: Lsn,
-    pub config: &'a Arc<LogletConfig>,
+    pub config: &'a LogletConfig,
 }
 
 /// A segment in the chain of loglet instances.
@@ -68,11 +71,17 @@ pub struct LogletConfig {
 /// and start-lsn. It's provided by bifrost on loglet creation. This allows the
 /// parameters to be shared between segments and logs if needed.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, derive_more::From, Serialize, Deserialize)]
-pub struct LogletParams(String);
+pub struct LogletParams(ByteString);
+
+impl From<String> for LogletParams {
+    fn from(value: String) -> Self {
+        Self(ByteString::from(value))
+    }
+}
 
 impl From<&'static str> for LogletParams {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
+    fn from(value: &'static str) -> Self {
+        Self(ByteString::from_static(value))
     }
 }
 
@@ -112,8 +121,12 @@ impl LogletConfig {
 }
 
 impl LogletParams {
-    pub fn id(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn as_bytes(&self) -> &Bytes {
+        self.0.as_bytes()
     }
 }
 
@@ -171,7 +184,7 @@ impl Chain {
     /// Create a chain with `base_lsn` as its oldest Lsn.
     pub fn with_base_lsn(base_lsn: Lsn, kind: ProviderKind, config: LogletParams) -> Self {
         let mut chain = BTreeMap::new();
-        chain.insert(base_lsn, Arc::new(LogletConfig::new(kind, config)));
+        chain.insert(base_lsn, LogletConfig::new(kind, config));
         Self { chain }
     }
 
@@ -235,18 +248,43 @@ impl Chain {
     }
 }
 
+/// Creates appropriate [[LogletParams]] value that can be used to start a fresh
+/// single-node loglet instance.
+///
+/// This is used in single-node bootstrap scenarios and assumes a non-running system.
+/// It must generate params that uniquely identify the new loglet instance on every call.
+pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletParams {
+    let loglet_id = rand::thread_rng().next_u64().to_string();
+    match default_provider {
+        ProviderKind::Local => LogletParams::from(loglet_id),
+        ProviderKind::InMemory => LogletParams::from(loglet_id),
+        #[cfg(feature = "replicated-loglet")]
+        ProviderKind::Replicated => panic!(
+            "replicated-loglet cannot be used as default-provider in a single-node setup.\
+            To use replicated loglet, the node must be running in cluster-mode"
+        ),
+    }
+}
+
 /// Initializes the bifrost metadata with static log metadata, it creates a log for every partition
 /// with a chain of the default loglet provider kind.
-pub fn create_static_metadata(default_provider: ProviderKind, num_partitions: u64) -> Logs {
+pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u64) -> Logs {
     // Get metadata from somewhere
     let mut builder = LogsBuilder::default();
-
+    #[allow(clippy::mutable_key_type)]
+    let mut generated_params: HashSet<_> = HashSet::new();
     // pre-fill with all possible logs up to `num_partitions`
     (0..num_partitions).for_each(|i| {
-        // fixed config that uses the log-id as loglet identifier/config
-        let config = LogletParams::from(i.to_string());
+        // a little paranoid about collisions
+        let params = loop {
+            let params = new_single_node_loglet_params(default_provider);
+            if !generated_params.contains(&params) {
+                generated_params.insert(params.clone());
+                break params;
+            }
+        };
         builder
-            .add_log(LogId::from(i), Chain::new(default_provider, config))
+            .add_log(LogId::from(i), Chain::new(default_provider, params))
             .unwrap();
     });
 
@@ -264,6 +302,6 @@ mod tests {
         let Segment { base_lsn, config } = chain.tail();
         assert_eq!(Lsn::OLDEST, base_lsn);
         assert_eq!(ProviderKind::Local, config.kind);
-        assert_eq!("test".to_string(), config.params.0);
+        assert_eq!("test".to_string(), config.params.0.to_string());
     }
 }

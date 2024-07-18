@@ -109,11 +109,11 @@ impl RocksDbLogStore {
             .expect("METADATA_CF exists")
     }
 
-    pub fn get_log_state(&self, log_id: u64) -> Result<Option<LogState>, LogStoreError> {
+    pub fn get_log_state(&self, loglet_id: u64) -> Result<Option<LogState>, LogStoreError> {
         let metadata_cf = self.metadata_cf();
         let value = self.rocksdb.inner().as_raw_db().get_pinned_cf(
             &metadata_cf,
-            MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
+            MetadataKey::new(loglet_id, MetadataKind::LogState).to_bytes(),
         )?;
 
         if let Some(value) = value {

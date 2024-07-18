@@ -48,7 +48,7 @@ pub async fn spawn_environment(
         RocksDbManager::init(Constant::new(config.common))
     });
 
-    let logs = restate_types::logs::metadata::create_static_metadata(provider, num_logs);
+    let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, num_logs);
 
     metadata_store_client
         .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
