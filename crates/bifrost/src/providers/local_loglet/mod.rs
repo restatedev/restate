@@ -375,7 +375,7 @@ impl LogletBase for LocalLoglet {
         Ok(())
     }
 
-    async fn read_next_single(
+    async fn read(
         &self,
         from: Self::Offset,
     ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError> {
@@ -389,7 +389,7 @@ impl LogletBase for LocalLoglet {
         }
     }
 
-    async fn read_next_single_opt(
+    async fn read_opt(
         &self,
         from: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {

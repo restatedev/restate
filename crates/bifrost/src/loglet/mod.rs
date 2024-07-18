@@ -157,13 +157,13 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
     /// defined for the loglet.
-    async fn read_next_single(
+    async fn read(
         &self,
         from: Self::Offset,
     ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError>;
 
     /// Read the next record if it's been committed, otherwise, return None without waiting.
-    async fn read_next_single_opt(
+    async fn read_opt(
         &self,
         from: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError>;
