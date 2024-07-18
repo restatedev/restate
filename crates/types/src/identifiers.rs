@@ -615,7 +615,7 @@ impl IdempotencyId {
         idempotency_key: ByteString,
     ) -> Self {
         IdempotencyId {
-            service_name: invocation_target.handler_name().clone(),
+            service_name: invocation_target.service_name().clone(),
             service_key: invocation_target.key().map(|bs| bs.as_bytes().clone()),
             service_handler: invocation_target.handler_name().clone(),
             idempotency_key,
