@@ -39,7 +39,6 @@ mod proxy;
 mod request_identity;
 mod utils;
 
-pub type RequestBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes>>;
 pub type ResponseBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes>>;
 
 #[derive(Debug, Clone)]

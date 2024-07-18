@@ -21,6 +21,7 @@ use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
+use restate_types::errors::GenericError;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::service_discovery::{
@@ -33,7 +34,6 @@ use restate_types::service_protocol::{
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fmt::Display;
 use std::ops::{Deref, RangeInclusive};
 use strum::IntoEnumIterator;
@@ -131,7 +131,7 @@ pub enum DiscoveryError {
     #[error("client error: {0}")]
     Client(#[from] ServiceClientError),
     #[error("cannot read body: {0}")]
-    BodyError(Box<dyn Error + Send + Sync + 'static>),
+    BodyError(GenericError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
     #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported")]

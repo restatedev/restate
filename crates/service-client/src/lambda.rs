@@ -315,7 +315,12 @@ impl LambdaError {
     pub fn is_retryable(&self) -> bool {
         match self {
             LambdaError::SdkError(err) => err.is_retryable(),
-            _ => false,
+            LambdaError::Body(_)
+            | LambdaError::FunctionError(_)
+            | LambdaError::SerializationError(_)
+            | LambdaError::DeserializationError(_)
+            | LambdaError::Base64Error(_)
+            | LambdaError::MissingResponse => false,
         }
     }
 }
