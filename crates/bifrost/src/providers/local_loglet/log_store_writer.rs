@@ -40,7 +40,7 @@ type Ack = oneshot::Sender<Result<(), OperationError>>;
 type AckRecv = oneshot::Receiver<Result<(), OperationError>>;
 
 pub struct LogStoreWriteCommand {
-    log_id: u64,
+    loglet_id: u64,
     data_updates: SmallVec<[DataUpdate; SMALL_BATCH_THRESHOLD_COUNT]>,
     log_state_updates: Option<LogStateUpdates>,
     ack: Option<Ack>,
@@ -155,7 +155,7 @@ impl LogStoreWriter {
                         DataUpdate::PutRecord { offset, data } => Self::put_record(
                             &data_cf,
                             &mut write_batch,
-                            command.log_id,
+                            command.loglet_id,
                             offset,
                             data,
                         ),
@@ -165,7 +165,7 @@ impl LogStoreWriter {
                         } => Self::trim_log(
                             &data_cf,
                             &mut write_batch,
-                            command.log_id,
+                            command.loglet_id,
                             old_trim_point,
                             new_trim_point,
                         ),
@@ -178,7 +178,7 @@ impl LogStoreWriter {
                     Self::update_log_state(
                         &metadata_cf,
                         &mut write_batch,
-                        command.log_id,
+                        command.loglet_id,
                         logstate_updates,
                         buffer,
                     )
@@ -198,14 +198,14 @@ impl LogStoreWriter {
     fn update_log_state(
         metadata_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
-        log_id: u64,
+        loglet_id: u64,
         updates: LogStateUpdates,
         buffer: &mut BytesMut,
     ) {
         updates.encode(buffer).expect("encode");
         write_batch.merge_cf(
             metadata_cf,
-            MetadataKey::new(log_id, MetadataKind::LogState).to_bytes(),
+            MetadataKey::new(loglet_id, MetadataKind::LogState).to_bytes(),
             buffer,
         );
     }
@@ -288,18 +288,18 @@ pub struct RocksDbLogWriterHandle {
 impl RocksDbLogWriterHandle {
     pub async fn enqueue_put_record(
         &self,
-        log_id: u64,
+        loglet_id: u64,
         offset: LogletOffset,
         data: Bytes,
     ) -> Result<AckRecv, ShutdownError> {
-        self.enqueue_put_records(log_id, offset, &[data]).await
+        self.enqueue_put_records(loglet_id, offset, &[data]).await
     }
 
-    pub async fn enqueue_seal(&self, log_id: u64) -> Result<AckRecv, ShutdownError> {
+    pub async fn enqueue_seal(&self, loglet_id: u64) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
         let log_state_updates = Some(LogStateUpdates::default().seal());
         self.send_command(LogStoreWriteCommand {
-            log_id,
+            loglet_id,
             data_updates: Default::default(),
             log_state_updates,
             ack: Some(ack),
@@ -310,7 +310,7 @@ impl RocksDbLogWriterHandle {
 
     pub async fn enqueue_put_records(
         &self,
-        log_id: u64,
+        loglet_id: u64,
         mut start_offset: LogletOffset,
         records: &[Bytes],
     ) -> Result<AckRecv, ShutdownError> {
@@ -328,7 +328,7 @@ impl RocksDbLogWriterHandle {
         let log_state_updates =
             Some(LogStateUpdates::default().update_release_pointer(start_offset.prev()));
         self.send_command(LogStoreWriteCommand {
-            log_id,
+            loglet_id,
             data_updates,
             log_state_updates,
             ack: Some(ack),
@@ -339,7 +339,7 @@ impl RocksDbLogWriterHandle {
 
     pub async fn enqueue_trim(
         &self,
-        log_id: u64,
+        loglet_id: u64,
         old_trim_point: LogletOffset,
         new_trim_point: LogletOffset,
     ) -> Result<(), ShutdownError> {
@@ -351,7 +351,7 @@ impl RocksDbLogWriterHandle {
         let log_state_updates = Some(LogStateUpdates::default().update_trim_point(new_trim_point));
 
         self.send_command(LogStoreWriteCommand {
-            log_id,
+            loglet_id,
             data_updates,
             log_state_updates,
             ack: None,
