@@ -56,6 +56,8 @@ pub struct Segment<'a> {
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub base_lsn: Lsn,
+    /// Exclusive, if unset, this is the tail/writeable segment of the log.
+    pub tail_lsn: Option<Lsn>,
     pub config: &'a LogletConfig,
 }
 
@@ -194,6 +196,7 @@ impl Chain {
             .last_key_value()
             .map(|(base_lsn, config)| Segment {
                 base_lsn: *base_lsn,
+                tail_lsn: None,
                 config,
             })
             .expect("Chain must have at least one segment")
@@ -201,10 +204,14 @@ impl Chain {
 
     #[track_caller]
     pub fn head(&self) -> Segment<'_> {
-        self.chain
-            .first_key_value()
+        let mut iter = self.chain.iter();
+        let maybe_head = iter.next();
+        let tail_lsn = iter.next().map(|(k, _)| *k);
+
+        maybe_head
             .map(|(base_lsn, config)| Segment {
                 base_lsn: *base_lsn,
+                tail_lsn,
                 config,
             })
             .expect("Chain must have at least one segment")
@@ -222,27 +229,36 @@ impl Chain {
         // NOTE: Hopefully at some point we will use the nightly Cursor API for
         // effecient cursor seeks in the chain (or use nightly channel)
         // Reference: https://github.com/rust-lang/rust/issues/107540
-        //
 
-        let mut range = self.chain.range(..=lsn);
+        // The tail lsn is the base_lsn of the next segment (if exists)
+        let mut tail_lsn = None;
+        // linear backward search until we can use the Cursor API.
+        let mut range = self.chain.range(..);
         // walking backwards.
         while let Some((base_lsn, config)) = range.next_back() {
             if lsn >= *base_lsn {
                 return MaybeSegment::Some(Segment {
                     base_lsn: *base_lsn,
+                    tail_lsn,
                     config,
                 });
             }
+            tail_lsn = Some(*base_lsn);
         }
 
         MaybeSegment::Trim {
-            next_base_lsn: self.head().base_lsn,
+            next_base_lsn: tail_lsn.expect("Chain is not empty"),
         }
     }
 
+    /// Note that this is a special case, we don't set tail_lsn on segments, why?
+    /// - It adds complexity
+    /// - Tail LSN can be established by visiting the next item in the iterator externally
     pub fn iter(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
         self.chain.iter().map(|(lsn, loglet_config)| Segment {
             base_lsn: *lsn,
+            // See note above
+            tail_lsn: None,
             config: loglet_config,
         })
     }
@@ -299,8 +315,13 @@ mod tests {
     fn test_chain_new() {
         let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));
         assert_eq!(chain.chain.len(), 1);
-        let Segment { base_lsn, config } = chain.tail();
+        let Segment {
+            base_lsn,
+            tail_lsn,
+            config,
+        } = chain.tail();
         assert_eq!(Lsn::OLDEST, base_lsn);
+        assert_eq!(None, tail_lsn);
         assert_eq!(ProviderKind::Local, config.kind);
         assert_eq!("test".to_string(), config.params.0.to_string());
     }

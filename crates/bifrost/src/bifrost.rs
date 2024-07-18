@@ -14,11 +14,11 @@ use std::sync::OnceLock;
 
 use bytes::BytesMut;
 use enum_map::EnumMap;
-
 use smallvec::SmallVec;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use restate_core::{Metadata, MetadataKind};
+use restate_types::config::Configuration;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
@@ -109,18 +109,10 @@ impl Bifrost {
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
     /// start reading from. This means that the record returned will have a LSN that is equal or greater than
-    /// `from`. If no records are committed yet at this LSN, this read operation will "wait"
-    /// for such records to appear.
-    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
-        self.inner.read(log_id, from).await
-    }
-
-    /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
-    /// start reading from. This means that the record returned will have a LSN that is equal or greater than
     /// `from`. If no records are committed yet at this LSN, this read operation will return
     /// `None`.
-    pub async fn read_opt(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
-        self.inner.read_opt(log_id, from).await
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
+        self.inner.read(log_id, from).await
     }
 
     /// Create a read stream. `end_lsn` is inclusive. Pass [[`Lsn::Max`]] for a tailing stream. Use
@@ -283,28 +275,73 @@ impl BifrostInner {
         })
     }
 
-    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<LogRecord> {
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
         self.fail_if_shutting_down()?;
         // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
         let from = std::cmp::max(Lsn::OLDEST, from);
 
-        let loglet = self.find_loglet_for_lsn(log_id, from).await?;
-        Ok(loglet
-            .read(from)
-            .await?
-            .decode()
-            .expect("decoding a bifrost envelope succeeds"))
-    }
+        let mut retry = Configuration::pinned()
+            .bifrost
+            .read_retry_policy
+            .clone()
+            .into_iter();
 
-    pub async fn read_opt(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
-        self.fail_if_shutting_down()?;
+        let mut attempts = 0;
+        let (known_tail, loglet) = loop {
+            attempts += 1;
+            let loglet = self.find_loglet_for_lsn(log_id, from).await?;
+            // When reading from an open loglet segment, we need to make sure we need to be careful of
+            // reading when the loglet is sealed (metadata is not updated yet, or reconfiguration is in
+            // progress). If we observed that the loglet is sealed, we must wait until the tail is
+            // determined and a new loglet segment is appended.
+            match loglet.tail_lsn {
+                Some(known_tail) => break (known_tail, loglet),
+                None => {
+                    // optimization to avoid find_tail if we know it's safe to perform this read.
+                    if let Some(known_unsealed_tail) = loglet.last_known_unsealed_tail() {
+                        if known_unsealed_tail > from {
+                            // safe to proceed without find_tail.
+                            break (known_unsealed_tail, loglet);
+                        }
+                    }
 
-        let loglet = self.find_loglet_for_lsn(log_id, from).await?;
-        Ok(loglet.read_opt(from).await?.map(|record| {
-            record
-                .decode()
-                .expect("decoding a bifrost envelope succeeds")
-        }))
+                    let tail = loglet.find_tail().await?;
+                    match tail {
+                        TailState::Open(tail) => {
+                            break (tail, loglet);
+                        }
+                        TailState::Sealed(_) => {
+                            // There we go. We need to wait for someone to finish the
+                            // reconfiguration.
+                            info!("Loglet is sealed, waiting for tail to be determined");
+                            let Some(sleep_dur) = retry.next() else {
+                                // exhausted retries
+                                info!(
+                                    loglet = ?loglet,
+                                    "read() failed after {} attempts. Loglet reconfiguration was not completed on time",
+                                    attempts
+                                );
+                                return Err(Error::ReadFailureDuringReconfiguration(log_id, from));
+                            };
+                            tokio::time::sleep(sleep_dur).await;
+                            self.sync_metadata().await?;
+                            continue;
+                        }
+                    }
+                }
+            }
+        };
+
+        // Are we reading at or beyond the established tail?
+        if known_tail > from {
+            Ok(loglet.read_opt(from).await?.map(|record| {
+                record
+                    .decode()
+                    .expect("decoding a bifrost envelope succeeds")
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn find_tail(
@@ -429,13 +466,17 @@ impl BifrostInner {
     async fn get_loglet(&self, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind)?;
         let loglet = provider.get_loglet(&segment.config.params).await?;
-        Ok(LogletWrapper::new(segment.base_lsn, loglet))
+        Ok(LogletWrapper::new(
+            segment.base_lsn,
+            segment.tail_lsn,
+            loglet,
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use tokio::time::Duration;
 
     use super::*;
 
@@ -593,7 +634,7 @@ mod tests {
 
                 // 5 itself is trimmed
                 for lsn in 1..=5 {
-                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -606,7 +647,7 @@ mod tests {
                 }
 
                 for lsn in 6..=10 {
-                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -629,7 +670,7 @@ mod tests {
                 let new_trim_point = bifrost.get_trim_point(log_id).await?;
                 assert_eq!(Lsn::from(10), new_trim_point);
 
-                let record = bifrost.read_opt(log_id, Lsn::from(10)).await?.unwrap();
+                let record = bifrost.read(log_id, Lsn::from(10)).await?.unwrap();
                 assert!(record.record.is_trim_gap());
                 assert_eq!(Lsn::from(10), record.record.try_as_trim_gap().unwrap().to);
 
@@ -639,7 +680,7 @@ mod tests {
                 }
 
                 for lsn in 11..20 {
-                    let record = bifrost.read_opt(log_id, Lsn::from(lsn)).await?;
+                    let record = bifrost.read(log_id, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
                         pat!(Some(pat!(LogRecord {
@@ -654,8 +695,8 @@ mod tests {
             .await
     }
 
-    #[tokio::test]
-    async fn test_read_next_across_segments() -> googletest::Result<()> {
+    #[tokio::test(start_paused = true)]
+    async fn test_read_across_segments() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .with_partition_table(FixedPartitionTable::new(Version::MIN, 1))
@@ -696,6 +737,18 @@ mod tests {
                     .find_tail(LOG_ID, FindTailAttributes::default())
                     .await?,
                 pat!(TailState::Sealed(eq(Lsn::new(6))))
+            );
+
+            println!("attempting to read during reconfiguration");
+            // attempting to read from bifrost will result in a timeout since metadata has open
+            // segment but the segment itself is sealed, this means reconfiguration is in-progress
+            // and we can't confidently read records.
+            assert_that!(
+                bifrost.read(LOG_ID, Lsn::new(2)).await,
+                err(pat!(Error::ReadFailureDuringReconfiguration(
+                    eq(LOG_ID),
+                    eq(Lsn::new(2)),
+                )))
             );
 
             let old_version = bifrost.inner().metadata.logs_version();
@@ -782,7 +835,7 @@ mod tests {
             );
 
             // Reading the log. (OLDEST)
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
             assert_eq!(Lsn::from(1), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -790,7 +843,7 @@ mod tests {
                 record.payload().unwrap().body(),
             );
 
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
             assert_eq!(Lsn::from(2), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -799,7 +852,7 @@ mod tests {
             );
 
             // border of segment 1
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?.unwrap();
             assert_eq!(Lsn::from(4), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -808,7 +861,7 @@ mod tests {
             );
 
             // start of segment 2
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
             assert_eq!(Lsn::from(5), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -817,7 +870,7 @@ mod tests {
             );
 
             // last record
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?;
+            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?.unwrap();
             assert_eq!(Lsn::from(7), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -826,7 +879,7 @@ mod tests {
             );
 
             // 8 doesn't exist yet.
-            assert_eq!(None, bifrost.read_opt(LOG_ID, Lsn::new(8)).await?);
+            assert_eq!(None, bifrost.read(LOG_ID, Lsn::new(8)).await?);
 
             Ok(())
         })
