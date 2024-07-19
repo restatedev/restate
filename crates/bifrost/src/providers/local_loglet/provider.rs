@@ -11,7 +11,6 @@
 use std::collections::{hash_map, HashMap};
 use std::sync::Arc;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
@@ -23,7 +22,7 @@ use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
 use super::{metric_definitions, LocalLoglet};
-use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, ProviderError};
+use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, OperationError};
 use crate::Error;
 
 pub struct Factory {
@@ -49,7 +48,7 @@ impl LogletProviderFactory for Factory {
         ProviderKind::Local
     }
 
-    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         let Factory {
             mut options,
@@ -59,7 +58,7 @@ impl LogletProviderFactory for Factory {
         let opts = options.live_load();
         let log_store = RocksDbLogStore::create(opts, rocksdb_opts)
             .await
-            .context("RocksDb LogStore")?;
+            .map_err(OperationError::other)?;
         let log_writer = log_store.create_writer().start(options)?;
         debug!("Started a bifrost local loglet provider");
         Ok(Arc::new(LocalLogletProvider {
@@ -110,7 +109,7 @@ impl LogletProvider for LocalLogletProvider {
         Ok(loglet as Arc<dyn Loglet>)
     }
 
-    async fn shutdown(&self) -> Result<(), ProviderError> {
+    async fn shutdown(&self) -> Result<(), OperationError> {
         Ok(())
     }
 }

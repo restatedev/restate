@@ -19,7 +19,9 @@ use futures::Stream;
 
 use restate_types::logs::{Lsn, SequenceNumber};
 
-use crate::loglet::{Loglet, LogletBase, LogletOffset, SendableLogletReadStream};
+use crate::loglet::{
+    AppendError, Loglet, LogletBase, LogletOffset, OperationError, SendableLogletReadStream,
+};
 use crate::{LogRecord, LsnExt};
 use crate::{Result, TailState};
 
@@ -71,18 +73,18 @@ impl LogletBase for LogletWrapper {
         unreachable!("create_read_stream on LogletWrapper should never be used directly")
     }
 
-    async fn append(&self, data: Bytes) -> Result<Lsn> {
+    async fn append(&self, data: Bytes) -> Result<Lsn, AppendError> {
         let offset = self.loglet.append(data).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn> {
+    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, AppendError> {
         let offset = self.loglet.append_batch(payloads).await?;
         Ok(self.base_lsn.offset_by(offset))
     }
 
-    async fn find_tail(&self) -> Result<TailState<Lsn>> {
+    async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
         Ok(self
             .loglet
             .find_tail()
@@ -90,13 +92,13 @@ impl LogletBase for LogletWrapper {
             .map(|o| self.base_lsn.offset_by(o)))
     }
 
-    async fn get_trim_point(&self) -> Result<Option<Lsn>> {
+    async fn get_trim_point(&self) -> Result<Option<Lsn>, OperationError> {
         let offset = self.loglet.get_trim_point().await?;
         Ok(offset.map(|o| self.base_lsn.offset_by(o)))
     }
 
     // trim_point is inclusive.
-    async fn trim(&self, trim_point: Self::Offset) -> Result<()> {
+    async fn trim(&self, trim_point: Self::Offset) -> Result<(), OperationError> {
         // trimming to INVALID is no-op
         if trim_point == Self::Offset::INVALID {
             return Ok(());
@@ -105,7 +107,7 @@ impl LogletBase for LogletWrapper {
         self.loglet.trim(trim_point).await
     }
 
-    async fn read_next_single(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>> {
+    async fn read_next_single(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
         // convert LSN to loglet offset
         let offset = from.into_offset(self.base_lsn);
         self.loglet
@@ -117,7 +119,7 @@ impl LogletBase for LogletWrapper {
     async fn read_next_single_opt(
         &self,
         from: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>> {
+    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
         let offset = from.into_offset(self.base_lsn);
         self.loglet
             .read_next_single_opt(offset)
@@ -139,7 +141,7 @@ impl LogletReadStreamWrapper {
 }
 
 impl Stream for LogletReadStreamWrapper {
-    type Item = Result<LogRecord<Lsn, Bytes>>;
+    type Item = Result<LogRecord<Lsn, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
