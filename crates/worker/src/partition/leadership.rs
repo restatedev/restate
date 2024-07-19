@@ -733,9 +733,7 @@ mod tests {
 
             assert!(matches!(state.state, State::Candidate(_)));
 
-            let record = bifrost
-                .read_next_single(PARTITION_ID.into(), Lsn::OLDEST)
-                .await?;
+            let record = bifrost.read(PARTITION_ID.into(), Lsn::OLDEST).await?;
             let envelope = Envelope::from_bytes(record.record.into_payload_unchecked().body())?;
             let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
             assert_eq!(
