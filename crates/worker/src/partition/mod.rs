@@ -255,9 +255,6 @@ where
                     Record::TrimGap(_) => {
                         unimplemented!("Currently not supported")
                     }
-                    Record::Seal(_) => {
-                        unimplemented!("Currently not supported")
-                    }
                 }
             });
 

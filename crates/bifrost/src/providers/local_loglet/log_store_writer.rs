@@ -33,11 +33,11 @@ use super::log_store::{DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
-use crate::loglet::{AppendError, LogletOffset};
+use crate::loglet::{LogletOffset, OperationError};
 use crate::SMALL_BATCH_THRESHOLD_COUNT;
 
-type Ack = oneshot::Sender<Result<(), AppendError>>;
-type AckRecv = oneshot::Receiver<Result<(), AppendError>>;
+type Ack = oneshot::Sender<Result<(), OperationError>>;
+type AckRecv = oneshot::Receiver<Result<(), OperationError>>;
 
 pub struct LogStoreWriteCommand {
     log_id: u64,
@@ -266,14 +266,14 @@ impl LogStoreWriter {
 
         if let Err(e) = result {
             error!("Failed to commit local loglet write batch: {}", e);
-            self.send_acks(Err(AppendError::terminal(e)));
+            self.send_acks(Err(OperationError::terminal(e)));
             return;
         }
 
         self.send_acks(Ok(()));
     }
 
-    fn send_acks(&mut self, result: Result<(), AppendError>) {
+    fn send_acks(&mut self, result: Result<(), OperationError>) {
         self.batch_acks_buf.drain(..).for_each(|a| {
             let _ = a.send(result.clone());
         });
@@ -293,6 +293,19 @@ impl RocksDbLogWriterHandle {
         data: Bytes,
     ) -> Result<AckRecv, ShutdownError> {
         self.enqueue_put_records(log_id, offset, &[data]).await
+    }
+
+    pub async fn enqueue_seal(&self, log_id: u64) -> Result<AckRecv, ShutdownError> {
+        let (ack, receiver) = oneshot::channel();
+        let log_state_updates = Some(LogStateUpdates::default().seal());
+        self.send_command(LogStoreWriteCommand {
+            log_id,
+            data_updates: Default::default(),
+            log_state_updates,
+            ack: Some(ack),
+        })
+        .await?;
+        Ok(receiver)
     }
 
     pub async fn enqueue_put_records(

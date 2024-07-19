@@ -14,7 +14,6 @@ use std::sync::Arc;
 use restate_types::logs::{LogId, Lsn};
 
 use crate::loglet::{LogletError, OperationError};
-use crate::types::SealReason;
 
 /// Result type for bifrost operations.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -22,7 +21,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("log '{0}' is sealed")]
-    LogSealed(LogId, SealReason),
+    LogSealed(LogId),
     #[error("unknown log '{0}'")]
     UnknownLogId(LogId),
     #[error("invalid log sequence number '{0}'")]
