@@ -13,11 +13,10 @@ options_schema = ["dep:schemars", "restate-types/schemars"]
 
 [dependencies]
 arc-swap = { workspace = true }
-aws-config = { version = "1.1.9", features = ["sso"] }
-aws-credential-types = "1.1.8"
-aws-sdk-lambda = "1.19.0"
-aws-sdk-sts = "1.18.0"
-aws-smithy-runtime = "1.1.8"
+aws-config = { version = "1.5.4", default-features = false, features = ["rt-tokio", "sso"] }
+aws-credential-types = {version = "1.2.0", default-features = false}
+aws-sdk-lambda = {version = "1.36.0", default-features = false, features = ["rt-tokio"]}
+aws-sdk-sts = {version = "1.35.0", default-features = false, features = ["rt-tokio"]}
 base64 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
@@ -29,12 +28,8 @@ http = "1.1.0"
 http-serde = "2.0.0"
 http-body-util = "0.1.2"
 hyper = { version = "1.4.1", features = ["http1", "http2", "client"] }
-# TODO Remove once bumped lambda
-hyper-0-14 = { package = "hyper", version = "0.14.30" }
 hyper-util = { version = "0.1.6", features = ["client-legacy"] }
-hyper-rustls = { version = "0.27.2", features = ["http2"] }
-# TODO Remove once bumped lambda
-hyper-rustls-0-24 = { package = "hyper-rustls", version = "=0.24.1", features = ["http2"] }
+hyper-rustls = { version = "0.27.2", default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"] }
 humantime = { workspace = true }
 jsonwebtoken = { version = "9.1.0" }
 once_cell = { workspace = true }
@@ -42,15 +37,21 @@ pem = { version = "3.0.3" }
 tower-service = { version = "0.3" }
 ring = { version = "0.17.8" }
 restate-types = { workspace = true }
-rustls = "0.23.11"
-# TODO Remove once bumped lambda
-rustls_0_21 = { version = "0.21.11", package = "rustls" }
+rustls = {version = "0.23.11", features = ["ring"]}
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
+
+# dependencies for aws_hyper_client.rs until the aws hyper 1.0 connector supports setting nodelay...
+aws-smithy-async = {version = "1.2.1", default-features = false}
+aws-smithy-runtime = {version = "1.6.2", default-features = false}
+aws-smithy-runtime-api = {version = "1.7.1", default-features = false}
+aws-smithy-types = { version = "1.2.0", default-features = false}
+pin-project-lite = "0.2.13"
 
 [dev-dependencies]
 tempfile = { workspace = true }

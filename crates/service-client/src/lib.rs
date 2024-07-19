@@ -33,6 +33,7 @@ use std::future;
 use std::future::Future;
 use std::sync::Arc;
 
+mod aws_hyper_client;
 mod http;
 mod lambda;
 mod proxy;

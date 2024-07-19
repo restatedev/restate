@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
-//! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-smithy-client/src/conns.rs
 //! License Apache-2.0
 
+use crate::aws_hyper_client::{CryptoMode, HyperClientBuilder};
 use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
@@ -20,7 +20,6 @@ use aws_sdk_lambda::config::Region;
 use aws_sdk_lambda::error::{DisplayErrorContext, SdkError};
 use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
-use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use base64::display::Base64Display;
 use base64::Engine;
 use bytes::Bytes;
@@ -31,9 +30,6 @@ use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderValue, Method, Response};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use hyper_0_14::client::HttpConnector;
-use hyper_rustls_0_24::{ConfigBuilderExt, HttpsConnector, HttpsConnectorBuilder};
-use once_cell::sync::Lazy;
 use restate_types::config::AwsOptions;
 use restate_types::identifiers::LambdaARN;
 use serde::ser::Error as _;
@@ -84,39 +80,6 @@ struct LambdaClientInner {
     assume_role_external_id: Option<String>,
 }
 
-/// Copied from `aws_smithy_runtime::client::http::HTTPS_NATIVE_ROOTS` but with SO_NODELAY set
-static HTTPS_NATIVE_ROOTS: Lazy<HttpsConnector<HttpConnector>> = Lazy::new(|| {
-    let mut http = HttpConnector::new();
-    // HttpConnector won't enforce scheme, but HttpsConnector will
-    http.enforce_http(false);
-    // Set SO_NODELAY, which we have found significantly improves Lambda invocation latency
-    http.set_nodelay(true);
-    HttpsConnectorBuilder::new()
-        .with_tls_config(
-            rustls_0_21::ClientConfig::builder()
-                .with_cipher_suites(&[
-                    // TLS1.3 suites
-                    rustls_0_21::cipher_suite::TLS13_AES_256_GCM_SHA384,
-                    rustls_0_21::cipher_suite::TLS13_AES_128_GCM_SHA256,
-                    // TLS1.2 suites
-                    rustls_0_21::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-                    rustls_0_21::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                    rustls_0_21::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-                ])
-                .with_safe_default_kx_groups()
-                .with_safe_default_protocol_versions()
-                .expect("Error with the TLS configuration. Please file a bug report under https://github.com/restatedev/restate/issues.")
-                .with_native_roots()
-                .with_no_client_auth()
-        )
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(http)
-});
-
 impl LambdaClient {
     pub fn new(
         profile_name: Option<String>,
@@ -128,7 +91,11 @@ impl LambdaClient {
         if let Some(profile_name) = profile_name {
             config = config.profile_name(profile_name);
         };
-        config = config.http_client(HyperClientBuilder::new().build(HTTPS_NATIVE_ROOTS.clone()));
+        config = config.http_client(
+            HyperClientBuilder::new()
+                .crypto_mode(CryptoMode::Ring)
+                .build_https(),
+        );
 
         let inner = async move {
             let config = config.load().await;
