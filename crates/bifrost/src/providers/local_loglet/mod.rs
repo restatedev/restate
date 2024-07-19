@@ -45,7 +45,7 @@ use self::read_stream::LocalLogletReadStream;
 use crate::loglet::util::OffsetWatch;
 
 struct LocalLoglet {
-    log_id: u64,
+    loglet_id: u64,
     log_store: RocksDbLogStore,
     log_writer: RocksDbLogWriterHandle,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
@@ -63,7 +63,7 @@ struct LocalLoglet {
 impl std::fmt::Debug for LocalLoglet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalLoglet")
-            .field("log_id", &self.log_id)
+            .field("loglet_id", &self.loglet_id)
             .field("trim_point_offset", &self.trim_point_offset)
             .field("last_committed_offset", &self.last_committed_offset)
             .field("next_write_offset", &self.next_write_offset)
@@ -74,13 +74,13 @@ impl std::fmt::Debug for LocalLoglet {
 
 impl LocalLoglet {
     pub async fn create(
-        log_id: u64,
+        loglet_id: u64,
         log_store: RocksDbLogStore,
         log_writer: RocksDbLogWriterHandle,
     ) -> Result<Self, OperationError> {
         // Fetch the log metadata from the store
         let log_state = log_store
-            .get_log_state(log_id)
+            .get_log_state(loglet_id)
             .map_err(OperationError::other)?;
         let log_state = log_state.unwrap_or_default();
 
@@ -93,7 +93,7 @@ impl LocalLoglet {
         let sealed = AtomicBool::new(log_state.seal);
         let append_latency = histogram!(BIFROST_LOCAL_APPEND_DURATION);
         let loglet = Self {
-            log_id,
+            loglet_id,
             log_store,
             log_writer,
             trim_point_offset,
@@ -105,7 +105,7 @@ impl LocalLoglet {
             append_latency,
         };
         debug!(
-            log_id = log_id,
+            loglet_id = loglet_id,
             release_pointer = %release_pointer,
             next_offset = next_write_offset_raw,
             "Local loglet started"
@@ -136,10 +136,10 @@ impl LocalLoglet {
         if from_offset > commit_offset {
             Ok(None)
         } else {
-            let key = RecordKey::new(self.log_id, from_offset);
+            let key = RecordKey::new(self.loglet_id, from_offset);
             let data_cf = self.log_store.data_cf();
             let mut read_opts = rocksdb::ReadOptions::default();
-            read_opts.set_iterate_upper_bound(RecordKey::upper_bound(self.log_id).to_bytes());
+            read_opts.set_iterate_upper_bound(RecordKey::upper_bound(self.loglet_id).to_bytes());
 
             let mut iter = self.log_store.db().iterator_cf_opt(
                 &data_cf,
@@ -163,12 +163,12 @@ impl LocalLoglet {
             let (key, data) = record;
             let key = RecordKey::from_slice(&key);
             // Defensive, the upper_bound set on the iterator should prevent this.
-            if key.log_id != self.log_id {
+            if key.loglet_id != self.loglet_id {
                 warn!(
-                    log_id = self.log_id,
-                    "read_from moved to the adjacent log {}, that should not happen.\
+                    loglet_id = self.loglet_id,
+                    "read_from moved to the adjacent loglet {}, that should not happen.\
                     This is harmless but needs to be investigated!",
-                    key.log_id,
+                    key.loglet_id,
                 );
                 return Ok(None);
             }
@@ -219,7 +219,7 @@ impl LogletBase for LocalLoglet {
             let offset = *next_offset_guard;
             let receiver = self
                 .log_writer
-                .enqueue_put_record(self.log_id, offset, payload)
+                .enqueue_put_record(self.loglet_id, offset, payload)
                 .await?;
             // next offset points to the next available slot.
             *next_offset_guard = offset.next();
@@ -272,7 +272,7 @@ impl LogletBase for LocalLoglet {
             // lock acquired
             let receiver = self
                 .log_writer
-                .enqueue_put_records(self.log_id, *next_offset_guard, payloads)
+                .enqueue_put_records(self.loglet_id, *next_offset_guard, payloads)
                 .await?;
             // next offset points to the next available slot.
             *next_offset_guard = offset + num_payloads;
@@ -352,7 +352,7 @@ impl LogletBase for LocalLoglet {
             .store(effective_trim_point.0, Ordering::Relaxed);
 
         self.log_writer
-            .enqueue_trim(self.log_id, current_trim_point, effective_trim_point)
+            .enqueue_trim(self.loglet_id, current_trim_point, effective_trim_point)
             .await?;
 
         histogram!(BIFROST_LOCAL_TRIM_LENGTH).record(
@@ -366,7 +366,7 @@ impl LogletBase for LocalLoglet {
         if self.sealed.load(Ordering::Acquire) {
             return Ok(());
         }
-        let receiver = self.log_writer.enqueue_seal(self.log_id).await?;
+        let receiver = self.log_writer.enqueue_seal(self.loglet_id).await?;
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was sealed, the ack channel was dropped");
             Err(ShutdownError.into())
@@ -436,7 +436,7 @@ mod tests {
                 let loglet = Arc::new(
                     LocalLoglet::create(
                         params
-                            .id()
+                            .as_str()
                             .parse()
                             .expect("loglet params can be converted into u64"),
                         log_store,
@@ -478,7 +478,7 @@ mod tests {
                 let loglet = Arc::new(
                     LocalLoglet::create(
                         params
-                            .id()
+                            .as_str()
                             .parse()
                             .expect("loglet params can be converted into u64"),
                         log_store,
@@ -520,7 +520,7 @@ mod tests {
                 let loglet = Arc::new(
                     LocalLoglet::create(
                         params
-                            .id()
+                            .as_str()
                             .parse()
                             .expect("loglet params can be converted into u64"),
                         log_store,
@@ -561,7 +561,7 @@ mod tests {
                 let loglet = Arc::new(
                     LocalLoglet::create(
                         params
-                            .id()
+                            .as_str()
                             .parse()
                             .expect("loglet params can be converted into u64"),
                         log_store,
@@ -603,7 +603,7 @@ mod tests {
                 let loglet = Arc::new(
                     LocalLoglet::create(
                         params
-                            .id()
+                            .as_str()
                             .parse()
                             .expect("loglet params can be converted into u64"),
                         log_store,

@@ -20,18 +20,18 @@ pub(crate) const DATA_KEY_PREFIX_LENGTH: usize = size_of::<u8>() + size_of::<u64
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordKey {
-    pub log_id: u64,
+    pub loglet_id: u64,
     pub offset: LogletOffset,
 }
 
 impl RecordKey {
-    pub fn new(log_id: u64, offset: LogletOffset) -> Self {
-        Self { log_id, offset }
+    pub fn new(loglet_id: u64, offset: LogletOffset) -> Self {
+        Self { loglet_id, offset }
     }
 
-    pub fn upper_bound(log_id: u64) -> Self {
+    pub fn upper_bound(loglet_id: u64) -> Self {
         Self {
-            log_id,
+            loglet_id,
             offset: LogletOffset::MAX,
         }
     }
@@ -39,7 +39,7 @@ impl RecordKey {
     pub fn to_bytes(self) -> Bytes {
         let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
         buf.put_u8(b'd');
-        buf.put_u64(self.log_id);
+        buf.put_u64(self.loglet_id);
         buf.put_u64(self.offset.into());
         buf.freeze()
     }
@@ -48,9 +48,9 @@ impl RecordKey {
         let mut data = data;
         let c = data.get_u8();
         debug_assert_eq!(c, b'd');
-        let log_id = data.get_u64();
+        let loglet_id = data.get_u64();
         let offset = LogletOffset::from(data.get_u64());
-        Self { log_id, offset }
+        Self { loglet_id, offset }
     }
 }
 
@@ -64,20 +64,20 @@ pub enum MetadataKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetadataKey {
-    pub log_id: u64,
+    pub loglet_id: u64,
     pub kind: MetadataKind,
 }
 
 impl MetadataKey {
-    pub fn new(log_id: u64, kind: MetadataKind) -> Self {
-        Self { log_id, kind }
+    pub fn new(loglet_id: u64, kind: MetadataKind) -> Self {
+        Self { loglet_id, kind }
     }
 
     pub fn to_bytes(self) -> Bytes {
         let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
         // m for metadata
         buf.put_u8(b'm');
-        buf.put_u64(self.log_id);
+        buf.put_u64(self.loglet_id);
         buf.put_u8(self.kind as u8);
         buf.freeze()
     }
@@ -86,11 +86,11 @@ impl MetadataKey {
         let mut data = Bytes::copy_from_slice(data);
         let c = data.get_u8();
         debug_assert_eq!(c, b'm');
-        let log_id = data.get_u64();
+        let loglet_id = data.get_u64();
         let kind = MetadataKind::from_repr(data.get_u8());
         let kind = kind.unwrap_or_default();
 
-        Self { log_id, kind }
+        Self { loglet_id, kind }
     }
 }
 
@@ -111,12 +111,12 @@ mod tests {
     #[test]
     fn test_metadata_key() {
         let key = MetadataKey::new(1, MetadataKind::LogState);
-        assert_eq!(key.log_id, 1);
+        assert_eq!(key.loglet_id, 1);
         assert_eq!(key.kind, MetadataKind::LogState);
         let bytes = key.to_bytes();
         let key2 = MetadataKey::from_slice(&bytes);
         assert_eq!(key, key2);
-        assert_eq!(key2.log_id, 1);
+        assert_eq!(key2.loglet_id, 1);
         assert_eq!(key2.kind, MetadataKind::LogState);
     }
 }

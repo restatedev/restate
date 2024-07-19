@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use super::metadata::{Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind};
 use super::{LogId, Lsn};
@@ -105,7 +104,7 @@ impl<'a> ChainBuilder<'a> {
             // validate that the base_lsn is higher than existing base_lsns.
             self.inner
                 .chain
-                .insert(base_lsn, Arc::new(LogletConfig::new(provider, params)));
+                .insert(base_lsn, LogletConfig::new(provider, params));
             Ok(())
         } else {
             // can't add to the back.
