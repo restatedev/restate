@@ -19,6 +19,7 @@ use restate_serde_util::NonZeroByteCount;
 use tracing::warn;
 
 use crate::logs::metadata::ProviderKind;
+use crate::retries::RetryPolicy;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
@@ -42,6 +43,12 @@ pub struct BifrostOptions {
     /// [IN DEVELOPMENT]
     /// Configuration of replicated loglet provider
     pub replicated_loglet: ReplicatedLogletOptions,
+
+    /// # Retry policy
+    ///
+    /// Retry policy to use when bifrost waits for reconfiguration to complete during
+    /// read operations
+    pub read_retry_policy: RetryPolicy,
 }
 
 impl BifrostOptions {
@@ -58,6 +65,12 @@ impl Default for BifrostOptions {
             #[cfg(feature = "replicated-loglet")]
             replicated_loglet: ReplicatedLogletOptions::default(),
             local: LocalLogletOptions::default(),
+            read_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(50),
+                2.0,
+                Some(50),
+                Some(Duration::from_secs(1)),
+            ),
         }
     }
 }
