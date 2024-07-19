@@ -15,7 +15,7 @@ use arc_swap::ArcSwap;
 use dyn_clone::DynClone;
 use serde::Serialize;
 
-pub type BoxedLiveLoad<T> = Box<dyn LiveLoad<T> + Send + 'static>;
+pub type BoxedLiveLoad<T> = Box<dyn LiveLoad<T> + Send + Sync + 'static>;
 /// A trait to use in cases where a projection is applied on an updateable since it's impossible to
 /// spell out the closure type in Live<T, ...>.
 pub trait LiveLoad<T>: DynClone {
@@ -142,7 +142,7 @@ where
 
 impl<T, F, U> Live<T, F>
 where
-    F: FnMut(&T) -> &U + 'static + Send + Clone,
+    F: FnMut(&T) -> &U + 'static + Send + Sync + Clone,
     T: Clone + Send + Sync + 'static,
     U: Clone + Send,
 {

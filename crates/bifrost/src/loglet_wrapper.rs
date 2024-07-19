@@ -25,6 +25,12 @@ use crate::loglet::{
 use crate::{LogRecord, LsnExt};
 use crate::{Result, TailState};
 
+#[derive(Debug, Clone, thiserror::Error)]
+enum LogletWrapperError {
+    #[error("attempted to read outside the tail boundary of the loglet, requested read LSN is {attempt_lsn}, tail is at {tail_lsn}")]
+    OutOfBoundsRead { attempt_lsn: Lsn, tail_lsn: Lsn },
+}
+
 /// Wraps loglets with the base LSN of the segment
 #[derive(Clone, Debug)]
 pub struct LogletWrapper {
@@ -33,12 +39,17 @@ pub struct LogletWrapper {
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub(crate) base_lsn: Lsn,
+    pub(crate) tail_lsn: Option<Lsn>,
     loglet: Arc<dyn Loglet>,
 }
 
 impl LogletWrapper {
-    pub fn new(base_lsn: Lsn, loglet: Arc<dyn Loglet>) -> Self {
-        Self { base_lsn, loglet }
+    pub fn new(base_lsn: Lsn, tail_lsn: Option<Lsn>, loglet: Arc<dyn Loglet>) -> Self {
+        Self {
+            base_lsn,
+            tail_lsn,
+            loglet,
+        }
     }
 
     pub async fn create_wrapped_read_stream(
@@ -48,7 +59,13 @@ impl LogletWrapper {
         // Translates LSN to loglet offset
         Ok(LogletReadStreamWrapper::new(
             self.loglet
-                .create_read_stream(start_lsn.into_offset(self.base_lsn), None)
+                .create_read_stream(
+                    start_lsn.into_offset(self.base_lsn),
+                    // We go back one lsn because `to` is inclusive and `tail_lsn` is exclusive.
+                    // transposed to loglet offset (if set)
+                    self.tail_lsn
+                        .map(|tail| tail.prev().into_offset(self.base_lsn)),
+                )
                 .await?,
             self.base_lsn,
         ))
@@ -75,17 +92,28 @@ impl LogletBase for LogletWrapper {
     }
 
     async fn append(&self, data: Bytes) -> Result<Lsn, AppendError> {
+        if self.tail_lsn.is_some() {
+            return Err(AppendError::Sealed);
+        }
+
         let offset = self.loglet.append(data).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
 
     async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, AppendError> {
+        if self.tail_lsn.is_some() {
+            return Err(AppendError::Sealed);
+        }
         let offset = self.loglet.append_batch(payloads).await?;
         Ok(self.base_lsn.offset_by(offset))
     }
 
     async fn find_tail(&self) -> Result<TailState<Lsn>, OperationError> {
+        if let Some(tail) = self.tail_lsn {
+            return Ok(TailState::Sealed(tail));
+        }
+
         Ok(self
             .loglet
             .find_tail()
@@ -109,10 +137,24 @@ impl LogletBase for LogletWrapper {
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
+        if self.tail_lsn.is_some() {
+            return Ok(());
+        }
+
         self.loglet.seal().await
     }
 
     async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
+        if self.tail_lsn.is_some_and(|tail| from >= tail) {
+            // We are trying to read past the the last record. Upper layers should fence against
+            // this case, therefore, we throw an OperationError.
+            return Err(OperationError::terminal(
+                LogletWrapperError::OutOfBoundsRead {
+                    attempt_lsn: from,
+                    tail_lsn: self.tail_lsn.unwrap(),
+                },
+            ));
+        }
         // convert LSN to loglet offset
         let offset = from.into_offset(self.base_lsn);
         self.loglet
@@ -125,6 +167,16 @@ impl LogletBase for LogletWrapper {
         &self,
         from: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
+        if self.tail_lsn.is_some_and(|tail| from >= tail) {
+            // We are trying to read past the the last record. Upper layers should fence against
+            // this case, therefore, we throw an OperationError.
+            return Err(OperationError::terminal(
+                LogletWrapperError::OutOfBoundsRead {
+                    attempt_lsn: from,
+                    tail_lsn: self.tail_lsn.unwrap(),
+                },
+            ));
+        }
         let offset = from.into_offset(self.base_lsn);
         self.loglet
             .read_opt(offset)
