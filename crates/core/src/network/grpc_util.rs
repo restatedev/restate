@@ -40,11 +40,16 @@ pub fn create_grpc_channel_from_advertised_address(
         }
         AdvertisedAddress::Http(uri) => {
             // todo: Make the channel settings configurable
-            Channel::builder(uri)
-                .connect_timeout(Duration::from_secs(5))
-                // todo: configure the channel from configuration file
-                .http2_adaptive_window(true)
-                .connect_lazy()
+            Channel::builder(
+                // TODO we need this because we use a old tonic version that still uses old http types. We can remove this once tonic bumps to 1.0
+                uri.to_string()
+                    .parse()
+                    .expect("uri conversion should work fine"),
+            )
+            .connect_timeout(Duration::from_secs(5))
+            // todo: configure the channel from configuration file
+            .http2_adaptive_window(true)
+            .connect_lazy()
         }
     };
     Ok(channel)

@@ -10,16 +10,18 @@
 
 use bytes::Bytes;
 use codederror::CodedError;
-use hyper::header::{ACCEPT, CONTENT_TYPE};
-use hyper::http::response::Parts as ResponseParts;
-use hyper::http::uri::PathAndQuery;
-use hyper::http::{HeaderName, HeaderValue};
-use hyper::{Body, HeaderMap, StatusCode};
+use http::header::{ACCEPT, CONTENT_TYPE};
+use http::response::Parts as ResponseParts;
+use http::uri::PathAndQuery;
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
+use http_body_util::BodyExt;
+use http_body_util::Empty;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
 use restate_types::endpoint_manifest;
+use restate_types::errors::GenericError;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::service_discovery::{
@@ -87,7 +89,7 @@ impl DiscoverEndpoint {
         &self.0
     }
 
-    fn request(&self) -> Request<Body> {
+    fn request(&self) -> Request<Empty<Bytes>> {
         let mut headers = HeaderMap::from_iter([(
             ACCEPT,
             SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
@@ -98,7 +100,7 @@ impl DiscoverEndpoint {
         let path = PathAndQuery::from_static(DISCOVER_PATH);
         Request::new(
             Parts::new(Method::GET, self.0.clone(), path, headers),
-            Body::empty(),
+            Empty::default(),
         )
     }
 }
@@ -128,6 +130,8 @@ pub enum DiscoveryError {
     BadStatusCode(u16),
     #[error("client error: {0}")]
     Client(#[from] ServiceClientError),
+    #[error("cannot read body: {0}")]
+    BodyError(GenericError),
     #[error("unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]", i32::from(MIN_SERVICE_PROTOCOL_VERSION), i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
     #[error("the SDK reports itself as being in bidirectional protocol mode, but we are not discovering over a transport that supports it. Discovering with Lambda or HTTP < 1.1 is not supported")]
@@ -147,6 +151,7 @@ impl CodedError for DiscoveryError {
             DiscoveryError::Client(_) => Some(&META0003),
             DiscoveryError::UnsupportedServiceProtocol { .. } => Some(&META0012),
             DiscoveryError::BidirectionalNotSupported => Some(&META0015),
+            DiscoveryError::BodyError(_) => None,
         }
     }
 }
@@ -170,6 +175,7 @@ impl DiscoveryError {
             | DiscoveryError::Decode(_, _)
             | DiscoveryError::UnsupportedServiceProtocol { .. }
             | DiscoveryError::BidirectionalNotSupported => false,
+            DiscoveryError::BodyError(_) => true,
         }
     }
 }
@@ -277,13 +283,10 @@ impl ServiceDiscovery {
             // all endpoints support request response
             (ProtocolType::RequestResponse, _) => {}
             // http2 upwards supports bidi
-            (
-                ProtocolType::BidiStream,
-                Endpoint::Http(_, hyper::Version::HTTP_2 | hyper::Version::HTTP_3),
-            ) => {}
+            (ProtocolType::BidiStream, Endpoint::Http(_, Version::HTTP_2 | Version::HTTP_3)) => {}
             // http1.1 *can* support bidi depending on server implementation (and load balancers)
             // trust the user if this is what they advertise
-            (ProtocolType::BidiStream, Endpoint::Http(_, hyper::Version::HTTP_11)) => {}
+            (ProtocolType::BidiStream, Endpoint::Http(_, Version::HTTP_11)) => {}
             // lambda client and HTTP < 1.1 do not support bidi
             (ProtocolType::BidiStream, _) => {
                 return Err(DiscoveryError::BidirectionalNotSupported);
@@ -343,7 +346,7 @@ impl ServiceDiscovery {
     async fn invoke_discovery_endpoint(
         client: &ServiceClient,
         address: impl Display,
-        build_request: impl Fn() -> Request<Body>,
+        build_request: impl Fn() -> Request<Empty<Bytes>>,
         mut retry_iter: RetryIter,
     ) -> Result<(ResponseParts, Bytes), DiscoveryError> {
         loop {
@@ -360,9 +363,10 @@ impl ServiceDiscovery {
 
                 Ok((
                     parts,
-                    hyper::body::to_bytes(body).await.map_err(|err| {
-                        DiscoveryError::Client(ServiceClientError::Http(err.into()))
-                    })?,
+                    body.collect()
+                        .await
+                        .map_err(DiscoveryError::BodyError)?
+                        .to_bytes(),
                 ))
             };
 
@@ -400,6 +404,7 @@ mod tests {
         parse_service_discovery_protocol_version_from_content_type, DiscoveryError,
         ServiceDiscovery, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
     };
+    use http::{Uri, Version};
     use restate_service_client::Endpoint;
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
@@ -416,7 +421,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                &Endpoint::Http(Uri::default(), Version::HTTP_2),
                 response
             ),
             Err(DiscoveryError::BadResponse(_))
@@ -457,7 +462,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                &Endpoint::Http(Uri::default(), Version::HTTP_2),
                 response
             ),
             Err(DiscoveryError::BadResponse(_))
@@ -475,7 +480,7 @@ mod tests {
 
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                &Endpoint::Http(Uri::default(), Version::HTTP_2),
                 response
             ),
             Err(DiscoveryError::BadResponse(_))
@@ -494,7 +499,7 @@ mod tests {
 
         assert!(
             matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-                &Endpoint::Http(hyper::Uri::default(), hyper::Version::HTTP_2),
+                &Endpoint::Http(Uri::default(), Version::HTTP_2),
                 response
             ), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
         );

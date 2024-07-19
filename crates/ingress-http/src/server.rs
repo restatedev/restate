@@ -15,7 +15,6 @@ use codederror::CodedError;
 use http::{Request, Response};
 use http_body_util::Full;
 use hyper::body::Incoming;
-use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{cancellation_watcher, task_center, TaskKind};
@@ -193,18 +192,18 @@ where
     {
         let connect_info = ConnectInfo::new(remote_peer);
         let io = TokioIo::new(stream);
+        let handler = hyper_util::service::TowerToHyperService::new(handler.map_request(
+            move |mut req: Request<Incoming>| {
+                req.extensions_mut().insert(connect_info);
+                req
+            },
+        ));
 
         // Spawn a tokio task to serve the connection
         task_center().spawn(TaskKind::Ingress, "ingress", None, async move {
-            let svc = service_fn(move |mut hyper_req| {
-                hyper_req.extensions_mut().insert(connect_info);
-                let h = handler.clone();
-                async move { h.oneshot(hyper_req).await }
-            });
-
             let shutdown = cancellation_watcher();
             let auto_connection = auto::Builder::new(TaskCenterExecutor);
-            let serve_connection_fut = auto_connection.serve_connection(io, svc);
+            let serve_connection_fut = auto_connection.serve_connection(io, handler);
 
             tokio::select! {
                 res = serve_connection_fut => {

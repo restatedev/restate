@@ -32,13 +32,9 @@ impl<E, R> ErrorExt for SdkError<E, R> {
     }
 }
 
-impl ErrorExt for hyper::Error {
+impl ErrorExt for hyper_util::client::legacy::Error {
     fn is_retryable(&self) -> bool {
-        self.is_closed()
-            || self.is_canceled()
-            || self.is_connect()
-            || self.is_timeout()
-            || self.is_incomplete_message()
+        self.is_connect()
     }
 }
 
