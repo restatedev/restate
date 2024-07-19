@@ -150,8 +150,6 @@ impl DataFusionHttpClient {
 
         Ok(actual_count as usize == expected_count)
     }
-
-    // check if column exists: SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'sys_invocation' AND column_name IN ('completion_result', 'completion_failure')
 }
 
 fn get_column_as<T>(
