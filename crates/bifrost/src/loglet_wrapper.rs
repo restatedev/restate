@@ -112,22 +112,22 @@ impl LogletBase for LogletWrapper {
         self.loglet.seal().await
     }
 
-    async fn read_next_single(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
+    async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
         // convert LSN to loglet offset
         let offset = from.into_offset(self.base_lsn);
         self.loglet
-            .read_next_single(offset)
+            .read(offset)
             .await
             .map(|record| record.with_base_lsn(self.base_lsn))
     }
 
-    async fn read_next_single_opt(
+    async fn read_opt(
         &self,
         from: Self::Offset,
     ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
         let offset = from.into_offset(self.base_lsn);
         self.loglet
-            .read_next_single_opt(offset)
+            .read_opt(offset)
             .await
             .map(|maybe_record| maybe_record.map(|record| record.with_base_lsn(self.base_lsn)))
     }
