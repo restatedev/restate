@@ -464,7 +464,7 @@ mod tests {
 
                 svc_handle.trim_log(log_id, Lsn::from(3)).await??;
 
-                let record = bifrost.read_next_single(log_id, Lsn::OLDEST).await?;
+                let record = bifrost.read(log_id, Lsn::OLDEST).await?;
                 assert_that!(
                     record.record,
                     pat!(Record::TrimGap(pat!(TrimGap {
@@ -668,7 +668,7 @@ mod tests {
                 // everything before the persisted_lsn.
                 assert_eq!(bifrost.get_trim_point(log_id).await?, Lsn::from(3));
                 // we should be able to after the last persisted lsn
-                let v = bifrost.read_next_single(log_id, Lsn::from(4)).await?;
+                let v = bifrost.read(log_id, Lsn::from(4)).await?;
                 assert_eq!(Lsn::from(4), v.offset);
                 assert!(v.record.is_data());
                 assert_eq!(
