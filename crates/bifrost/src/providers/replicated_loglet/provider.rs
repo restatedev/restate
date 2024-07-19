@@ -24,9 +24,8 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
 use super::metric_definitions;
-use crate::loglet::{Loglet, LogletOffset};
-use crate::ProviderError;
-use crate::{Error, LogletProvider};
+use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, ProviderError};
+use crate::Error;
 
 pub struct Factory {
     opts: BoxedLiveLoad<ReplicatedLogletOptions>,
@@ -53,7 +52,7 @@ impl Factory {
 }
 
 #[async_trait]
-impl crate::LogletProviderFactory for Factory {
+impl LogletProviderFactory for Factory {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Replicated
     }

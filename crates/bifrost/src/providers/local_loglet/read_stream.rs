@@ -25,7 +25,7 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::SequenceNumber;
 
 use crate::loglet::{LogletOffset, LogletReadStream};
-use crate::loglets::local_loglet::LogStoreError;
+use crate::providers::local_loglet::LogStoreError;
 use crate::{Error, LogRecord, Result};
 
 use super::keys::RecordKey;
