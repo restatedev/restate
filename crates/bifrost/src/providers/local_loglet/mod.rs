@@ -26,7 +26,7 @@ use restate_types::logs::SequenceNumber;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::loglet::{
@@ -35,7 +35,7 @@ use crate::loglet::{
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{LogRecord, Result, SealReason, TailState};
+use crate::{LogRecord, Result, TailState};
 
 use self::keys::RecordKey;
 use self::log_store::RocksDbLogStore;
@@ -55,8 +55,7 @@ struct LocalLoglet {
     // In local loglet, the release point == the last committed offset
     last_committed_offset: AtomicU64,
     next_write_offset: Mutex<LogletOffset>,
-    #[allow(dead_code)]
-    seal: Option<SealReason>,
+    sealed: AtomicBool,
     release_watch: OffsetWatch,
     append_latency: Histogram,
 }
@@ -68,7 +67,7 @@ impl std::fmt::Debug for LocalLoglet {
             .field("trim_point_offset", &self.trim_point_offset)
             .field("last_committed_offset", &self.last_committed_offset)
             .field("next_write_offset", &self.next_write_offset)
-            .field("seal", &self.seal)
+            .field("sealed", &self.sealed)
             .finish()
     }
 }
@@ -91,7 +90,7 @@ impl LocalLoglet {
         let next_write_offset_raw = log_state.release_pointer + 1;
         let next_write_offset = Mutex::new(LogletOffset::from(next_write_offset_raw));
         let release_pointer = LogletOffset::from(log_state.release_pointer);
-        let seal = log_state.seal;
+        let sealed = AtomicBool::new(log_state.seal);
         let append_latency = histogram!(BIFROST_LOCAL_APPEND_DURATION);
         let loglet = Self {
             log_id,
@@ -101,7 +100,7 @@ impl LocalLoglet {
             trim_point_lock: Mutex::new(()),
             next_write_offset,
             last_committed_offset,
-            seal,
+            sealed,
             release_watch: OffsetWatch::new(release_pointer),
             append_latency,
         };
@@ -116,8 +115,7 @@ impl LocalLoglet {
     }
 
     #[inline]
-    fn notify_readers(&self) {
-        let release_pointer = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+    fn notify_readers(&self, release_pointer: LogletOffset) {
         self.release_watch.notify(release_pointer);
     }
 
@@ -203,6 +201,12 @@ impl LogletBase for LocalLoglet {
     }
 
     async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
+        // An initial check if we are sealed or not, this is relaxed because we are not worried
+        // about accepting an append while sealing is taking place. We only care about *not*
+        // acknowledging it if we lost the race.
+        if self.sealed.load(Ordering::Relaxed) {
+            return Err(AppendError::Sealed);
+        }
         counter!(BIFROST_LOCAL_APPEND).increment(1);
         let start_time = std::time::Instant::now();
         // We hold the lock to ensure that offsets are enqueued in the order of
@@ -230,14 +234,31 @@ impl LogletBase for LocalLoglet {
             Err(ShutdownError.into())
         })?;
 
-        self.last_committed_offset
-            .fetch_max(offset.into(), Ordering::Relaxed);
-        self.notify_readers();
+        // The order here is critical. We must update the last_committed_offset before checking the
+        // seal to ensure that `find_tail` observe `last_committed_offset` changes.
+        let release_pointer = LogletOffset::from(
+            self.last_committed_offset
+                .fetch_max(offset.into(), Ordering::SeqCst)
+                .max(offset.into()),
+        );
+        self.notify_readers(release_pointer);
+        // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
+        // has been sealed already. Memory ordering Acquire is required to establish happens-before
+        // relationship between bumping the last_commit_offset and the seal operation.
+        if self.sealed.load(Ordering::Acquire) {
+            return Err(AppendError::Sealed);
+        }
         self.append_latency.record(start_time.elapsed());
         Ok(offset)
     }
 
     async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, AppendError> {
+        // An initial check if we are sealed or not, this is relaxed because we are not worried
+        // about accepting an append while sealing is taking place. We only care about *not*
+        // acknowledging it if we lost the race.
+        if self.sealed.load(Ordering::Relaxed) {
+            return Err(AppendError::Sealed);
+        }
         let num_payloads = payloads.len();
         counter!(BIFROST_LOCAL_APPEND).increment(num_payloads as u64);
         let start_time = std::time::Instant::now();
@@ -264,21 +285,34 @@ impl LogletBase for LocalLoglet {
             Err(ShutdownError.into())
         })?;
 
-        self.last_committed_offset
-            .fetch_max(offset.into(), Ordering::Relaxed);
-        self.notify_readers();
+        // The order here is critical. We must update the last_committed_offset before checking the
+        // seal to ensure that `find_tail` observe `last_committed_offset` changes.
+        let release_pointer = LogletOffset::from(
+            self.last_committed_offset
+                .fetch_max(offset.into(), Ordering::SeqCst)
+                .max(offset.into()),
+        );
+        self.notify_readers(release_pointer);
+        // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
+        // has been sealed already. Memory ordering Acquire is required to establish happens-before
+        // relationship between bumping the last_commit_offset and the seal operation.
+        if self.sealed.load(Ordering::Acquire) {
+            return Err(AppendError::Sealed);
+        }
         self.append_latency.record(start_time.elapsed());
         Ok(offset)
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
-        let last_committed =
-            LogletOffset::from(self.last_committed_offset.load(Ordering::Relaxed)).next();
-        Ok(if self.seal.is_some() {
-            TailState::Sealed(last_committed)
+        if self.sealed.load(Ordering::Acquire) {
+            let last_committed =
+                LogletOffset::from(self.last_committed_offset.load(Ordering::SeqCst)).next();
+            Ok(TailState::Sealed(last_committed))
         } else {
-            TailState::Open(last_committed)
-        })
+            let last_committed =
+                LogletOffset::from(self.last_committed_offset.load(Ordering::SeqCst)).next();
+            Ok(TailState::Open(last_committed))
+        }
     }
 
     async fn get_trim_point(&self) -> Result<Option<Self::Offset>, OperationError> {
@@ -295,7 +329,7 @@ impl LogletBase for LocalLoglet {
     /// new_trim_point is inclusive (will be trimmed)
     async fn trim(&self, new_trim_point: Self::Offset) -> Result<(), OperationError> {
         let effective_trim_point = new_trim_point.min(LogletOffset(
-            self.last_committed_offset.load(Ordering::Relaxed),
+            self.last_committed_offset.load(Ordering::Acquire),
         ));
 
         // the lock is needed to prevent concurrent trim operations from over taking each other :-(
@@ -329,7 +363,16 @@ impl LogletBase for LocalLoglet {
     }
 
     async fn seal(&self) -> Result<(), OperationError> {
-        todo!()
+        if self.sealed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let receiver = self.log_writer.enqueue_seal(self.log_id).await?;
+        let _ = receiver.await.unwrap_or_else(|_| {
+            warn!("Unsure if the local loglet record was sealed, the ack channel was dropped");
+            Err(ShutdownError.into())
+        })?;
+        self.sealed.store(true, Ordering::Release);
+        Ok(())
     }
 
     async fn read_next_single(
@@ -487,6 +530,89 @@ mod tests {
                 );
 
                 single_loglet_readstream_test_with_trims(loglet).await?;
+                Ok(())
+            })
+            .await
+    }
+    #[tokio::test(start_paused = true)]
+    async fn local_loglet_test_append_after_seal() -> googletest::Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+                let params = LogletParams::from("99".to_string());
+
+                let log_store = RocksDbLogStore::create(
+                    &config.pinned().bifrost.local,
+                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+                )
+                .await?;
+
+                let log_writer = log_store
+                    .create_writer()
+                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+
+                let loglet = Arc::new(
+                    LocalLoglet::create(
+                        params
+                            .id()
+                            .parse()
+                            .expect("loglet params can be converted into u64"),
+                        log_store,
+                        log_writer,
+                    )
+                    .await?,
+                );
+
+                loglet_test_append_after_seal(loglet).await?;
+                Ok(())
+            })
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_loglet_test_append_after_seal_concurrent() -> googletest::Result<()> {
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        node_env
+            .tc
+            .run_in_scope("test", None, async {
+                let config = Live::from_value(Configuration::default());
+                RocksDbManager::init(config.clone().map(|c| &c.common));
+                let params = LogletParams::from("99".to_string());
+
+                let log_store = RocksDbLogStore::create(
+                    &config.pinned().bifrost.local,
+                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
+                )
+                .await?;
+
+                let log_writer = log_store
+                    .create_writer()
+                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
+
+                let loglet = Arc::new(
+                    LocalLoglet::create(
+                        params
+                            .id()
+                            .parse()
+                            .expect("loglet params can be converted into u64"),
+                        log_store,
+                        log_writer,
+                    )
+                    .await?,
+                );
+
+                loglet_test_append_after_seal_concurrent(loglet).await?;
                 Ok(())
             })
             .await

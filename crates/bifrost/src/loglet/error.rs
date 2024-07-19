@@ -37,7 +37,7 @@ impl AppendError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum OperationError {
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
@@ -56,6 +56,15 @@ impl OperationError {
 
     pub fn other<E: LogletError + Send + Sync>(error: E) -> Self {
         Self::Other(Arc::new(error))
+    }
+}
+
+impl From<OperationError> for AppendError {
+    fn from(value: OperationError) -> Self {
+        match value {
+            OperationError::Shutdown(s) => AppendError::Shutdown(s),
+            OperationError::Other(o) => AppendError::Other(o),
+        }
     }
 }
 
