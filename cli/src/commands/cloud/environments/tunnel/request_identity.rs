@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::HeaderMap;
+use http_0_2::HeaderMap;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -66,7 +67,7 @@ pub(crate) fn validate_request_identity(
 
     let mut validate = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
     validate.required_spec_claims =
-        std::collections::HashSet::from(["aud".into(), "exp".into(), "iat".into(), "nbf".into()]);
+        HashSet::from(["aud".into(), "exp".into(), "iat".into(), "nbf".into()]);
     validate.leeway = 0;
     validate.reject_tokens_expiring_in_less_than = 0;
     validate.validate_exp = true;

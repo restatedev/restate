@@ -95,7 +95,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         .into_body()
         .await?;
 
-    let client = reqwest::Client::builder()
+    let client = reqwest_0_11::Client::builder()
         .user_agent(format!(
             "{}/{} {}-{}",
             env!("CARGO_PKG_NAME"),

@@ -19,12 +19,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::FutureExt;
-use http::{Request, StatusCode, Uri};
-use http_body::Body;
-use hyper::client::HttpConnector;
-use hyper::service::Service;
-use hyper::Response;
-use hyper_rustls::HttpsConnector;
+use http_0_2::{Request, StatusCode, Uri};
+use hyper_0_14::body::HttpBody;
+use hyper_0_14::client::HttpConnector;
+use hyper_0_14::service::Service;
+use hyper_0_14::{Body, Response};
+use hyper_rustls_0_24::HttpsConnector;
 use restate_cli_util::CliContext;
 use restate_types::retries::RetryPolicy;
 use tracing::{error, info};
@@ -37,7 +37,7 @@ use super::renderer::{LocalRenderer, TunnelRenderer};
 
 pub(crate) async fn run_local(
     env: &CliEnv,
-    client: reqwest::Client,
+    client: reqwest_0_11::Client,
     bearer_token: &str,
     environment_info: DescribeEnvironmentResponse,
     opts: &super::Tunnel,
@@ -56,7 +56,7 @@ pub(crate) async fn run_local(
     // default interval on linux is 75 secs, also use this as the start-after
     http_connector.set_keepalive(Some(Duration::from_secs(75)));
 
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+    let https_connector = hyper_rustls_0_24::HttpsConnectorBuilder::new()
         .with_native_roots()
         .https_or_http()
         .enable_http2()
@@ -180,7 +180,7 @@ pub(crate) struct HandlerInner {
     pub request_identity_key: Option<jsonwebtoken::DecodingKey>,
     pub environment_id: String,
     pub bearer_token: String,
-    pub client: reqwest::Client,
+    pub client: reqwest_0_11::Client,
     pub environment_name: String,
     pub url: Url,
 }
@@ -210,7 +210,7 @@ pub(crate) enum ServeError {
     #[error("Failed to initialise tunnel")]
     StartError(#[from] StartError),
     #[error("Failed to serve over tunnel")]
-    Hyper(#[source] hyper::Error),
+    Hyper(#[source] hyper_0_14::Error),
     #[error("Failed to connect to tunnel server")]
     Connection(#[source] Box<dyn Error + Send + Sync>),
     #[error("Server closed connection while {0}")]
@@ -228,8 +228,8 @@ impl ServeError {
     }
 }
 
-impl From<hyper::Error> for ServeError {
-    fn from(err: hyper::Error) -> Self {
+impl From<hyper_0_14::Error> for ServeError {
+    fn from(err: hyper_0_14::Error) -> Self {
         if let Some(err) = err
             .source()
             .and_then(|err| err.downcast_ref::<StartError>())
@@ -261,8 +261,8 @@ impl Display for HandlerStatus {
 
 impl<Proxy, ProxyFut> Handler<Proxy>
 where
-    Proxy: FnMut(Arc<HandlerInner>, reqwest::Request) -> ProxyFut,
-    ProxyFut: Future<Output = Result<Response<hyper::Body>, StartError>> + Send + 'static,
+    Proxy: FnMut(Arc<HandlerInner>, reqwest_0_11::Request) -> ProxyFut,
+    ProxyFut: Future<Output = Result<Response<Body>, StartError>> + Send + 'static,
 {
     pub async fn serve(mut self, tunnel_url: Uri) -> Result<(), ServeError> {
         let io = self
@@ -272,7 +272,7 @@ where
             .map_err(ServeError::Connection)?;
 
         #[allow(deprecated)]
-        hyper::server::conn::Http::new()
+        hyper_0_14::server::conn::Http::new()
             .serve_connection(io, &mut self)
             .await?;
 
@@ -287,12 +287,12 @@ where
     }
 }
 
-impl<Proxy, ProxyFut> Service<Request<hyper::Body>> for Handler<Proxy>
+impl<Proxy, ProxyFut> Service<Request<Body>> for Handler<Proxy>
 where
-    Proxy: FnMut(Arc<HandlerInner>, reqwest::Request) -> ProxyFut,
-    ProxyFut: Future<Output = Result<Response<hyper::Body>, StartError>>,
+    Proxy: FnMut(Arc<HandlerInner>, reqwest_0_11::Request) -> ProxyFut,
+    ProxyFut: Future<Output = Result<Response<Body>, StartError>>,
 {
-    type Response = Response<hyper::Body>;
+    type Response = Response<Body>;
     type Error = StartError;
     type Future = futures::future::Either<
         futures::future::Ready<Result<Self::Response, Self::Error>>,
@@ -313,10 +313,10 @@ where
         }
     }
 
-    fn call(&mut self, req: Request<hyper::Body>) -> Self::Future {
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
         match &self.status {
             HandlerStatus::AwaitingStart => {
-                let body: hyper::Body = req.into_body();
+                let body: Body = req.into_body();
 
                 self.status = HandlerStatus::ProcessingStart(Box::pin(process_start(
                     self.inner.clone(),
@@ -336,7 +336,7 @@ where
                     resp
                 };
 
-                futures::future::ready(Ok(resp.body(hyper::Body::empty()).unwrap())).left_future()
+                futures::future::ready(Ok(resp.body(Body::empty()).unwrap())).left_future()
             }
             HandlerStatus::ProcessingStart(_) => {
                 // 'Implementations are permitted to panic if call is invoked without obtaining Poll::Ready(Ok(())) from poll_ready.'
@@ -368,7 +368,7 @@ where
     }
 }
 
-async fn process_start(inner: Arc<HandlerInner>, body: hyper::Body) -> Result<(), StartError> {
+async fn process_start(inner: Arc<HandlerInner>, body: Body) -> Result<(), StartError> {
     let collected = Body::collect(body).await;
     let trailers = match collected {
         Ok(ref collected) if collected.trailers().is_some() => collected.trailers().unwrap(),
@@ -448,8 +448,8 @@ enum ProxyError {
 
 pub(crate) async fn proxy(
     inner: Arc<HandlerInner>,
-    request: reqwest::Request,
-) -> Result<Response<hyper::Body>, StartError> {
+    request: reqwest_0_11::Request,
+) -> Result<Response<Body>, StartError> {
     if let Some(request_identity_key) = &inner.request_identity_key {
         if let Err(err) = super::request_identity::validate_request_identity(
             request_identity_key,
@@ -464,7 +464,7 @@ pub(crate) async fn proxy(
 
             return Ok(Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
-                .body(hyper::Body::empty())
+                .body(Body::empty())
                 .unwrap());
         }
     }
@@ -478,7 +478,7 @@ pub(crate) async fn proxy(
 
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
-                .body(hyper::Body::empty())
+                .body(Body::empty())
                 .unwrap());
         }
     };
@@ -491,6 +491,6 @@ pub(crate) async fn proxy(
     };
 
     Ok(response
-        .body(hyper::Body::wrap_stream(result.bytes_stream()))
+        .body(Body::wrap_stream(result.bytes_stream()))
         .unwrap())
 }
