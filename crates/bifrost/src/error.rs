@@ -35,6 +35,8 @@ pub enum Error {
     /// Provider is unknown or disabled
     #[error("bifrost provider '{0}' is disabled or unrecognized")]
     Disabled(String),
+    #[error("read() at {0} failed waiting on reconfiguration of log {1}")]
+    ReadFailureDuringReconfiguration(LogId, Lsn),
 }
 
 impl From<OperationError> for Error {

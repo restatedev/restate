@@ -147,6 +147,7 @@ mod tests {
             segment,
             pat!(MaybeSegment::Some(pat!(Segment {
                 base_lsn: eq(Lsn::from(1)),
+                tail_lsn: eq(None),
             })))
         );
 
@@ -155,6 +156,7 @@ mod tests {
             segment,
             pat!(MaybeSegment::Some(pat!(Segment {
                 base_lsn: eq(Lsn::from(1)),
+                tail_lsn: eq(None),
             })))
         );
 
@@ -163,6 +165,7 @@ mod tests {
             segment,
             pat!(MaybeSegment::Some(pat!(Segment {
                 base_lsn: eq(Lsn::from(1)),
+                tail_lsn: eq(None),
             })))
         );
 
@@ -304,8 +307,23 @@ mod tests {
         }
 
         assert_eq!(6, chain.num_segments());
+
         assert_eq!(Lsn::from(500), chain.head().base_lsn);
-        assert_eq!(Lsn::from(550), chain.tail().base_lsn);
+        assert_that!(
+            chain.head(),
+            pat!(Segment {
+                base_lsn: eq(Lsn::from(500)),
+                tail_lsn: eq(Some(Lsn::from(510))),
+            })
+        );
+
+        assert_that!(
+            chain.tail(),
+            pat!(Segment {
+                base_lsn: eq(Lsn::from(550)),
+                tail_lsn: eq(None),
+            })
+        );
 
         // segments are [500 -> 510 -> 520 -> 530 -> 540 -> 550 -> ..]
         // Find segments
@@ -349,10 +367,14 @@ mod tests {
                 .copied()
                 .unwrap();
 
+            // the base_lsn of the segment after, or None if tail.
+            let expected_tail = segment_starts.iter().find(|&&x| x > lsn).copied();
+
             assert_that!(
                 segment,
                 pat!(MaybeSegment::Some(pat!(Segment {
                     base_lsn: eq(expected_base),
+                    tail_lsn: eq(expected_tail),
                 })))
             );
         }
@@ -416,7 +438,10 @@ mod tests {
 
         assert_eq!(6, chain.num_segments());
         assert_eq!(Lsn::from(500), chain.head().base_lsn);
+        assert_eq!(Some(Lsn::from(510)), chain.head().tail_lsn);
+
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
+        assert_eq!(None, chain.tail().tail_lsn);
 
         // no segments behind 10 point, nothing changed
         chain.trim_prefix(Lsn::new(10));
