@@ -195,8 +195,11 @@ impl LogletBase for LocalLoglet {
     async fn create_read_stream(
         self: Arc<Self>,
         from: Self::Offset,
+        to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>> {
-        Ok(Box::pin(LocalLogletReadStream::create(self, from).await?))
+        Ok(Box::pin(
+            LocalLogletReadStream::create(self, from, to).await?,
+        ))
     }
 
     async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
@@ -323,6 +326,10 @@ impl LogletBase for LocalLoglet {
         );
 
         Ok(())
+    }
+
+    async fn seal(&self) -> Result<(), OperationError> {
+        todo!()
     }
 
     async fn read_next_single(

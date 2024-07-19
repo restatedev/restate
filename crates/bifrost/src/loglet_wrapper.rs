@@ -48,7 +48,7 @@ impl LogletWrapper {
         // Translates LSN to loglet offset
         Ok(LogletReadStreamWrapper::new(
             self.loglet
-                .create_read_stream(start_lsn.into_offset(self.base_lsn))
+                .create_read_stream(start_lsn.into_offset(self.base_lsn), None)
                 .await?,
             self.base_lsn,
         ))
@@ -69,6 +69,7 @@ impl LogletBase for LogletWrapper {
     async fn create_read_stream(
         self: Arc<Self>,
         _after: Self::Offset,
+        _to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>> {
         unreachable!("create_read_stream on LogletWrapper should never be used directly")
     }
@@ -105,6 +106,10 @@ impl LogletBase for LogletWrapper {
         }
         let trim_point = trim_point.into_offset(self.base_lsn);
         self.loglet.trim(trim_point).await
+    }
+
+    async fn seal(&self) -> Result<(), OperationError> {
+        self.loglet.seal().await
     }
 
     async fn read_next_single(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
