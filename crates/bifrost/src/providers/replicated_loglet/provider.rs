@@ -24,7 +24,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
 use super::metric_definitions;
-use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, ProviderError};
+use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, OperationError};
 use crate::Error;
 
 pub struct Factory {
@@ -57,7 +57,7 @@ impl LogletProviderFactory for Factory {
         ProviderKind::Replicated
     }
 
-    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, ProviderError> {
+    async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
         Ok(Arc::new(ReplicatedLogletProvider))
     }
@@ -75,7 +75,7 @@ impl LogletProvider for ReplicatedLogletProvider {
         todo!("Not implemented yet")
     }
 
-    async fn shutdown(&self) -> Result<(), ProviderError> {
+    async fn shutdown(&self) -> Result<(), OperationError> {
         Ok(())
     }
 }
