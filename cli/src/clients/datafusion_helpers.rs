@@ -276,6 +276,26 @@ pub async fn find_active_invocations_simple(
 }
 
 #[derive(Debug, Clone)]
+pub enum InvocationCompletion {
+    Success,
+    Failure(String),
+}
+
+impl InvocationCompletion {
+    fn from_sql(
+        completion_result: Option<String>,
+        completion_failure: Option<String>,
+    ) -> Option<InvocationCompletion> {
+        match (completion_result.as_deref(), completion_failure) {
+            (Some("success"), None) => Some(InvocationCompletion::Success),
+            (Some("failure"), None) => Some(InvocationCompletion::Failure("Unknown".to_owned())),
+            (Some("failure"), Some(failure)) => Some(InvocationCompletion::Failure(failure)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Invocation {
     pub id: String,
     pub target: String,
@@ -285,6 +305,7 @@ pub struct Invocation {
     pub invoked_by_id: Option<String>,
     pub invoked_by_target: Option<String>,
     pub status: InvocationState,
+    pub completion: Option<InvocationCompletion>,
     pub trace_id: Option<String>,
 
     // If it **requires** this deployment.
@@ -764,6 +785,8 @@ struct InvocationRowResult {
     comp_latest_deployment: Option<String>,
     known_deployment_id: Option<String>,
     trace_id: Option<String>,
+    completion_result: Option<String>,
+    completion_failure: Option<String>,
     full_count: Option<i64>,
 }
 
@@ -774,6 +797,20 @@ pub async fn find_active_invocations(
     order: &str,
     limit: usize,
 ) -> Result<(Vec<Invocation>, usize)> {
+    // Check if columns completion_result and completion_failure are available.
+    // Those were introduced in Restate 1.1
+    let has_restate_1_1_completion_columns = client
+        .check_columns_exists(
+            "sys_invocation",
+            &["completion_result", "completion_failure"],
+        )
+        .await?;
+    let select_completion_columns = if has_restate_1_1_completion_columns {
+        "inv.completion_result, inv.completion_failure"
+    } else {
+        "CAST(NULL as STRING) AS completion_result, CAST(NULL as STRING) AS completion_failure"
+    };
+
     let mut full_count = 0;
     let mut active = vec![];
     let query = format!(
@@ -799,7 +836,8 @@ pub async fn find_active_invocations(
             inv.invoked_by_target,
             svc.deployment_id as comp_latest_deployment,
             dp.id as known_deployment_id,
-            inv.trace_id
+            inv.trace_id,
+            {select_completion_columns}
         FROM sys_invocation inv
         LEFT JOIN sys_service svc ON svc.name = inv.target_service_name
         LEFT JOIN sys_deployment dp ON dp.id = inv.pinned_deployment_id
@@ -853,6 +891,10 @@ pub async fn find_active_invocations(
             current_attempt_duration,
             last_attempt_started_at,
             last_failure_entry_ty: row.last_failure_related_entry_type,
+            completion: InvocationCompletion::from_sql(
+                row.completion_result,
+                row.completion_failure,
+            ),
         });
 
         full_count = row.full_count.expect("full_count") as usize;

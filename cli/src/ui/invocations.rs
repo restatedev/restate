@@ -10,9 +10,9 @@
 
 use chrono_humanize::Tense;
 use comfy_table::{Attribute, Cell, Table};
-use dialoguer::console::style;
 use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
+use dialoguer::console::{style, Style};
 use restate_cli_util::c_indent_table;
 use restate_cli_util::c_indentln;
 use restate_cli_util::c_println;
@@ -20,8 +20,8 @@ use restate_cli_util::ui::console::Icon;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_precise;
 
-use crate::clients::datafusion_helpers::JournalEntryType;
 use crate::clients::datafusion_helpers::{Invocation, InvocationState};
+use crate::clients::datafusion_helpers::{InvocationCompletion, JournalEntryType};
 use crate::clients::datafusion_helpers::{JournalEntry, SimpleInvocation};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
@@ -103,8 +103,8 @@ fn invocation_header(invocation: &Invocation) -> String {
     format!("❯ {} {}", created_at, style(&invocation.id).bold())
 }
 
-pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationState> {
-    let status_style = match status {
+pub fn invocation_status_style(status: InvocationState) -> Style {
+    match status {
         InvocationState::Unknown => DStyle::new().red(),
         InvocationState::Pending => DStyle::new().yellow(),
         InvocationState::Ready => DStyle::new().blue(),
@@ -112,8 +112,28 @@ pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationStat
         InvocationState::Suspended => DStyle::new().dim(),
         InvocationState::BackingOff => DStyle::new().red(),
         InvocationState::Completed => DStyle::new().blue(),
-    };
-    status_style.apply_to(status)
+    }
+}
+
+pub fn invocation_status(status: InvocationState) -> StyledObject<InvocationState> {
+    invocation_status_style(status).apply_to(status)
+}
+
+pub fn rich_invocation_status(
+    status: InvocationState,
+    completion: Option<&InvocationCompletion>,
+) -> StyledObject<String> {
+    match completion {
+        None => invocation_status_style(status).apply_to(status.to_string()),
+        Some(InvocationCompletion::Success) => DStyle::new()
+            .green()
+            .bold()
+            .apply_to("completed with success".to_string()),
+        Some(InvocationCompletion::Failure(_)) => DStyle::new()
+            .red()
+            .bold()
+            .apply_to("completed with failure".to_string()),
+    }
 }
 
 pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
@@ -121,7 +141,11 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
 
     // Status: backing-off (Retried 1198 time(s). Next retry in 5 seconds and 78 ms) (if not pending....)
     let status_msg = invocation_status_note(invocation);
-    let status = format!("{} {}", invocation_status(invocation.status), status_msg);
+    let status = format!(
+        "{} {}",
+        rich_invocation_status(invocation.status, invocation.completion.as_ref()),
+        status_msg
+    );
     table.add_kv_row("Status:", status);
 
     // Invoked by: TicketDb p4DGRWa7OTJwAYxelm96fFWSV9woYc0MLQ
@@ -208,6 +232,10 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 ),
             );
         }
+    }
+
+    if let Some(InvocationCompletion::Failure(error)) = invocation.completion.clone() {
+        table.add_kv_row("Error:", format!("{}", style(error).red()));
     }
 }
 

@@ -122,6 +122,8 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             column_type: "Utf8",
             description: "Either `pending` or `ready` or `running` or `backing-off` or `suspended` or `completed`.",
         },
+        sys_invocation_status.remove("completion_result").expect("completion_result should exist"),
+        sys_invocation_status.remove("completion_failure").expect("completion_failure should exist"),
     ];
 
     OwnedTableDocs {
