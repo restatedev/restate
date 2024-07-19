@@ -110,9 +110,12 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
     /// Create a read stream that streams record from a single loglet instance.
     ///
+    /// `to`: The offset of the last record to be read (inclusive). If `None`, the
+    /// stream is an open-ended tailing read stream.
     async fn create_read_stream(
         self: Arc<Self>,
         from: Self::Offset,
+        to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>>;
 
     /// Append a record to the loglet.
@@ -146,6 +149,12 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// Passing `Offset::OLDEST` trims the first record in the loglet (if exists).
     async fn trim(&self, trim_point: Self::Offset) -> Result<(), OperationError>;
 
+    /// Seal the loglet. This operation is idempotent.
+    ///
+    /// Appends **SHOULD NOT** succeed after a `seal()` call is successful. And appends **MUST
+    /// NOT** succeed after the offset returned by the *first* TailState::Sealed() response.
+    async fn seal(&self) -> Result<(), OperationError>;
+
     /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
     /// defined for the loglet.
     async fn read_next_single(
@@ -166,6 +175,7 @@ pub trait LogletReadStream<S: SequenceNumber>:
 {
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> S;
+
     /// Returns true if the stream is terminated.
     fn is_terminated(&self) -> bool;
 }
