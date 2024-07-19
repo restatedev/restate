@@ -1029,7 +1029,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use restate_invoker_api::{entry_enricher, ServiceHandle};
+    use restate_invoker_api::{entry_enricher, InvokerHandle};
     use restate_test_util::{check, let_assert};
     use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::journal::enriched::EnrichedEntryHeader;

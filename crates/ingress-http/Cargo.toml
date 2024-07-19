@@ -37,7 +37,7 @@ http = "1.0"
 url = "2.5.0"
 http-body = "1.0"
 http-body-util = "0.1"
-hyper-util = { version = "0.1", features = ["http1", "http2", "server", "tokio"] }
+hyper-util = { version = "0.1.6", features = ["http1", "http2", "server", "tokio", "service"] }
 tower = { version = "0.4.13", features = ["util"] }
 tower-http = { version = "0.5.2", features = ["cors", "normalize-path"] }
 

@@ -271,6 +271,7 @@ where
             .await
             .map_err(ServeError::Connection)?;
 
+        #[allow(deprecated)]
         hyper::server::conn::Http::new()
             .serve_connection(io, &mut self)
             .await?;

@@ -409,7 +409,7 @@ mod tests {
     use restate_bifrost::{Bifrost, Record, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnvBuilder};
-    use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
+    use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::AdminOptions;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Constant;
@@ -491,7 +491,7 @@ mod tests {
 
             let partition_processor_status = PartitionProcessorStatus {
                 last_persisted_log_lsn: Some(Lsn::from(self.persisted_lsn.load(Ordering::Relaxed))),
-                ..PartitionProcessorStatus::new(RunMode::Leader)
+                ..PartitionProcessorStatus::new()
             };
 
             let state = [(PartitionId::MIN, partition_processor_status)].into();

@@ -12,32 +12,43 @@ use super::proxy::ProxyConnector;
 
 use crate::utils::ErrorExt;
 
+use bytes::Bytes;
 use futures::future::Either;
 use futures::FutureExt;
-use hyper::client::HttpConnector;
+use http::Version;
+use http_body_util::BodyExt;
+use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::http::HeaderValue;
-use hyper::{Body, HeaderMap, Method, Request, Response, Uri, Version};
+use hyper::{HeaderMap, Method, Request, Response, Uri};
 use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use restate_types::config::HttpOptions;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future;
 use std::future::Future;
+
 type Connector = ProxyConnector<HttpsConnector<HttpConnector>>;
+
+// TODO
+//  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
+//  We should consider replacing this with some concrete type that makes sense.
+type BoxError = Box<dyn Error + Send + Sync + 'static>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
     // alpn client defaults to http1.1, but can upgrade to http2 using ALPN for TLS servers
-    alpn_client: hyper::Client<Connector, Body>,
+    alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
     // h2 client defaults to http2 and so supports unencrypted http2 servers
-    h2_client: hyper::Client<Connector, Body>,
+    h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
 }
 
 impl HttpClient {
     pub fn new(
-        alpn_client: hyper::Client<Connector, Body>,
-        h2_client: hyper::Client<Connector, Body>,
+        alpn_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
+        h2_client: hyper_util::client::legacy::Client<Connector, BoxBody>,
     ) -> Self {
         Self {
             alpn_client,
@@ -46,7 +57,10 @@ impl HttpClient {
     }
 
     pub fn from_options(options: &HttpOptions) -> HttpClient {
-        let mut builder = hyper::Client::builder();
+        let mut builder =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::default());
+        builder.timer(hyper_util::rt::TokioTimer::default());
+
         builder
             .http2_keep_alive_timeout(options.http_keep_alive_options.timeout.into())
             .http2_keep_alive_interval(Some(options.http_keep_alive_options.interval.into()));
@@ -58,6 +72,7 @@ impl HttpClient {
 
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_native_roots()
+            .expect("Can build native roots")
             .https_or_http()
             .enable_http2()
             .wrap_connector(http_connector);
@@ -65,22 +80,26 @@ impl HttpClient {
         let proxy_connector = ProxyConnector::new(options.http_proxy.clone(), https_connector);
 
         HttpClient::new(
-            builder.clone().build::<_, Body>(proxy_connector.clone()), // h1 client with alpn upgrade support
+            builder.clone().build::<_, BoxBody>(proxy_connector.clone()), // h1 client with alpn upgrade support
             {
                 builder.http2_only(true);
-                builder.build::<_, hyper::Body>(proxy_connector) // h2-prior knowledge client
+                builder.build::<_, BoxBody>(proxy_connector) // h2-prior knowledge client
             },
         )
     }
 
-    fn build_request(
+    fn build_request<B>(
         uri: Uri,
         version: Version,
-        body: Body,
+        body: B,
         method: Method,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> Result<Request<Body>, hyper::http::Error> {
+    ) -> Result<Request<BoxBody>, http::Error>
+    where
+        B: Body<Data = Bytes> + Send + Sync + Unpin + Sized + 'static,
+        <B as Body>::Error: Error + Send + Sync + 'static,
+    {
         let mut uri_parts = uri.into_parts();
         uri_parts.path_and_query = match uri_parts.path_and_query {
             None => Some(path),
@@ -113,18 +132,22 @@ impl HttpClient {
 
         http_request_builder = http_request_builder.version(version);
 
-        http_request_builder.body(body)
+        http_request_builder.body(BoxBody::new(body.map_err(|e| e.into())))
     }
 
-    pub fn request(
+    pub fn request<B>(
         &self,
         uri: Uri,
         version: Version,
         method: Method,
-        body: Body,
+        body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
-    ) -> impl Future<Output = Result<Response<Body>, HttpError>> + Send + 'static {
+    ) -> impl Future<Output = Result<Response<hyper::body::Incoming>, HttpError>> + Send + 'static
+    where
+        B: Body<Data = Bytes> + Send + Sync + Unpin + Sized + 'static,
+        <B as Body>::Error: Error + Send + Sync + 'static,
+    {
         let request = match Self::build_request(uri, version, body, method, path, headers) {
             Ok(request) => request,
             Err(err) => return future::ready(Err(err.into())).right_future(),
@@ -149,7 +172,7 @@ impl HttpClient {
     }
 }
 
-fn is_possible_h11_only_error(err: &hyper::Error) -> bool {
+fn is_possible_h11_only_error(err: &hyper_util::client::legacy::Error) -> bool {
     // this is the error we see from the h2 lib when the server sends back an http1.1 response
     // to an http2 request. http2 is designed to start requests with what looks like an invalid
     // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
@@ -163,11 +186,11 @@ fn is_possible_h11_only_error(err: &hyper::Error) -> bool {
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
     #[error(transparent)]
-    Hyper(#[from] hyper::Error),
+    Hyper(#[from] hyper_util::client::legacy::Error),
     #[error(transparent)]
-    Http(#[from] hyper::http::Error),
+    Http(#[from] http::Error),
     #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1: {0}")]
-    PossibleHTTP11Only(#[source] hyper::Error),
+    PossibleHTTP11Only(#[source] hyper_util::client::legacy::Error),
 }
 
 impl HttpError {

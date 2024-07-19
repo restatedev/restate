@@ -15,7 +15,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use googletest::prelude::*;
 use http::StatusCode;
-use http::{Method, Request, Response};
+use http::{HeaderValue, Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
 use restate_types::live::Live;
 use tokio::sync::mpsc;
@@ -933,7 +933,7 @@ async fn set_custom_content_type_on_response() {
         InvocationTargetMetadata {
             output_rules: OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
-                    content_type: http_old::HeaderValue::from_static("application/cbor"),
+                    content_type: HeaderValue::from_static("application/cbor"),
                     set_content_type_if_empty: false,
                     has_json_schema: false,
                 },
@@ -980,7 +980,7 @@ async fn set_custom_content_type_on_empty_response() {
         InvocationTargetMetadata {
             output_rules: OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
-                    content_type: http_old::HeaderValue::from_static("application/protobuf"),
+                    content_type: HeaderValue::from_static("application/protobuf"),
                     set_content_type_if_empty: true,
                     has_json_schema: false,
                 },

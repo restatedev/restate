@@ -12,7 +12,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-use http::uri::{InvalidUri, Scheme};
+use http::uri::{InvalidUri, Parts, Scheme};
 use http::Uri;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -166,7 +166,7 @@ impl ProxyUri {
     pub fn new(proxy_uri: Uri) -> Result<Self, InvalidProxyUri> {
         match proxy_uri.clone().into_parts() {
             // all three must be present
-            http::uri::Parts {
+            Parts {
                 scheme: Some(_),
                 authority: Some(_),
                 path_and_query: Some(_),

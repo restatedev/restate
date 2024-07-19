@@ -11,31 +11,35 @@
 use crate::http::HttpClient;
 use crate::lambda::LambdaClient;
 
+pub use crate::http::HttpError;
+pub use crate::lambda::AssumeRoleCacheMode;
+use crate::request_identity::SignRequest;
+use ::http::Version;
 use arc_swap::ArcSwapOption;
+use bytes::Bytes;
 use bytestring::ByteString;
 use core::fmt;
-
 use futures::FutureExt;
+use http_body_util::Full;
+use hyper::body::Body;
 use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
-use hyper::Body;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
+use std::error::Error;
 use std::fmt::Formatter;
 use std::future;
 use std::future::Future;
 use std::sync::Arc;
-
-pub use crate::http::HttpError;
-pub use crate::lambda::AssumeRoleCacheMode;
-use crate::request_identity::SignRequest;
 
 mod http;
 mod lambda;
 mod proxy;
 mod request_identity;
 mod utils;
+
+pub type ResponseBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes>>;
 
 #[derive(Debug, Clone)]
 pub struct ServiceClient {
@@ -91,10 +95,14 @@ pub enum BuildError {
 }
 
 impl ServiceClient {
-    pub fn call(
+    pub fn call<B>(
         &self,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Response<Body>, ServiceClientError>> + Send + 'static {
+        req: Request<B>,
+    ) -> impl Future<Output = Result<Response<ResponseBody>, ServiceClientError>> + Send + 'static
+    where
+        B: Body<Data = Bytes> + Send + Sync + Unpin + Sized + 'static,
+        <B as Body>::Error: Error + Send + Sync + 'static,
+    {
         let (mut parts, body) = req.into_parts();
 
         let request_identity_key = self.request_identity_key.load();
@@ -123,7 +131,7 @@ impl ServiceClient {
                     parts.path,
                     parts.headers,
                 );
-                async move { Ok(fut.await?) }.left_future()
+                async move { Ok(fut.await?.map(http_body_util::Either::Left)) }.left_future()
             }
             Endpoint::Lambda(arn, assume_role_arn) => {
                 let fut = self.lambda.invoke(
@@ -134,7 +142,7 @@ impl ServiceClient {
                     parts.path,
                     parts.headers,
                 );
-                async move { Ok(fut.await?) }.right_future()
+                async move { Ok(fut.await?.map(http_body_util::Either::Right)) }.right_future()
             }
         }
         .left_future()
@@ -234,7 +242,7 @@ impl Parts {
 
 #[derive(Clone, Debug)]
 pub enum Endpoint {
-    Http(Uri, hyper::http::Version),
+    Http(Uri, Version),
     Lambda(LambdaARN, Option<ByteString>),
 }
 

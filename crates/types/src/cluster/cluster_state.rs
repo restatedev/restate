@@ -98,7 +98,7 @@ pub struct PartitionProcessorStatus {
     #[proto(required)]
     pub updated_at: MillisSinceEpoch,
     pub planned_mode: RunMode,
-    pub effective_mode: Option<RunMode>,
+    pub effective_mode: RunMode,
     pub last_observed_leader_epoch: Option<LeaderEpoch>,
     pub last_observed_leader_node: Option<GenerationalNodeId>,
     pub last_applied_log_lsn: Option<Lsn>,
@@ -110,18 +110,12 @@ pub struct PartitionProcessorStatus {
     pub target_tail_lsn: Option<Lsn>,
 }
 
-impl PartitionProcessorStatus {
-    pub fn is_effective_leader(&self) -> bool {
-        self.effective_mode
-            .map(|m| m == RunMode::Leader)
-            .unwrap_or(false)
-    }
-
-    pub fn new(planned_mode: RunMode) -> Self {
+impl Default for PartitionProcessorStatus {
+    fn default() -> Self {
         Self {
             updated_at: MillisSinceEpoch::now(),
-            planned_mode,
-            effective_mode: None,
+            planned_mode: RunMode::Follower,
+            effective_mode: RunMode::Follower,
             last_observed_leader_epoch: None,
             last_observed_leader_node: None,
             last_applied_log_lsn: None,
@@ -131,5 +125,15 @@ impl PartitionProcessorStatus {
             last_persisted_log_lsn: None,
             target_tail_lsn: None,
         }
+    }
+}
+
+impl PartitionProcessorStatus {
+    pub fn is_effective_leader(&self) -> bool {
+        self.effective_mode == RunMode::Leader
+    }
+
+    pub fn new() -> Self {
+        Self::default()
     }
 }

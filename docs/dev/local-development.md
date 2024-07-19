@@ -21,7 +21,7 @@ Optionally, you can install [just](https://github.com/casey/just) to make use of
 To setup these on Fedora, run:
 
 ```
-sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler just liburing-devel
+sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler protobuf-devel just liburing-devel
 ```
 
 On MacOS, you can use [homebrew](https://brew.sh)

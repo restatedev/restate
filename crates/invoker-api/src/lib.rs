@@ -26,11 +26,18 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 pub mod test_util {
     use super::*;
     use bytes::Bytes;
-    use restate_types::identifiers::{InvocationId, ServiceId};
-    use restate_types::invocation::ServiceInvocationSpanContext;
+    use restate_errors::NotRunningError;
+    use restate_types::identifiers::{
+        EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
+    };
+    use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
     use restate_types::journal::raw::PlainRawEntry;
+    use restate_types::journal::Completion;
     use std::convert::Infallible;
     use std::iter::empty;
+    use std::marker::PhantomData;
+    use std::ops::RangeInclusive;
+    use tokio::sync::mpsc::Sender;
 
     #[derive(Debug, Clone)]
     pub struct EmptyStorageReader;
@@ -59,6 +66,74 @@ pub mod test_util {
             _service_id: &'a ServiceId,
         ) -> Result<EagerState<Self::StateIter>, Self::Error> {
             Ok(EagerState::new_complete(empty()))
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MockInvokerHandle<SR> {
+        phantom_data: PhantomData<SR>,
+    }
+
+    impl<SR> Default for MockInvokerHandle<SR> {
+        fn default() -> Self {
+            Self {
+                phantom_data: PhantomData,
+            }
+        }
+    }
+
+    impl<SR: Send> InvokerHandle<SR> for MockInvokerHandle<SR> {
+        async fn invoke(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+            _invocation_target: InvocationTarget,
+            _journal: InvokeInputJournal,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn notify_completion(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+            _completion: Completion,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn notify_stored_entry_ack(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+            _entry_index: EntryIndex,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn abort_all_partition(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn abort_invocation(
+            &mut self,
+            _partition_leader_epoch: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        async fn register_partition(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _partition_key_range: RangeInclusive<PartitionKey>,
+            _storage_reader: SR,
+            _sender: Sender<Effect>,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
         }
     }
 }

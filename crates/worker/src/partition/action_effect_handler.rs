@@ -11,7 +11,7 @@
 use super::leadership::ActionEffect;
 use futures::stream::FuturesUnordered;
 use restate_bifrost::{Bifrost, SMALL_BATCH_THRESHOLD_COUNT};
-use restate_core::{metadata, Metadata};
+use restate_core::Metadata;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::{LogId, Payload};
@@ -130,7 +130,7 @@ impl ActionEffectHandler {
                 partition_id: self.partition_id,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
-                node_id: metadata().my_node_id().as_plain(),
+                node_id: self.metadata.my_node_id(),
             },
         }
     }

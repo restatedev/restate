@@ -11,22 +11,21 @@
 use crate::invocation_task::{
     invocation_id_to_header_value, service_protocol_version_to_header_value,
     InvocationErrorRelatedEntry, InvocationTask, InvocationTaskError, InvocationTaskOutputInner,
-    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    InvokerBodyStream, InvokerRequestStreamSender, ResponseChunk, ResponseStreamState,
+    TerminalLoopState, X_RESTATE_SERVER,
 };
 use crate::Notification;
 use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
-use hyper::body::Sender;
-use hyper::header::HeaderName;
-use hyper::http::uri::PathAndQuery;
-use hyper::{http, Body, HeaderMap};
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_http::HeaderInjector;
+use http::uri::PathAndQuery;
+use http::{HeaderMap, HeaderName};
+use http_body::Frame;
+use opentelemetry::propagation::{Injector, TextMapPropagator};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
-use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClientError};
+use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::message::{
     Decoder, Encoder, MessageHeader, MessageType, ProtocolMessage,
 };
@@ -41,6 +40,8 @@ use restate_types::schema::deployment::{
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::future::poll_fn;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -201,8 +202,10 @@ where
         deployment_metadata: DeploymentMetadata,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
-    ) -> (Sender, Request<Body>) {
-        let (http_stream_tx, req_body) = Body::channel();
+    ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
+        // Just an arbitrary buffering size
+        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
+        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -249,7 +252,7 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn replay_loop<JournalStream>(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut InvokerRequestStreamSender,
         http_stream_rx: &mut ResponseStreamState,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
@@ -289,7 +292,7 @@ where
     async fn bidi_stream_loop(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: Sender,
+        mut http_stream_tx: InvokerRequestStreamSender,
         http_stream_rx: &mut ResponseStreamState,
     ) -> TerminalLoopState<()> {
         loop {
@@ -367,7 +370,7 @@ where
 
     async fn write_start<I: Iterator<Item = (Bytes, Bytes)>>(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut InvokerRequestStreamSender,
         journal_size: u32,
         state_entries: EagerState<I>,
     ) -> Result<(), InvocationTaskError> {
@@ -393,20 +396,14 @@ where
 
     async fn write(
         &mut self,
-        http_stream_tx: &mut Sender,
+        http_stream_tx: &mut InvokerRequestStreamSender,
         msg: ProtocolMessage,
     ) -> Result<(), InvocationTaskError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if let Err(hyper_err) = http_stream_tx.send_data(buf).await {
-            // is_closed() is try only if the request channel (Sender) has been closed.
-            // This can happen if the deployment is suspending.
-            if !hyper_err.is_closed() {
-                return Err(InvocationTaskError::Client(ServiceClientError::Http(
-                    hyper_err.into(),
-                )));
-            }
+        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+            return Err(InvocationTaskError::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
@@ -539,6 +536,20 @@ where
                     });
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
+            }
+        }
+    }
+}
+
+// TODO
+//  Copy pasted from opentelemetry_http. Replace it with the original struct as soon as we bump opentelemetry
+pub struct HeaderInjector<'a>(pub &'a mut http::HeaderMap);
+impl<'a> Injector for HeaderInjector<'a> {
+    /// Set a key and value in the HeaderMap.  Does nothing if the key or value are not valid inputs.
+    fn set(&mut self, key: &str, value: String) {
+        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
+            if let Ok(val) = http::header::HeaderValue::from_str(&value) {
+                self.0.insert(name, val);
             }
         }
     }

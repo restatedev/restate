@@ -55,7 +55,7 @@ enum ReplayStatus {
 message PartitionProcessorStatus {
   google.protobuf.Timestamp updated_at = 1;
   RunMode planned_mode = 2;
-  optional RunMode effective_mode = 3;
+  RunMode effective_mode = 3;
   optional restate.common.LeaderEpoch last_observed_leader_epoch = 4;
   optional restate.common.NodeId last_observed_leader_node = 5;
   optional restate.common.Lsn last_applied_log_lsn = 6;
