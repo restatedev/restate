@@ -99,7 +99,6 @@ impl LogReadStream {
             // skips over the boundary of the gap.
             crate::Record::TrimGap(trim_gap) => trim_gap.to,
             crate::Record::Data(_) => record.offset,
-            crate::Record::Seal(_) => record.offset,
         }
         .next()
     }
