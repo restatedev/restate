@@ -1077,7 +1077,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b829e4e32b91e643de6eafe82b1d90675f5874230191a4ffbc1b336dec4d6bf"
 dependencies = [
  "async-trait",
- "axum-core",
+ "axum-core 0.3.4",
  "bitflags 1.3.2",
  "bytes",
  "futures-util",
@@ -1092,14 +1092,46 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
- "serde_json",
- "serde_path_to_error",
  "serde_urlencoded",
  "sync_wrapper 0.1.2",
  "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "axum"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a6c9af12842a67734c9a2e355436e5d03b22383ed60cf13cd0c18fbfe3dcbcf"
+dependencies = [
+ "async-trait",
+ "axum-core 0.4.3",
+ "bytes",
+ "futures-util",
+ "http 1.1.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.4.1",
+ "hyper-util",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
+ "sync_wrapper 1.0.1",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1117,6 +1149,27 @@ dependencies = [
  "rustversion",
  "tower-layer",
  "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a15c63fd72d41492dc4f497196f5da1fb04fb7529e631d73630d1b491e47a2e3"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "http 1.1.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "rustversion",
+ "sync_wrapper 0.1.2",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -3028,16 +3081,6 @@ checksum = "add0ab9360ddbd88cfeb3bd9574a1d85cfdfa14db10b3e21d3700dbc4328758f"
 
 [[package]]
 name = "http-serde"
-version = "1.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f560b665ad9f1572cfcaf034f7fb84338a7ce945216d64a90fd81f046a3caee"
-dependencies = [
- "http 0.2.12",
- "serde",
-]
-
-[[package]]
-name = "http-serde"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f056c8559e3757392c8d091e796416e4649d8e49e88b8d76df6c002f05027fd"
@@ -3142,6 +3185,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.0",
  "tower-service",
+ "webpki-roots 0.26.3",
 ]
 
 [[package]]
@@ -4242,14 +4286,15 @@ dependencies = [
 
 [[package]]
 name = "okapi-operation"
-version = "0.2.2"
+version = "0.3.0-rc2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb9f8592e696267af3f08ae9b3072b04c1f8a38d69d9c09fe70a30a6044c46c"
+checksum = "0ba5d0188de2ac2778f6085794f8ccd0dc5f2623f13b88325eb5220769ffc532"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.5",
  "bytes",
- "http 0.2.12",
+ "http 1.1.0",
+ "indexmap 2.2.6",
  "okapi",
  "okapi-operation-macro",
  "paste",
@@ -4950,6 +4995,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "quinn"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4ceeeeabace7857413798eb1ffa1e9c905a9946a57d81fb69b4b71c4d8eb3ad"
+dependencies = [
+ "bytes",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash",
+ "rustls 0.23.11",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "quinn-proto"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddf517c03a109db8100448a4be38d498df8a210a99fe0e1b9eaf39e78c640efe"
+dependencies = [
+ "bytes",
+ "rand",
+ "ring",
+ "rustc-hash",
+ "rustls 0.23.11",
+ "slab",
+ "thiserror",
+ "tinyvec",
+ "tracing",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9096629c45860fc7fb143e125eb826b5e721e10be3263160c7d60ca832cf8c46"
+dependencies = [
+ "libc",
+ "once_cell",
+ "socket2",
+ "tracing",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5187,8 +5279,52 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots",
- "winreg",
+ "webpki-roots 0.25.4",
+ "winreg 0.50.0",
+]
+
+[[package]]
+name = "reqwest"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7d6d2a27d57148378eb5e111173f4276ad26340ecc5c49a4a2152167a2d6a37"
+dependencies = [
+ "base64 0.22.0",
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "http 1.1.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.4.1",
+ "hyper-rustls 0.27.2",
+ "hyper-util",
+ "ipnet",
+ "js-sys",
+ "log",
+ "mime",
+ "once_cell",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls 0.23.11",
+ "rustls-pemfile 2.1.2",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper 1.0.1",
+ "tokio",
+ "tokio-rustls 0.26.0",
+ "tokio-util",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams",
+ "web-sys",
+ "webpki-roots 0.26.3",
+ "winreg 0.52.0",
 ]
 
 [[package]]
@@ -5198,7 +5334,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "arrow-flight",
- "axum",
+ "axum 0.7.5",
  "bytes",
  "bytestring",
  "codederror",
@@ -5207,9 +5343,9 @@ dependencies = [
  "derive_more",
  "futures",
  "googletest",
- "http 0.2.12",
  "http 1.1.0",
- "hyper 0.14.30",
+ "http-body 1.0.1",
+ "http-body-util",
  "okapi-operation",
  "prost",
  "prost-dto",
@@ -5246,9 +5382,8 @@ name = "restate-admin-rest-model"
 version = "1.1.0"
 dependencies = [
  "bytes",
- "http 0.2.12",
  "http 1.1.0",
- "http-serde 1.1.3",
+ "http-serde",
  "humantime",
  "restate-serde-util",
  "restate-types",
@@ -5341,7 +5476,7 @@ dependencies = [
  "arc-swap",
  "arrow 51.0.0",
  "arrow_convert",
- "axum",
+ "axum 0.6.20",
  "base62",
  "base64 0.22.0",
  "bs58",
@@ -5360,7 +5495,7 @@ dependencies = [
  "figment",
  "futures",
  "http 0.2.12",
- "http-body 0.4.6",
+ "http 1.1.0",
  "hyper 0.14.30",
  "hyper-rustls 0.24.1",
  "hyper-util",
@@ -5370,7 +5505,8 @@ dependencies = [
  "jsonwebtoken",
  "octocrab",
  "open",
- "reqwest",
+ "reqwest 0.11.27",
+ "reqwest 0.12.5",
  "restate-admin-rest-model",
  "restate-cli-util",
  "restate-serde-util",
@@ -5745,7 +5881,7 @@ dependencies = [
  "arc-swap",
  "arrow-flight",
  "async-trait",
- "axum",
+ "axum 0.6.20",
  "bytes",
  "codederror",
  "datafusion",
@@ -5890,7 +6026,7 @@ dependencies = [
  "bytes",
  "bytesize",
  "http 1.1.0",
- "http-serde 2.1.1",
+ "http-serde",
  "humantime",
  "iso8601",
  "prost",
@@ -5962,7 +6098,7 @@ dependencies = [
  "h2 0.4.5",
  "http 1.1.0",
  "http-body-util",
- "http-serde 2.1.1",
+ "http-serde",
  "humantime",
  "hyper 1.4.1",
  "hyper-rustls 0.27.2",
@@ -7468,7 +7604,7 @@ checksum = "d560933a0de61cf715926b9cac824d4c883c2c43142f787595e48280c40a1d0e"
 dependencies = [
  "async-stream",
  "async-trait",
- "axum",
+ "axum 0.6.20",
  "base64 0.21.7",
  "bytes",
  "flate2",
@@ -7496,7 +7632,7 @@ checksum = "76c4eb7a4e9ef9d4763600161f12f5070b92a578e1b634db88a6887844c91a13"
 dependencies = [
  "async-stream",
  "async-trait",
- "axum",
+ "axum 0.6.20",
  "base64 0.21.7",
  "bytes",
  "h2 0.3.26",
@@ -8087,6 +8223,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
 
 [[package]]
+name = "webpki-roots"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd7c23921eeb1713a4e851530e9b9756e4fb0e89978582942612524cf09f01cd"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
 name = "which"
 version = "4.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8309,6 +8454,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "winreg"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a277a57398d4bfa075df44f501a17cfdf8542d224f0d36095a2adc7aee4ef0a5"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8319,7 +8474,7 @@ name = "xtask"
 version = "1.1.0"
 dependencies = [
  "anyhow",
- "reqwest",
+ "reqwest 0.11.27",
  "restate-admin",
  "restate-bifrost",
  "restate-core",

@@ -19,9 +19,9 @@ pub enum Error {
     Binding {
         address: SocketAddr,
         #[source]
-        source: hyper::Error,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
     #[error("error while running admin server: {0}")]
     #[code(unknown)]
-    Running(hyper::Error),
+    Running(Box<dyn std::error::Error + Send + Sync + 'static>),
 }

@@ -85,24 +85,25 @@ where
                     )),
             );
 
-        // Bind and serve
-        let server = hyper::Server::try_bind(&opts.bind_address)
+        // run our app with hyper
+        let listener = tokio::net::TcpListener::bind(&opts.bind_address)
+            .await
             .map_err(|err| Error::Binding {
                 address: opts.bind_address,
-                source: err,
-            })?
-            .serve(router.into_make_service());
-
-        info!(
-            net.host.addr = %server.local_addr().ip(),
-            net.host.port = %server.local_addr().port(),
-            "Admin API listening"
-        );
-
-        // Wait server graceful shutdown
-        Ok(server
+                source: Box::new(err),
+            })?;
+        if let Ok(local_addr) = listener.local_addr() {
+            info!(
+                net.host.addr = %local_addr.ip(),
+                net.host.port = %local_addr.port(),
+                "Admin API listening"
+            );
+        } else {
+            info!("Admin API listening");
+        }
+        Ok(axum::serve(listener, router)
             .with_graceful_shutdown(cancellation_watcher())
             .await
-            .map_err(Error::Running)?)
+            .map_err(|e| Error::Running(Box::new(e)))?)
     }
 }

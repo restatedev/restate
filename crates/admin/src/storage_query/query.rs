@@ -15,9 +15,8 @@ use std::task::{Context, Poll};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::FlightData;
-use axum::body::StreamBody;
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::{http, Json};
 use bytes::Bytes;
 use datafusion::arrow::array::{
@@ -29,6 +28,8 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{ready, Stream, StreamExt, TryStreamExt};
+use http_body::Frame;
+use http_body_util::StreamBody;
 use okapi_operation::*;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -82,16 +83,15 @@ pub async fn query(
     );
 
     // create a stream without LargeUtf8 or LargeBinary columns as JS doesn't support these yet
-    let result_stream = ConvertRecordBatchStream::new(record_batch_stream);
+    let result_stream = ConvertRecordBatchStream::new(record_batch_stream).map_ok(Frame::data);
 
-    let body = StreamBody::new(result_stream);
-    Ok((
-        [(
+    Ok(Response::builder()
+        .header(
             http::header::CONTENT_TYPE,
             "application/vnd.apache.arrow.stream",
-        )],
-        body,
-    ))
+        )
+        .body(StreamBody::new(result_stream))
+        .unwrap())
 }
 
 fn convert_schema(schema: SchemaRef) -> SchemaRef {

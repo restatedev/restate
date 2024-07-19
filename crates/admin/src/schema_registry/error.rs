@@ -89,7 +89,7 @@ pub enum ServiceError {
     BadInputContentType(String, BadInputContentType),
     #[error("the handler '{0}' output content-type is not valid: {1}")]
     #[code(unknown)]
-    BadOutputContentType(String, http_1::header::InvalidHeaderValue),
+    BadOutputContentType(String, http::header::InvalidHeaderValue),
     #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
     #[code(unknown)]
     BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),

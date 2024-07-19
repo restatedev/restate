@@ -94,10 +94,7 @@ where
         )
         .route("/health", get(openapi_handler!(health::health)))
         .route("/version", get(openapi_handler!(version::version)))
-        .route_openapi_specification(
-            "/openapi",
-            OpenApiBuilder::new("Admin API", env!("CARGO_PKG_VERSION")),
-        )
+        .finish_openapi("/openapi", "Admin API", env!("CARGO_PKG_VERSION"))
         .expect("Error when building the OpenAPI specification")
         .with_state(state)
 }
