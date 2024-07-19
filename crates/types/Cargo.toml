@@ -45,7 +45,7 @@ prost-types = { workspace = true }
 rand = { workspace = true }
 regress = { workspace = true }
 schemars = { workspace = true, optional = true }
-serde = { workspace = true, features = ["rc"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 sha2 = { workspace = true }

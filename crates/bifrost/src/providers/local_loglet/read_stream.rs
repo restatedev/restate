@@ -71,7 +71,7 @@ impl LocalLogletReadStream {
         // We seek to next key on every iteration, we need to setup the iterator to be
         // at the previous key within the same prefix if from_offset > 0 (saturating to
         // LogletOffset::INVALID)
-        let key = RecordKey::new(loglet.log_id, from_offset.prev());
+        let key = RecordKey::new(loglet.loglet_id, from_offset.prev());
         let mut read_opts = rocksdb::ReadOptions::default();
         read_opts.set_tailing(true);
         // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
@@ -84,7 +84,7 @@ impl LocalLogletReadStream {
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
         read_opts.set_iterate_lower_bound(key.to_bytes());
-        read_opts.set_iterate_upper_bound(RecordKey::upper_bound(loglet.log_id).to_bytes());
+        read_opts.set_iterate_upper_bound(RecordKey::upper_bound(loglet.loglet_id).to_bytes());
 
         let log_store = &loglet.log_store;
         let mut release_watch = loglet.release_watch.to_stream();
@@ -107,7 +107,7 @@ impl LocalLogletReadStream {
         };
 
         Ok(Self {
-            log_id: loglet.log_id,
+            log_id: loglet.loglet_id,
             loglet,
             read_pointer: from_offset,
             iterator: iter,
@@ -236,12 +236,12 @@ impl Stream for LocalLogletReadStream {
             debug_assert_eq!(loaded_key.offset, key.offset);
 
             // Defensive, the upper_bound set on the iterator should prevent this.
-            if loaded_key.log_id != *this.log_id {
+            if loaded_key.loglet_id != *this.log_id {
                 warn!(
                     log_id = *this.log_id,
                     "read_after moved to the adjacent log {}, that should not happen.\
                     This is harmless but needs to be investigated!",
-                    key.log_id,
+                    key.loglet_id,
                 );
                 this.terminated.set(true);
                 return Poll::Ready(None);
