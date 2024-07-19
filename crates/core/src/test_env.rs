@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
 
-use restate_types::logs::metadata::{create_static_metadata, ProviderKind};
+use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
@@ -288,7 +288,7 @@ where
         self.metadata_writer.submit(self.nodes_config.clone());
 
         let logs =
-            create_static_metadata(self.provider_kind, self.partition_table.num_partitions());
+            bootstrap_logs_metadata(self.provider_kind, self.partition_table.num_partitions());
         self.metadata_store_client
             .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
             .await

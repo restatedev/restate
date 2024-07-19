@@ -32,7 +32,7 @@ use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::{CommonOptions, Configuration};
-use restate_types::logs::metadata::{create_static_metadata, Logs};
+use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
@@ -453,7 +453,7 @@ impl Node {
     ) -> Result<Logs, Error> {
         Self::retry_on_network_error(|| {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                create_static_metadata(config.bifrost.default_provider, num_partitions)
+                bootstrap_logs_metadata(config.bifrost.default_provider, num_partitions)
             })
         })
         .await
