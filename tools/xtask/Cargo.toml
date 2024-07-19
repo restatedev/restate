@@ -19,7 +19,7 @@ restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }
 
 anyhow = { workspace = true }
-reqwest = { version = "0.11.16", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12.5", default-features = false, features = ["rustls-tls"] }
 schemars = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
