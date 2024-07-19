@@ -21,8 +21,8 @@ use restate_types::logs::SequenceNumber;
 use restate_types::logs::{LogId, Lsn};
 
 use crate::bifrost::BifrostInner;
-use crate::loglet::LogletReadStreamWrapper;
-use crate::loglet::LogletWrapper;
+use crate::loglet_wrapper::LogletReadStreamWrapper;
+use crate::loglet_wrapper::LogletWrapper;
 use crate::FindTailAttributes;
 use crate::LogRecord;
 use crate::Result;

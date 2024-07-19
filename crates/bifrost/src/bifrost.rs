@@ -24,10 +24,11 @@ use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
 
-use crate::loglet::{LogletBase, LogletWrapper};
+use crate::loglet::{LogletBase, LogletProvider};
+use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
 use crate::{
-    Error, FindTailAttributes, LogReadStream, LogRecord, LogletProvider, Result, TailState,
+    Error, FindTailAttributes, LogReadStream, LogRecord, Result, TailState,
     SMALL_BATCH_THRESHOLD_COUNT,
 };
 
@@ -48,7 +49,7 @@ impl Bifrost {
 
     #[cfg(any(test, feature = "test-util"))]
     pub async fn init_in_memory(metadata: Metadata) -> Self {
-        use crate::loglets::memory_loglet;
+        use crate::providers::memory_loglet;
 
         Self::init_with_factory(metadata, memory_loglet::Factory::default()).await
     }
@@ -75,7 +76,7 @@ impl Bifrost {
     #[cfg(any(test, feature = "test-util"))]
     pub async fn init_with_factory(
         metadata: Metadata,
-        factory: impl crate::LogletProviderFactory,
+        factory: impl crate::loglet::LogletProviderFactory,
     ) -> Self {
         use crate::BifrostService;
 
@@ -436,7 +437,7 @@ mod tests {
 
     use super::*;
 
-    use crate::loglets::memory_loglet::{self};
+    use crate::providers::memory_loglet::{self};
     use googletest::prelude::*;
 
     use crate::{Record, TrimGap};

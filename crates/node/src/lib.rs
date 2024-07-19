@@ -160,7 +160,7 @@ impl Node {
         // Setup bifrost
         // replicated-loglet
         #[cfg(feature = "replicated-loglet")]
-        let replicated_loglet_factory = restate_bifrost::loglets::replicated_loglet::Factory::new(
+        let replicated_loglet_factory = restate_bifrost::providers::replicated_loglet::Factory::new(
             updateable_config
                 .clone()
                 .map(|c| &c.bifrost.replicated_loglet)
