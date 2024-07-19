@@ -21,7 +21,7 @@ use tracing::info;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::{cancellation_watcher, task_center, MetadataWriter};
+use restate_core::{cancellation_token, task_center, MetadataWriter};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 
@@ -101,8 +101,9 @@ where
         } else {
             info!("Admin API listening");
         }
+        let cancellation_token = cancellation_token();
         Ok(axum::serve(listener, router)
-            .with_graceful_shutdown(cancellation_watcher())
+            .with_graceful_shutdown(async move { cancellation_token.cancelled().await })
             .await
             .map_err(|e| Error::Running(Box::new(e)))?)
     }
