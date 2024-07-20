@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 // mod multi_service_tracer;
+mod exporter;
 mod pretty;
-mod processor;
 mod tracer;
 
+use crate::exporter::ResourceModifyingSpanExporter;
 use crate::pretty::PrettyFields;
-use crate::processor::ResourceModifyingSpanProcessor;
 use crate::tracer::SpanModifyingTracer;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry::KeyValue;
@@ -86,10 +86,10 @@ where
     ]);
 
     // the following logic is based on `opentelemetry_otlp::span::build_batch_with_exporter`
-    // but also injecting ResourceModifyingSpanProcessor around the BatchSpanProcessor
+    // but also injecting ResourceModifyingSpanExporter around the SpanExporter
 
     let mut tracer_provider_builder = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_config(opentelemetry_sdk::trace::config().with_resource(resource));
+        .with_config(opentelemetry_sdk::trace::Config::default().with_resource(resource));
 
     if let Some(endpoint) = &common_opts.tracing_endpoint {
         let exporter = SpanExporterBuilder::from(
@@ -98,36 +98,34 @@ where
                 .with_endpoint(endpoint),
         )
         .build_span_exporter()?;
-        tracer_provider_builder =
-            tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
-                BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-            ));
+        let exporter = ResourceModifyingSpanExporter::new(exporter);
+        tracer_provider_builder = tracer_provider_builder.with_span_processor(
+            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
+        );
     }
 
     if let Some(path) = &common_opts.tracing_json_path {
-        tracer_provider_builder =
-            tracer_provider_builder.with_span_processor(ResourceModifyingSpanProcessor::new(
-                BatchSpanProcessor::builder(
-                    JaegerJsonExporter::new(
-                        path.into(),
-                        "trace".to_string(),
-                        service_name,
-                        opentelemetry_sdk::runtime::Tokio,
-                    ),
-                    opentelemetry_sdk::runtime::Tokio,
-                )
-                .build(),
-            ));
+        let exporter = JaegerJsonExporter::new(
+            path.into(),
+            "trace".to_string(),
+            service_name,
+            opentelemetry_sdk::runtime::Tokio,
+        );
+        let exporter = ResourceModifyingSpanExporter::new(exporter);
+
+        tracer_provider_builder = tracer_provider_builder.with_span_processor(
+            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
+        );
     }
 
     let provider = tracer_provider_builder.build();
 
-    let tracer = SpanModifyingTracer::new(provider.versioned_tracer(
-        "opentelemetry-otlp",
-        Some(env!("CARGO_PKG_VERSION")),
-        None::<&'static str>,
-        None,
-    ));
+    let tracer = SpanModifyingTracer::new(
+        provider
+            .tracer_builder("opentelemetry-otlp")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build(),
+    );
     let _ = opentelemetry::global::set_tracer_provider(provider);
 
     Ok(Some(

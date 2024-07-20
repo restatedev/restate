@@ -29,7 +29,7 @@ options_schema = [
 replicated-loglet = [
     "restate-node/replicated-loglet",
 ]
-    
+
 [dependencies]
 restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
@@ -63,7 +63,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 toml = { version = "0.8.12" }
 tracing = { workspace = true }
-tracing-panic = { version = "0.1.1" }
+tracing-panic = { version = "0.1.2" }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }

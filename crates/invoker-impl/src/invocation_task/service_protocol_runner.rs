@@ -21,7 +21,7 @@ use futures::{FutureExt, Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName};
 use http_body::Frame;
-use opentelemetry::propagation::{Injector, TextMapPropagator};
+use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
@@ -224,7 +224,7 @@ where
         // Inject OpenTelemetry context
         TraceContextPropagator::new().inject_context(
             &Span::current().context(),
-            &mut HeaderInjector(&mut headers),
+            &mut opentelemetry_http::HeaderInjector(&mut headers),
         );
 
         let address = match deployment_metadata.ty {
@@ -536,20 +536,6 @@ where
                     });
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
-            }
-        }
-    }
-}
-
-// TODO
-//  Copy pasted from opentelemetry_http. Replace it with the original struct as soon as we bump opentelemetry
-pub struct HeaderInjector<'a>(pub &'a mut http::HeaderMap);
-impl<'a> Injector for HeaderInjector<'a> {
-    /// Set a key and value in the HeaderMap.  Does nothing if the key or value are not valid inputs.
-    fn set(&mut self, key: &str, value: String) {
-        if let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) {
-            if let Ok(val) = http::header::HeaderValue::from_str(&value) {
-                self.0.insert(name, val);
             }
         }
     }

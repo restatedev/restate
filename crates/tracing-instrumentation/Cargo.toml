@@ -16,15 +16,16 @@ rt-tokio = ["dep:tokio"]
 [dependencies]
 restate-types = { workspace = true }
 
-console-subscriber = { version = "0.2.0", optional = true }
+console-subscriber = { version = "0.3.0", optional = true }
 derive_builder = { workspace = true }
+futures = { workspace = true }
 nu-ansi-term = "0.46.0"
 once_cell = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { version = "0.14.0", features = ["jaeger_json_exporter", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.15.0" }
-opentelemetry_sdk = { workspace = true }
-opentelemetry-semantic-conventions = "0.14.0"
+opentelemetry-contrib = { version = "0.16.0", features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.17.0" }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-semantic-conventions = "0.16.0"
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -32,7 +33,7 @@ tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
-metrics-tracing-context = { version = "0.15.0" }
+metrics-tracing-context = { version = "0.16.0" }
 
 [dev-dependencies]
 tokio = { workspace = true }

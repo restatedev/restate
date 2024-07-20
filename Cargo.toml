@@ -130,9 +130,9 @@ metrics-exporter-prometheus = { version = "0.15", default-features = false, feat
     "async-runtime",
 ] }
 once_cell = "1.18"
-opentelemetry = { version = "0.22.0" }
-opentelemetry-http = { version = "0.11.1" }
-opentelemetry_sdk = { version = "0.22.1" }
+opentelemetry = { version = "0.24.0" }
+opentelemetry-http = { version = "0.13.0" }
+opentelemetry_sdk = { version = "0.24.0" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
@@ -188,9 +188,10 @@ tonic-0-11 = { package = "tonic", version = "0.11.0", default-features = false }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }
 tracing = "0.1"
-tracing-opentelemetry = { version = "0.23.0" }
+# until 0.25.0 released (should be soon)
+tracing-opentelemetry = { git = "https://github.com/tokio-rs/tracing-opentelemetry", rev = "6fb2ba4c8b5b5b00e2566256c3ce80d7ebbe59ec" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tracing-test = { version = "0.2.4" }
+tracing-test = { version = "0.2.5" }
 ulid = { version = "1.1.0" }
 url = { version = "2.5" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
