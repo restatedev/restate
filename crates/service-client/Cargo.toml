@@ -37,7 +37,7 @@ pem = { version = "3.0.3" }
 tower-service = { version = "0.3" }
 ring = { version = "0.17.8" }
 restate-types = { workspace = true }
-rustls = {version = "0.23.11", features = ["ring"]}
+rustls = {version = "0.23.11", default-features = false, features = ["ring"]}
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
