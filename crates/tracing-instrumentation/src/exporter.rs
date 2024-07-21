@@ -13,12 +13,10 @@ use futures::future::BoxFuture;
 use opentelemetry::trace::TraceError;
 use opentelemetry::{Key, KeyValue, StringValue, Value};
 use opentelemetry_sdk::export::trace::SpanData;
-use opentelemetry_sdk::runtime::Runtime;
 use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// `RPC_SERVICE` is used to override `service.name` on the `SpanBuilder`
 const RPC_SERVICE: Key = Key::from_static_str("rpc.service");
@@ -27,24 +25,22 @@ const RPC_SERVICE: Key = Key::from_static_str("rpc.service");
 /// the service name which is within the resource field. As this field is set during export,
 /// we are forced to intercept the export
 #[derive(Debug)]
-pub(crate) struct ResourceModifyingSpanExporter<T, R> {
+pub(crate) struct ResourceModifyingSpanExporter<T> {
     exporter: Option<Arc<Mutex<T>>>,
     resource: ArcSwap<Resource>,
-    runtime: R,
 }
 
-impl<T, R> ResourceModifyingSpanExporter<T, R> {
-    pub(crate) fn new(inner: T, runtime: R) -> Self {
+impl<T> ResourceModifyingSpanExporter<T> {
+    pub(crate) fn new(inner: T) -> Self {
         ResourceModifyingSpanExporter {
             exporter: Some(Arc::new(Mutex::new(inner))),
             resource: ArcSwap::from_pointee(Resource::empty()),
-            runtime,
         }
     }
 }
 
-impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static, R: Runtime + std::fmt::Debug>
-    opentelemetry_sdk::export::trace::SpanExporter for ResourceModifyingSpanExporter<T, R>
+impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static>
+    opentelemetry_sdk::export::trace::SpanExporter for ResourceModifyingSpanExporter<T>
 {
     fn export(
         &mut self,
@@ -80,20 +76,25 @@ impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static, R: Runtime + s
         let resource = self.resource.load();
 
         Box::pin(async move {
-            let mut exporter = match exporter.try_lock() {
-                Ok(exporter) => exporter,
-                Err(_) => {
-                    return Err(TraceError::Other("export on SpanExporter has been called concurrently in violation of its contract".into()))
-                }
-            };
             for (service_name, batch) in spans_by_service.into_iter() {
-                match service_name {
-                    None => exporter.set_resource(&resource),
-                    Some(service_name) => exporter.set_resource(&resource.merge(&Resource::new(
-                        std::iter::once(KeyValue::new(SERVICE_NAME, service_name)),
-                    ))),
+                {
+                    let mut exporter_guard = match exporter.lock() {
+                        Ok(exporter) => exporter,
+                        Err(_) => {
+                            return Err(TraceError::Other("exporter mutex is poisoned".into()))
+                        }
+                    };
+                    match service_name {
+                        None => exporter_guard.set_resource(&resource),
+                        Some(service_name) => {
+                            exporter_guard.set_resource(&resource.merge(&Resource::new(
+                                std::iter::once(KeyValue::new(SERVICE_NAME, service_name)),
+                            )))
+                        }
+                    }
+                    exporter_guard.export(batch)
                 }
-                exporter.export(batch).await?;
+                .await?;
             }
             Ok(())
         })
@@ -101,16 +102,10 @@ impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static, R: Runtime + s
 
     fn shutdown(&mut self) {
         if let Some(exporter) = self.exporter.take() {
-            if let Ok(mut exporter) = exporter.try_lock() {
-                // this is the case we expect; that shutdown is only called when all export calls have been awaited
+            // wait for any in-flight export to finish
+            if let Ok(mut exporter) = exporter.lock() {
                 return exporter.shutdown();
             }
-            // but for completeness, cover the contested case too
-            // wait for existing export() to complete, then shutdown underlying exporter
-            _ = self.runtime.spawn(Box::pin(async move {
-                let mut e = exporter.lock().await;
-                e.shutdown()
-            }));
         }
     }
 
@@ -125,12 +120,17 @@ impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static, R: Runtime + s
                 ))))
             }
         };
-        Box::pin(async move {
-            // wait for any in-flight export to finish
-            let mut exporter = exporter.lock().await;
-            // wait for flush on the underlying exporter
-            exporter.force_flush().await
-        })
+        // wait for any in-flight export to finish
+        let mut exporter_guard = match exporter.lock() {
+            Ok(exporter_guard) => exporter_guard,
+            Err(_) => {
+                return Box::pin(std::future::ready(Err(TraceError::Other(
+                    "exporter mutex is poisoned".into(),
+                ))))
+            }
+        };
+        let fut = exporter_guard.force_flush();
+        Box::pin(fut)
     }
 
     fn set_resource(&mut self, resource: &Resource) {
