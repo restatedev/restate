@@ -104,7 +104,7 @@ impl<T: opentelemetry_sdk::export::trace::SpanExporter + 'static>
         if let Some(exporter) = self.exporter.take() {
             // wait for any in-flight export to finish
             if let Ok(mut exporter) = exporter.lock() {
-                return exporter.shutdown();
+                exporter.shutdown()
             }
         }
     }
