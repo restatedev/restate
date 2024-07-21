@@ -188,8 +188,7 @@ tonic-0-11 = { package = "tonic", version = "0.11.0", default-features = false }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }
 tracing = "0.1"
-# until 0.25.0 released (should be soon)
-tracing-opentelemetry = { git = "https://github.com/tokio-rs/tracing-opentelemetry", rev = "6fb2ba4c8b5b5b00e2566256c3ce80d7ebbe59ec" }
+tracing-opentelemetry = { version = "0.25.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-test = { version = "0.2.5" }
 ulid = { version = "1.1.0" }

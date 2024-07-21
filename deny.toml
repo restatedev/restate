@@ -168,7 +168,6 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/restatedev/rust-rocksdb.git",
-    "https://github.com/tokio-rs/tracing-opentelemetry.git",
 ]
 
 [sources.allow-org]

@@ -7856,7 +7856,8 @@ dependencies = [
 [[package]]
 name = "tracing-opentelemetry"
 version = "0.25.0"
-source = "git+https://github.com/tokio-rs/tracing-opentelemetry?rev=6fb2ba4c8b5b5b00e2566256c3ce80d7ebbe59ec#6fb2ba4c8b5b5b00e2566256c3ce80d7ebbe59ec"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9784ed4da7d921bc8df6963f8c80a0e4ce34ba6ba76668acadd3edbd985ff3b"
 dependencies = [
  "js-sys",
  "once_cell",
