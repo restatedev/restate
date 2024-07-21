@@ -98,7 +98,8 @@ where
                 .with_endpoint(endpoint),
         )
         .build_span_exporter()?;
-        let exporter = ResourceModifyingSpanExporter::new(exporter);
+        let exporter =
+            ResourceModifyingSpanExporter::new(exporter, opentelemetry_sdk::runtime::Tokio);
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
         );
@@ -111,7 +112,8 @@ where
             service_name,
             opentelemetry_sdk::runtime::Tokio,
         );
-        let exporter = ResourceModifyingSpanExporter::new(exporter);
+        let exporter =
+            ResourceModifyingSpanExporter::new(exporter, opentelemetry_sdk::runtime::Tokio);
 
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
