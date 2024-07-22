@@ -27,7 +27,8 @@ use super::LogStoreError;
 pub struct LogStateUpdates {
     /// SmallVec is used to avoid heap allocation for the common case of small
     /// number of updates.
-    updates: SmallVec<[LogStateUpdate; 1]>,
+    /// Assumes one entry per LogStateUpdate variant at most since everything can be merged.
+    updates: SmallVec<[LogStateUpdate; 3]>,
 }
 
 /// Represents a single update to the log state.
@@ -46,26 +47,65 @@ impl LogStateUpdates {
     }
 
     pub fn update_release_pointer(mut self, release_pointer: LogletOffset) -> Self {
+        // update existing release pointer if exists, otherwise, add to the vec.
+        for update in &mut self.updates {
+            if let LogStateUpdate::ReleasePointer(ref mut existing) = update {
+                *existing = (*existing).max(release_pointer.into());
+                return self;
+            }
+        }
+
         self.updates
             .push(LogStateUpdate::ReleasePointer(release_pointer.into()));
         self
     }
 
     pub fn update_trim_point(mut self, trim_point: LogletOffset) -> Self {
+        // update existing release pointer if exists, otherwise, add to the vec.
+        for update in &mut self.updates {
+            if let LogStateUpdate::TrimPoint(ref mut existing) = update {
+                *existing = (*existing).max(trim_point.into());
+                return self;
+            }
+        }
         self.updates
             .push(LogStateUpdate::TrimPoint(trim_point.into()));
         self
     }
 
     pub fn seal(mut self) -> Self {
+        // do nothing if we will seal already
+        for update in &self.updates {
+            if matches!(update, LogStateUpdate::Seal) {
+                return self;
+            }
+        }
         self.updates.push(LogStateUpdate::Seal);
+        self
+    }
+
+    pub fn merge(mut self, rhs: LogStateUpdates) -> Self {
+        for update in rhs.updates {
+            match update {
+                LogStateUpdate::ReleasePointer(release_pointer) => {
+                    self = self.update_release_pointer(LogletOffset::from(release_pointer));
+                }
+                LogStateUpdate::TrimPoint(trim_point) => {
+                    self = self.update_trim_point(LogletOffset::from(trim_point));
+                }
+                LogStateUpdate::Seal => {
+                    self = self.seal();
+                }
+            }
+        }
         self
     }
 }
 
 impl LogStateUpdates {
     pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
-        let mut buf = BytesMut::default();
+        // trying to avoid buffer resizing by having plenty of space for serialization
+        let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
         self.encode(&mut buf)?;
         Ok(buf.freeze())
     }
@@ -90,7 +130,8 @@ pub struct LogState {
 
 impl LogState {
     pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
-        let mut buf = BytesMut::default();
+        // trying to avoid buffer resizing by having plenty of space for serialization
+        let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
         StorageCodec::encode(self, &mut buf)?;
         Ok(buf.freeze())
     }
@@ -172,10 +213,12 @@ pub fn log_state_partial_merge(
         warn!(key = ?key, "Merge is only supported for log-state");
         return None;
     }
-    let mut merged = LogStateUpdates::with_capacity(operands.len());
+    // assuming one entry per LogStateUpdate variant at most since everything can be merged.
+    let mut merged = LogStateUpdates::with_capacity(3);
+
     for op in operands {
         let updates = LogStateUpdates::from_slice(op);
-        let mut updates = match updates {
+        let updates = match updates {
             Err(e) => {
                 error!(key = ?key,"Failed to decode log state updates: {}", e);
                 return None;
@@ -183,8 +226,8 @@ pub fn log_state_partial_merge(
             Ok(updates) => updates,
         };
 
-        // todo (asoli): actually merge updates
-        merged.updates.append(&mut updates.updates);
+        // deduplicates all operations
+        merged = merged.merge(updates);
     }
     match merged.to_bytes() {
         Ok(bytes) => Some(bytes.into()),
