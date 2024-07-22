@@ -92,7 +92,7 @@ impl NetworkSender for Networking {
                 sleep_with_jitter(SEND_RETRY_BASE_DURATION).await;
             }
 
-            let sender = match self.connections.get_node_sender(to).await {
+            let mut sender = match self.connections.get_node_sender(to).await {
                 Ok(sender) => sender,
                 // retryable errors
                 Err(

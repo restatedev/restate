@@ -74,12 +74,7 @@ impl NetworkSender for MockNetworkSender {
         };
 
         let metadata = metadata();
-        let header = Header::new(
-            metadata.nodes_config_version(),
-            metadata.logs_version(),
-            metadata.schema_version(),
-            metadata.partition_table_version(),
-        );
+        let header = Header::new(metadata.nodes_config_version(), None, None, None);
         let body =
             serialize_message(message, CURRENT_PROTOCOL_VERSION).map_err(ProtocolError::Codec)?;
         sender

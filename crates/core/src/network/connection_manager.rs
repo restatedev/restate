@@ -183,12 +183,7 @@ impl ConnectionManager {
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
         let welcome = Message::new(
-            Header::new(
-                nodes_config.version(),
-                self.metadata.logs_version(),
-                self.metadata.schema_version(),
-                self.metadata.partition_table_version(),
-            ),
+            Header::new(nodes_config.version(), None, None, None),
             welcome,
         );
 
@@ -196,12 +191,7 @@ impl ConnectionManager {
             .expect("channel accept Welcome message");
 
         INCOMING_CONNECTION.increment(1);
-        let connection = Connection::new(
-            peer_node_id,
-            selected_protocol_version,
-            tx,
-            self.metadata.clone(),
-        );
+        let connection = Connection::new(peer_node_id, selected_protocol_version, tx);
         // Register the connection.
         let _ = self.start_connection_reactor(connection, incoming)?;
         // For uniformity with outbound connections, we map all responses to Ok, we never rely on
@@ -251,7 +241,7 @@ impl ConnectionManager {
         node_id: GenerationalNodeId,
     ) -> Result<ConnectionSender, NetworkError> {
         let connection = self.connect(node_id).await?;
-        Ok(connection.sender())
+        Ok(connection.sender(&self.metadata))
     }
 
     /// Gets an existing connection or creates a new one if no active connection exists. If
@@ -268,12 +258,12 @@ impl ConnectionManager {
         };
 
         if let Some(connection) = maybe_connection {
-            return Ok(connection.sender());
+            return Ok(connection.sender(&self.metadata));
         }
         // We have no connection, or the connection we picked is stale. We attempt to create a
         // new connection anyway.
         let connection = self.connect(node_id).await?;
-        Ok(connection.sender())
+        Ok(connection.sender(&self.metadata))
     }
 
     async fn connect(&self, node_id: GenerationalNodeId) -> Result<Arc<Connection>, NetworkError> {
@@ -309,12 +299,7 @@ impl ConnectionManager {
         node_id: GenerationalNodeId,
     ) -> Result<Arc<Connection>, NetworkError> {
         let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
-        let connection = Connection::new(
-            node_id,
-            restate_types::net::CURRENT_PROTOCOL_VERSION,
-            tx,
-            self.metadata.clone(),
-        );
+        let connection = Connection::new(node_id, restate_types::net::CURRENT_PROTOCOL_VERSION, tx);
 
         let transformed = ReceiverStream::new(rx).map(Ok);
         let incoming = Box::pin(transformed);
@@ -337,12 +322,7 @@ impl ConnectionManager {
 
         // perform handshake.
         let hello = Message::new(
-            Header::new(
-                self.metadata.nodes_config_version(),
-                self.metadata.logs_version(),
-                self.metadata.schema_version(),
-                self.metadata.partition_table_version(),
-            ),
+            Header::new(self.metadata.nodes_config_version(), None, None, None),
             hello,
         );
 
@@ -389,7 +369,6 @@ impl ConnectionManager {
                 .expect("must be generational id"),
             protocol_version,
             tx,
-            self.metadata.clone(),
         );
 
         self.start_connection_reactor(connection, transformed)
@@ -448,7 +427,14 @@ impl ConnectionManager {
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
             None,
-            run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
+            run_reactor(
+                self.inner.clone(),
+                connection.clone(),
+                router,
+                incoming,
+                self.metadata.clone(),
+            )
+            .instrument(span),
         )?;
         debug!(
             peer_node_id = %peer_node_id,
@@ -474,6 +460,7 @@ async fn run_reactor<S>(
     connection: Arc<Connection>,
     router: MessageRouter,
     mut incoming: S,
+    metadata: Metadata,
 ) -> anyhow::Result<()>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
@@ -524,7 +511,7 @@ where
                 .into_iter()
                 .for_each(|(kind, version)| {
                     if let Some(version) = version {
-                        connection.metadata.notify_observed_version(
+                        metadata.notify_observed_version(
                             kind,
                             version,
                             Some(NodeId::from(connection.peer)),
@@ -793,12 +780,7 @@ mod tests {
                     cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
                 };
                 let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        metadata.logs_version(),
-                        metadata.schema_version(),
-                        metadata.partition_table_version(),
-                    ),
+                    Header::new(metadata.nodes_config_version(), None, None, None),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -826,12 +808,7 @@ mod tests {
                     cluster_name: "Random-cluster".to_owned(),
                 };
                 let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        metadata.logs_version(),
-                        metadata.schema_version(),
-                        metadata.partition_table_version(),
-                    ),
+                    Header::new(metadata.nodes_config_version(), None, None, None),
                     hello,
                 );
                 tx.send(Ok(hello)).await?;
@@ -872,12 +849,7 @@ mod tests {
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
                 let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        metadata.logs_version(),
-                        metadata.schema_version(),
-                        metadata.partition_table_version(),
-                    ),
+                    Header::new(metadata.nodes_config_version(), None, None, None),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -909,12 +881,7 @@ mod tests {
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
                 let hello = Message::new(
-                    Header::new(
-                        metadata.nodes_config_version(),
-                        metadata.logs_version(),
-                        metadata.schema_version(),
-                        metadata.partition_table_version(),
-                    ),
+                    Header::new(metadata.nodes_config_version(), None, None, None),
                     hello,
                 );
                 tx.send(Ok(hello))
@@ -977,9 +944,9 @@ mod tests {
                 let partition_table_version = metadata.partition_table_version().next();
                 let header = Header::new(
                     metadata.nodes_config_version(),
-                    metadata.logs_version(),
-                    metadata.schema_version(),
-                    partition_table_version,
+                    None,
+                    None,
+                    Some(partition_table_version),
                 );
 
                 connection.send(request, header).await?;
@@ -1043,12 +1010,7 @@ mod tests {
             metadata.nodes_config_ref().cluster_name().to_owned(),
         );
         let hello = Message::new(
-            Header::new(
-                metadata.nodes_config_version(),
-                metadata.logs_version(),
-                metadata.schema_version(),
-                metadata.partition_table_version(),
-            ),
+            Header::new(metadata.nodes_config_version(), None, None, None),
             hello,
         );
         tx.send(Ok(hello))
