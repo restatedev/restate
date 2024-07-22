@@ -15,8 +15,8 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use futures_util::{future, TryFutureExt};
-use hyper::header::CONTENT_TYPE;
-use hyper::{Body, Uri};
+use hyper_0_14::header::CONTENT_TYPE;
+use hyper_0_14::{Body, Uri};
 use pprof::flamegraph::Options;
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
@@ -35,9 +35,9 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let discovery_result = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
-                hyper::Client::new()
+                hyper_0_14::Client::new()
                     .request(
-                        hyper::Request::post("http://localhost:9070/deployments")
+                        hyper_0_14::Request::post("http://localhost:9070/deployments")
                             .header(CONTENT_TYPE, "application/json")
                             .body(Body::from(discovery_payload.clone()))
                             .expect("building discovery request should not fail"),
@@ -64,9 +64,9 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let health_response = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
-                hyper::Client::new()
+                hyper_0_14::Client::new()
                     .request(
-                        hyper::Request::get("http://localhost:8080/restate/health")
+                        hyper_0_14::Request::get("http://localhost:8080/restate/health")
                             .body(Body::empty())
                             .expect("building health request should not fail"),
                     )
