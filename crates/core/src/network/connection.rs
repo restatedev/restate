@@ -21,6 +21,7 @@ use super::metric_definitions::CONNECTION_SEND_DURATION;
 use super::metric_definitions::MESSAGE_SENT;
 use super::NetworkError;
 use super::ProtocolError;
+use crate::network::connection_manager::MetadataVersions;
 use crate::Metadata;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
@@ -91,6 +92,7 @@ impl Connection {
             schema: metadata.updateable_schema(),
             logs: metadata.updateable_logs_metadata(),
             partition_table: metadata.updateable_partition_table(),
+            metadata_versions: MetadataVersions::default(),
         }
     }
 
@@ -211,6 +213,7 @@ pub struct ConnectionSender {
     schema: Live<Schema>,
     logs: Live<Logs>,
     partition_table: Live<FixedPartitionTable>,
+    metadata_versions: MetadataVersions,
 }
 
 impl ConnectionSender {
@@ -238,14 +241,18 @@ impl ConnectionSender {
     }
 
     fn header_metadata_versions(&mut self) -> HeaderMetadataVersions {
-        let mut versions = EnumMap::default();
+        let mut version_updates = self.metadata_versions.update(
+            None,
+            Some(self.partition_table.live_load().version()),
+            Some(self.schema.live_load().version()),
+            Some(self.logs.live_load().version()),
+        );
+        version_updates[MetadataKind::NodesConfiguration] =
+            Some(self.nodes_config.live_load().version());
 
-        versions[MetadataKind::NodesConfiguration] = Some(self.nodes_config.live_load().version());
-        versions[MetadataKind::PartitionTable] = Some(self.partition_table.live_load().version());
-        versions[MetadataKind::Logs] = Some(self.logs.live_load().version());
-        versions[MetadataKind::Schema] = Some(self.schema.live_load().version());
-
-        HeaderMetadataVersions { versions }
+        HeaderMetadataVersions {
+            versions: version_updates,
+        }
     }
 }
 
