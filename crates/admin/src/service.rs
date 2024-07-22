@@ -93,9 +93,10 @@ where
                 source: Box::new(err),
             })?;
 
-        let local_addr = listener
-            .local_addr()
-            .expect("cannot read the local address of the bound socket");
+        let local_addr = listener.local_addr().map_err(|err| Error::Binding {
+            address: opts.bind_address,
+            source: Box::new(err),
+        })?;
         info!(
             net.host.addr = %local_addr.ip(),
             net.host.port = %local_addr.port(),
