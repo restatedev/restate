@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, Context, Result};
-use axum_0_6::{extract, response::Html};
+use axum::{extract, response::Html};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use restate_cli_util::{c_println, c_success, c_tip, CliContext};
@@ -71,7 +71,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 }
 
 async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
-    let client = reqwest_0_11::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent(format!(
             "{}/{} {}-{}",
             env!("CARGO_PKG_NAME"),
@@ -84,19 +84,26 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .build()
         .context("Failed to build oauth token client")?;
 
-    let server = match env.config.cloud.redirect_ports.iter().find_map(|port| {
-        axum_0_6::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], *port))).ok()
-    }) {
-        Some(server) => server,
-        None => {
+    let mut i = 0;
+    let listener = loop {
+        if i >= env.config.cloud.redirect_ports.len() {
             return Err(anyhow!(
                 "Failed to bind oauth callback server to localhost. Tried ports: [{:?}]",
                 env.config.cloud.redirect_ports
-            ))
+            ));
         }
+        if let Ok(listener) = tokio::net::TcpListener::bind(SocketAddr::from((
+            [127, 0, 0, 1],
+            env.config.cloud.redirect_ports[i],
+        )))
+        .await
+        {
+            break listener;
+        }
+        i += 1
     };
 
-    let port = server.local_addr().port();
+    let port = listener.local_addr().unwrap().port();
     let redirect_uri = format!("http://localhost:{port}/callback");
 
     let (result_send, mut result_recv) = mpsc::channel(1);
@@ -113,10 +120,10 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .append_pair("state", &state)
         .append_pair("scope", "openid");
 
-    let router = axum_0_6::Router::new()
+    let router = axum::Router::new()
         .route(
             "/callback",
-            axum_0_6::routing::get(
+            axum::routing::get(
                 |extract::State(state): extract::State<RedirectState>,
                  extract::Query(params): extract::Query<RedirectParams>| async move {
                     let post_login = include_str!("./postlogin.html");
@@ -155,8 +162,9 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
             state,
         });
 
-    let server = server.serve(router.into_make_service());
-    tokio::pin!(server);
+    let server = axum::serve(listener, router.into_make_service());
+    let server_fut = std::future::IntoFuture::into_future(server);
+    tokio::pin!(server_fut);
     let result_fut = result_recv.recv();
     tokio::pin!(result_fut);
 
@@ -169,7 +177,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
     progress.set_message("Waiting for login redirect...");
 
     let result = tokio::select! {
-        server_result = server => {
+        server_result = server_fut => {
             match server_result {
                 Ok(()) => {
                     Err(anyhow!("Authentication callback server exited before we received an access token"))
@@ -197,7 +205,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
 
 #[derive(Clone)]
 struct RedirectState {
-    client: reqwest_0_11::Client,
+    client: reqwest::Client,
     login_base_url: Url,
     client_id: String,
     redirect_uri: String,
