@@ -62,7 +62,7 @@ impl LocalMetadataStoreService {
         let bind_address = options.bind_address.clone();
         let store = LocalMetadataStore::create(options, rocksdb_options).await?;
         // Trace layer
-        let span_factory = tower_http::trace::DefaultMakeSpan::new()
+        let span_factory = tower_http_0_4::trace::DefaultMakeSpan::new()
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
@@ -75,7 +75,7 @@ impl LocalMetadataStoreService {
             .await;
 
         let server_builder = tonic::transport::Server::builder()
-            .layer(tower_http::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
+            .layer(tower_http_0_4::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(health_service)
             .add_service(MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(
                 store.request_sender(),

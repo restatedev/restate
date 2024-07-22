@@ -29,7 +29,7 @@ pub enum NetworkError {
     #[error("operation aborted, node is shutting down")]
     Shutdown(#[from] ShutdownError),
     #[error("node {0} address is bad: {1}")]
-    BadNodeAddress(NodeId, http::Error),
+    BadNodeAddress(NodeId, http_0_2::Error),
     #[error("timeout: {0}")]
     Timeout(&'static str),
     #[error("protocol error: {0}")]

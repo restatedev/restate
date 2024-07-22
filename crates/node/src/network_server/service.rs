@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use axum::routing::get;
+use axum_0_6::routing::get;
 use tonic::codec::CompressionEncoding;
-use tower_http::trace::TraceLayer;
+use tower_http_0_4::trace::TraceLayer;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_admin::cluster_controller::ClusterControllerHandle;
@@ -61,12 +61,12 @@ impl NetworkServer {
         let shared_state = state_builder.build().expect("should be infallible");
 
         // Trace layer
-        let span_factory = tower_http::trace::DefaultMakeSpan::new()
+        let span_factory = tower_http_0_4::trace::DefaultMakeSpan::new()
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
         // -- HTTP service (for prometheus et al.)
-        let router = axum::Router::new()
+        let router = axum_0_6::Router::new()
             .route("/metrics", get(handler::render_metrics))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
@@ -122,9 +122,9 @@ impl NetworkServer {
 }
 
 // handle 404
-async fn handler_404() -> (http::StatusCode, &'static str) {
+async fn handler_404() -> (axum_0_6::http::StatusCode, &'static str) {
     (
-        http::StatusCode::NOT_FOUND,
+        axum_0_6::http::StatusCode::NOT_FOUND,
         "Are you lost? Maybe visit https://restate.dev instead!",
     )
 }

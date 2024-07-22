@@ -27,7 +27,8 @@ enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
-http = { workspace = true }
+http_0_2 = { package = "http", version = "0.2" }
+hyper_0_14 = { package = "hyper", version = "0.14" }
 humantime = { workspace = true }
 hyper = { workspace = true }
 metrics = { workspace = true }

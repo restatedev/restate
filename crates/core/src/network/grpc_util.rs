@@ -13,28 +13,27 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use http::Uri;
-use hyper::body::HttpBody;
-use hyper::server::accept::Accept;
-use hyper::server::conn::AddrIncoming;
+use hyper_0_14::body::HttpBody;
+use hyper_0_14::http::Uri;
+use hyper_0_14::server::accept::Accept;
+use hyper_0_14::server::conn::AddrIncoming;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use tokio::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Channel, Endpoint};
-use tower::service_fn;
 use tracing::{debug, info};
 
 pub fn create_grpc_channel_from_advertised_address(
     address: AdvertisedAddress,
-) -> Result<Channel, http::Error> {
+) -> Result<Channel, http_0_2::Error> {
     let channel = match address {
         AdvertisedAddress::Uds(uds_path) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1")
                 .expect("/ should be a valid Uri")
-                .connect_with_connector_lazy(service_fn(move |_: Uri| {
+                .connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                     UnixStream::connect(uds_path.clone())
                 }))
         }
@@ -61,7 +60,7 @@ pub enum Error {
     TcpBinding {
         address: SocketAddr,
         #[source]
-        source: hyper::Error,
+        source: hyper_0_14::Error,
     },
     #[error("failed opening uds '{uds_path}': {source}")]
     UdsBinding {
@@ -70,7 +69,7 @@ pub enum Error {
         source: io::Error,
     },
     #[error("failed running grpc server: {0}")]
-    Running(#[from] hyper::Error),
+    Running(#[from] hyper_0_14::Error),
 }
 
 pub async fn run_hyper_server<S, B, F>(
@@ -80,8 +79,10 @@ pub async fn run_hyper_server<S, B, F>(
     server_name: &str,
 ) -> Result<(), Error>
 where
-    S: hyper::service::Service<http::Request<hyper::Body>, Response = hyper::Response<B>>
-        + Send
+    S: hyper_0_14::service::Service<
+            http_0_2::Request<hyper_0_14::Body>,
+            Response = hyper_0_14::Response<B>,
+        > + Send
         + Clone
         + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -98,7 +99,7 @@ where
                 source: err,
             })?;
             let acceptor =
-                hyper::server::accept::from_stream(UnixListenerStream::new(unix_listener));
+                hyper_0_14::server::accept::from_stream(UnixListenerStream::new(unix_listener));
 
             info!(uds.path = %uds_path.display(), "Server '{}' listening", server_name);
 
@@ -121,8 +122,10 @@ async fn run_tcp_server<S, B, F>(
     server_name: &str,
 ) -> Result<(), Error>
 where
-    S: hyper::service::Service<http::Request<hyper::Body>, Response = hyper::Response<B>>
-        + Send
+    S: hyper_0_14::service::Service<
+            http_0_2::Request<hyper_0_14::Body>,
+            Response = hyper_0_14::Response<B>,
+        > + Send
         + Clone
         + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -152,8 +155,10 @@ async fn run_server<S, B, Conn, Err, F>(
     shutdown_signal: F,
 ) -> Result<(), Error>
 where
-    S: hyper::service::Service<http::Request<hyper::Body>, Response = hyper::Response<B>>
-        + Send
+    S: hyper_0_14::service::Service<
+            http_0_2::Request<hyper_0_14::Body>,
+            Response = hyper_0_14::Response<B>,
+        > + Send
         + Clone
         + 'static,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -165,7 +170,7 @@ where
     Err: Into<Box<dyn std::error::Error + Send + Sync>>,
     F: Future<Output = ()>,
 {
-    let server = hyper::Server::builder(acceptor).serve(tower::make::Shared::new(service));
+    let server = hyper_0_14::Server::builder(acceptor).serve(tower::make::Shared::new(service));
 
     server
         .with_graceful_shutdown(shutdown_signal)

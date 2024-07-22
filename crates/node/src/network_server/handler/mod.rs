@@ -13,7 +13,7 @@ pub mod node;
 
 use std::fmt::Write;
 
-use axum::extract::State;
+use axum_0_6::extract::State;
 use metrics_exporter_prometheus::formatting;
 use rocksdb::statistics::{Histogram, Ticker};
 
