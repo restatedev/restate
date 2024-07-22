@@ -31,15 +31,15 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 
 # Tokio + Hyper
-hyper = { version = "1", features = ["server"] }
+hyper = { workspace = true, features = ["server"] }
 tokio = { workspace = true }
-http = "1.0"
+http = { workspace = true }
 url = "2.5.0"
-http-body = "1.0"
-http-body-util = "0.1"
-hyper-util = { version = "0.1.6", features = ["http1", "http2", "server", "tokio", "service"] }
-tower = { version = "0.4.13", features = ["util"] }
-tower-http = { version = "0.5.2", features = ["cors", "normalize-path"] }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+hyper-util = { workspace = true, features = ["http1", "http2", "server", "tokio", "service"] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["cors", "normalize-path"] }
 
 # We need this until we convert everything else to http 1.0/hyper 1.0
 # https://github.com/restatedev/restate/issues/96
@@ -68,8 +68,8 @@ restate-ingress-dispatcher = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
-hyper = { version = "1.0", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
+hyper = { workspace = true, features = ["full"] }
+hyper-util = { workspace = true, features = ["full"] }
 
 tracing-test = { workspace = true }
 tracing-subscriber = { workspace = true }

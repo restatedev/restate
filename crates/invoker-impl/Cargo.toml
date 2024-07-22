@@ -30,9 +30,9 @@ derive_builder = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
 
-http = "1.1.0"
-http-body = "1.0.1"
-http-body-util = "0.1.2"
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
 tokio-stream = { workspace = true }
 
 itertools = { workspace = true }
