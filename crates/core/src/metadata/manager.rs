@@ -108,9 +108,7 @@ where
             MetadataKind::NodesConfiguration => self.send_nodes_config(peer, min_version),
             MetadataKind::PartitionTable => self.send_partition_table(peer, min_version),
             MetadataKind::Logs => self.send_logs(peer, min_version),
-            _ => {
-                todo!("Can't send metadata '{}' to peer", metadata_kind)
-            }
+            MetadataKind::Schema => self.send_schema(peer, min_version),
         };
     }
 
@@ -129,6 +127,13 @@ where
         let logs = self.metadata.logs();
         if logs.version() != Version::INVALID {
             self.send_metadata_internal(to, version, logs.deref(), "logs");
+        }
+    }
+
+    fn send_schema(&self, to: GenerationalNodeId, version: Option<Version>) {
+        let schema = self.metadata.schema();
+        if schema.version != Version::INVALID {
+            self.send_metadata_internal(to, version, schema.deref(), "schema");
         }
     }
 

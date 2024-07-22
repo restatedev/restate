@@ -146,8 +146,8 @@ impl Metadata {
         self.inner.logs.load().version()
     }
 
-    pub fn schema(&self) -> Arc<Schema> {
-        self.inner.schema.load_full()
+    pub fn schema(&self) -> Pinned<Schema> {
+        Pinned::new(&self.inner.schema)
     }
 
     pub fn schema_version(&self) -> Version {
