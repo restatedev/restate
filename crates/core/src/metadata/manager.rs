@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use enum_map::EnumMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -118,9 +118,8 @@ where
     }
 
     fn send_partition_table(&self, to: GenerationalNodeId, version: Option<Version>) {
-        if let Some(partition_table) = self.metadata.partition_table() {
-            self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
-        }
+        let partition_table = self.metadata.partition_table_snapshot();
+        self.send_metadata_internal(to, version, partition_table.deref(), "partition_table");
     }
 
     fn send_logs(&self, to: GenerationalNodeId, version: Option<Version>) {
@@ -423,7 +422,7 @@ where
 
     fn update_partition_table(&mut self, partition_table: FixedPartitionTable) {
         let maybe_new_version =
-            Self::update_option_internal(&self.metadata.inner.partition_table, partition_table);
+            Self::update_internal(&self.metadata.inner.partition_table, partition_table);
 
         self.update_task_and_notify_watches(maybe_new_version, MetadataKind::PartitionTable);
     }
@@ -454,30 +453,6 @@ where
                 current_value.version(),
             );
             maybe_new_version = current_value.version();
-        }
-
-        maybe_new_version
-    }
-
-    fn update_option_internal<T: Versioned>(container: &ArcSwapOption<T>, new_value: T) -> Version {
-        let current_value = container.load();
-        let mut maybe_new_version = new_value.version();
-        match current_value.as_deref() {
-            None => {
-                container.store(Some(Arc::new(new_value)));
-            }
-            Some(current_value) if new_value.version() > current_value.version() => {
-                container.store(Some(Arc::new(new_value)));
-            }
-            Some(current_value) => {
-                /* Do nothing, current is already newer */
-                debug!(
-                    "Ignoring update {} because we are at {}",
-                    new_value.version(),
-                    current_value.version(),
-                );
-                maybe_new_version = current_value.version();
-            }
         }
 
         maybe_new_version

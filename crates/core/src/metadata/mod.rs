@@ -19,7 +19,7 @@ use restate_types::schema::Schema;
 
 use std::sync::{Arc, OnceLock};
 
-use arc_swap::{ArcSwap, ArcSwapOption, AsRaw};
+use arc_swap::{ArcSwap, AsRaw};
 use enum_map::EnumMap;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -99,17 +99,22 @@ impl Metadata {
         self.inner.nodes_config.load().version()
     }
 
-    pub fn partition_table(&self) -> Option<Arc<FixedPartitionTable>> {
+    pub fn partition_table_snapshot(&self) -> Arc<FixedPartitionTable> {
         self.inner.partition_table.load_full()
+    }
+
+    #[inline(always)]
+    pub fn partition_table_ref(&self) -> Pinned<FixedPartitionTable> {
+        Pinned::new(&self.inner.partition_table)
+    }
+
+    pub fn updateable_partition_table(&self) -> Live<FixedPartitionTable> {
+        Live::from(self.inner.partition_table.clone())
     }
 
     /// Returns Version::INVALID if partition table has not been loaded yet.
     pub fn partition_table_version(&self) -> Version {
-        let c = self.inner.partition_table.load();
-        match c.as_deref() {
-            Some(c) => c.version(),
-            None => Version::INVALID,
-        }
+        self.inner.partition_table.load().version()
     }
 
     pub fn version(&self, metadata_kind: MetadataKind) -> Version {
@@ -126,15 +131,14 @@ impl Metadata {
         &self,
         min_version: Version,
     ) -> Result<Arc<FixedPartitionTable>, ShutdownError> {
-        if let Some(partition_table) = self.partition_table() {
-            if partition_table.version() >= min_version {
-                return Ok(partition_table);
-            }
+        let partition_table = self.partition_table_ref();
+        if partition_table.version() >= min_version {
+            return Ok(partition_table.into_arc());
         }
 
         self.wait_for_version(MetadataKind::PartitionTable, min_version)
             .await?;
-        Ok(self.partition_table().unwrap())
+        Ok(self.partition_table_snapshot())
     }
 
     pub fn logs(&self) -> Pinned<Logs> {
@@ -264,7 +268,7 @@ impl Metadata {
 struct MetadataInner {
     my_node_id: OnceLock<GenerationalNodeId>,
     nodes_config: Arc<ArcSwap<NodesConfiguration>>,
-    partition_table: ArcSwapOption<FixedPartitionTable>,
+    partition_table: Arc<ArcSwap<FixedPartitionTable>>,
     logs: Arc<ArcSwap<Logs>>,
     schema: Arc<ArcSwap<Schema>>,
     write_watches: EnumMap<MetadataKind, VersionWatch>,

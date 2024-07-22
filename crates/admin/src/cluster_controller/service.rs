@@ -318,10 +318,7 @@ where
         from: GenerationalNodeId,
         request: AttachRequest,
     ) -> Result<(), ShutdownError> {
-        let partition_table = self
-            .metadata
-            .partition_table()
-            .expect("partition table is loaded before run");
+        let partition_table = self.metadata.partition_table_ref();
         let networking = self.networking.clone();
         let response = self.create_attachment_response(&partition_table, from, request.request_id);
         self.task_center.spawn(
@@ -379,9 +376,7 @@ async fn signal_all_partitions_started(
                 )
                 .await?;
         } else {
-            let partition_table = metadata
-                .partition_table()
-                .expect("valid partition table must be present");
+            let partition_table = metadata.partition_table_ref();
 
             let mut pending_partitions_wo_leader = partition_table.num_partitions();
 
