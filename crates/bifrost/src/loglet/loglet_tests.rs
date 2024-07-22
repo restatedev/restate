@@ -89,20 +89,20 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     }
 
     // read record 1 (reading from OLDEST)
-    let_assert!(Some(log_record) = loglet.read_next_single_opt(LogletOffset::OLDEST).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::OLDEST).await?);
     let LogRecord { offset, record } = log_record;
     assert_eq!(LogletOffset::OLDEST, offset,);
     assert!(record.is_data());
     assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
 
     // read record 2
-    let_assert!(Some(log_record) = loglet.read_next_single_opt(offset.next()).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
     let LogRecord { offset, record } = log_record;
     assert_eq!(LogletOffset::from(2), offset);
     assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
 
     // read record 3
-    let_assert!(Some(log_record) = loglet.read_next_single_opt(offset.next()).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
     let LogRecord { offset, record } = log_record;
     assert_eq!(LogletOffset::from(3), offset);
     assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
@@ -116,17 +116,13 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     }
 
     // read from the future returns None
-    assert!(loglet
-        .read_next_single_opt(LogletOffset::from(end))
-        .await?
-        .is_none());
+    assert!(loglet.read_opt(LogletOffset::from(end)).await?.is_none());
 
     let handle1: JoinHandle<googletest::Result<()>> = tokio::spawn({
         let loglet = loglet.clone();
         async move {
             // read future record 4
-            let LogRecord { offset, record } =
-                loglet.read_next_single(LogletOffset::from(4)).await?;
+            let LogRecord { offset, record } = loglet.read(LogletOffset::from(4)).await?;
             assert_eq!(LogletOffset(4), offset);
             assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
             Ok(())
@@ -138,8 +134,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 10
-            let LogRecord { offset, record } =
-                loglet.read_next_single(LogletOffset::from(10)).await?;
+            let LogRecord { offset, record } = loglet.read(LogletOffset::from(10)).await?;
             assert_eq!(LogletOffset(10), offset);
             assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
             Ok(())
@@ -192,7 +187,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         assert!(!tail.is_sealed());
     }
 
-    let_assert!(Some(log_record) = loglet.read_next_single_opt(LogletOffset::OLDEST).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::OLDEST).await?);
     let LogRecord { offset, record } = log_record;
     assert_eq!(LogletOffset::OLDEST, offset);
     assert!(record.is_trim_gap());
@@ -201,7 +196,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         record.try_as_trim_gap_ref().unwrap().to
     );
 
-    let_assert!(Some(log_record) = loglet.read_next_single_opt(LogletOffset::from(4)).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::from(4)).await?);
     let LogRecord { offset, record } = log_record;
     assert_eq!(LogletOffset::from(4), offset);
     assert!(record.is_data());
