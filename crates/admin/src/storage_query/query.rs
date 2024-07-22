@@ -91,7 +91,7 @@ pub async fn query(
             "application/vnd.apache.arrow.stream",
         )
         .body(StreamBody::new(result_stream))
-        .unwrap())
+        .expect("content-type header is correct"))
 }
 
 fn convert_schema(schema: SchemaRef) -> SchemaRef {

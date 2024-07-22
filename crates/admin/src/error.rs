@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 
 use codederror::CodedError;
+use restate_types::errors::GenericError;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -19,9 +20,9 @@ pub enum Error {
     Binding {
         address: SocketAddr,
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        source: GenericError,
     },
     #[error("error while running admin server: {0}")]
     #[code(unknown)]
-    Running(Box<dyn std::error::Error + Send + Sync + 'static>),
+    Running(GenericError),
 }
