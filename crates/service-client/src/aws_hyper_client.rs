@@ -10,6 +10,8 @@
 
 //! Copied from https://github.com/smithy-lang/smithy-rs/blob/release-2024-07-16/rust-runtime/aws-smithy-experimental/src/hyper_1_0.rs
 //! necessary to set nodelay(true) on http connector, which has a significant Lambda speedup
+//! https://github.com/smithy-lang/smithy-rs/issues/3769 is the issue which will enable removing
+//! this file.
 //! License Apache-2.0
 
 use aws_smithy_async::future::timeout::TimedOutError;
