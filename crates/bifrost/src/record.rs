@@ -12,7 +12,7 @@ use bytes::Bytes;
 use restate_types::logs::{Lsn, Payload, SequenceNumber};
 use restate_types::storage::{StorageCodec, StorageDecodeError};
 
-use crate::{LsnExt, SealReason};
+use crate::LsnExt;
 
 /// A single entry in the log.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +43,6 @@ impl<S: SequenceNumber, D> LogRecord<S, D> {
                 to: base_lsn.offset_by(to),
             }),
             Record::Data(payload) => Record::Data(payload),
-            Record::Seal(reason) => Record::Seal(reason),
         };
 
         LogRecord {
@@ -58,7 +57,6 @@ impl<S: SequenceNumber> LogRecord<S, Bytes> {
         let record = match self.record {
             Record::Data(mut payload) => Record::Data(StorageCodec::decode(&mut payload)?),
             Record::TrimGap(t) => Record::TrimGap(t),
-            Record::Seal(reason) => Record::Seal(reason),
         };
         Ok(LogRecord {
             offset: self.offset,
@@ -71,7 +69,6 @@ impl<S: SequenceNumber> LogRecord<S, Bytes> {
 pub enum Record<S: SequenceNumber = Lsn, D = Payload> {
     TrimGap(TrimGap<S>),
     Data(D),
-    Seal(SealReason),
 }
 
 impl<S: SequenceNumber, D> Record<S, D> {

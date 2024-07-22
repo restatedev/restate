@@ -437,7 +437,7 @@ pub async fn loglet_test_append_after_seal_concurrent(
 ) -> googletest::Result<()> {
     use futures::TryStreamExt as _;
 
-    const WARMUP_APPENDS: usize = 1000;
+    const WARMUP_APPENDS: usize = 200;
     const CONCURRENT_APPENDERS: usize = 20;
 
     setup();
@@ -487,6 +487,20 @@ pub async fn loglet_test_append_after_seal_concurrent(
         });
     }
 
+    let first_observed_seal = tokio::task::spawn({
+        let loglet = loglet.clone();
+        async move {
+            loop {
+                let res = loglet.find_tail().await.expect("find_tail succeeds");
+                if res.is_sealed() {
+                    return res.offset();
+                }
+                // give a chance to other tasks to work
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
     // Wait for some warmup appends
     println!(
         "Awaiting all appenders to reach at least {} appends",
@@ -507,7 +521,11 @@ pub async fn loglet_test_append_after_seal_concurrent(
 
     let tail = loglet.find_tail().await?;
     assert!(tail.is_sealed());
-    println!("Sealed tail: {:?}", tail);
+    let first_observed_seal = first_observed_seal.await?;
+    println!(
+        "Sealed tail={:?}, first observed seal at={}",
+        tail, first_observed_seal
+    );
 
     let mut all_committed = BTreeSet::new();
     while let Some(handle) = appenders.join_next().await {
@@ -519,7 +537,7 @@ pub async fn loglet_test_append_after_seal_concurrent(
         // tail must be beyond seal point
         assert!(tail.offset() > tail_record);
         println!(
-            "Committed len: {}, last appended was {}",
+            "Committed len={}, last appended={}",
             committed_len, tail_record
         );
         // ensure that all committed records are unique
@@ -528,6 +546,10 @@ pub async fn loglet_test_append_after_seal_concurrent(
             assert!(all_committed.insert(offset));
         }
     }
+
+    // All (acknowledged) appends must have offsets less than the tail observed at the first
+    // Sealed() response of find_tail()
+    assert!(first_observed_seal > *all_committed.last().unwrap());
 
     let reader = loglet
         .clone()
