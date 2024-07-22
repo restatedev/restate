@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod config;
 mod describe;
 mod list;
 mod status;
@@ -23,4 +24,8 @@ pub enum Services {
     Describe(describe::Describe),
     /// Prints activity information about a given service (and method)
     Status(status::Status),
+    /// Configure a service
+    #[clap(name = "config", alias = "conf")]
+    #[clap(subcommand)]
+    Config(config::Config),
 }
