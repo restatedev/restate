@@ -92,15 +92,16 @@ where
                 address: opts.bind_address,
                 source: Box::new(err),
             })?;
-        if let Ok(local_addr) = listener.local_addr() {
-            info!(
-                net.host.addr = %local_addr.ip(),
-                net.host.port = %local_addr.port(),
-                "Admin API listening"
-            );
-        } else {
-            info!("Admin API listening");
-        }
+
+        let local_addr = listener
+            .local_addr()
+            .expect("cannot read the local address of the bound socket");
+        info!(
+            net.host.addr = %local_addr.ip(),
+            net.host.port = %local_addr.port(),
+            "Admin API listening"
+        );
+
         let cancellation_token = cancellation_token();
         Ok(axum::serve(listener, router)
             .with_graceful_shutdown(async move { cancellation_token.cancelled().await })
