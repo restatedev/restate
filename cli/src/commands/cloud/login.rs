@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, Context, Result};
-use axum::{extract, response::Html};
+use axum_0_6::{extract, response::Html};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use restate_cli_util::{c_println, c_success, c_tip, CliContext};
@@ -71,7 +71,7 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
 }
 
 async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
-    let client = reqwest::Client::builder()
+    let client = reqwest_0_11::Client::builder()
         .user_agent(format!(
             "{}/{} {}-{}",
             env!("CARGO_PKG_NAME"),
@@ -84,18 +84,17 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .build()
         .context("Failed to build oauth token client")?;
 
-    let server =
-        match env.config.cloud.redirect_ports.iter().find_map(|port| {
-            axum::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], *port))).ok()
-        }) {
-            Some(server) => server,
-            None => {
-                return Err(anyhow!(
-                    "Failed to bind oauth callback server to localhost. Tried ports: [{:?}]",
-                    env.config.cloud.redirect_ports
-                ))
-            }
-        };
+    let server = match env.config.cloud.redirect_ports.iter().find_map(|port| {
+        axum_0_6::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], *port))).ok()
+    }) {
+        Some(server) => server,
+        None => {
+            return Err(anyhow!(
+                "Failed to bind oauth callback server to localhost. Tried ports: [{:?}]",
+                env.config.cloud.redirect_ports
+            ))
+        }
+    };
 
     let port = server.local_addr().port();
     let redirect_uri = format!("http://localhost:{port}/callback");
@@ -114,10 +113,10 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .append_pair("state", &state)
         .append_pair("scope", "openid");
 
-    let router = axum::Router::new()
+    let router = axum_0_6::Router::new()
         .route(
             "/callback",
-            axum::routing::get(
+            axum_0_6::routing::get(
                 |extract::State(state): extract::State<RedirectState>,
                  extract::Query(params): extract::Query<RedirectParams>| async move {
                     let post_login = include_str!("./postlogin.html");
@@ -198,7 +197,7 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
 
 #[derive(Clone)]
 struct RedirectState {
-    client: reqwest::Client,
+    client: reqwest_0_11::Client,
     login_base_url: Url,
     client_id: String,
     redirect_uri: String,

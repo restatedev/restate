@@ -46,7 +46,7 @@ impl From<RemotePort> for u16 {
 
 #[derive(Clone)]
 struct HandlerState {
-    client: reqwest::Client,
+    client: reqwest_0_11::Client,
     base_url: Url,
     bearer_token: String,
     tunnel_renderer: Arc<TunnelRenderer>,
@@ -55,20 +55,20 @@ struct HandlerState {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ServeError {
     #[error("Failed to create local server")]
-    Hyper(#[from] hyper::Error),
+    Hyper(#[from] hyper_0_14::Error),
     #[error("Local server closed unexpectedly")]
     ServerClosed,
 }
 
 pub async fn run_remote(
     remote_port: RemotePort,
-    client: reqwest::Client,
+    client: reqwest_0_11::Client,
     base_url: &Url,
     bearer_token: &str,
     tunnel_renderer: Arc<TunnelRenderer>,
 ) -> Result<(), ServeError> {
-    let router = axum::Router::new()
-        .fallback(axum::routing::any(handler))
+    let router = axum_0_6::Router::new()
+        .fallback(axum_0_6::routing::any(handler))
         .with_state(HandlerState {
             client: client.clone(),
             base_url: base_url.clone(),
@@ -77,7 +77,7 @@ pub async fn run_remote(
         });
 
     let server =
-        axum::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], u16::from(remote_port))))?;
+        axum_0_6::Server::try_bind(&SocketAddr::from(([127, 0, 0, 1], u16::from(remote_port))))?;
 
     server.serve(router.into_make_service()).await?;
 
@@ -85,14 +85,14 @@ pub async fn run_remote(
 }
 
 async fn handler(
-    axum::extract::State(state): axum::extract::State<HandlerState>,
-    req: axum::http::Request<axum::body::Body>,
-) -> Result<axum::response::Response, Infallible> {
+    axum_0_6::extract::State(state): axum_0_6::extract::State<HandlerState>,
+    req: axum_0_6::http::Request<axum_0_6::body::Body>,
+) -> Result<axum_0_6::response::Response, Infallible> {
     let res: Result<_, anyhow::Error> = async {
         let (mut head, body) = req.into_parts();
         head.headers.insert(
-            http::header::HOST,
-            http::HeaderValue::from_str(state.base_url.authority())?,
+            http_0_2::header::HOST,
+            http_0_2::HeaderValue::from_str(state.base_url.authority())?,
         );
         let url = if let Some(path) = head.uri.path_and_query() {
             state.base_url.join(path.as_str())?
@@ -109,13 +109,13 @@ async fn handler(
             .build()?;
         let mut result = state.client.execute(request).await?;
 
-        let mut response = axum::http::Response::builder().status(result.status());
+        let mut response = axum_0_6::http::Response::builder().status(result.status());
         if let Some(headers) = response.headers_mut() {
             std::mem::swap(headers, result.headers_mut())
         };
 
-        let body = axum::body::Body::wrap_stream(result.bytes_stream());
-        Ok(response.body(axum::body::boxed(body))?)
+        let body = axum_0_6::body::Body::wrap_stream(result.bytes_stream());
+        Ok(response.body(axum_0_6::body::boxed(body))?)
     }
     .await;
 
@@ -126,9 +126,9 @@ async fn handler(
         }
         Err(err) => {
             state.tunnel_renderer.store_error(err);
-            Ok(axum::response::Response::builder()
-                .status(http::status::StatusCode::BAD_GATEWAY)
-                .body(axum::body::boxed(axum::body::Body::empty()))
+            Ok(axum_0_6::response::Response::builder()
+                .status(http_0_2::status::StatusCode::BAD_GATEWAY)
+                .body(axum_0_6::body::boxed(axum_0_6::body::Body::empty()))
                 .expect("failed to create http error response"))
         }
     }

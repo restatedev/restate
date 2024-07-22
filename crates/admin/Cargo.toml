@@ -28,7 +28,7 @@ restate-wal-protocol = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrow-flight = { workspace = true }
-axum = { workspace = true }
+axum = { version = "0.7.5" }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
@@ -36,10 +36,10 @@ datafusion = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
-http = { workspace = true }
-http-1 = { version = "1.0", package = "http" }
-hyper = { workspace = true, features = ["full"] }
-okapi-operation = { version = "0.2.2", features = ["axum-integration"] }
+http = "1.1.0"
+http-body = "1.0.1"
+http-body-util = "0.1.2"
+okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
 prost = { workspace = true }
 prost-dto = { workspace = true }
 prost-types = { workspace = true }

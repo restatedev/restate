@@ -12,7 +12,7 @@ use crate::schema_registry::error::{
     DeploymentError, SchemaError, ServiceError, SubscriptionError,
 };
 use crate::schema_registry::{ModifyServiceChange, ServiceName};
-use http::Uri;
+use http::{HeaderValue, Uri};
 use restate_types::endpoint_manifest;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::{
@@ -533,7 +533,7 @@ impl DiscoveredHandlerMetadata {
         Ok(if let Some(ct) = schema.content_type {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
-                    content_type: http_1::HeaderValue::from_str(&ct)
+                    content_type: HeaderValue::from_str(&ct)
                         .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),

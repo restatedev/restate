@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::serde_util_http_0_1::{SerdeableHeaderHashMap, VersionSerde};
+use http::Uri;
 use http::Version;
-use http::{HeaderName, HeaderValue, Uri};
+use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::DeploymentType;
@@ -18,7 +18,6 @@ use restate_types::schema::deployment::{DeploymentMetadata, ProtocolType};
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -31,9 +30,9 @@ pub enum Deployment {
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
         protocol_type: ProtocolType,
-        #[serde(with = "serde_with::As::<VersionSerde>")]
+        #[serde(with = "http_serde::version")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
-        http_version: http::Version,
+        http_version: Version,
         #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
@@ -66,7 +65,7 @@ enum DeploymentShadow {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         uri: Uri,
         protocol_type: ProtocolType,
-        #[serde(with = "serde_with::As::<Option<VersionSerde>>")]
+        #[serde(with = "http_serde::option::version")]
         #[serde(default)]
         // this field did not used to be provided; to provide backwards compatibility with old restate, we must consider it optional when deserialising
         http_version: Option<Version>,
@@ -107,9 +106,8 @@ impl From<DeploymentShadow> for Deployment {
             } => Self::Http {
                 uri,
                 protocol_type,
-                http_version: http_version.unwrap_or_else(|| {
-                    version_http_1_to_http_01(DeploymentType::backfill_http_version(protocol_type))
-                }),
+                http_version: http_version
+                    .unwrap_or_else(|| DeploymentType::backfill_http_version(protocol_type)),
                 additional_headers,
                 created_at,
                 min_protocol_version,
@@ -168,14 +166,10 @@ impl From<DeploymentMetadata> for Deployment {
                 protocol_type,
                 http_version,
             } => Self::Http {
-                // TODO these conversions should be removed once this module is ported to http 1.0
                 uri: address.to_string().parse().unwrap(),
                 protocol_type,
-                http_version: version_http_1_to_http_01(http_version),
-                additional_headers: header_map_http_1_to_http_01(
-                    value.delivery_options.additional_headers,
-                )
-                .into(),
+                http_version,
+                additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),
                 max_protocol_version: *value.supported_protocol_versions.end(),
@@ -186,40 +180,13 @@ impl From<DeploymentMetadata> for Deployment {
             } => Self::Lambda {
                 arn,
                 assume_role_arn: assume_role_arn.map(Into::into),
-                additional_headers: header_map_http_1_to_http_01(
-                    value.delivery_options.additional_headers,
-                )
-                .into(),
+                additional_headers: value.delivery_options.additional_headers.into(),
                 created_at: SystemTime::from(value.created_at).into(),
                 min_protocol_version: *value.supported_protocol_versions.start(),
                 max_protocol_version: *value.supported_protocol_versions.end(),
             },
         }
     }
-}
-
-fn version_http_1_to_http_01(version: http_1::Version) -> Version {
-    match version {
-        http_1::Version::HTTP_3 => Version::HTTP_3,
-        http_1::Version::HTTP_2 => Version::HTTP_2,
-        http_1::Version::HTTP_11 => Version::HTTP_11,
-        http_1::Version::HTTP_10 => Version::HTTP_10,
-        http_1::Version::HTTP_09 => Version::HTTP_09,
-        v => panic!("Unexpected http version {:?}", v),
-    }
-}
-
-fn header_map_http_1_to_http_01(
-    hm: HashMap<http_1::HeaderName, http_1::HeaderValue>,
-) -> HashMap<HeaderName, HeaderValue> {
-    hm.into_iter()
-        .map(|(k, v)| {
-            (
-                HeaderName::try_from(k.as_str()).unwrap(),
-                HeaderValue::try_from(v.as_bytes()).unwrap(),
-            )
-        })
-        .collect()
 }
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation

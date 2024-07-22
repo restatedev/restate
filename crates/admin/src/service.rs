@@ -21,7 +21,7 @@ use tracing::info;
 
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::{cancellation_watcher, task_center, MetadataWriter};
+use restate_core::{cancellation_token, task_center, MetadataWriter};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 
@@ -85,24 +85,28 @@ where
                     )),
             );
 
-        // Bind and serve
-        let server = hyper::Server::try_bind(&opts.bind_address)
+        // run our app with hyper
+        let listener = tokio::net::TcpListener::bind(&opts.bind_address)
+            .await
             .map_err(|err| Error::Binding {
                 address: opts.bind_address,
-                source: err,
-            })?
-            .serve(router.into_make_service());
+                source: Box::new(err),
+            })?;
 
+        let local_addr = listener.local_addr().map_err(|err| Error::Binding {
+            address: opts.bind_address,
+            source: Box::new(err),
+        })?;
         info!(
-            net.host.addr = %server.local_addr().ip(),
-            net.host.port = %server.local_addr().port(),
+            net.host.addr = %local_addr.ip(),
+            net.host.port = %local_addr.port(),
             "Admin API listening"
         );
 
-        // Wait server graceful shutdown
-        Ok(server
-            .with_graceful_shutdown(cancellation_watcher())
+        let cancellation_token = cancellation_token();
+        Ok(axum::serve(listener, router)
+            .with_graceful_shutdown(async move { cancellation_token.cancelled().await })
             .await
-            .map_err(Error::Running)?)
+            .map_err(|e| Error::Running(Box::new(e)))?)
     }
 }
