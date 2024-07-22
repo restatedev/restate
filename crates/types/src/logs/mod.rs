@@ -35,12 +35,17 @@ pub mod metadata;
 )]
 pub struct LogId(u64);
 
-/// Index of an entry in the log
 impl LogId {
     // This is allows the usage of the first 62 bits for log ids while keeping a space for
     // internal logs as needed. Partitions cannot be larger than 2^62.
     pub const MAX_PARTITION_LOG: LogId = LogId((1 << 62) - 1);
     pub const MIN: LogId = LogId(0);
+}
+
+impl LogId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 impl From<PartitionId> for LogId {
