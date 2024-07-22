@@ -11,15 +11,11 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
-use std::ops::DerefMut;
-use std::pin::Pin;
 
 use std::sync::{Arc};
-use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use anyhow::Result;
-use futures::FutureExt;
 use http::{Request, StatusCode, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -27,7 +23,7 @@ use hyper::Response;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use reqwest::Body;
-use tokio::sync::Mutex;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use restate_cli_util::CliContext;
 use restate_types::retries::RetryPolicy;
 use tower::Service as _;
@@ -208,8 +204,8 @@ pub(crate) enum StartError {
     MissingTunnelName,
     #[error("Tunnel service provided a different tunnel name to what we requested")]
     TunnelNameMismatch,
-    #[error("Tunnel service made a request before the handshake was complete")]
-    RequestDuringHandshake,
+    #[error("Timed out while waiting for tunnel handshake")]
+    Timeout,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -255,15 +251,15 @@ impl From<hyper::Error> for ServeError {
 
 pub(crate) enum HandlerStatus {
     AwaitingStart,
-    ProcessingStart(Pin<Box<dyn Future<Output = Result<(), StartError>> + Send + Sync>>),
     Proxying,
+    Failed(StartError),
 }
 
 impl Display for HandlerStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             HandlerStatus::AwaitingStart => write!(f, "awaiting start"),
-            HandlerStatus::ProcessingStart(_) => write!(f, "processing start"),
+            HandlerStatus::Failed(_) => write!(f, "failed"),
             HandlerStatus::Proxying => write!(f, "proxying"),
         }
     }
@@ -271,7 +267,7 @@ impl Display for HandlerStatus {
 
 impl<Proxy, ProxyFut> Handler<Proxy>
 where
-    Proxy: Fn(Arc<HandlerInner>, reqwest::Request) -> ProxyFut + Send + 'static,
+    Proxy: Fn(Arc<HandlerInner>, reqwest::Request) -> ProxyFut + Send + Sync + 'static,
     ProxyFut: Future<Output = Result<Response<Body>, StartError>> + Send + 'static,
 {
     pub async fn serve(mut self, tunnel_url: Uri) -> Result<(), ServeError> {
@@ -281,140 +277,127 @@ where
             .await
             .map_err(ServeError::Connection)?;
 
-        let this = Arc::new(Mutex::new(self));
+        let this = Arc::new(RwLock::new(self));
 
         {
-            let conn_fut =
-                hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+
+            hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
                     .serve_connection(
                         io,
                         hyper::service::service_fn(|req| {
-                            let conn_self = this.clone();
-                            async move  {
-                                let mut this = conn_self.lock_owned().await;
-                                match this.status {
-                                    HandlerStatus::AwaitingStart | HandlerStatus::Proxying => {
-                                        tower::Service::call(this.deref_mut(), req).await
-                                    }
-                                    HandlerStatus::ProcessingStart(_) => {
-                                        Err(StartError::RequestDuringHandshake)
+                            let this = this.clone();
+                            async {
+                                loop {
+                                    let guard = this.read().await;
+                                    match &guard.status {
+                                        HandlerStatus::AwaitingStart => {
+                                            // slow path
+                                            drop(guard);
+                                            let guard = this.write_owned().await;
+                                            match guard.status {
+                                                // won the race; process start
+                                                HandlerStatus::AwaitingStart => return Self::process_start(guard, req),
+                                                // lost the race
+                                                _ => {
+                                                    let guard = guard.downgrade();
+                                                    match &guard.status {
+                                                        HandlerStatus::Proxying => {
+                                                            return guard.proxy(req).await
+                                                        }
+                                                        HandlerStatus::Failed(err) => {
+                                                            return Err(err.clone())
+                                                        }
+                                                        HandlerStatus::AwaitingStart => unreachable!("cannot re-enter awaiting start state"),
+                                                    }
+                                                },
+                                            }
+                                        },
+                                        HandlerStatus::Proxying => {
+                                            return guard.proxy(req).await
+                                        }
+                                        HandlerStatus::Failed(err) => {
+                                            return Err(err.clone())
+                                        }
                                     }
                                 }
                             }
                         }),
-                    );
-            tokio::pin!(conn_fut);
-
-
-            futures::future::poll_fn(|cx| {
-                let this = this.lock();
-                tokio::pin!(this);
-                let mut this = ready!(this.poll(cx));
-                match tower::Service::poll_ready(this.deref_mut(), cx) {
-                    Poll::Ready(Err(err)) => Poll::Ready(Err(ServeError::StartError(err))),
-                    // unfortunately we have to progress the connection even in the pending case, even though
-                    // we'd prefer no new streams to be accepted
-                    Poll::Ready(Ok(())) | Poll::Pending => {
-                        match Future::poll(conn_fut.as_mut(), cx) {
-                            Poll::Pending => Poll::Pending,
-                            Poll::Ready(Err(err)) => Poll::Ready(Err(err.into())),
-                            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-                        }
-                    },
-                }
-            })
-                .await?;
+                    ).await?;
         }
 
-        let mut this =  this.lock().await;
+        let this =  this.read().await;
 
-        // there is a race where the server closes the connection before we process the trailers, leading
-        // us to not observe a permanent StartError error like unauthorized. so, we should here process the future
-        // to completion
-        futures::future::poll_fn(|cx| tower::Service::poll_ready(this.deref_mut(), cx)).await?;
-
-        Err(ServeError::ServerClosed(this.status.to_string()))
+        if let HandlerStatus::Failed(err) = &this.status {
+            Err(err.clone().into())
+        } else {
+            Err(ServeError::ServerClosed(this.status.to_string()))
+        }
     }
 }
 
-impl<Proxy, ProxyFut> tower::Service<Request<Incoming>> for Handler<Proxy>
+impl<Proxy, ProxyFut> Handler<Proxy>
 where
-    Proxy: Fn(Arc<HandlerInner>, reqwest::Request) -> ProxyFut,
+    Proxy: Fn(Arc<HandlerInner>, reqwest::Request) -> ProxyFut + Send + Sync + 'static,
     ProxyFut: Future<Output = Result<Response<Body>, StartError>> + Send + 'static,
 {
-    type Response = Response<Body>;
-    type Error = StartError;
-    type Future = futures::future::Either<
-        futures::future::Ready<Result<Self::Response, Self::Error>>,
-        ProxyFut,
-    >;
+    fn process_start(mut this: OwnedRwLockWriteGuard<Self>, req: Request<Incoming>) -> Result<Response<Body>, StartError>  {
+        let body = req.into_body();
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match &mut self.status {
-            HandlerStatus::AwaitingStart | HandlerStatus::Proxying { .. } => Poll::Ready(Ok(())),
-            HandlerStatus::ProcessingStart(fut) => match fut.poll_unpin(cx) {
-                Poll::Ready(Ok(())) => {
-                    self.status = HandlerStatus::Proxying;
-                    Poll::Ready(Ok(()))
+        let resp = Response::builder()
+            .header(
+                "authorization",
+                format!("Bearer {}", this.inner.bearer_token),
+            )
+            .header("environment-id", &this.inner.environment_id);
+
+        let resp = if let Some(tunnel_name) = this.tunnel_name() {
+            resp.header("tunnel-name", tunnel_name)
+        } else {
+            resp
+        };
+
+        // keep holding the lock until this is complete; no other requests should be processed
+        tokio::task::spawn(async move {
+            match tokio::time::timeout(Duration::from_secs(5), process_start(
+                this.inner.clone(),
+                body,
+            )).await {
+                Ok(Ok(())) => {
+                    this.status = HandlerStatus::Proxying;
+                },
+                Ok(Err(err)) => {
+                    this.status = HandlerStatus::Failed(err)
                 }
-                Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                Poll::Pending => Poll::Pending,
-            },
-        }
+                Err(_timeout) => {
+                    this.status = HandlerStatus::Failed(StartError::Timeout)
+                }
+            }
+        });
+
+        Ok(resp.body(Body::default()).unwrap())
     }
 
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        match &self.status {
-            HandlerStatus::AwaitingStart => {
-                let body = req.into_body();
+    fn proxy(&self, req: Request<Incoming>) -> ProxyFut {
+        let url = if let Some(path) = req.uri().path_and_query() {
+            self.inner.url.join(path.as_str()).unwrap()
+        } else {
+            self.inner.url.clone()
+        };
 
-                self.status = HandlerStatus::ProcessingStart(Box::pin(process_start(
-                    self.inner.clone(),
-                    body,
-                )));
+        info!("Proxying request to {}", url);
 
-                let resp = Response::builder()
-                    .header(
-                        "authorization",
-                        format!("Bearer {}", self.inner.bearer_token),
-                    )
-                    .header("environment-id", &self.inner.environment_id);
+        let (head, body) = req.into_parts();
 
-                let resp = if let Some(tunnel_name) = self.tunnel_name() {
-                    resp.header("tunnel-name", tunnel_name)
-                } else {
-                    resp
-                };
+        let request = self
+            .inner
+            .client
+            .request(head.method, url)
+            .body(Body::wrap_stream(body.into_data_stream()))
+            .headers(head.headers)
+            .build()
+            .expect("Failed to build request");
 
-                futures::future::ready(Ok(resp.body(Body::default()).unwrap())).left_future()
-            }
-            HandlerStatus::ProcessingStart(_) => {
-                // 'Implementations are permitted to panic if call is invoked without obtaining Poll::Ready(Ok(())) from poll_ready.'
-                panic!("Called when not ready")
-            }
-            HandlerStatus::Proxying => {
-                let url = if let Some(path) = req.uri().path_and_query() {
-                    self.inner.url.join(path.as_str()).unwrap()
-                } else {
-                    self.inner.url.clone()
-                };
-
-                info!("Proxying request to {}", url);
-
-                let (head, body) = req.into_parts();
-
-                let request = self
-                    .inner
-                    .client
-                    .request(head.method, url)
-                    .body(Body::wrap_stream(body.into_data_stream()))
-                    .headers(head.headers)
-                    .build()
-                    .expect("Failed to build request");
-
-                (self.proxy)(self.inner.clone(), request).right_future()
-            }
-        }
+        (self.proxy)(self.inner.clone(), request)
     }
 }
 
