@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use axum_0_6::routing::get;
-use tonic::codec::CompressionEncoding;
+use tonic_0_10::codec::CompressionEncoding;
 use tower_http_0_4::trace::TraceLayer;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
@@ -73,7 +73,7 @@ impl NetworkServer {
             .fallback(handler_404);
 
         // -- GRPC Service Setup
-        let mut reflection_service_builder = tonic_reflection::server::Builder::configure()
+        let mut reflection_service_builder = tonic_reflection_0_10::server::Builder::configure()
             .register_encoded_file_descriptor_set(
                 restate_core::network::protobuf::node_svc::FILE_DESCRIPTOR_SET,
             )
@@ -92,7 +92,7 @@ impl NetworkServer {
                 .send_compressed(CompressionEncoding::Gzip)
         });
 
-        let server_builder = tonic::transport::Server::builder()
+        let server_builder = tonic_0_10::transport::Server::builder()
             .layer(TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(
                 NodeSvcServer::new(NodeSvcHandler::new(

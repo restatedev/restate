@@ -13,7 +13,7 @@ use arrow_flight::error::FlightError;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use tokio_stream::StreamExt;
-use tonic::{Request, Response, Status, Streaming};
+use tonic_0_10::{Request, Response, Status, Streaming};
 
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvc;
 use restate_core::network::protobuf::node_svc::IdentResponse;

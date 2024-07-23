@@ -23,7 +23,7 @@ prost-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tonic = { workspace = true, features = ["transport", "prost"] }
+tonic-0-10 = { workspace = true, features = ["transport", "prost"] }
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-log = { version = "0.2" }

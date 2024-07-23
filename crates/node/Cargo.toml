@@ -64,8 +64,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
-tonic-reflection = { workspace = true }
+tonic-0-10 = { workspace = true }
+tonic-reflection-0-10 = { workspace = true }
 tower = { workspace = true }
 tower-http-0-4 = { package = "tower-http", version = "0.4", features = ["trace"] }
 tracing = { workspace = true }

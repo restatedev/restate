@@ -50,12 +50,12 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic-0-10 = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-build-0-11 = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

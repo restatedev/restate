@@ -26,7 +26,7 @@ use restate_types::protobuf::cluster::{
     node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId};
-use tonic::codec::CompressionEncoding;
+use tonic_0_10::codec::CompressionEncoding;
 
 use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;

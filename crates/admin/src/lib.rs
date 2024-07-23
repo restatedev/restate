@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+extern crate tonic_0_10 as tonic;
 pub mod cluster_controller;
 mod error;
 mod rest_api;

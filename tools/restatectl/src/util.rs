@@ -11,10 +11,12 @@
 use restate_cli_util::CliContext;
 use restate_types::net::AdvertisedAddress;
 use tokio::net::UnixStream;
-use tonic::transport::{Channel, Endpoint, Uri};
+use tonic_0_10::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
-pub async fn grpc_connect(address: AdvertisedAddress) -> Result<Channel, tonic::transport::Error> {
+pub async fn grpc_connect(
+    address: AdvertisedAddress,
+) -> Result<Channel, tonic_0_10::transport::Error> {
     let ctx = CliContext::get();
     match address {
         AdvertisedAddress::Uds(uds_path) => {

@@ -15,8 +15,8 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use test_log::test;
-use tonic_health::pb::health_client::HealthClient;
-use tonic_health::pb::HealthCheckRequest;
+use tonic_health_0_10::pb::health_client::HealthClient;
+use tonic_health_0_10::pb::HealthCheckRequest;
 
 use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};

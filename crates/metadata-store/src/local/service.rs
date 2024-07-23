@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::server::NamedService;
+use tonic_0_10::server::NamedService;
 
 use restate_core::network::grpc_util;
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
@@ -31,7 +31,7 @@ pub enum Error {
     #[error("failed running grpc server: {0}")]
     GrpcServer(#[from] grpc_util::Error),
     #[error("error while running server server grpc reflection service: {0}")]
-    GrpcReflection(#[from] tonic_reflection::server::Error),
+    GrpcReflection(#[from] tonic_reflection_0_10::server::Error),
     #[error("system is shutting down")]
     Shutdown(#[from] ShutdownError),
     #[error("rocksdb error: {0}")]
@@ -66,10 +66,10 @@ impl LocalMetadataStoreService {
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
-        let reflection_service_builder = tonic_reflection::server::Builder::configure()
+        let reflection_service_builder = tonic_reflection_0_10::server::Builder::configure()
             .register_encoded_file_descriptor_set(grpc_svc::FILE_DESCRIPTOR_SET);
 
-        let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+        let (mut health_reporter, health_service) = tonic_health_0_10::server::health_reporter();
         health_reporter
             .set_serving::<MetadataStoreSvcServer<LocalMetadataStoreHandler>>()
             .await;

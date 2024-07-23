@@ -10,8 +10,8 @@
 
 use async_trait::async_trait;
 use bytestring::ByteString;
-use tonic::transport::Channel;
-use tonic::{Code, Status};
+use tonic_0_10::transport::Channel;
+use tonic_0_10::{Code, Status};
 
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,

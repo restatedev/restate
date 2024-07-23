@@ -15,7 +15,7 @@ use std::{env, io};
 use anyhow::bail;
 use reqwest::header::ACCEPT;
 use schemars::gen::SchemaSettings;
-use tonic::transport::{Channel, Uri};
+use tonic_0_10::transport::{Channel, Uri};
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;

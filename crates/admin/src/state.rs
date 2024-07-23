@@ -13,7 +13,7 @@ use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use restate_core::TaskCenter;
-use tonic::transport::Channel;
+use tonic_0_10::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {

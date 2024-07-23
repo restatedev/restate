@@ -43,7 +43,7 @@ pub enum WorkerRoleError {
 pub enum SchemaError {
     #[error("failed to fetch schema updates: {0}")]
     #[code(unknown)]
-    Fetch(#[from] tonic::Status),
+    Fetch(#[from] tonic_0_10::Status),
     #[error("failed updating subscriptions: {0}")]
     #[code(unknown)]
     Subscription(#[from] restate_worker::WorkerHandleError),

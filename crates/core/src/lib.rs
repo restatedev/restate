@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+extern crate tonic_0_10 as tonic;
+
 mod metadata;
 pub mod metadata_store;
 mod metric_definitions;

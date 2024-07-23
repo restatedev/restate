@@ -22,7 +22,7 @@ use tokio::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::{Channel, Endpoint};
+use tonic_0_10::transport::{Channel, Endpoint};
 use tracing::{debug, info};
 
 pub fn create_grpc_channel_from_advertised_address(

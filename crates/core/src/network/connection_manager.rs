@@ -18,7 +18,7 @@ use rand::seq::SliceRandom;
 use restate_types::net::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
+use tonic_0_10::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
 use restate_types::live::Pinned;
@@ -112,7 +112,7 @@ impl ConnectionManager {
     pub async fn accept_incoming_connection<S>(
         &self,
         mut incoming: S,
-    ) -> Result<BoxStream<'static, Result<Message, tonic::Status>>, NetworkError>
+    ) -> Result<BoxStream<'static, Result<Message, tonic_0_10::Status>>, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {

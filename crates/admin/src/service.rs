@@ -15,7 +15,7 @@ use http::StatusCode;
 use restate_bifrost::Bifrost;
 use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
-use tonic::transport::Channel;
+use tonic_0_10::transport::Channel;
 use tower::ServiceBuilder;
 use tracing::info;
 

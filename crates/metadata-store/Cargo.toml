@@ -32,9 +32,9 @@ serde = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
-tonic-reflection = { workspace = true }
-tonic-health = { workspace = true }
+tonic-0-10 = { workspace = true, features = ["transport", "codegen", "prost"] }
+tonic-reflection-0-10 = { workspace = true }
+tonic-health-0-10 = { workspace = true }
 tower = { workspace = true }
 tower-http-0-4 = { package = "tower-http", version = "0.4", features = ["trace"] }
 tracing = { workspace = true }
@@ -51,4 +51,4 @@ test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-build-0-11 = { workspace = true }

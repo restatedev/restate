@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::{async_trait, Request, Response, Status};
+use tonic_0_10::{async_trait, Request, Response, Status};
 use tracing::info;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
@@ -45,7 +45,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .controller_handle
             .get_cluster_state()
             .await
-            .map_err(|_| tonic::Status::aborted("Node is shutting down"))?;
+            .map_err(|_| tonic_0_10::Status::aborted("Node is shutting down"))?;
 
         let resp = ClusterStateResponse {
             cluster_state: Some((*cluster_state).clone().into()),
