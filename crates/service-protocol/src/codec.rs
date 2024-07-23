@@ -261,6 +261,7 @@ mod test_util {
                             service_name: entry.request.service_name.into(),
                             handler_name: entry.request.handler_name.into(),
                             parameter: entry.request.parameter,
+                            headers: entry.request.headers.into_iter().map(Into::into).collect(),
                             result: entry.result.map(|r| match r {
                                 EntryResult::Success(v) => call_entry_message::Result::Value(v),
                                 EntryResult::Failure(code, msg) => {
@@ -297,6 +298,7 @@ mod test_util {
                             service_name: entry.request.service_name.into(),
                             handler_name: entry.request.handler_name.into(),
                             parameter: entry.request.parameter,
+                            headers: entry.request.headers.into_iter().map(Into::into).collect(),
                             invoke_time: entry.invoke_time,
                             ..Default::default()
                         }
