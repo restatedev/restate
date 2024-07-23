@@ -43,11 +43,11 @@ dialoguer = { workspace = true }
 dirs = { version = "5.0" }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
-http = { version = "1.1.0" }
+http = { workspace = true }
 http-0-2 = { package = "http", version = "0.2" }
 hyper-0-14 = { package = "hyper", version = "0.14", features = ["server", "http2"] }
 hyper-rustls-0-24 = { package = "hyper-rustls", version = "0.24.1", features = ["http2"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http2", "server", "client", "tokio"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http2", "server", "client", "tokio"] }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }

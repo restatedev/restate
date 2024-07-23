@@ -12,8 +12,8 @@
 //! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use hyper::client::HttpConnector;
-use hyper::{Body, Uri};
+use hyper_0_14::client::HttpConnector;
+use hyper_0_14::{Body, Uri};
 use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
@@ -32,7 +32,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         Uri::from_static("http://localhost:9080"),
     );
 
-    let client = hyper::Client::new();
+    let client = hyper_0_14::Client::new();
 
     let num_requests = 1;
     let mut group = criterion.benchmark_group("throughput");
@@ -49,14 +49,14 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 }
 
 async fn send_sequential_counter_requests(
-    client: &hyper::Client<HttpConnector>,
+    client: &hyper_0_14::Client<HttpConnector>,
     num_requests: u64,
 ) {
     for _ in 0..num_requests {
         let response = client
             .request(
-                hyper::Request::post("http://localhost:8080/Counter/1/getAndAdd")
-                    .header(hyper::header::CONTENT_TYPE, "application/json")
+                hyper_0_14::Request::post("http://localhost:8080/Counter/1/getAndAdd")
+                    .header(hyper_0_14::header::CONTENT_TYPE, "application/json")
                     .body(Body::from("10"))
                     .expect("building discovery request should not fail"),
             )

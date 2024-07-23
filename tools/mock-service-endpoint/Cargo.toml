@@ -12,10 +12,10 @@ assert2 = { workspace = true }
 async-stream = "0.3.5"
 bytes = { workspace = true }
 futures = { workspace = true }
-http = {workspace = true}
-http-body-util = "0.1"
-hyper = { version = "1", features = ["server"] }
-hyper-util = { version = "0.1", features = ["full"] }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["server"] }
+hyper-util = { workspace = true, features = ["full"] }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-types = { workspace = true }
 prost = { workspace = true }
