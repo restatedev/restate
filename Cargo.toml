@@ -128,6 +128,7 @@ prost-types = "0.12.1"
 rand = "0.8.5"
 rayon = { version = "1.10" }
 regress = { version = "0.10" }
+reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev="c7ccbbcd261bdec011c4976c441676512a1a4841" }
 rustls = {version = "0.23.11", default-features = false, features = ["ring"]}

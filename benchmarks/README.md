@@ -7,19 +7,19 @@ The benchmarks crate contains currently the following benchmarks:
 
 ## Prerequisites
 
-The above-mentioned benchmarks require the [counter.Counter service](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/src/counter.ts) running on `localhost:9080`. 
+The above-mentioned benchmarks require the [Counter service](https://github.com/restatedev/e2e/blob/7fd827c3e6071cc55dcf443ad3beac7e0927dafc/services/node-services/src/counter.ts) running on `localhost:9080`. 
 You can use both the Java or the Node service.
 
 To start the Java service:
 
 ```shell
-SERVICES=counter.Counter LOG4J_CONFIGURATION_FILE=unknown gradle :services:java-services:run
+SERVICES=Counter LOG4J_CONFIGURATION_FILE=unknown gradle :services:java-services:run
 ```
 
 To start the Node service:
 
 ```shell
-SERVICES=counter.Counter gradle :services:node-services:npm_run_app
+SERVICES=Counter gradle :services:node-services:npm_run_app
 ```
 
 See the [node services' readme](https://github.com/restatedev/e2e/blob/a500164a31d58c0ee65ae77a7f99a8a2ef1825cb/services/node-services/README.md) for more details.
@@ -47,13 +47,13 @@ Prerequisites:
 In order to profile the benchmarks select a benchmark and pass the `--profile-time=<time_to_run>` option:
 
 ```shell
-cargo bench --bench throughput_parallel -- --profile-time=30
+cargo bench --package restate-benchmarks --bench throughput_parallel -- --profile-time=30
 ```
 
 On MacOS you need to enable the frame-pointer feature:
 
 ```shell
-cargo bench --features frame-pointer --bench throughput_parallel -- --profile-time=30
+cargo bench --package restate-benchmarks --features frame-pointer --bench throughput_parallel -- --profile-time=30
 ```
 
 This will profile the *throughput_parallel* benchmark for *30 s*.

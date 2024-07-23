@@ -15,8 +15,8 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use futures_util::{future, TryFutureExt};
-use hyper_0_14::header::CONTENT_TYPE;
-use hyper_0_14::{Body, Uri};
+use http::header::CONTENT_TYPE;
+use http::Uri;
 use pprof::flamegraph::Options;
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
@@ -31,17 +31,18 @@ use restate_node::Node;
 use restate_types::retries::RetryPolicy;
 
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
+    let client = reqwest::Client::builder()
+        .build()
+        .expect("client should build");
     let discovery_payload = serde_json::json!({"uri": address.to_string()}).to_string();
     let discovery_result = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
-                hyper_0_14::Client::new()
-                    .request(
-                        hyper_0_14::Request::post("http://localhost:9070/deployments")
-                            .header(CONTENT_TYPE, "application/json")
-                            .body(Body::from(discovery_payload.clone()))
-                            .expect("building discovery request should not fail"),
-                    )
+                client
+                    .post("http://localhost:9070/deployments")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(discovery_payload.clone())
+                    .send()
                     .map_err(anyhow::Error::from)
                     .and_then(|response| {
                         if response.status().is_success() {
@@ -64,12 +65,9 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let health_response = current_thread_rt.block_on(async {
         RetryPolicy::fixed_delay(Duration::from_millis(200), Some(50))
             .retry(|| {
-                hyper_0_14::Client::new()
-                    .request(
-                        hyper_0_14::Request::get("http://localhost:8080/restate/health")
-                            .body(Body::empty())
-                            .expect("building health request should not fail"),
-                    )
+                client
+                    .get("http://localhost:8080/restate/health")
+                    .send()
                     .map_err(anyhow::Error::from)
                     .and_then(|response| {
                         if response.status().is_success() {
