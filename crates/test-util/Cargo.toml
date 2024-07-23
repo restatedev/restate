@@ -7,11 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+prost = ["dep:prost-0-12"]
+
 [dependencies]
 assert2 = { workspace = true }
 googletest = { workspace = true }
 pretty_assertions = "1.3"
-prost = { workspace = true, optional = true }
+prost-0-12 = { workspace = true, optional = true }
 
 [dev-dependencies]
-prost-types = { workspace = true }
+prost-types-0-12 = { workspace = true }

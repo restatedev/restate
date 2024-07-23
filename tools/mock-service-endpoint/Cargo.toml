@@ -18,7 +18,7 @@ hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true, features = ["full"] }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-types = { workspace = true }
-prost = { workspace = true }
+prost-0-12 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

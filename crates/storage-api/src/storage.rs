@@ -77,7 +77,7 @@ pub mod v1 {
         use bytes::{Buf, BufMut, Bytes};
         use bytestring::ByteString;
         use opentelemetry::trace::TraceState;
-        use prost::Message;
+        use prost_0_12::Message;
         use restate_types::deployment::PinnedDeployment;
 
         use restate_types::errors::{IdDecodeError, InvocationError};

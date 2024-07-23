@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+extern crate prost_0_12 as prost;
+extern crate prost_types_0_12 as prost_types;
 extern crate tonic_0_10 as tonic;
 pub mod cluster_controller;
 mod error;

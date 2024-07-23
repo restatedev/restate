@@ -31,7 +31,7 @@ http-body-util = { workspace = true, optional = true }
 itertools = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true, optional = true }
-prost = { workspace = true }
+prost-0-12 = { workspace = true }
 regress = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

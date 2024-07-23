@@ -24,8 +24,8 @@ bytestring = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
+prost-0-12 = { workspace = true }
+prost-types-0-12 = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

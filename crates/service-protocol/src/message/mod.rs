@@ -12,7 +12,7 @@
 //! including encoding and decoding of headers and message payloads.
 
 use bytes::Bytes;
-use prost::Message;
+use prost_0_12::Message;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::{Completion, EntryIndex};

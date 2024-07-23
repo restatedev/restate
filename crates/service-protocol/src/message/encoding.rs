@@ -24,7 +24,7 @@ use tracing::warn;
 #[code(restate_errors::RT0012)]
 pub enum EncodingError {
     #[error("cannot decode message type {0:?}. This looks like a bug of the SDK. Reason: {1:?}")]
-    DecodeMessage(MessageType, #[source] prost::DecodeError),
+    DecodeMessage(MessageType, #[source] prost_0_12::DecodeError),
     #[error(transparent)]
     UnknownMessageType(#[from] UnknownMessageType),
     #[error("hit message size limit: {0} >= {1}")]
@@ -66,7 +66,7 @@ impl Encoder {
         &self,
         mut buf: impl BufMut,
         msg: ProtocolMessage,
-    ) -> Result<(), prost::EncodeError> {
+    ) -> Result<(), prost_0_12::EncodeError> {
         let header = generate_header(&msg);
         buf.put_u64(header.into());
 
@@ -101,7 +101,7 @@ fn generate_header(msg: &ProtocolMessage) -> MessageHeader {
     }
 }
 
-fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost::EncodeError> {
+fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost_0_12::EncodeError> {
     match msg {
         ProtocolMessage::Start(m) => m.encode(buf),
         ProtocolMessage::Completion(m) => m.encode(buf),
@@ -239,7 +239,7 @@ impl DecoderState {
 fn decode_protocol_message(
     header: &MessageHeader,
     mut buf: impl Buf,
-) -> Result<ProtocolMessage, prost::DecodeError> {
+) -> Result<ProtocolMessage, prost_0_12::DecodeError> {
     Ok(match header.message_type() {
         MessageType::Start => ProtocolMessage::Start(service_protocol::StartMessage::decode(buf)?),
         MessageType::Completion => {

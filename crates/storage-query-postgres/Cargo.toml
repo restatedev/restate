@@ -31,7 +31,7 @@ derive_builder = { workspace = true }
 futures = { workspace = true }
 paste = { workspace = true}
 pgwire = {version = "0.23", default-features = false, features = ["server-api-ring"]}
-prost = {workspace = true}
+prost-0-12 = {workspace = true}
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

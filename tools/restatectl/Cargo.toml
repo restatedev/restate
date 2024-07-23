@@ -19,7 +19,7 @@ clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
-prost-types = { workspace = true }
+prost-types-0-12 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

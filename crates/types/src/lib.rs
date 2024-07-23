@@ -10,6 +10,9 @@
 
 //! This crate contains the core types used by various Restate components.
 
+extern crate prost_0_12 as prost;
+extern crate prost_types_0_12 as prost_types;
+
 mod base62_util;
 mod id_util;
 mod macros;

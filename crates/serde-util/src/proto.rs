@@ -19,7 +19,7 @@ pub struct ProtobufEncoded;
 
 impl<T> SerializeAs<T> for ProtobufEncoded
 where
-    T: prost::Message,
+    T: prost_0_12::Message,
 {
     fn serialize_as<S>(source: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -31,7 +31,7 @@ where
 
 impl<'de, T> DeserializeAs<'de, T> for ProtobufEncoded
 where
-    T: prost::Message + Default,
+    T: prost_0_12::Message + Default,
 {
     fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
     where

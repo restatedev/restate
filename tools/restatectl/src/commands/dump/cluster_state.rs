@@ -185,7 +185,7 @@ fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
     }
 }
 
-fn render_as_duration(ts: Option<prost_types::Timestamp>, tense: Tense) -> Cell {
+fn render_as_duration(ts: Option<prost_types_0_12::Timestamp>, tense: Tense) -> Cell {
     let ts: Option<SystemTime> = ts
         .map(TryInto::try_into)
         .transpose()

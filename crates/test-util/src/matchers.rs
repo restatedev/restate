@@ -17,14 +17,14 @@ pub use prost::protobuf_decoded;
 #[cfg(feature = "prost")]
 mod prost {
     use googletest::matcher::{Matcher, MatcherResult};
-    use prost::bytes;
+    use prost_0_12::bytes;
     use std::fmt::Debug;
     use std::marker::PhantomData;
 
     struct ProtobufDecodeMatcher<InnerMatcher, B>(InnerMatcher, PhantomData<B>);
 
     impl<
-            T: prost::Message + Default,
+            T: prost_0_12::Message + Default,
             B: bytes::Buf + Clone + Debug,
             InnerMatcher: Matcher<ActualT = T>,
         > Matcher for ProtobufDecodeMatcher<InnerMatcher, B>
@@ -54,7 +54,7 @@ mod prost {
     }
 
     // Decode Bytes as protobuf
-    pub fn protobuf_decoded<T: prost::Message + Default, B: bytes::Buf + Clone + Debug>(
+    pub fn protobuf_decoded<T: prost_0_12::Message + Default, B: bytes::Buf + Clone + Debug>(
         inner: impl Matcher<ActualT = T>,
     ) -> impl Matcher<ActualT = B> {
         ProtobufDecodeMatcher(inner, Default::default())
@@ -65,8 +65,8 @@ mod prost {
         use super::*;
 
         use googletest::{assert_that, matchers::eq};
-        use prost::Message;
-        use prost_types::Timestamp;
+        use prost_0_12::Message;
+        use prost_types_0_12::Timestamp;
 
         #[test]
         fn timestamp() {

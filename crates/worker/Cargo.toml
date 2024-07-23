@@ -78,7 +78,7 @@ restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true, features = ["prost"] }
 restate-types = { workspace = true, features = ["test-util"] }
-prost = { workspace = true }
+prost-0-12 = { workspace = true }
 
 googletest = { workspace = true }
 tempfile = { workspace = true }

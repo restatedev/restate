@@ -56,7 +56,7 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true }
 
 googletest = { workspace = true }
-prost = { workspace = true }
+prost-0-12 = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tokio-util = { workspace = true }

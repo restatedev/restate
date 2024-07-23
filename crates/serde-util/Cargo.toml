@@ -10,7 +10,7 @@ publish = false
 [features]
 default = []
 schema = ["dep:schemars"]
-proto = ["dep:prost", "dep:bytes"]
+proto = ["dep:prost-0-12", "dep:bytes"]
 
 [dependencies]
 bytes = { workspace = true, optional = true }
@@ -19,7 +19,7 @@ http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }
 iso8601 = "0.6.1"
-prost = { workspace = true, optional = true }
+prost-0-12 = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }

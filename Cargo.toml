@@ -121,10 +121,10 @@ opentelemetry_sdk = { version = "0.22.1" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
-prost = "0.12.1"
-prost-build = "0.12.1"
+prost-0-12 = { package = "prost", version = "0.12.1" }
+prost-build-0-12 = { package = "prost-build", version = "0.12.1" }
 prost-dto = { version = "0.0.2" }
-prost-types = "0.12.1"
+prost-types-0-12 = { package = "prost-types", version = "0.12.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
 regress = { version = "0.10" }
