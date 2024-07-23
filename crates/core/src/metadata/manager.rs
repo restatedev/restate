@@ -79,7 +79,7 @@ pub(super) enum Command {
     SyncMetadata(
         MetadataKind,
         TargetVersion,
-        oneshot::Sender<Result<(), ReadError>>,
+        Option<oneshot::Sender<Result<(), ReadError>>>,
     ),
 }
 
@@ -315,8 +315,10 @@ where
             Command::UpdateMetadata(value, callback) => self.update_metadata(value, callback),
             Command::SyncMetadata(kind, target_version, callback) => {
                 let result = self.sync_metadata(kind, target_version).await;
-                if callback.send(result).is_err() {
-                    trace!("Couldn't send synce metadata reply back. System is probably shutting down.");
+                if let Some(callback) = callback {
+                    if callback.send(result).is_err() {
+                        trace!("Couldn't send sync metadata reply back. System is probably shutting down.");
+                    }
                 }
             }
         }

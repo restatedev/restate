@@ -38,6 +38,7 @@ use super::metric_definitions::{
 };
 use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use super::{Handler, MessageRouter};
+use crate::metadata::Urgency;
 use crate::network::net_util::create_tonic_channel_from_advertised_address;
 use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
@@ -220,6 +221,7 @@ impl ConnectionManager {
                         MetadataKind::NodesConfiguration,
                         other_nodes_config_version,
                         None,
+                        Urgency::High,
                     );
                     debug!("Remote node '{}' with newer nodes configuration '{}' tried to connect. Trying to fetch newer version before accepting connection.", peer_node_id, other_nodes_config_version);
                 } else {
@@ -515,6 +517,7 @@ where
                             kind,
                             version,
                             Some(NodeId::from(connection.peer)),
+                            Urgency::Normal,
                         );
                     }
                 })

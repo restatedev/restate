@@ -204,7 +204,7 @@ impl Metadata {
             .send(Command::SyncMetadata(
                 metadata_kind,
                 target_version,
-                result_tx,
+                Some(result_tx),
             ))
             .map_err(|_| ShutdownError)?;
         result_rx.await.map_err(|_| ShutdownError)??;
@@ -219,32 +219,45 @@ impl Metadata {
         metadata_kind: MetadataKind,
         version: Version,
         remote_location: Option<NodeId>,
+        urgency: Urgency,
     ) {
         // check whether the version is newer than what we know
         if version > self.version(metadata_kind) {
-            let mut guard = self.inner.observed_versions[metadata_kind].load();
+            match urgency {
+                Urgency::High => {
+                    // send should only fail in case of shut down
+                    let _ = self.sender.send(Command::SyncMetadata(
+                        metadata_kind,
+                        TargetVersion::Version(version),
+                        None,
+                    ));
+                }
+                Urgency::Normal => {
+                    let mut guard = self.inner.observed_versions[metadata_kind].load();
 
-            // check whether it is even newer than the latest observed version
-            if version > guard.version {
-                // Create the arc outside of loop to avoid reallocations in case of contention;
-                // maybe this is guarding too much against the contended case.
-                let new_version_information =
-                    Arc::new(VersionInformation::new(version, remote_location));
+                    // check whether it is even newer than the latest observed version
+                    if version > guard.version {
+                        // Create the arc outside of loop to avoid reallocations in case of contention;
+                        // maybe this is guarding too much against the contended case.
+                        let new_version_information =
+                            Arc::new(VersionInformation::new(version, remote_location));
 
-                // maybe a simple Arc<Mutex<VersionInformation>> works better? Needs a benchmark.
-                loop {
-                    let cas_guard = self.inner.observed_versions[metadata_kind]
-                        .compare_and_swap(&guard, Arc::clone(&new_version_information));
+                        // maybe a simple Arc<Mutex<VersionInformation>> works better? Needs a benchmark.
+                        loop {
+                            let cas_guard = self.inner.observed_versions[metadata_kind]
+                                .compare_and_swap(&guard, Arc::clone(&new_version_information));
 
-                    if std::ptr::eq(cas_guard.as_raw(), guard.as_raw()) {
-                        break;
-                    }
+                            if std::ptr::eq(cas_guard.as_raw(), guard.as_raw()) {
+                                break;
+                            }
 
-                    guard = cas_guard;
+                            guard = cas_guard;
 
-                    // stop trying to update the observed value if a newer one was reported before
-                    if guard.version >= version {
-                        break;
+                            // stop trying to update the observed value if a newer one was reported before
+                            if guard.version >= version {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -376,4 +389,13 @@ impl VersionInformation {
             remote_node: remote_location,
         }
     }
+}
+
+/// Defines how urgent it is to react to observed metadata versions.
+#[derive(Debug)]
+pub enum Urgency {
+    /// Immediately sync data from the metadata store
+    High,
+    /// Try to fetch metadata from a remote node if available on the next update interval
+    Normal,
 }
