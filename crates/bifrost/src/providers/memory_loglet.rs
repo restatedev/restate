@@ -25,8 +25,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
+use restate_types::logs::{LogId, SequenceNumber};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
@@ -66,16 +66,21 @@ impl LogletProviderFactory for Factory {
 
 #[derive(Default)]
 struct MemoryLogletProvider {
-    store: AsyncMutex<HashMap<LogletParams, Arc<MemoryLoglet>>>,
+    store: AsyncMutex<HashMap<(LogId, SegmentIndex), Arc<MemoryLoglet>>>,
     init_delay: Duration,
 }
 
 #[async_trait]
 impl LogletProvider for MemoryLogletProvider {
-    async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>> {
+    async fn get_loglet(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        params: &LogletParams,
+    ) -> Result<Arc<dyn Loglet>> {
         let mut guard = self.store.lock().await;
 
-        let loglet = match guard.entry(params.clone()) {
+        let loglet = match guard.entry((log_id, segment_index)) {
             hash_map::Entry::Vacant(entry) => {
                 if !self.init_delay.is_zero() {
                     // Artificial delay to simulate slow loglet creation
