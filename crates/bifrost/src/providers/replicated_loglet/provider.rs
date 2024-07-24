@@ -21,7 +21,8 @@ use restate_core::Metadata;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::config::ReplicatedLogletOptions;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
+use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
+use restate_types::logs::LogI;
 
 use super::metric_definitions;
 use crate::loglet::{Loglet, LogletOffset, LogletProvider, LogletProviderFactory, OperationError};
@@ -70,6 +71,8 @@ impl LogletProvider for ReplicatedLogletProvider {
     async fn get_loglet(
         &self,
         // todo: we need richer params
+        _log_id: LogId,
+        _segment_index: SegmentIndex,
         _params: &LogletParams,
     ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
         todo!("Not implemented yet")

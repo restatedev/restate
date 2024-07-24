@@ -12,12 +12,13 @@ use std::collections::{hash_map, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use restate_types::logs::LogId;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
+use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
 
 use super::log_store::RocksDbLogStore;
 use super::log_store_writer::RocksDbLogWriterHandle;
@@ -71,7 +72,7 @@ impl LogletProviderFactory for Factory {
 
 pub(crate) struct LocalLogletProvider {
     log_store: RocksDbLogStore,
-    active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
+    active_loglets: AsyncMutex<HashMap<(LogId, SegmentIndex), Arc<LocalLoglet>>>,
     log_writer: RocksDbLogWriterHandle,
 }
 
@@ -79,10 +80,12 @@ pub(crate) struct LocalLogletProvider {
 impl LogletProvider for LocalLogletProvider {
     async fn get_loglet(
         &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
         let mut guard = self.active_loglets.lock().await;
-        let loglet = match guard.entry(params.as_str().to_owned()) {
+        let loglet = match guard.entry((log_id, segment_index)) {
             hash_map::Entry::Vacant(entry) => {
                 // Create loglet
                 // NOTE: local-loglet expects params to be a `u64` string-encoded unique identifier under the hood.
