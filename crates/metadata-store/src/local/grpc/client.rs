@@ -10,18 +10,18 @@
 
 use async_trait::async_trait;
 use bytestring::ByteString;
-use tonic_0_10::transport::Channel;
-use tonic_0_10::{Code, Status};
+use tonic::transport::Channel;
+use tonic::{Code, Status};
 
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
-use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
 use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
+use crate::local::grpc::net_util::create_tonic_channel_from_advertised_address;
 use crate::local::grpc::pb_conversions::ConversionError;
 
 /// Client end to interact with the [`LocalMetadataStore`].
@@ -31,7 +31,7 @@ pub struct LocalMetadataStoreClient {
 }
 impl LocalMetadataStoreClient {
     pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
-        let channel = create_grpc_channel_from_advertised_address(metadata_store_address)
+        let channel = create_tonic_channel_from_advertised_address(metadata_store_address)
             .expect("should not fail");
 
         Self {

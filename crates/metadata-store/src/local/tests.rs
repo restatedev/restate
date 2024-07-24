@@ -15,10 +15,9 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use test_log::test;
-use tonic_health_0_10::pb::health_client::HealthClient;
-use tonic_health_0_10::pb::HealthCheckRequest;
+use tonic_health::pb::health_client::HealthClient;
+use tonic_health::pb::HealthCheckRequest;
 
-use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
@@ -30,6 +29,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::local::grpc::net_util::create_tonic_channel_from_advertised_address;
 use crate::local::service::LocalMetadataStoreService;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
@@ -358,7 +358,7 @@ async fn start_metadata_store(
     )?;
 
     // await start-up of metadata store
-    let health_client = HealthClient::new(create_grpc_channel_from_advertised_address(
+    let health_client = HealthClient::new(create_tonic_channel_from_advertised_address(
         advertised_address.clone(),
     )?);
     let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);

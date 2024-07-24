@@ -121,9 +121,12 @@ opentelemetry_sdk = { version = "0.22.1" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
+prost = { version = "0.13.1" }
 prost-0-12 = { package = "prost", version = "0.12.1" }
+prost-build = { version = "0.13.1" }
 prost-build-0-12 = { package = "prost-build", version = "0.12.1" }
 prost-dto = { version = "0.0.2" }
+prost-types = { version = "0.13.1" }
 prost-types-0-12 = { package = "prost-types", version = "0.12.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
@@ -152,9 +155,13 @@ thiserror = "1.0"
 tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10" }
+tonic = { version = "0.12.1", default-features = false }
 tonic-0-10 = { package = "tonic", version = "0.10.2", default-features = false }
+tonic-reflection = { version = "0.12.1" }
 tonic-reflection-0-10 = { package = "tonic-reflection", version = "0.10.2" }
+tonic-health = { version = "0.12.1" }
 tonic-health-0-10 = { package = "tonic-health", version = "0.10.2" }
+tonic-build = { version = "0.12.1" }
 tonic-build-0-11 = { package = "tonic-build", version = "0.11.0" }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }

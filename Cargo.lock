@@ -400,7 +400,7 @@ dependencies = [
  "bytes",
  "futures",
  "paste",
- "prost",
+ "prost 0.12.3",
  "tokio",
  "tonic 0.10.2",
 ]
@@ -1749,8 +1749,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd326812b3fd01da5bb1af7d340d0d555fd3d4b641e7f1dfcf5962a902952787"
 dependencies = [
  "futures-core",
- "prost",
- "prost-types",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
  "tonic 0.10.2",
  "tracing-core",
 ]
@@ -1767,7 +1767,7 @@ dependencies = [
  "futures-task",
  "hdrhistogram",
  "humantime",
- "prost-types",
+ "prost-types 0.12.3",
  "serde",
  "serde_json",
  "thread_local",
@@ -3195,6 +3195,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-timeout"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3203a961e5c83b6f5498933e78b6b263e208c197b63e9c6c53cc82ffd3f63793"
+dependencies = [
+ "hyper 1.4.1",
+ "hyper-util",
+ "pin-project-lite",
+ "tokio",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3960,7 +3973,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.4.1",
  "hyper-util",
- "prost",
+ "prost 0.12.3",
  "restate-service-protocol",
  "restate-types",
  "serde",
@@ -4248,7 +4261,7 @@ dependencies = [
  "http-body 0.4.6",
  "hyper 0.14.30",
  "hyper-rustls 0.24.1",
- "hyper-timeout",
+ "hyper-timeout 0.4.1",
  "jsonwebtoken",
  "once_cell",
  "percent-encoding",
@@ -4397,7 +4410,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.12.3",
  "thiserror",
  "tokio",
  "tonic 0.11.0",
@@ -4411,7 +4424,7 @@ checksum = "3a8fddc9b68f5b80dae9d6f510b88e02396f006ad48cac349411fbecc80caae4"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.12.3",
  "tonic 0.11.0",
 ]
 
@@ -4883,7 +4896,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "146c289cda302b98a28d40c8b3b90498d6e526dd24ac2ecea73e4e491685b94a"
 dependencies = [
  "bytes",
- "prost-derive",
+ "prost-derive 0.12.3",
+]
+
+[[package]]
+name = "prost"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13db3d3fde688c61e2446b4d843bc27a7e8af269a69440c0308021dc92333cc"
+dependencies = [
+ "bytes",
+ "prost-derive 0.13.1",
 ]
 
 [[package]]
@@ -4900,12 +4923,33 @@ dependencies = [
  "once_cell",
  "petgraph",
  "prettyplease",
- "prost",
- "prost-types",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
  "regex",
  "syn 2.0.65",
  "tempfile",
  "which",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bb182580f71dd070f88d01ce3de9f4da5021db7115d2e1c3605a754153b77c1"
+dependencies = [
+ "bytes",
+ "heck 0.5.0",
+ "itertools 0.13.0",
+ "log",
+ "multimap",
+ "once_cell",
+ "petgraph",
+ "prettyplease",
+ "prost 0.13.1",
+ "prost-types 0.13.1",
+ "regex",
+ "syn 2.0.65",
+ "tempfile",
 ]
 
 [[package]]
@@ -4916,6 +4960,19 @@ checksum = "efb6c9a1dd1def8e2124d17e83a20af56f1570d6c2d2bd9e266ccb768df3840e"
 dependencies = [
  "anyhow",
  "itertools 0.11.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.65",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18bec9b0adc4eba778b33684b7ba3e7137789434769ee3ce3930463ef904cfca"
+dependencies = [
+ "anyhow",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.65",
@@ -4961,7 +5018,16 @@ version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "193898f59edcf43c26227dcd4c8427f00d99d61e95dcde58dabd49fa291d470e"
 dependencies = [
- "prost",
+ "prost 0.12.3",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee5168b05f49d4b0ca581206eb14a7b22fafd963efe729ac48eb03266e25cc2"
+dependencies = [
+ "prost 0.13.1",
 ]
 
 [[package]]
@@ -5341,9 +5407,9 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "okapi-operation",
- "prost",
+ "prost 0.12.3",
  "prost-dto",
- "prost-types",
+ "prost-types 0.12.3",
  "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
@@ -5365,7 +5431,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic 0.10.2",
- "tonic-build",
+ "tonic-build 0.11.0",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5573,8 +5639,8 @@ dependencies = [
  "metrics 0.23.0",
  "once_cell",
  "pin-project",
- "prost",
- "prost-types",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
  "rand",
  "restate-test-util",
  "restate-types",
@@ -5589,7 +5655,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic 0.10.2",
- "tonic-build",
+ "tonic-build 0.11.0",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5761,7 +5827,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.12.3",
  "restate-core",
  "restate-errors",
  "restate-fs-util",
@@ -5844,9 +5910,12 @@ dependencies = [
  "flexbuffers",
  "futures",
  "googletest",
+ "http 1.1.0",
  "humantime",
- "prost",
- "prost-types",
+ "hyper 1.4.1",
+ "hyper-util",
+ "prost 0.13.1",
+ "prost-types 0.13.1",
  "restate-core",
  "restate-rocksdb",
  "restate-types",
@@ -5858,12 +5927,14 @@ dependencies = [
  "test-log",
  "thiserror",
  "tokio",
- "tonic 0.10.2",
- "tonic-build",
+ "tokio-stream",
+ "tokio-util",
+ "tonic 0.12.1",
+ "tonic-build 0.12.1",
  "tonic-health",
- "tonic-reflection",
+ "tonic-reflection 0.12.1",
  "tower",
- "tower-http 0.4.4",
+ "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5894,7 +5965,7 @@ dependencies = [
  "metrics-tracing-context 0.16.0",
  "metrics-util 0.17.0",
  "once_cell",
- "prost-types",
+ "prost-types 0.12.3",
  "restate-admin",
  "restate-bifrost",
  "restate-core",
@@ -5922,7 +5993,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic 0.10.2",
- "tonic-reflection",
+ "tonic-reflection 0.10.2",
  "tower",
  "tower-http 0.4.4",
  "tracing",
@@ -5947,7 +6018,7 @@ dependencies = [
  "num-bigint",
  "once_cell",
  "paste",
- "prost",
+ "prost 0.12.3",
  "rand",
  "restate-core",
  "restate-errors",
@@ -6024,7 +6095,7 @@ dependencies = [
  "http-serde",
  "humantime",
  "iso8601",
- "prost",
+ "prost 0.12.3",
  "schemars",
  "serde",
  "serde_json",
@@ -6129,7 +6200,7 @@ dependencies = [
  "itertools 0.13.0",
  "once_cell",
  "paste",
- "prost",
+ "prost 0.12.3",
  "regress 0.10.0",
  "restate-base64-util",
  "restate-errors",
@@ -6158,9 +6229,9 @@ dependencies = [
  "derive_more",
  "futures-util",
  "opentelemetry",
- "prost",
- "prost-build",
- "prost-types",
+ "prost 0.12.3",
+ "prost-build 0.12.3",
+ "prost-types 0.12.3",
  "restate-types",
  "serde",
  "strum 0.26.2",
@@ -6183,7 +6254,7 @@ dependencies = [
  "futures",
  "googletest",
  "paste",
- "prost",
+ "prost 0.12.3",
  "restate-core",
  "restate-invoker-api",
  "restate-partition-store",
@@ -6214,7 +6285,7 @@ dependencies = [
  "futures",
  "paste",
  "pgwire",
- "prost",
+ "prost 0.12.3",
  "restate-core",
  "restate-errors",
  "restate-partition-store",
@@ -6236,8 +6307,8 @@ dependencies = [
  "assert2",
  "googletest",
  "pretty_assertions",
- "prost",
- "prost-types",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
 ]
 
 [[package]]
@@ -6321,10 +6392,10 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "prettyplease",
- "prost",
- "prost-build",
+ "prost 0.12.3",
+ "prost-build 0.12.3",
  "prost-dto",
- "prost-types",
+ "prost-types 0.12.3",
  "rand",
  "regress 0.10.0",
  "restate-base64-util",
@@ -6403,7 +6474,7 @@ dependencies = [
  "metrics 0.23.0",
  "opentelemetry",
  "pin-project",
- "prost",
+ "prost 0.12.3",
  "rand",
  "restate-bifrost",
  "restate-core",
@@ -6455,7 +6526,7 @@ dependencies = [
  "cling",
  "crossterm 0.27.0",
  "ctrlc",
- "prost-types",
+ "prost-types 0.12.3",
  "restate-admin",
  "restate-cli-util",
  "restate-types",
@@ -7605,10 +7676,10 @@ dependencies = [
  "http 0.2.12",
  "http-body 0.4.6",
  "hyper 0.14.30",
- "hyper-timeout",
+ "hyper-timeout 0.4.1",
  "percent-encoding",
  "pin-project",
- "prost",
+ "prost 0.12.3",
  "tokio",
  "tokio-stream",
  "tower",
@@ -7632,10 +7703,40 @@ dependencies = [
  "http 0.2.12",
  "http-body 0.4.6",
  "hyper 0.14.30",
- "hyper-timeout",
+ "hyper-timeout 0.4.1",
  "percent-encoding",
  "pin-project",
- "prost",
+ "prost 0.12.3",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "tonic"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38659f4a91aba8598d27821589f5db7dddd94601e7a01b1e485a50e5484c7401"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "axum 0.7.5",
+ "base64 0.22.0",
+ "bytes",
+ "h2 0.4.5",
+ "http 1.1.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.4.1",
+ "hyper-timeout 0.5.1",
+ "hyper-util",
+ "percent-encoding",
+ "pin-project",
+ "prost 0.13.1",
+ "socket2",
  "tokio",
  "tokio-stream",
  "tower",
@@ -7652,22 +7753,35 @@ checksum = "be4ef6dd70a610078cb4e338a0f79d06bc759ff1b22d2120c2ff02ae264ba9c2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build",
+ "prost-build 0.12.3",
+ "quote",
+ "syn 2.0.65",
+]
+
+[[package]]
+name = "tonic-build"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "568392c5a2bd0020723e3f387891176aabafe36fd9fcd074ad309dfa0c8eb964"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build 0.13.1",
  "quote",
  "syn 2.0.65",
 ]
 
 [[package]]
 name = "tonic-health"
-version = "0.10.2"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f80db390246dfb46553481f6024f0082ba00178ea495dbb99e70ba9a4fafb5e1"
+checksum = "e1e10e6a96ee08b6ce443487d4368442d328d0e746f3681f81127f7dc41b4955"
 dependencies = [
  "async-stream",
- "prost",
+ "prost 0.13.1",
  "tokio",
  "tokio-stream",
- "tonic 0.10.2",
+ "tonic 0.12.1",
 ]
 
 [[package]]
@@ -7676,11 +7790,24 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fa37c513df1339d197f4ba21d28c918b9ef1ac1768265f11ecb6b7f1cba1b76"
 dependencies = [
- "prost",
- "prost-types",
+ "prost 0.12.3",
+ "prost-types 0.12.3",
  "tokio",
  "tokio-stream",
  "tonic 0.10.2",
+]
+
+[[package]]
+name = "tonic-reflection"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b742c83ad673e9ab5b4ce0981f7b9e8932be9d60e8682cbf9120494764dbc173"
+dependencies = [
+ "prost 0.13.1",
+ "prost-types 0.13.1",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.1",
 ]
 
 [[package]]
@@ -7738,6 +7865,7 @@ dependencies = [
  "pin-project-lite",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

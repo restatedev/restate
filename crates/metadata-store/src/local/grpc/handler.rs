@@ -14,7 +14,7 @@ use crate::local::grpc::pb_conversions::ConversionError;
 use crate::local::store::{Error, MetadataStoreRequest, RequestSender};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
-use tonic_0_10::{Request, Response, Status};
+use tonic::{Request, Response, Status};
 
 /// Grpc svc handler for the [`LocalMetadataStore`].
 #[derive(Debug)]
