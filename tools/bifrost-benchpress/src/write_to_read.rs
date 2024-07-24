@@ -41,7 +41,7 @@ pub async fn run(
         let bifrost = bifrost.clone();
         let clock = clock.clone();
         async move {
-            let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX).await?;
+            let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX)?;
             let mut counter = 0;
             let mut cancel = std::pin::pin!(cancellation_watcher());
             let mut lag_latencies = Histogram::<u64>::new(3)?;
