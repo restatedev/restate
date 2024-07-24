@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::Stream;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 
 use restate_types::logs::{Lsn, SequenceNumber};
 
@@ -107,6 +108,17 @@ impl LogletBase for LogletWrapper {
         let offset = self.loglet.append(data).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
+    }
+
+    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+        let base_lsn = self.base_lsn;
+        self.loglet
+            .watch_tail()
+            .map(move |tail_state| {
+                let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);
+                TailState::new(tail_state.is_sealed(), base_lsn.offset_by(offset))
+            })
+            .boxed()
     }
 
     async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, AppendError> {

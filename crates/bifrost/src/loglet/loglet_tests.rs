@@ -25,17 +25,7 @@ use tracing::info;
 
 use super::{Loglet, LogletOffset};
 use crate::loglet::AppendError;
-use crate::{LogRecord, Record, TailState, TrimGap};
-
-fn setup() {
-    // Make sure that panics exits the process.
-    let orig_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |panic_info| {
-        // invoke the default handler and exit the process
-        orig_hook(panic_info);
-        std::process::exit(1);
-    }));
-}
+use crate::{setup_panic_handler, LogRecord, Record, TailState, TrimGap};
 
 async fn wait_for_trim(
     loglet: &Arc<dyn Loglet>,
@@ -65,7 +55,7 @@ async fn wait_for_trim(
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
 /// provide contiguous offsets that start from LogletOffset::OLDEST.
 pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
-    setup();
+    setup_panic_handler();
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -211,7 +201,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
 /// starts from LogletOffset::OLDEST.
 pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
-    setup();
+    setup_panic_handler();
 
     let read_from_offset = LogletOffset::from(6);
     let mut reader = loglet
@@ -283,7 +273,7 @@ pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletes
 pub async fn single_loglet_readstream_test_with_trims(
     loglet: Arc<dyn Loglet>,
 ) -> googletest::Result<()> {
-    setup();
+    setup_panic_handler();
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -397,7 +387,7 @@ pub async fn single_loglet_readstream_test_with_trims(
 
 /// Validates that appends fail after find_tail() returned Sealed()
 pub async fn loglet_test_append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
-    setup();
+    setup_panic_handler();
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -435,7 +425,7 @@ pub async fn loglet_test_append_after_seal_concurrent(
     const WARMUP_APPENDS: usize = 200;
     const CONCURRENT_APPENDERS: usize = 20;
 
-    setup();
+    setup_panic_handler();
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
