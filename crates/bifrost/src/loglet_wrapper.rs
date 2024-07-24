@@ -18,6 +18,7 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{Lsn, SequenceNumber};
 
 use crate::loglet::{
@@ -35,6 +36,7 @@ enum LogletWrapperError {
 /// Wraps loglets with the base LSN of the segment
 #[derive(Clone, Debug)]
 pub struct LogletWrapper {
+    segment_index: SegmentIndex,
     /// The offset of the first record in the segment (if exists).
     /// A segment on a clean chain is created with Lsn::OLDEST but this doesn't mean that this
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
@@ -46,8 +48,14 @@ pub struct LogletWrapper {
 }
 
 impl LogletWrapper {
-    pub fn new(base_lsn: Lsn, tail_lsn: Option<Lsn>, loglet: Arc<dyn Loglet>) -> Self {
+    pub fn new(
+        segment_index: SegmentIndex,
+        base_lsn: Lsn,
+        tail_lsn: Option<Lsn>,
+        loglet: Arc<dyn Loglet>,
+    ) -> Self {
         Self {
+            segment_index,
             base_lsn,
             tail_lsn,
             loglet,
@@ -58,6 +66,10 @@ impl LogletWrapper {
     pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
         debug_assert!(tail_lsn >= self.base_lsn);
         self.tail_lsn = Some(tail_lsn)
+    }
+
+    pub fn segment_index(&self) -> SegmentIndex {
+        self.segment_index
     }
 
     pub async fn create_wrapped_read_stream(
@@ -83,7 +95,7 @@ impl LogletWrapper {
 
 impl PartialEq for LogletWrapper {
     fn eq(&self, other: &Self) -> bool {
-        self.base_lsn == other.base_lsn && Arc::ptr_eq(&self.loglet, &other.loglet)
+        self.segment_index == other.segment_index
     }
 }
 

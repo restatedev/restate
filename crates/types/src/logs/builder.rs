@@ -10,7 +10,9 @@
 
 use std::ops::Deref;
 
-use super::metadata::{Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind};
+use super::metadata::{
+    Chain, LogletConfig, LogletParams, Logs, MaybeSegment, ProviderKind, SegmentIndex,
+};
 use super::{LogId, Lsn};
 
 #[derive(Debug, Default, Clone)]
@@ -102,9 +104,10 @@ impl<'a> ChainBuilder<'a> {
         if *last_entry.key() < base_lsn {
             // append
             // validate that the base_lsn is higher than existing base_lsns.
+            let new_index = SegmentIndex(last_entry.get().index().0 + 1);
             self.inner
                 .chain
-                .insert(base_lsn, LogletConfig::new(provider, params));
+                .insert(base_lsn, LogletConfig::new(new_index, provider, params));
             Ok(())
         } else {
             // can't add to the back.
@@ -141,6 +144,8 @@ mod tests {
             LogId::from(1),
             Chain::new(ProviderKind::InMemory, LogletParams::from("test1")),
         )?;
+
+        assert_eq!(chain.tail_index(), SegmentIndex(0));
 
         let segment = chain.find_segment_for_lsn(Lsn::INVALID);
         assert_that!(
@@ -215,6 +220,9 @@ mod tests {
         assert_eq!(Lsn::OLDEST, chain.head().base_lsn);
         assert_eq!(Lsn::from(10), chain.tail().base_lsn);
 
+        assert_eq!(SegmentIndex(1), chain.tail_index());
+        assert_eq!(SegmentIndex(1), chain.tail().index());
+
         // can't, this is a conflict.
         assert_that!(
             chain.append_segment(
@@ -262,6 +270,8 @@ mod tests {
             LogletParams::from("test5"),
         )?;
         assert_eq!(3, chain.num_segments());
+        assert_eq!(SegmentIndex(2), chain.tail_index());
+        assert_eq!(SegmentIndex(2), chain.tail().index());
         let base_lsns: Vec<_> = chain.iter().map(|s| s.base_lsn).collect();
         assert_that!(
             base_lsns,
@@ -483,6 +493,8 @@ mod tests {
         chain.trim_prefix(Lsn::MAX);
         assert_eq!(1, chain.num_segments());
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
+
+        assert_eq!(SegmentIndex(5), chain.tail_index());
 
         Ok(())
     }
