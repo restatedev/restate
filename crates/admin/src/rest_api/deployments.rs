@@ -54,7 +54,7 @@ pub async fn create_deployment<V>(
         } => (
             DiscoverEndpoint::new(
                 Endpoint::Http(
-                    uri.to_string().parse().unwrap(),
+                    uri,
                     if use_http_11 {
                         http::Version::HTTP_11
                     } else {

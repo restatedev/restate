@@ -166,7 +166,7 @@ impl From<DeploymentMetadata> for Deployment {
                 protocol_type,
                 http_version,
             } => Self::Http {
-                uri: address.to_string().parse().unwrap(),
+                uri: address,
                 protocol_type,
                 http_version,
                 additional_headers: value.delivery_options.additional_headers.into(),

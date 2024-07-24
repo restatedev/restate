@@ -31,15 +31,12 @@ pub async fn grpc_connect(address: AdvertisedAddress) -> Result<Channel, tonic::
                 })).await
         }
         AdvertisedAddress::Http(uri) => {
-            Channel::builder(
-                // TODO we need this conversion because tonic still relies on http 0.1
-                uri.to_string().parse().unwrap(),
-            )
-            .connect_timeout(ctx.connect_timeout())
-            .timeout(ctx.request_timeout())
-            .http2_adaptive_window(true)
-            .connect()
-            .await
+            Channel::builder(uri)
+                .connect_timeout(ctx.connect_timeout())
+                .timeout(ctx.request_timeout())
+                .http2_adaptive_window(true)
+                .connect()
+                .await
         }
     }
 }
