@@ -679,10 +679,11 @@ mod tests {
                 None,
                 shuffle_env.shuffle.run(),
             )?;
-            let reader = shuffle_env
-                .bifrost
-                .create_reader(LogId::from(partition_id), Lsn::OLDEST, Lsn::MAX)
-                .await?;
+            let reader = shuffle_env.bifrost.create_reader(
+                LogId::from(partition_id),
+                Lsn::OLDEST,
+                Lsn::MAX,
+            )?;
 
             let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
 
@@ -723,10 +724,11 @@ mod tests {
                 None,
                 shuffle_env.shuffle.run(),
             )?;
-            let reader = shuffle_env
-                .bifrost
-                .create_reader(LogId::from(partition_id), Lsn::OLDEST, Lsn::MAX)
-                .await?;
+            let reader = shuffle_env.bifrost.create_reader(
+                LogId::from(partition_id),
+                Lsn::OLDEST,
+                Lsn::MAX,
+            )?;
 
             let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
 
@@ -759,10 +761,11 @@ mod tests {
         let shuffle_task_id = tc
             .run_in_scope("test", None, async {
                 let partition_id = shuffle_env.shuffle.metadata.partition_id;
-                let reader = shuffle_env
-                    .bifrost
-                    .create_reader(LogId::from(partition_id), Lsn::INVALID, Lsn::MAX)
-                    .await?;
+                let reader = shuffle_env.bifrost.create_reader(
+                    LogId::from(partition_id),
+                    Lsn::INVALID,
+                    Lsn::MAX,
+                )?;
                 let total_restarts = Arc::clone(&total_restarts);
 
                 let shuffle_task =
