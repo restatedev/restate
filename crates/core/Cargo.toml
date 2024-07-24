@@ -27,15 +27,15 @@ enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
-http_0_2 = { package = "http", version = "0.2" }
-hyper_0_14 = { package = "hyper", version = "0.14" }
+http = { workspace = true }
 humantime = { workspace = true }
 hyper = { workspace = true }
+hyper-util = { workspace = true }
 metrics = { workspace = true }
 once_cell = { workspace = true }
 pin-project = { workspace = true }
-prost-0-12 = { workspace = true }
-prost-types-0-12 = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -47,12 +47,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
-tonic-0-10 = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build-0-11 = { workspace = true }
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-test-util = { workspace = true }

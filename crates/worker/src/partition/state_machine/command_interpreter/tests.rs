@@ -14,7 +14,7 @@ use bytestring::ByteString;
 use futures::stream;
 use googletest::matcher::Matcher;
 use googletest::{all, any, assert_that, pat, unordered_elements_are};
-use prost_0_12::Message;
+use prost::Message;
 use restate_invoker_api::EffectKind;
 use restate_service_protocol::awakeable_id::AwakeableIdentifier;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;

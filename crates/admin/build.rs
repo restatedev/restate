@@ -14,7 +14,7 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    tonic_build_0_11::configure()
+    tonic_build::configure()
         .bytes(["."])
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         .server_mod_attribute("cluster_ctrl", "#[cfg(feature = \"servers\")]")

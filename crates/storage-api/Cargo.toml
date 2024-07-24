@@ -20,12 +20,12 @@ bytestring = { workspace = true }
 derive_more = { workspace = true }
 futures-util = { workspace = true }
 opentelemetry = { workspace = true }
-prost-0-12 = { workspace = true }
-prost-types-0-12 = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 serde = { workspace = true, optional = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-prost-build-0-12 = { workspace = true }
+prost-build = { workspace = true }

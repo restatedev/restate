@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-extern crate prost_0_12 as prost;
-extern crate prost_types_0_12 as prost_types;
-
 use std::future::Future;
 
 /// Storage error

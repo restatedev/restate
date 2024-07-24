@@ -1092,8 +1092,6 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
- "serde_json",
- "serde_path_to_error",
  "serde_urlencoded",
  "sync_wrapper 0.1.2",
  "tokio",
@@ -3973,7 +3971,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.4.1",
  "hyper-util",
- "prost 0.12.3",
+ "prost 0.13.1",
  "restate-service-protocol",
  "restate-types",
  "serde",
@@ -4911,28 +4909,6 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c55e02e35260070b6f716a2423c2ff1c3bb1642ddca6f99e1f26d06268a0e2d2"
-dependencies = [
- "bytes",
- "heck 0.4.1",
- "itertools 0.11.0",
- "log",
- "multimap",
- "once_cell",
- "petgraph",
- "prettyplease",
- "prost 0.12.3",
- "prost-types 0.12.3",
- "regex",
- "syn 2.0.65",
- "tempfile",
- "which",
-]
-
-[[package]]
-name = "prost-build"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bb182580f71dd070f88d01ce3de9f4da5021db7115d2e1c3605a754153b77c1"
@@ -5407,9 +5383,9 @@ dependencies = [
  "http-body 1.0.1",
  "http-body-util",
  "okapi-operation",
- "prost 0.12.3",
+ "prost 0.13.1",
  "prost-dto",
- "prost-types 0.12.3",
+ "prost-types 0.13.1",
  "restate-admin-rest-model",
  "restate-bifrost",
  "restate-core",
@@ -5431,7 +5407,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic 0.10.2",
- "tonic-build 0.11.0",
+ "tonic 0.12.1",
+ "tonic-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5632,15 +5609,15 @@ dependencies = [
  "futures",
  "googletest",
  "hostname",
- "http 0.2.12",
+ "http 1.1.0",
  "humantime",
- "hyper 0.14.30",
  "hyper 1.4.1",
+ "hyper-util",
  "metrics 0.23.0",
  "once_cell",
  "pin-project",
- "prost 0.12.3",
- "prost-types 0.12.3",
+ "prost 0.13.1",
+ "prost-types 0.13.1",
  "rand",
  "restate-test-util",
  "restate-types",
@@ -5654,8 +5631,8 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tonic 0.10.2",
- "tonic-build 0.11.0",
+ "tonic 0.12.1",
+ "tonic-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5827,7 +5804,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry_sdk",
- "prost 0.12.3",
+ "prost 0.13.1",
  "restate-core",
  "restate-errors",
  "restate-fs-util",
@@ -5930,9 +5907,9 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic 0.12.1",
- "tonic-build 0.12.1",
+ "tonic-build",
  "tonic-health",
- "tonic-reflection 0.12.1",
+ "tonic-reflection",
  "tower",
  "tower-http 0.5.2",
  "tracing",
@@ -5947,7 +5924,7 @@ dependencies = [
  "arc-swap",
  "arrow-flight",
  "async-trait",
- "axum 0.6.20",
+ "axum 0.7.5",
  "bytes",
  "codederror",
  "datafusion",
@@ -5958,14 +5935,16 @@ dependencies = [
  "futures",
  "googletest",
  "http 1.1.0",
+ "http-body 1.0.1",
  "humantime",
- "hyper 0.14.30",
+ "hyper 1.4.1",
+ "hyper-util",
  "metrics 0.23.0",
  "metrics-exporter-prometheus",
  "metrics-tracing-context 0.16.0",
  "metrics-util 0.17.0",
  "once_cell",
- "prost-types 0.12.3",
+ "prost-types 0.13.1",
  "restate-admin",
  "restate-bifrost",
  "restate-core",
@@ -5993,9 +5972,10 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic 0.10.2",
- "tonic-reflection 0.10.2",
+ "tonic 0.12.1",
+ "tonic-reflection",
  "tower",
- "tower-http 0.4.4",
+ "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
 ]
@@ -6018,7 +5998,7 @@ dependencies = [
  "num-bigint",
  "once_cell",
  "paste",
- "prost 0.12.3",
+ "prost 0.13.1",
  "rand",
  "restate-core",
  "restate-errors",
@@ -6095,7 +6075,7 @@ dependencies = [
  "http-serde",
  "humantime",
  "iso8601",
- "prost 0.12.3",
+ "prost 0.13.1",
  "schemars",
  "serde",
  "serde_json",
@@ -6200,7 +6180,7 @@ dependencies = [
  "itertools 0.13.0",
  "once_cell",
  "paste",
- "prost 0.12.3",
+ "prost 0.13.1",
  "regress 0.10.0",
  "restate-base64-util",
  "restate-errors",
@@ -6229,9 +6209,9 @@ dependencies = [
  "derive_more",
  "futures-util",
  "opentelemetry",
- "prost 0.12.3",
- "prost-build 0.12.3",
- "prost-types 0.12.3",
+ "prost 0.13.1",
+ "prost-build",
+ "prost-types 0.13.1",
  "restate-types",
  "serde",
  "strum 0.26.2",
@@ -6254,7 +6234,7 @@ dependencies = [
  "futures",
  "googletest",
  "paste",
- "prost 0.12.3",
+ "prost 0.13.1",
  "restate-core",
  "restate-invoker-api",
  "restate-partition-store",
@@ -6285,7 +6265,7 @@ dependencies = [
  "futures",
  "paste",
  "pgwire",
- "prost 0.12.3",
+ "prost 0.13.1",
  "restate-core",
  "restate-errors",
  "restate-partition-store",
@@ -6307,8 +6287,8 @@ dependencies = [
  "assert2",
  "googletest",
  "pretty_assertions",
- "prost 0.12.3",
- "prost-types 0.12.3",
+ "prost 0.13.1",
+ "prost-types 0.13.1",
 ]
 
 [[package]]
@@ -6392,10 +6372,10 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "prettyplease",
- "prost 0.12.3",
- "prost-build 0.12.3",
+ "prost 0.13.1",
+ "prost-build",
  "prost-dto",
- "prost-types 0.12.3",
+ "prost-types 0.13.1",
  "rand",
  "regress 0.10.0",
  "restate-base64-util",
@@ -6474,7 +6454,7 @@ dependencies = [
  "metrics 0.23.0",
  "opentelemetry",
  "pin-project",
- "prost 0.12.3",
+ "prost 0.13.1",
  "rand",
  "restate-bifrost",
  "restate-core",
@@ -6526,14 +6506,15 @@ dependencies = [
  "cling",
  "crossterm 0.27.0",
  "ctrlc",
- "prost-types 0.12.3",
+ "hyper-util",
+ "prost-types 0.13.1",
  "restate-admin",
  "restate-cli-util",
  "restate-types",
  "thiserror",
  "tokio",
  "tokio-stream",
- "tonic 0.10.2",
+ "tonic 0.12.1",
  "tower",
  "tracing",
  "tracing-log",
@@ -7671,7 +7652,6 @@ dependencies = [
  "axum 0.6.20",
  "base64 0.21.7",
  "bytes",
- "flate2",
  "h2 0.3.26",
  "http 0.2.12",
  "http-body 0.4.6",
@@ -7726,6 +7706,7 @@ dependencies = [
  "axum 0.7.5",
  "base64 0.22.0",
  "bytes",
+ "flate2",
  "h2 0.4.5",
  "http 1.1.0",
  "http-body 1.0.1",
@@ -7747,26 +7728,13 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be4ef6dd70a610078cb4e338a0f79d06bc759ff1b22d2120c2ff02ae264ba9c2"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "prost-build 0.12.3",
- "quote",
- "syn 2.0.65",
-]
-
-[[package]]
-name = "tonic-build"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "568392c5a2bd0020723e3f387891176aabafe36fd9fcd074ad309dfa0c8eb964"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build 0.13.1",
+ "prost-build",
  "quote",
  "syn 2.0.65",
 ]
@@ -7782,19 +7750,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.12.1",
-]
-
-[[package]]
-name = "tonic-reflection"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fa37c513df1339d197f4ba21d28c918b9ef1ac1768265f11ecb6b7f1cba1b76"
-dependencies = [
- "prost 0.12.3",
- "prost-types 0.12.3",
- "tokio",
- "tokio-stream",
- "tonic 0.10.2",
 ]
 
 [[package]]
@@ -8608,7 +8563,7 @@ dependencies = [
  "schemars",
  "serde_json",
  "tokio",
- "tonic 0.10.2",
+ "tonic 0.12.1",
 ]
 
 [[package]]

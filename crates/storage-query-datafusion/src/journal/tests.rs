@@ -16,7 +16,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
-use prost_0_12::Message;
+use prost::Message;
 use restate_core::TaskCenterBuilder;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};

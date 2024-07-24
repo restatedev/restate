@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -31,11 +32,12 @@ use futures::{ready, Stream, StreamExt, TryStreamExt};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
+use restate_core::network::protobuf::node_svc::StorageQueryRequest;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
-
-use restate_core::network::protobuf::node_svc::StorageQueryRequest;
+use tonic::metadata::{KeyAndValueRef, MetadataMap};
+use tonic::Status;
 
 use super::error::StorageQueryError;
 use crate::state::QueryServiceState;
@@ -79,7 +81,7 @@ pub async fn query(
                 data_body: response.data,
                 ..FlightData::default()
             })
-            .map_err(FlightError::from),
+            .map_err(|status| FlightError::from(tonic_status_012_to_010(status))),
     );
 
     // create a stream without LargeUtf8 or LargeBinary columns as JS doesn't support these yet
@@ -267,4 +269,41 @@ impl Stream for ConvertRecordBatchStream {
             }
         }
     }
+}
+
+// todo: Remove once arrow-flight works with tonic 0.12
+fn tonic_status_012_to_010(status: Status) -> tonic_0_10::Status {
+    let code = tonic_0_10::Code::from(status.code() as i32);
+    let message = status.message().to_owned();
+    let details = Bytes::copy_from_slice(status.details());
+    let metadata = tonic_metadata_map_012_to_010(status.metadata());
+    tonic_0_10::Status::with_details_and_metadata(code, message, details, metadata)
+}
+
+// todo: Remove once arrow-flight works with tonic 0.12
+fn tonic_metadata_map_012_to_010(metadata_map: &MetadataMap) -> tonic_0_10::metadata::MetadataMap {
+    let mut resulting_metadata_map =
+        tonic_0_10::metadata::MetadataMap::with_capacity(metadata_map.len());
+    for key_value in metadata_map.iter() {
+        match key_value {
+            KeyAndValueRef::Ascii(key, value) => {
+                // ignore metadata map entries if conversion fails
+                if let Ok(value) =
+                    tonic_0_10::metadata::MetadataValue::from_str(value.to_str().unwrap_or(""))
+                {
+                    if let Ok(key) = tonic_0_10::metadata::MetadataKey::from_str(key.as_str()) {
+                        resulting_metadata_map.insert(key, value);
+                    }
+                }
+            }
+            KeyAndValueRef::Binary(key, value) => {
+                if let Ok(key) = tonic_0_10::metadata::MetadataKey::from_bytes(key.as_ref()) {
+                    let value = tonic_0_10::metadata::MetadataValue::from_bytes(value.as_ref());
+                    resulting_metadata_map.insert_bin(key, value);
+                }
+            }
+        }
+    }
+
+    resulting_metadata_map
 }

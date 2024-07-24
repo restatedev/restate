@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::Context;
 use codederror::CodedError;
 use tokio::sync::oneshot;
-use tonic_0_10::transport::Channel;
+use tonic::transport::Channel;
 
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_admin::service::AdminService;

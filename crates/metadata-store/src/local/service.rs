@@ -8,9 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc_svc;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::local::grpc::handler::LocalMetadataStoreHandler;
+use crate::local::store::LocalMetadataStore;
 use http::Request;
 use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
+use restate_core::network::net_util;
 use restate_core::{task_center, ShutdownError, TaskKind};
 use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
@@ -18,12 +23,6 @@ use restate_types::live::BoxedLiveLoad;
 use tonic::body::boxed;
 use tonic::server::NamedService;
 use tower::ServiceExt;
-
-use crate::grpc_svc;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::grpc::net_util;
-use crate::local::store::LocalMetadataStore;
 
 pub struct LocalMetadataStoreService {
     opts: BoxedLiveLoad<MetadataStoreOptions>,

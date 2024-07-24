@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use prost_0_12::Message;
+use prost::Message;
 use restate_types::invocation::Header;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::*;
@@ -35,7 +35,7 @@ macro_rules! match_decode {
     };
 }
 
-#[derive(Clone, PartialEq, ::prost_0_12::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 struct NamedEntryTemplate {
     // By spec the field `name` is always tag 12
     #[prost(string, optional, tag = "12")]

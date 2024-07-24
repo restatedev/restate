@@ -13,7 +13,7 @@ use hyper::server::conn::http2;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use prost_0_12::Message;
+use prost::Message;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 use tracing_subscriber::filter::LevelFilter;

@@ -29,7 +29,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 once_cell = { workspace = true }
 paste = { workspace = true }
-prost-0-12 = { workspace = true }
+prost = { workspace = true }
 rocksdb = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }

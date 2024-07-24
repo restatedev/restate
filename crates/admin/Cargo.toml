@@ -40,9 +40,9 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
-prost-0-12 = { workspace = true }
+prost = { workspace = true }
 prost-dto = { workspace = true }
-prost-types-0-12 = { workspace = true }
+prost-types = { workspace = true }
 restate-serde-util = { workspace = true, features = ["schema"] }
 schemars = { workspace = true }
 serde = { workspace = true }
@@ -50,12 +50,13 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic-0-10 = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic-0-10 = { workspace = true }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build-0-11 = { workspace = true }
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

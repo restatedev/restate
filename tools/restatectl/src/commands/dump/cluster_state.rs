@@ -26,7 +26,7 @@ use restate_types::protobuf::cluster::{
     node_state, DeadNode, PartitionProcessorStatus, ReplayStatus, RunMode,
 };
 use restate_types::{GenerationalNodeId, PlainNodeId};
-use tonic_0_10::codec::CompressionEncoding;
+use tonic::codec::CompressionEncoding;
 
 use crate::app::ConnectionInfo;
 use crate::util::grpc_connect;
@@ -185,7 +185,7 @@ fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
     }
 }
 
-fn render_as_duration(ts: Option<prost_types_0_12::Timestamp>, tense: Tense) -> Cell {
+fn render_as_duration(ts: Option<prost_types::Timestamp>, tense: Tense) -> Cell {
     let ts: Option<SystemTime> = ts
         .map(TryInto::try_into)
         .transpose()

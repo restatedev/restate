@@ -18,7 +18,7 @@ use rand::seq::SliceRandom;
 use restate_types::net::codec::try_unwrap_binary_message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic_0_10::transport::Channel;
+use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
 use restate_types::live::Pinned;
@@ -31,7 +31,6 @@ use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
 
 use super::connection::{Connection, ConnectionSender};
 use super::error::{NetworkError, ProtocolError};
-use super::grpc_util::create_grpc_channel_from_advertised_address;
 use super::handshake::{negotiate_protocol_version, wait_for_hello, wait_for_welcome};
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
@@ -39,6 +38,7 @@ use super::metric_definitions::{
 };
 use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use super::{Handler, MessageRouter};
+use crate::network::net_util::create_tonic_channel_from_advertised_address;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
 use crate::{Metadata, TargetVersion};
 
@@ -112,7 +112,7 @@ impl ConnectionManager {
     pub async fn accept_incoming_connection<S>(
         &self,
         mut incoming: S,
-    ) -> Result<BoxStream<'static, Result<Message, tonic_0_10::Status>>, NetworkError>
+    ) -> Result<BoxStream<'static, Result<Message, tonic::Status>>, NetworkError>
     where
         S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send + 'static,
     {
@@ -142,12 +142,9 @@ impl ConnectionManager {
         let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
         // NodeId **must** be generational at this layer
-        let peer_node_id = hello
-            .my_node_id
-            .clone()
-            .ok_or(ProtocolError::HandshakeFailed(
-                "NodeId is not set in the Hello message",
-            ))?;
+        let peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
+            "NodeId is not set in the Hello message",
+        ))?;
 
         if peer_node_id.generation() == 0 {
             return Err(
@@ -230,7 +227,7 @@ impl ConnectionManager {
                 self.metadata
                     .sync(
                         MetadataKind::NodesConfiguration,
-                        TargetVersion::from(header.my_nodes_config_version.clone().map(Into::into)),
+                        TargetVersion::from(header.my_nodes_config_version.map(Into::into)),
                     )
                     .await?;
                 nodes_config = self.metadata.nodes_config_ref();
@@ -291,7 +288,7 @@ impl ConnectionManager {
         let channel = {
             let mut guard = self.inner.lock().unwrap();
             if let hash_map::Entry::Vacant(entry) = guard.channel_cache.entry(address.clone()) {
-                let channel = create_grpc_channel_from_advertised_address(address)
+                let channel = create_tonic_channel_from_advertised_address(address)
                     .map_err(|e| NetworkError::BadNodeAddress(node_id.into(), e))?;
                 entry.insert(channel.clone());
                 channel

@@ -17,7 +17,7 @@ use typify::{TypeSpace, TypeSpaceSettings};
 fn main() -> std::io::Result<()> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    prost_build_0_12::Config::new()
+    prost_build::Config::new()
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional")
         .enum_attribute(
@@ -84,7 +84,7 @@ fn main() -> std::io::Result<()> {
 }
 
 fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
-    prost_build_0_12::Config::new()
+    prost_build::Config::new()
         .bytes(["."])
         .enum_attribute(
             "TargetName",

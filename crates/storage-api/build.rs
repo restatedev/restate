@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 fn main() -> std::io::Result<()> {
-    prost_build_0_12::Config::new()
+    prost_build::Config::new()
         .bytes(["."])
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")

@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 use http::Uri;
 use hyper::body::{Body, Incoming};
 use hyper::rt::{Read, Write};
 use hyper_util::rt::TokioIo;
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskCenter, TaskKind};
 use restate_types::errors::GenericError;
 use restate_types::net::{AdvertisedAddress, BindAddress};
 use std::fmt::Debug;

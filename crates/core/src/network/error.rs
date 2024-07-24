@@ -29,13 +29,13 @@ pub enum NetworkError {
     #[error("operation aborted, node is shutting down")]
     Shutdown(#[from] ShutdownError),
     #[error("node {0} address is bad: {1}")]
-    BadNodeAddress(NodeId, http_0_2::Error),
+    BadNodeAddress(NodeId, http::Error),
     #[error("timeout: {0}")]
     Timeout(&'static str),
     #[error("protocol error: {0}")]
     ProtocolError(#[from] ProtocolError),
-    #[error("cannot connect: {} {}", tonic_0_10::Status::code(.0), tonic_0_10::Status::message(.0))]
-    ConnectError(#[from] tonic_0_10::Status),
+    #[error("cannot connect: {} {}", tonic::Status::code(.0), tonic::Status::message(.0))]
+    ConnectError(#[from] tonic::Status),
     #[error("new node generation exists: {0}")]
     OldPeerGeneration(String),
     #[error("peer is not connected")]
@@ -57,7 +57,7 @@ pub enum ProtocolError {
     #[error("codec error: {0}")]
     Codec(#[from] CodecError),
     #[error("grpc error: {0}")]
-    GrpcError(#[from] tonic_0_10::Status),
+    GrpcError(#[from] tonic::Status),
     #[error(
         "peer has unsupported protocol version {0}, minimum supported is '{}'",
         MIN_SUPPORTED_PROTOCOL_VERSION as i32
@@ -65,30 +65,30 @@ pub enum ProtocolError {
     UnsupportedVersion(i32),
 }
 
-impl From<ProtocolError> for tonic_0_10::Status {
+impl From<ProtocolError> for tonic::Status {
     fn from(value: ProtocolError) -> Self {
         match value {
-            ProtocolError::HandshakeFailed(e) => tonic_0_10::Status::invalid_argument(e),
-            ProtocolError::HandshakeTimeout(e) => tonic_0_10::Status::deadline_exceeded(e),
-            ProtocolError::PeerDropped => tonic_0_10::Status::cancelled("peer dropped"),
-            ProtocolError::Codec(e) => tonic_0_10::Status::internal(e.to_string()),
+            ProtocolError::HandshakeFailed(e) => tonic::Status::invalid_argument(e),
+            ProtocolError::HandshakeTimeout(e) => tonic::Status::deadline_exceeded(e),
+            ProtocolError::PeerDropped => tonic::Status::cancelled("peer dropped"),
+            ProtocolError::Codec(e) => tonic::Status::internal(e.to_string()),
             ProtocolError::UnsupportedVersion(_) => {
-                tonic_0_10::Status::invalid_argument(value.to_string())
+                tonic::Status::invalid_argument(value.to_string())
             }
             ProtocolError::GrpcError(s) => s,
         }
     }
 }
 
-impl From<NetworkError> for tonic_0_10::Status {
+impl From<NetworkError> for tonic::Status {
     fn from(value: NetworkError) -> Self {
         match value {
-            NetworkError::Shutdown(_) => tonic_0_10::Status::unavailable(value.to_string()),
+            NetworkError::Shutdown(_) => tonic::Status::unavailable(value.to_string()),
             NetworkError::ProtocolError(e) => e.into(),
-            NetworkError::Timeout(e) => tonic_0_10::Status::deadline_exceeded(e),
-            NetworkError::OldPeerGeneration(e) => tonic_0_10::Status::already_exists(e),
+            NetworkError::Timeout(e) => tonic::Status::deadline_exceeded(e),
+            NetworkError::OldPeerGeneration(e) => tonic::Status::already_exists(e),
             NetworkError::ConnectError(s) => s,
-            e => tonic_0_10::Status::internal(e.to_string()),
+            e => tonic::Status::internal(e.to_string()),
         }
     }
 }

@@ -10,7 +10,6 @@
 
 pub mod client;
 pub mod handler;
-pub mod net_util;
 
 pub mod pb_conversions {
     use crate::grpc_svc;

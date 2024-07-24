@@ -11,7 +11,7 @@
 use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
-use prost_0_12::encoding::encoded_len_varint;
+use prost::encoding::encoded_len_varint;
 use std::mem;
 use strum_macros::EnumIter;
 
@@ -576,13 +576,13 @@ impl KeyCodec for TimerKeyKind {
 #[inline]
 fn write_delimited<B: BufMut>(source: impl AsRef<[u8]>, target: &mut B) {
     let source = source.as_ref();
-    prost_0_12::encoding::encode_varint(source.len() as u64, target);
+    prost::encoding::encode_varint(source.len() as u64, target);
     target.put(source);
 }
 
 #[inline]
 fn read_delimited<B: Buf>(source: &mut B) -> crate::Result<Bytes> {
-    let len = prost_0_12::encoding::decode_varint(source)
+    let len = prost::encoding::decode_varint(source)
         .map_err(|error| StorageError::Generic(error.into()))?;
     // note: this is a zero-copy when the source is bytes::Bytes.
     Ok(source.copy_to_bytes(len as usize))

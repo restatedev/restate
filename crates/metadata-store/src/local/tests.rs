@@ -18,6 +18,7 @@ use test_log::test;
 use tonic_health::pb::health_client::HealthClient;
 use tonic_health::pb::HealthCheckRequest;
 
+use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
@@ -29,7 +30,6 @@ use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
-use crate::local::grpc::net_util::create_tonic_channel_from_advertised_address;
 use crate::local::service::LocalMetadataStoreService;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 

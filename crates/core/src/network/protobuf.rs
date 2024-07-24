@@ -9,8 +9,8 @@
 // by the Apache License, Version 2.0.
 
 pub mod node_svc {
-    tonic_0_10::include_proto!("restate.node_svc");
+    tonic::include_proto!("restate.node_svc");
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic_0_10::include_file_descriptor_set!("node_svc_descriptor");
+        tonic::include_file_descriptor_set!("node_svc_descriptor");
 }

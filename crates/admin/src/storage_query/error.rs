@@ -24,7 +24,7 @@ use serde::Serialize;
 #[derive(Debug, thiserror::Error)]
 pub enum StorageQueryError {
     #[error("failed grpc: {0}")]
-    Tonic(#[from] tonic_0_10::Status),
+    Tonic(#[from] tonic::Status),
 }
 
 /// # Error description response
