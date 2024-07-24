@@ -119,11 +119,11 @@ mod tests {
     };
     use restate_types::ingress::{IngressResponseEnvelope, IngressResponseResult};
     use restate_types::invocation::{
-        InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
+        Header, InvocationResponse, InvocationTarget, InvocationTermination, ResponseResult,
         ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
     };
     use restate_types::journal::enriched::EnrichedRawEntry;
-    use restate_types::journal::{Completion, CompletionResult, EntryResult};
+    use restate_types::journal::{Completion, CompletionResult, EntryResult, InvokeRequest};
     use restate_types::journal::{Entry, EntryType};
     use restate_types::live::{Constant, Live};
     use restate_types::state_mut::ExternalStateMutation;
@@ -479,6 +479,53 @@ mod tests {
             some((ge(0), outbox_message_matcher(caller_id)))
         );
 
+        Ok(())
+    }
+
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+    async fn invoke_with_headers() -> TestResult {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()
+            .expect("task_center builds");
+        let mut state_machine = tc
+            .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+            .await;
+        let service_id = ServiceId::mock_random();
+        let invocation_id =
+            mock_start_invocation_with_service_id(&mut state_machine, service_id.clone()).await;
+
+        let actions = state_machine
+            .apply(Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::invoke(
+                        InvokeRequest {
+                            service_name: service_id.service_name,
+                            handler_name: "MyMethod".into(),
+                            parameter: Bytes::default(),
+                            headers: vec![Header::new("foo", "bar")],
+                            key: service_id.key,
+                        },
+                        None,
+                    )),
+                },
+            }))
+            .await;
+
+        assert_that!(
+            actions,
+            contains(pat!(Action::NewOutboxMessage {
+                message: pat!(
+                    restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(pat!(
+                        restate_types::invocation::ServiceInvocation {
+                            headers: eq(vec![Header::new("foo", "bar")])
+                        }
+                    ))
+                )
+            }))
+        );
         Ok(())
     }
 

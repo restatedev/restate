@@ -24,12 +24,12 @@ bs58 = { version = "0.5.0" }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 h2 = "0.4.5"
-http = "1.1.0"
-http-serde = "2.0.0"
-http-body-util = "0.1.2"
-hyper = { version = "1.4.1", features = ["http1", "http2", "client"] }
-hyper-util = { version = "0.1.6", features = ["client-legacy"] }
-hyper-rustls = { version = "0.27.2", default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"] }
+http = { workspace = true }
+http-serde = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["http1", "http2", "client"] }
+hyper-util = { workspace = true, features = ["client-legacy"] }
+hyper-rustls = { workspace = true }
 humantime = { workspace = true }
 jsonwebtoken = { version = "9.1.0" }
 once_cell = { workspace = true }
@@ -37,7 +37,7 @@ pem = { version = "3.0.3" }
 tower-service = { version = "0.3" }
 ring = { version = "0.17.8" }
 restate-types = { workspace = true }
-rustls = {version = "0.23.11", default-features = false, features = ["ring"]}
+rustls = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

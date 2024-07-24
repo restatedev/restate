@@ -14,6 +14,7 @@ use super::*;
 
 use crate::errors::{InvocationError, InvocationErrorCode};
 use crate::identifiers::EntryIndex;
+use crate::invocation::Header;
 use crate::time::MillisSinceEpoch;
 use std::fmt;
 
@@ -331,6 +332,7 @@ pub struct InvokeRequest {
     pub service_name: ByteString,
     pub handler_name: ByteString,
     pub parameter: Bytes,
+    pub headers: Vec<Header>,
     /// Empty if service call.
     /// The reason this is not Option<ByteString> is that it cannot be distinguished purely from the message
     /// whether the key is none or empty.
@@ -342,12 +344,14 @@ impl InvokeRequest {
         service_name: impl Into<ByteString>,
         method_name: impl Into<ByteString>,
         parameter: impl Into<Bytes>,
+        headers: impl Into<Vec<Header>>,
         key: impl Into<ByteString>,
     ) -> Self {
         InvokeRequest {
             service_name: service_name.into(),
             handler_name: method_name.into(),
             parameter: parameter.into(),
+            headers: headers.into(),
             key: key.into(),
         }
     }

@@ -14,19 +14,19 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use pin_project::pin_project;
 use rocksdb::{DBRawIteratorWithThreadMode, DB};
-use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::{LogletOffset, LogletReadStream, OperationError};
+use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
-use crate::{LogRecord, Result};
+use crate::{LogRecord, Result, TailState};
 
 use super::keys::RecordKey;
 use super::LocalLoglet;
@@ -37,13 +37,14 @@ pub(crate) struct LocalLogletReadStream {
     loglet: Arc<LocalLoglet>,
     // the next record this stream will attempt to read
     read_pointer: LogletOffset,
-    release_pointer: LogletOffset,
+    /// stop when read_pointer is at or beyond this offset
+    last_known_tail: LogletOffset,
     /// Last offset to read before terminating the stream. None means "tailing" reader.
     read_to: Option<LogletOffset>,
     #[pin]
     iterator: DBRawIteratorWithThreadMode<'static, DB>,
     #[pin]
-    release_watch: WatchStream<LogletOffset>,
+    tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     #[pin]
     terminated: bool,
 }
@@ -87,11 +88,12 @@ impl LocalLogletReadStream {
         read_opts.set_iterate_upper_bound(RecordKey::upper_bound(loglet.loglet_id).to_bytes());
 
         let log_store = &loglet.log_store;
-        let mut release_watch = loglet.release_watch.to_stream();
-        let release_pointer = release_watch
+        let mut tail_watch = loglet.watch_tail();
+        let last_known_tail = tail_watch
             .next()
             .await
-            .expect("loglet watch returns release pointer");
+            .expect("loglet watch returns tail pointer")
+            .offset();
 
         // ## Safety:
         // the iterator is guaranteed to be dropped before the loglet is dropped, we hold to the
@@ -112,8 +114,8 @@ impl LocalLogletReadStream {
             read_pointer: from_offset,
             iterator: iter,
             terminated: false,
-            release_watch,
-            release_pointer,
+            tail_watch,
+            last_known_tail,
             read_to: to,
         })
     }
@@ -154,8 +156,8 @@ impl Stream for LocalLogletReadStream {
             }
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
-            if next_offset > *this.release_pointer {
-                let updated_release_pointer = match this.release_watch.poll_next(cx) {
+            if next_offset >= *this.last_known_tail {
+                let maybe_tail_state = match this.tail_watch.poll_next(cx) {
                     Poll::Ready(t) => t,
                     Poll::Pending => {
                         perf_guard.forget();
@@ -163,9 +165,9 @@ impl Stream for LocalLogletReadStream {
                     }
                 };
 
-                match updated_release_pointer {
-                    Some(updated_release_pointer) => {
-                        *this.release_pointer = updated_release_pointer;
+                match maybe_tail_state {
+                    Some(tail_state) => {
+                        *this.last_known_tail = tail_state.offset();
                         continue;
                     }
                     None => {
@@ -175,11 +177,11 @@ impl Stream for LocalLogletReadStream {
                     }
                 }
             }
-            // release_pointer has been updated.
-            let release_pointer = *this.release_pointer;
+            // tail has been updated.
+            let last_known_tail = *this.last_known_tail;
 
-            // assert that we are newer
-            assert!(release_pointer >= next_offset);
+            // assert that we are behind tail
+            assert!(last_known_tail > next_offset);
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
@@ -225,7 +227,7 @@ impl Stream for LocalLogletReadStream {
                     log_id = *this.log_id,
                     next_offset = %next_offset,
                     trim_point = %potentially_different_trim_point,
-                    release_pointer = %this.release_pointer,
+                    last_known_tail = %this.last_known_tail,
                     "poll_next() has moved to a non-existent record, that should not happen!"
                 );
                 panic!("poll_next() has moved to a non-existent record, that should not happen!");

@@ -76,7 +76,7 @@ arrow-flight = { version = "50.0.0" }
 assert2 = "0.3.11"
 async-channel = "2.1.1"
 async-trait = "0.1.73"
-axum = { version = "0.6.18", default-features = false }
+axum = { version = "0.7.5", default-features = false }
 base64 = "0.22"
 bytes = { version = "1.3", features = ["serde"] }
 bytes-utils = "0.1.3"
@@ -104,11 +104,14 @@ futures-sink = "0.3.25"
 futures-util = "0.3.25"
 googletest = "0.10"
 hostname = { version = "0.4.0" }
-http = "0.2.9"
-http-serde = { version = "1.1.2" }
+http = "1.1.0"
+http-body = "1.0.1"
+http-body-util = "0.1.2"
+http-serde = { version = "2.1.1" }
 humantime = "2.1.0"
-hyper = { version = "0.14.24", default-features = false }
-hyper-rustls = { version = "0.24.1", features = ["http2"] }
+hyper = { version = "1.4.1", default-features = false }
+hyper-rustls = { version = "0.27.2", default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"] }
+hyper-util = { version = "0.1" }
 itertools = "0.13.0"
 metrics = { version = "0.23" }
 metrics-exporter-prometheus = { version = "0.15", default-features = false, features = ["async-runtime"] }
@@ -128,7 +131,7 @@ rayon = { version = "1.10" }
 regress = { version = "0.10" }
 rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev="c7ccbbcd261bdec011c4976c441676512a1a4841" }
-rustls = "0.21.6"
+rustls = {version = "0.23.11", default-features = false, features = ["ring"]}
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -146,7 +149,7 @@ test-log = { version = "0.2.11", default-features = false, features = ["trace"] 
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
-tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
+tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", "parking_lot" ] }
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10" }
 tonic = { version = "0.10.2", default-features = false }
@@ -154,7 +157,7 @@ tonic-reflection = { version = "0.10.2" }
 tonic-health = "0.10.2"
 tonic-build = "0.11.0"
 tower = "0.4"
-tower-http = { version = "0.4", default-features = false }
+tower-http = { version = "0.5.2", default-features = false }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.23.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -14,8 +14,8 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use hyper::client::HttpConnector;
-use hyper::{Body, Uri};
+use hyper_0_14::client::HttpConnector;
+use hyper_0_14::{Body, Uri};
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
@@ -42,7 +42,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         Uri::from_static("http://localhost:9080"),
     );
 
-    let client = hyper::Client::new();
+    let client = hyper_0_14::Client::new();
 
     let mut group = criterion.benchmark_group("throughput");
     group
@@ -60,7 +60,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 }
 
 async fn send_parallel_counter_requests(
-    client: hyper::Client<HttpConnector>,
+    client: hyper_0_14::Client<HttpConnector>,
     num_requests: u32,
     num_parallel_requests: usize,
 ) {
@@ -76,10 +76,10 @@ async fn send_parallel_counter_requests(
             pending_requests.push(async move {
                 client
                     .request(
-                        hyper::Request::post(format!(
+                        hyper_0_14::Request::post(format!(
                             "http://localhost:8080/Counter/{counter_name}/getAndAdd"
                         ))
-                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .header(hyper_0_14::header::CONTENT_TYPE, "application/json")
                         .body(Body::from("10"))
                         .expect("building discovery request should not fail"),
                     )

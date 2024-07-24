@@ -57,6 +57,21 @@ impl From<ErrorMessage> for InvocationError {
     }
 }
 
+impl From<Header> for crate::invocation::Header {
+    fn from(value: Header) -> Self {
+        Self::new(value.key, value.value)
+    }
+}
+
+impl From<crate::invocation::Header> for Header {
+    fn from(value: crate::invocation::Header) -> Self {
+        Self {
+            key: value.name.into(),
+            value: value.value.into(),
+        }
+    }
+}
+
 /// This module implements conversions back and forth from proto messages to [`journal::Entry`] model.
 /// These are used by the [`codec::ProtobufRawEntryCodec`].
 mod pb_into {
@@ -236,6 +251,7 @@ mod pb_into {
                     service_name: msg.service_name.into(),
                     handler_name: msg.handler_name.into(),
                     parameter: msg.parameter,
+                    headers: msg.headers.into_iter().map(Into::into).collect(),
                     key: msg.key.into(),
                 },
                 result: msg.result.map(|v| match v {
@@ -257,6 +273,7 @@ mod pb_into {
                     service_name: msg.service_name.into(),
                     handler_name: msg.handler_name.into(),
                     parameter: msg.parameter,
+                    headers: msg.headers.into_iter().map(Into::into).collect(),
                     key: msg.key.into(),
                 },
                 invoke_time: msg.invoke_time,
