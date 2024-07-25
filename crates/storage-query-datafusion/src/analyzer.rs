@@ -10,8 +10,8 @@
 
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::config::ConfigOptions;
+use datafusion::logical_expr::{col, Join, LogicalPlan};
 use datafusion::optimizer::analyzer::AnalyzerRule;
-use datafusion_expr::{col, Join, LogicalPlan};
 
 pub(crate) struct UseSymmetricHashJoinWhenPartitionKeyIsPresent;
 

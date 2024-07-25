@@ -90,8 +90,7 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
-datafusion = { version = "35.0.0", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
-datafusion-expr = { version = "35.0.0" }
+datafusion = { git = "https://github.com/restatedev/datafusion.git", tag = "35.0.0-object-store", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
 derive-getters = {  version = "0.4.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "0.99.17" }

@@ -27,7 +27,6 @@ bytestring = { workspace = true }
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
 codederror = { workspace = true }
 datafusion = { workspace = true }
-datafusion-expr = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 paste = { workspace = true }
