@@ -10,14 +10,14 @@ publish = false
 [features]
 default = []
 options_schema = ["dep:schemars"]
-replicated-loglet = ["restate-types/replicated-loglet", "restate-metadata-store"]
+replicated-loglet = ["restate-types/replicated-loglet"]
 test-util = []
 
 [dependencies]
 restate-core = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-types = { workspace = true }
-restate-metadata-store = { workspace = true, optional = true }
+restate-metadata-store = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

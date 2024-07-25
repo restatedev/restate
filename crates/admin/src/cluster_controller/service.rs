@@ -15,21 +15,23 @@ use std::sync::Arc;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
+use restate_core::metadata_store::MetadataStoreClient;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
 use restate_types::config::{AdminOptions, Configuration};
-use restate_types::live::LiveLoad;
+use restate_types::live::Live;
 use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
 use restate_types::net::RequestId;
 use restate_types::partition_table::{FixedPartitionTable, KeyRange};
 
-use restate_bifrost::Bifrost;
+use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_core::{
-    cancellation_watcher, Metadata, ShutdownError, TargetVersion, TaskCenter, TaskKind,
+    cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
+    TaskKind,
 };
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
@@ -58,7 +60,9 @@ pub struct Service<N> {
     command_tx: mpsc::Sender<ClusterControllerCommand>,
     command_rx: mpsc::Receiver<ClusterControllerCommand>,
 
-    configuration: Box<dyn LiveLoad<AdminOptions> + Send + Sync>,
+    configuration: Live<Configuration>,
+    metadata_writer: MetadataWriter,
+    metadata_store_client: MetadataStoreClient,
     heartbeat_interval: time::Interval,
     log_trim_interval: Option<time::Interval>,
     log_trim_threshold: Lsn,
@@ -69,7 +73,9 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(
-        mut configuration: impl LiveLoad<AdminOptions> + Send + Sync + 'static,
+        configuration: Live<Configuration>,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: N,
@@ -85,13 +91,15 @@ where
             router_builder,
         );
 
-        let options = configuration.live_load();
+        let options = &configuration.pinned().admin;
 
         let heartbeat_interval = Self::create_heartbeat_interval(options);
         let (log_trim_interval, log_trim_threshold) = Self::create_log_trim_interval(options);
 
         Service {
-            configuration: Box::new(configuration),
+            configuration,
+            metadata_writer,
+            metadata_store_client,
             task_center,
             metadata,
             networking,
@@ -189,6 +197,8 @@ where
     ) -> anyhow::Result<()> {
         // Make sure we have partition table before starting
         let _ = self.metadata.wait_for_partition_table(Version::MIN).await?;
+        let bifrost_admin =
+            BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
@@ -216,21 +226,25 @@ where
                     let _ = self.cluster_state_refresher.schedule_refresh();
                 },
                 _ = OptionFuture::from(self.log_trim_interval.as_mut().map(|interval| interval.tick())) => {
-                    let result = self.trim_logs(&bifrost).await;
+                    let result = self.trim_logs(bifrost_admin).await;
 
                     if let Err(err) = result {
                         warn!("Could not trim the logs. This can lead to increased disk usage: {err}");
                     }
                 }
                 Some(cmd) = self.command_rx.recv() => {
-                    self.on_cluster_cmd(cmd, &bifrost).await;
+                    self.on_cluster_cmd(cmd, bifrost_admin).await;
                 }
                 Some(message) = self.incoming_messages.next() => {
                     let (from, message) = message.split();
                     self.on_attach_request(from, message)?;
                 }
                 _ = config_watcher.changed() => {
-                    self.on_config_update();
+                    debug!("Updating the cluster controller settings.");
+                    let options = &self.configuration.live_load().admin;
+
+                    self.heartbeat_interval = Self::create_heartbeat_interval(options);
+                    (self.log_trim_interval, self.log_trim_threshold) = Self::create_log_trim_interval(options);
                 }
                 _ = &mut shutdown => {
                     return Ok(());
@@ -239,15 +253,10 @@ where
         }
     }
 
-    fn on_config_update(&mut self) {
-        debug!("Updating the cluster controller settings.");
-        let options = self.configuration.live_load();
-
-        self.heartbeat_interval = Self::create_heartbeat_interval(options);
-        (self.log_trim_interval, self.log_trim_threshold) = Self::create_log_trim_interval(options);
-    }
-
-    async fn trim_logs(&self, bifrost: &Bifrost) -> Result<(), restate_bifrost::Error> {
+    async fn trim_logs(
+        &self,
+        bifrost_admin: BifrostAdmin<'_>,
+    ) -> Result<(), restate_bifrost::Error> {
         let cluster_state = self.cluster_state_refresher.get_cluster_state();
 
         let mut persisted_lsns_per_partition: BTreeMap<
@@ -283,20 +292,24 @@ where
             let min_persisted_lsn = persisted_lsns.into_values().min().unwrap_or(Lsn::INVALID);
             let log_id = LogId::from(partition_id);
             // trim point is before the oldest record
-            let current_trim_point = bifrost.get_trim_point(log_id).await?;
+            let current_trim_point = bifrost_admin.get_trim_point(log_id).await?;
 
             if min_persisted_lsn >= current_trim_point + self.log_trim_threshold {
                 debug!(
                     "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
                 );
-                bifrost.trim(log_id, min_persisted_lsn).await?
+                bifrost_admin.trim(log_id, min_persisted_lsn).await?
             }
         }
 
         Ok(())
     }
 
-    async fn on_cluster_cmd(&self, command: ClusterControllerCommand, bifrost: &Bifrost) {
+    async fn on_cluster_cmd(
+        &self,
+        command: ClusterControllerCommand,
+        bifrost_admin: BifrostAdmin<'_>,
+    ) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
@@ -307,14 +320,14 @@ where
                 response_tx,
             } => {
                 debug!("Manual trim log '{log_id}' until (inclusive) lsn='{trim_point}'");
-                let result = bifrost.trim(log_id, trim_point).await;
+                let result = bifrost_admin.trim(log_id, trim_point).await;
                 let _ = response_tx.send(result.map_err(Into::into));
             }
         }
     }
 
     fn on_attach_request(
-        &mut self,
+        &self,
         from: GenerationalNodeId,
         request: AttachRequest,
     ) -> Result<(), ShutdownError> {
@@ -417,9 +430,9 @@ mod tests {
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnvBuilder};
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
-    use restate_types::config::AdminOptions;
+    use restate_types::config::{AdminOptions, Configuration};
     use restate_types::identifiers::PartitionId;
-    use restate_types::live::Constant;
+    use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
     use restate_types::net::partition_processor_manager::{
         GetProcessorsState, ProcessorsStateResponse,
@@ -437,7 +450,9 @@ mod tests {
         let mut builder = TestCoreEnvBuilder::new_with_mock_network();
 
         let svc = Service::new(
-            Constant::new(AdminOptions::default()),
+            Live::from_value(Configuration::default()),
+            builder.metadata_writer.clone(),
+            builder.metadata_store_client.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.network_sender.clone(),
@@ -523,9 +538,13 @@ mod tests {
         admin_options.log_trim_threshold = 5;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
+        let mut config = Configuration::default();
+        config.admin = admin_options;
 
         let svc = Service::new(
-            Constant::new(admin_options),
+            Live::from_value(config),
+            builder.metadata_writer.clone(),
+            builder.metadata_store_client.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.network_sender.clone(),
@@ -613,9 +632,13 @@ mod tests {
         admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
         admin_options.log_trim_interval = Some(interval_duration.into());
+        let mut config = Configuration::default();
+        config.admin = admin_options;
 
         let svc = Service::new(
-            Constant::new(admin_options),
+            Live::from_value(config),
+            builder.metadata_writer.clone(),
+            builder.metadata_store_client.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.network_sender.clone(),

@@ -118,6 +118,8 @@ impl MetadataStoreClient {
         MetadataStoreClient::new(InMemoryMetadataStore::default())
     }
 
+    /// Gets the value and its current version for the given key. If key-value pair is not present,
+    /// then return [`None`].
     pub async fn get<T: Versioned + StorageDecode>(
         &self,
         key: ByteString,
@@ -140,10 +142,14 @@ impl MetadataStoreClient {
         }
     }
 
+    /// Gets the current version for the given key. If key-value pair is not present, then return
+    /// [`None`].
     pub async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         self.inner.get_version(key).await
     }
 
+    /// Puts the versioned value under the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
     pub async fn put<T>(
         &self,
         key: ByteString,
@@ -167,6 +173,8 @@ impl MetadataStoreClient {
             .await
     }
 
+    /// Deletes the key-value pair for the given key following the provided precondition. If the
+    /// precondition is not met, then the operation returns a [`WriteError::PreconditionViolation`].
     pub async fn delete(
         &self,
         key: ByteString,
