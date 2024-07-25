@@ -176,8 +176,8 @@ pub fn submit_tokio_metrics(runtime: &'static str, stats: RuntimeMetrics) {
         .set(stats.num_blocking_threads() as f64);
     gauge!("restate.tokio.blocking_queue_depth", "runtime" => runtime)
         .set(stats.blocking_queue_depth() as f64);
-    gauge!("restate.tokio.active_tasks_count", "runtime" => runtime)
-        .set(stats.active_tasks_count() as f64);
+    gauge!("restate.tokio.num_alive_tasks", "runtime" => runtime)
+        .set(stats.num_alive_tasks() as f64);
     gauge!("restate.tokio.io_driver_ready_count", "runtime" => runtime)
         .set(stats.io_driver_ready_count() as f64);
     gauge!("restate.tokio.remote_schedule_count", "runtime" => runtime)
