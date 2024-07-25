@@ -35,6 +35,7 @@ use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
     Serialize,
     Deserialize,
     derive_more::From,
+    derive_more::Display,
 )]
 #[repr(transparent)]
 #[serde(transparent)]
