@@ -11,23 +11,24 @@
 use std::collections::{hash_map, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::ready;
 use std::task::Poll;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::BoxStream;
 use futures::Stream;
 use pin_project::pin_project;
 use restate_core::ShutdownError;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio_stream::wrappers::WatchStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
 use restate_types::logs::metadata::{LogletParams, ProviderKind};
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::util::OffsetWatch;
+use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     AppendError, Loglet, LogletBase, LogletOffset, LogletProvider, LogletProviderFactory,
     LogletReadStream, OperationError, SendableLogletReadStream,
@@ -110,7 +111,8 @@ pub struct MemoryLoglet {
     trim_point_offset: AtomicU64,
     last_committed_offset: AtomicU64,
     sealed: AtomicBool,
-    release_watch: OffsetWatch,
+    // watches the tail state of ths loglet
+    tail_watch: TailOffsetWatch,
 }
 
 impl MemoryLoglet {
@@ -122,7 +124,7 @@ impl MemoryLoglet {
             trim_point_offset: AtomicU64::new(0),
             last_committed_offset: AtomicU64::new(0),
             sealed: AtomicBool::new(false),
-            release_watch: OffsetWatch::new(LogletOffset::INVALID),
+            tail_watch: TailOffsetWatch::new(TailState::new(false, LogletOffset::OLDEST)),
         })
     }
 
@@ -144,7 +146,9 @@ impl MemoryLoglet {
 
     fn notify_readers(&self) {
         let release_pointer = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
-        self.release_watch.notify(release_pointer);
+        // Note: We always notify with false here and the watcher will ignore it if it has observed
+        // a previous seal.
+        self.tail_watch.notify(false, release_pointer.next());
     }
 
     fn read_from(
@@ -179,9 +183,9 @@ struct MemoryReadStream {
     /// The next offset to read from
     read_pointer: LogletOffset,
     #[pin]
-    release_watch: WatchStream<LogletOffset>,
-    /// how far we are allowed to read in the loglet
-    release_pointer: LogletOffset,
+    tail_watch: BoxStream<'static, TailState<LogletOffset>>,
+    /// stop when read_pointer is at or beyond this offset
+    last_known_tail: LogletOffset,
     /// Last offset to read before terminating the stream. None means "tailing" reader.
     read_to: Option<LogletOffset>,
     #[pin]
@@ -194,17 +198,18 @@ impl MemoryReadStream {
         from_offset: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Self {
-        let mut release_watch = loglet.release_watch.to_stream();
-        let release_pointer = release_watch
+        let mut tail_watch = loglet.watch_tail();
+        let last_known_tail = tail_watch
             .next()
             .await
-            .expect("loglet watch returns release pointer");
+            .expect("loglet watch returns tail pointer")
+            .offset();
 
         Self {
             loglet,
             read_pointer: from_offset,
-            release_watch,
-            release_pointer,
+            tail_watch,
+            last_known_tail,
             read_to: to,
             terminated: false,
         }
@@ -246,17 +251,10 @@ impl Stream for MemoryReadStream {
 
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
-            if next_offset > *this.release_pointer {
-                let updated_release_pointer = match this.release_watch.poll_next(cx) {
-                    Poll::Ready(t) => t,
-                    Poll::Pending => {
-                        return Poll::Pending;
-                    }
-                };
-
-                match updated_release_pointer {
-                    Some(updated_release_pointer) => {
-                        *this.release_pointer = updated_release_pointer;
+            if next_offset >= *this.last_known_tail {
+                match ready!(this.tail_watch.poll_next(cx)) {
+                    Some(tail_state) => {
+                        *this.last_known_tail = tail_state.offset();
                         continue;
                     }
                     None => {
@@ -267,11 +265,11 @@ impl Stream for MemoryReadStream {
                 }
             }
 
-            // release_pointer has been updated.
-            let release_pointer = *this.release_pointer;
+            // tail has been updated.
+            let last_known_tail = *this.last_known_tail;
 
-            // assert that we are newer
-            assert!(release_pointer >= next_offset);
+            // assert that we are behind tail
+            assert!(last_known_tail > next_offset);
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
@@ -313,6 +311,10 @@ impl LogletBase for MemoryLoglet {
         Ok(Box::pin(MemoryReadStream::create(self, from, to).await))
     }
 
+    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+        Box::pin(self.tail_watch.to_stream())
+    }
+
     async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
@@ -352,8 +354,8 @@ impl LogletBase for MemoryLoglet {
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {
         let _guard = self.log.lock().unwrap();
-        let sealed = self.sealed.load(Ordering::Relaxed);
         let committed = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
+        let sealed = self.sealed.load(Ordering::Relaxed);
         Ok(if sealed {
             TailState::Sealed(committed)
         } else {
@@ -397,6 +399,7 @@ impl LogletBase for MemoryLoglet {
         // Ensures no in-flight operations are taking place.
         let _guard = self.log.lock().unwrap();
         self.sealed.store(true, Ordering::Relaxed);
+        self.tail_watch.notify_seal();
         Ok(())
     }
 
@@ -410,7 +413,7 @@ impl LogletBase for MemoryLoglet {
                 break Ok(next_record);
             }
             // Wait and respond when available.
-            self.release_watch.wait_for(from).await?;
+            self.tail_watch.wait_for(from).await?;
         }
     }
 

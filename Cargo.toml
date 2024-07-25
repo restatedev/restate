@@ -149,7 +149,7 @@ test-log = { version = "0.2.11", default-features = false, features = ["trace"] 
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
-tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
+tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", "parking_lot" ] }
 tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10" }
 tonic = { version = "0.12.1", default-features = false }
