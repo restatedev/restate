@@ -123,7 +123,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
     /// An optional optimization that loglets can implement. Offsets returned by this call **MUST**
     /// be offsets that were observed before a sealing point. For instance, the maximum acknowleged
-    /// append offset, or, the cached result of the last `find_tail` call that returned an Open
+    /// append offset + 1, or the result of the last `find_tail` call that returned a `TailState::Open(tail)`
     /// result.
     fn last_known_unsealed_tail(&self) -> Option<Self::Offset> {
         // default implementation that will require upper layers to call find_tail or do their own
