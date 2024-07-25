@@ -16,7 +16,6 @@ use restate_types::live::BoxedLiveLoad;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use restate_core::ShutdownError;
 use restate_rocksdb::{
     CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
@@ -72,9 +71,7 @@ impl PartitionStoreManager {
             .build_as_optimistic_db();
 
         let manager = RocksDbManager::get();
-        let raw_db = manager
-            .open_db(updateable_opts, db_spec)
-            .await?;
+        let raw_db = manager.open_db(updateable_opts, db_spec).await?;
 
         let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 
