@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_core::{ShutdownError, SyncError};
 use std::sync::Arc;
 
+use restate_core::{ShutdownError, SyncError};
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn};
 
 use crate::loglet::{LogletError, OperationError};
@@ -37,6 +38,21 @@ pub enum Error {
     Disabled(String),
     #[error("read() at {0} failed waiting on reconfiguration of log {1}")]
     ReadFailureDuringReconfiguration(LogId, Lsn),
+    #[error(transparent)]
+    AdminError(#[from] AdminError),
+    #[error(transparent)]
+    MetadataStoreError(#[from] restate_core::metadata_store::ReadWriteError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AdminError {
+    #[error("segment conflicts with existing segment with base_lsn={0}")]
+    SegmentConflict(Lsn),
+    #[error("segment index found in metadata does not match expected {expected}!={found}")]
+    SegmentMismatch {
+        expected: SegmentIndex,
+        found: SegmentIndex,
+    },
 }
 
 impl From<OperationError> for Error {
