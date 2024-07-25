@@ -74,8 +74,7 @@ impl PartitionStoreManager {
         let manager = RocksDbManager::get();
         let raw_db = manager
             .open_db(updateable_opts, db_spec)
-            .await
-            .map_err(|_| ShutdownError)?;
+            .await?;
 
         let rocksdb = manager.get_db(DbName::new(DB_NAME)).unwrap();
 
