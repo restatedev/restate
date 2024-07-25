@@ -35,18 +35,34 @@ ARG SCCACHE_GHA_ENABLED=''
 ARG CARGO_PROFILE_RELEASE_DEBUG=false
 # Caching layer if nothing has changed
 # Only build restate binary to avoid compiling unneeded crates
-RUN just arch=$TARGETARCH libc=gnu chef-cook --release --bin restate-server
+RUN just arch=$TARGETARCH libc=gnu chef-cook --release --bin restate-server --bin restate
 COPY . .
+
+FROM builder as builder-cli
+RUN just arch=$TARGETARCH libc=gnu build --release --bin restate && \
+    just notice-file && \
+    mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate
+
+FROM builder as builder-server
 RUN just arch=$TARGETARCH libc=gnu build --release --bin restate-server && \
     just notice-file && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server
 
 # We do not need the Rust toolchain to run the server binary!
-FROM debian:bookworm-slim AS runtime
-COPY --from=builder /restate/target/restate-server /usr/local/bin
-COPY --from=builder /restate/NOTICE /NOTICE
-COPY --from=builder /restate/LICENSE /LICENSE
+FROM debian:bookworm-slim AS cli
+COPY --from=builder-cli /restate/target/restate /usr/local/bin
+COPY --from=builder-cli /restate/NOTICE /NOTICE
+COPY --from=builder-cli /restate/LICENSE /LICENSE
 # copy OS roots
-COPY --from=builder /etc/ssl /etc/ssl
+COPY --from=builder-cli /etc/ssl /etc/ssl
+WORKDIR /
+ENTRYPOINT ["/usr/local/bin/restate"]
+
+FROM debian:bookworm-slim AS server
+COPY --from=builder-server /restate/target/restate-server /usr/local/bin
+COPY --from=builder-server /restate/NOTICE /NOTICE
+COPY --from=builder-server /restate/LICENSE /LICENSE
+# copy OS roots
+COPY --from=builder-server /etc/ssl /etc/ssl
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/restate-server"]
