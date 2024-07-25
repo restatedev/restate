@@ -12,7 +12,7 @@ use std::collections::{hash_map, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex as AsyncMutex;
+use parking_lot::Mutex;
 use tracing::debug;
 
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
@@ -71,7 +71,7 @@ impl LogletProviderFactory for Factory {
 
 pub(crate) struct LocalLogletProvider {
     log_store: RocksDbLogStore,
-    active_loglets: AsyncMutex<HashMap<String, Arc<LocalLoglet>>>,
+    active_loglets: Mutex<HashMap<String, Arc<LocalLoglet>>>,
     log_writer: RocksDbLogWriterHandle,
 }
 
@@ -81,7 +81,7 @@ impl LogletProvider for LocalLogletProvider {
         &self,
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet<Offset = LogletOffset>>, Error> {
-        let mut guard = self.active_loglets.lock().await;
+        let mut guard = self.active_loglets.lock();
         let loglet = match guard.entry(params.as_str().to_owned()) {
             hash_map::Entry::Vacant(entry) => {
                 // Create loglet
@@ -93,8 +93,7 @@ impl LogletProvider for LocalLogletProvider {
                         .expect("loglet params can be converted into u64"),
                     self.log_store.clone(),
                     self.log_writer.clone(),
-                )
-                .await?;
+                )?;
                 let loglet = entry.insert(Arc::new(loglet));
                 Arc::clone(loglet)
             }

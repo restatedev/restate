@@ -128,15 +128,15 @@ impl Bifrost {
     ///        log_id,
     ///        bifrost.get_trim_point(log_id).await.next(),
     ///        bifrost.find_tail(log_id).await().offset().prev(),
-    ///     ).await;
+    ///     );
     /// ```
-    pub async fn create_reader(
+    pub fn create_reader(
         &self,
         log_id: LogId,
         start_lsn: Lsn,
         end_lsn: Lsn,
     ) -> Result<LogReadStream> {
-        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn).await
+        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn)
     }
 
     /// The tail is *the first unwritten LSN* in the log
@@ -200,9 +200,7 @@ impl Bifrost {
             return Ok(Vec::default());
         }
 
-        let reader = self
-            .create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())
-            .await?;
+        let reader = self.create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())?;
         reader.try_collect().await
     }
 }
@@ -213,7 +211,7 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    metadata: Metadata,
+    pub(crate) metadata: Metadata,
     #[allow(unused)]
     watchdog: WatchdogSender,
     // Initialized after BifrostService::start completes.
