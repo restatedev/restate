@@ -27,7 +27,7 @@ use restate_cli_util::CliContext;
 use restate_types::retries::RetryPolicy;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use tokio_util::sync::CancellationToken;
-use tower::Service as _;
+use tower::Service;
 use tracing::{error, info};
 use url::Url;
 
@@ -330,13 +330,7 @@ where
             Err(ServeError::ServerClosed(this.status.to_string()))
         }
     }
-}
 
-impl<Proxy, ProxyFut> Handler<Proxy>
-where
-    Proxy: Fn(Arc<HandlerInner>, reqwest::Request) -> ProxyFut + Send + Sync + 'static,
-    ProxyFut: Future<Output = Result<Response<Body>, StartError>> + Send + 'static,
-{
     fn process_start(
         mut this: OwnedRwLockWriteGuard<Self>,
         req: Request<Incoming>,

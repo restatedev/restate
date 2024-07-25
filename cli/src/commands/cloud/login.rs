@@ -103,7 +103,10 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         i += 1
     };
 
-    let port = listener.local_addr().unwrap().port();
+    let port = listener
+        .local_addr()
+        .expect("failed to get local address of login http listener")
+        .port();
     let redirect_uri = format!("http://localhost:{port}/callback");
 
     let (result_send, mut result_recv) = mpsc::channel(1);
