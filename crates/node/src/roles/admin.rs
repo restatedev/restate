@@ -68,14 +68,16 @@ impl AdminRole {
         let service_discovery = ServiceDiscovery::new(retry_policy, client);
 
         let admin = AdminService::new(
-            metadata_writer,
-            metadata_store_client,
+            metadata_writer.clone(),
+            metadata_store_client.clone(),
             config.ingress.clone(),
             service_discovery,
         );
 
         let controller = restate_admin::cluster_controller::Service::new(
-            updateable_config.clone().map(|c| &c.admin),
+            updateable_config.clone(),
+            metadata_writer,
+            metadata_store_client,
             task_center,
             metadata,
             networking,
