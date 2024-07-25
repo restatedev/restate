@@ -29,7 +29,7 @@ pub use crate::subscription_integration::SubscriptionControllerHandle;
 use restate_bifrost::Bifrost;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
-use restate_core::{task_center, Metadata, TaskKind};
+use restate_core::{cancellation_watcher, task_center, Metadata, TaskKind};
 use restate_ingress_dispatcher::IngressDispatcher;
 use restate_ingress_http::HyperServerIngress;
 use restate_ingress_kafka::Service as IngressKafkaService;
@@ -214,8 +214,14 @@ impl Worker {
             "ingress-rpc-server",
             None,
             async move {
-                all_partitions_started_rx.await?;
-                self.external_client_ingress.run().await
+                tokio::select! {
+                    Ok(_) = all_partitions_started_rx => {
+                        self.external_client_ingress.run().await
+                    }
+                    _ = cancellation_watcher() => {
+                        Ok(())
+                    }
+                }
             },
         )?;
 
