@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrow = { version = "51.0.0", features = ["ipc", "prettyprint", "json"] }
 arrow_convert = { version = "0.6.6" }
-axum-0-6 = { package = "axum", version = "0.6.20", default-features = false, features = ["http1", "http2", "query", "tokio"] }
+axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
 base62 = { version = "2.0.2" }
 base64 = { workspace = true }
@@ -44,9 +44,9 @@ dirs = { version = "5.0" }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 http = { workspace = true }
-http-0-2 = { package = "http", version = "0.2" }
-hyper-0-14 = { package = "hyper", version = "0.14", features = ["server", "http2"] }
-hyper-rustls-0-24 = { package = "hyper-rustls", version = "0.24.1", features = ["http2"] }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["server", "http2"] }
+hyper-rustls = { workspace = true, default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"]  }
 hyper-util = { workspace = true, features = ["client-legacy", "http2", "server", "client", "tokio"] }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
@@ -54,12 +54,13 @@ itertools = { workspace = true }
 jsonwebtoken = { version = "9.1.0" }
 octocrab = { version = "0.32.0", features = ["stream"] }
 open = "5.1.2"
-reqwest = { workspace = true }
-reqwest-0-11 = { package = "reqwest", version = "0.11.22", default-features = false, features = ["json", "rustls-tls", "stream"] }
+pin-project = { workspace = true }
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
 ring = { version = "0.17.8" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
+sync_wrapper = { workspace = true, features = ["futures"] }
 termcolor = { version = "1.4.0" }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
