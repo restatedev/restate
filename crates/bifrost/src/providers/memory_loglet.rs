@@ -18,13 +18,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use futures::Stream;
-use pin_project::pin_project;
-use restate_core::ShutdownError;
+use futures::{Stream, StreamExt};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
+use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, SequenceNumber};
 
@@ -182,18 +180,15 @@ impl MemoryLoglet {
     }
 }
 
-#[pin_project]
 struct MemoryReadStream {
     loglet: Arc<MemoryLoglet>,
     /// The next offset to read from
     read_pointer: LogletOffset,
-    #[pin]
     tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     /// stop when read_pointer is at or beyond this offset
     last_known_tail: LogletOffset,
     /// Last offset to read before terminating the stream. None means "tailing" reader.
     read_to: Option<LogletOffset>,
-    #[pin]
     terminated: bool,
 }
 
@@ -246,39 +241,37 @@ impl Stream for MemoryReadStream {
         let next_offset = self.read_pointer;
 
         loop {
-            let mut this = self.as_mut().project();
-
             // We have reached the limit we are allowed to read
-            if this.read_to.is_some_and(|read_to| next_offset > read_to) {
-                this.terminated.set(true);
+            if self.read_to.is_some_and(|read_to| next_offset > read_to) {
+                self.terminated = true;
                 return Poll::Ready(None);
             }
 
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
-            if next_offset >= *this.last_known_tail {
-                match ready!(this.tail_watch.poll_next(cx)) {
+            if next_offset >= self.last_known_tail {
+                match ready!(self.tail_watch.poll_next_unpin(cx)) {
                     Some(tail_state) => {
-                        *this.last_known_tail = tail_state.offset();
+                        self.last_known_tail = tail_state.offset();
                         continue;
                     }
                     None => {
                         // system shutdown. Or that the loglet has been unexpectedly shutdown.
-                        this.terminated.set(true);
+                        self.terminated = true;
                         return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
                     }
                 }
             }
 
             // tail has been updated.
-            let last_known_tail = *this.last_known_tail;
+            let last_known_tail = self.last_known_tail;
 
             // assert that we are behind tail
             assert!(last_known_tail > next_offset);
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
-            let trim_point = LogletOffset(this.loglet.trim_point_offset.load(Ordering::Relaxed));
+            let trim_point = LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
             let head_offset = trim_point.next();
 
             // Are we reading behind the loglet head? -> TrimGap
