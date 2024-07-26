@@ -208,7 +208,6 @@ impl LogletBase for LogletWrapper {
 /// Wraps loglet read streams with the base LSN of the segment
 pub struct LogletReadStreamWrapper {
     pub(crate) base_lsn: Lsn,
-    #[allow(dead_code)]
     loglet: LogletWrapper,
     inner_read_stream: SendableLogletReadStream<LogletOffset>,
 }
@@ -228,18 +227,15 @@ impl LogletReadStreamWrapper {
 
     /// The first LSN outside the boundary of this stream (bifrost's tail semantics)
     /// The read stream will return None and terminate before it reads this LSN
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn tail_lsn(&self) -> Option<Lsn> {
         self.loglet.tail_lsn
     }
 
-    #[allow(dead_code)]
     pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
         self.loglet.set_tail_lsn(tail_lsn)
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn loglet(&self) -> &LogletWrapper {
         &self.loglet

@@ -75,7 +75,7 @@ impl std::fmt::Debug for LocalLoglet {
 }
 
 impl LocalLoglet {
-    pub async fn create(
+    pub fn create(
         loglet_id: u64,
         log_store: RocksDbLogStore,
         log_writer: RocksDbLogWriterHandle,
@@ -445,17 +445,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 gapless_loglet_smoke_test(loglet).await?;
                 Ok(())
@@ -487,17 +484,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 single_loglet_readstream_test(loglet).await?;
                 Ok(())
@@ -529,17 +523,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 single_loglet_readstream_test_with_trims(loglet).await?;
                 Ok(())
@@ -570,17 +561,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 loglet_test_append_after_seal(loglet).await?;
                 Ok(())
@@ -613,9 +601,11 @@ mod tests {
 
                 // Run the test 10 times
                 for i in 1..=10 {
-                    let loglet = Arc::new(
-                        LocalLoglet::create(i, log_store.clone(), log_writer.clone()).await?,
-                    );
+                    let loglet = Arc::new(LocalLoglet::create(
+                        i,
+                        log_store.clone(),
+                        log_writer.clone(),
+                    )?);
                     loglet_test_append_after_seal_concurrent(loglet).await?;
                 }
 
