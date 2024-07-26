@@ -227,7 +227,7 @@ impl MetadataStoreClient {
         }
     }
 
-    fn exponential_retry_policy(max_backoff: Duration) -> RetryIter {
+    fn exponential_retry_policy(max_backoff: Duration) -> RetryIter<'static> {
         RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, Some(max_backoff))
             .into_iter()
     }

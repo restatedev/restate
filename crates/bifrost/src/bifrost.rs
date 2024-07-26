@@ -424,7 +424,7 @@ impl BifrostInner {
         &self,
         log_id: LogId,
         sealed_segment: SegmentIndex,
-        retry_iter: &mut RetryIter,
+        retry_iter: &mut RetryIter<'_>,
     ) -> Result<LogletWrapper> {
         let start = Instant::now();
         for sleep_dur in retry_iter.by_ref() {
