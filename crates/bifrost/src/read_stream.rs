@@ -411,7 +411,9 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use crate::loglet::LogletBase;
-    use crate::{setup_panic_handler, BifrostService, FindTailAttributes, Record, TrimGap};
+    use crate::{
+        setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, Record, TrimGap,
+    };
 
     use super::*;
     use bytes::Bytes;
@@ -542,6 +544,12 @@ mod tests {
                 let svc =
                     BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
                 let bifrost = svc.handle();
+
+                let bifrost_admin = BifrostAdmin::new(
+                    &bifrost,
+                    &node_env.metadata_writer,
+                    &node_env.metadata_store_client,
+                );
                 svc.start().await.expect("loglet must start");
 
                 assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
@@ -553,7 +561,7 @@ mod tests {
                 }
 
                 // [1..5] trimmed. trim_point = 5
-                bifrost.trim(log_id, Lsn::from(5)).await?;
+                bifrost_admin.trim(log_id, Lsn::from(5)).await?;
 
                 assert_eq!(
                     Lsn::from(11),
@@ -595,7 +603,7 @@ mod tests {
                     .await?
                     .offset();
                 // trimming beyond the release point will fall back to the release point
-                bifrost.trim(log_id, Lsn::from(u64::MAX)).await?;
+                bifrost_admin.trim(log_id, Lsn::from(u64::MAX)).await?;
                 let trim_point = bifrost.get_trim_point(log_id).await?;
                 assert_eq!(Lsn::from(10), bifrost.get_trim_point(log_id).await?);
                 // trim point becomes the point before the next slot available for writes (aka. the
@@ -845,6 +853,11 @@ mod tests {
                 .enable_local_loglet(&config)
                 .enable_in_memory_loglet();
             let bifrost = svc.handle();
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
             svc.start().await.expect("loglet must start");
 
             let tail = bifrost
@@ -862,49 +875,46 @@ mod tests {
                 assert_eq!(Lsn::from(i), lsn);
             }
 
-            // manually seal the loglet, create a new in-memory loglet at base_lsn=11
-            let raw_loglet = bifrost
-                .inner()
-                .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
+            // seal the loglet and extend with an in-memory one
+            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+            bifrost_admin
+                .seal_and_extend_chain(
+                    LOG_ID,
+                    None,
+                    Version::MIN,
+                    ProviderKind::InMemory,
+                    new_segment_params,
+                )
                 .await?;
-            raw_loglet.seal().await?;
 
             let tail = bifrost
                 .find_tail(LOG_ID, FindTailAttributes::default())
                 .await?;
 
-            assert!(tail.is_sealed());
+            assert!(!tail.is_sealed());
             assert_eq!(Lsn::from(11), tail.offset());
-            // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
-            // when it's implemented)
-            let old_version = bifrost.inner().metadata.logs_version();
-            let mut builder = bifrost.inner().metadata.logs().clone().into_builder();
-            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
-            assert_eq!(1, chain_builder.num_segments());
-            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
-            chain_builder.append_segment(
-                Lsn::new(11),
-                ProviderKind::InMemory,
-                new_segment_params,
-            )?;
-            let new_metadata = builder.build();
-            let new_version = new_metadata.version();
-            assert_eq!(new_version, old_version.next());
-            node_env
-                .metadata_store_client
-                .put(
-                    BIFROST_CONFIG_KEY.clone(),
-                    new_metadata,
-                    restate_metadata_store::Precondition::MatchesVersion(old_version),
-                )
+
+            // validate that we have 2 segments now
+            assert_eq!(
+                2,
+                node_env
+                    .metadata
+                    .logs()
+                    .chain(&LOG_ID)
+                    .unwrap()
+                    .num_segments()
+            );
+
+            // validate that the first segment is sealed
+            let segment_1_loglet = bifrost
+                .inner
+                .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
                 .await?;
 
-            // make sure we have updated metadata.
-            bifrost
-                .inner()
-                .metadata
-                .sync(MetadataKind::Logs, TargetVersion::Latest)
-                .await?;
+            assert_that!(
+                segment_1_loglet.find_tail().await?,
+                pat!(TailState::Sealed(eq(Lsn::from(11))))
+            );
 
             // append 5 more records into the new loglet.
             for i in 11..=15 {

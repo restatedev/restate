@@ -170,7 +170,7 @@ impl Metadata {
         Live::from(self.inner.logs.clone())
     }
 
-    // Returns when the metadata kind is at the provided version (or newer)
+    /// Returns when the metadata kind is at the provided version (or newer)
     pub async fn wait_for_version(
         &self,
         metadata_kind: MetadataKind,

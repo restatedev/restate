@@ -49,6 +49,13 @@ pub struct BifrostOptions {
     /// Retry policy to use when bifrost waits for reconfiguration to complete during
     /// read operations
     pub read_retry_policy: RetryPolicy,
+
+    /// # Seal retry interval
+    ///
+    /// Interval to wait between retries of loglet seal failures
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub seal_retry_interval: humantime::Duration,
 }
 
 impl BifrostOptions {
@@ -71,6 +78,7 @@ impl Default for BifrostOptions {
                 Some(50),
                 Some(Duration::from_secs(1)),
             ),
+            seal_retry_interval: Duration::from_secs(2).into(),
         }
     }
 }
