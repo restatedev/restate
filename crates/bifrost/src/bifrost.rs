@@ -369,7 +369,7 @@ impl BifrostInner {
         // todo: support multiple segments.
         // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(segment).await?;
+            let loglet = self.get_loglet(log_id, segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
 
             // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
@@ -393,7 +393,7 @@ impl BifrostInner {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(segment).await?;
+            let loglet = self.get_loglet(log_id, segment).await?;
 
             if loglet.base_lsn > trim_point {
                 break;
@@ -443,7 +443,7 @@ impl BifrostInner {
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .tail();
-        self.get_loglet(tail_segment).await
+        self.get_loglet(log_id, tail_segment).await
     }
 
     pub(crate) async fn find_loglet_for_lsn(
@@ -457,16 +457,23 @@ impl BifrostInner {
             .ok_or(Error::UnknownLogId(log_id))?
             .find_segment_for_lsn(lsn);
         match maybe_segment {
-            MaybeSegment::Some(segment) => self.get_loglet(segment).await,
+            MaybeSegment::Some(segment) => self.get_loglet(log_id, segment).await,
             // todo: handle trimmed segments
             MaybeSegment::Trim { .. } => todo!("trimmed segments is not supported yet"),
         }
     }
 
-    async fn get_loglet(&self, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
+    async fn get_loglet(
+        &self,
+        log_id: LogId,
+        segment: Segment<'_>,
+    ) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind)?;
-        let loglet = provider.get_loglet(&segment.config.params).await?;
+        let loglet = provider
+            .get_loglet(log_id, segment.index(), &segment.config.params)
+            .await?;
         Ok(LogletWrapper::new(
+            segment.index(),
             segment.base_lsn,
             segment.tail_lsn,
             loglet,

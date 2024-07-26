@@ -329,21 +329,7 @@ impl Stream for LogReadStream {
                     };
 
                     let log_metadata = bifrost_inner.metadata.logs();
-                    // Does metadata indicate that the `base_lsn` of the current substream
-                    // points to a sealed segment?
-                    //
-                    // Why do we use `base_lsn` instead of `read_pointer`? Because if the loglet is
-                    // sealed, the read_pointer might end up being the `base_lsn` of the next
-                    // segment. We don't need to handle the transition to the next segment here
-                    // since we have this handled in Reading state. We just need to set the
-                    // `tail_lsn` on the substream once we determine it.
-                    //
-                    // todo (asoli): Handle empty sealed loglets. Ideally, we want to compare the segment returned
-                    // with the one backing the current loglet, if they are different, we should
-                    // recreate the substream and let the normal flow take over to move to the
-                    // replacement loglet. Unfortunately, at the moment we don't have a reliable
-                    // way to do that.
-                    //
+
                     // The log is gone!
                     let Some(chain) = log_metadata.chain(this.log_id) else {
                         this.substream.set(None);
@@ -351,17 +337,36 @@ impl Stream for LogReadStream {
                         return Poll::Ready(Some(Err(Error::UnknownLogId(*this.log_id))));
                     };
 
-                    match chain.find_segment_for_lsn(substream.base_lsn) {
-                        MaybeSegment::Some(segment) if segment.tail_lsn.is_some() => {
-                            let sealed_tail = segment.tail_lsn.unwrap();
-                            substream.set_tail_lsn(segment.tail_lsn.unwrap());
-                            // go back to reading.
-                            this.state.set(State::Reading {
-                                safe_known_tail: Some(sealed_tail),
-                                // No need for the tail watch since we know the tail already.
-                                tail_watch: None,
-                            });
-                            continue;
+                    match chain.find_segment_for_lsn(*this.read_pointer) {
+                        MaybeSegment::Some(segment) => {
+                            // This is a different segment now, we need to recreate the substream.
+                            // This could mean that this is a new segment replacing the existing
+                            // one (if it was an empty sealed loglet) or that the loglet has been
+                            // sealed and the read_pointer points to the next segment. In all
+                            // cases, we want to get the right loglet.
+                            if segment.index() != substream.loglet().segment_index() {
+                                this.substream.set(None);
+                                let find_loglet_fut = Box::pin(
+                                    bifrost_inner
+                                        .find_loglet_for_lsn(*this.log_id, *this.read_pointer),
+                                );
+                                // => Find Loglet
+                                this.state.set(State::FindingLoglet { find_loglet_fut });
+                                continue;
+                            }
+                            if segment.tail_lsn.is_some() {
+                                let sealed_tail = segment.tail_lsn.unwrap();
+                                substream.set_tail_lsn(segment.tail_lsn.unwrap());
+                                // go back to reading.
+                                this.state.set(State::Reading {
+                                    safe_known_tail: Some(sealed_tail),
+                                    // No need for the tail watch since we know the tail already.
+                                    tail_watch: None,
+                                });
+                                continue;
+                            }
+                            // Segment is not sealed yet.
+                            // fall-through
                         }
                         // Oh, we have a prefix trim, deliver the trim-gap and fast-forward.
                         MaybeSegment::Trim { next_base_lsn } => {
@@ -378,8 +383,6 @@ impl Stream for LogReadStream {
                             // Deliver the trim gap
                             return Poll::Ready(Some(Ok(record)));
                         }
-                        // Segment is not sealed yet.
-                        MaybeSegment::Some(_) => { /* fall-through */ }
                     };
 
                     // Reconfiguration still ongoing...
