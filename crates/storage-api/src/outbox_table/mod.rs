@@ -12,7 +12,7 @@ use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -62,6 +62,6 @@ pub trait OutboxTable {
     fn truncate_outbox(
         &mut self,
         partition_id: PartitionId,
-        seq_to_truncate: Range<u64>,
+        range: RangeInclusive<u64>,
     ) -> impl Future<Output = ()> + Send;
 }

@@ -479,13 +479,8 @@ where
             .await
     }
 
-    async fn truncate_outbox(&mut self, outbox_sequence_number: MessageIndex) -> StorageResult<()> {
-        self.inner
-            .truncate_outbox(
-                self.partition_id,
-                outbox_sequence_number..outbox_sequence_number + 1,
-            )
-            .await;
+    async fn truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) -> StorageResult<()> {
+        self.inner.truncate_outbox(self.partition_id, range).await;
 
         Ok(())
     }

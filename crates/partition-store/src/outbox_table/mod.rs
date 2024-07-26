@@ -18,7 +18,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageCodec;
 use std::io::Cursor;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 define_table_key!(
     Outbox,
@@ -82,14 +82,35 @@ fn get_outbox_message<S: StorageAccess>(
 fn truncate_outbox<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-    seq_to_truncate: Range<u64>,
+    range: RangeInclusive<u64>,
 ) {
-    let mut key = OutboxKey::default().partition_id(partition_id);
-    let k = &mut key;
+    let _x = RocksDbPerfGuard::new("truncate-outbox");
 
-    for seq in seq_to_truncate {
-        k.message_index = Some(seq);
-        storage.delete_key(k);
+    let mut keys = vec![];
+    {
+        let start_key = OutboxKey::default()
+            .partition_id(partition_id)
+            .message_index(range.start().clone());
+
+        let end_key = OutboxKey::default()
+            .partition_id(partition_id)
+            .message_index(range.end().clone());
+
+        let mut iter = storage.iterator_from(TableScan::KeyRangeInclusiveInSinglePartition(
+            partition_id,
+            start_key,
+            end_key,
+        ));
+
+        iter.seek_to_last();
+        while iter.valid() {
+            keys.push(iter.key().unwrap().to_vec());
+            iter.prev();
+        }
+    }
+
+    for key in keys {
+        storage.delete_cf(Outbox, key);
     }
 }
 
@@ -119,8 +140,8 @@ impl OutboxTable for PartitionStore {
         get_outbox_message(self, partition_id, sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
-        truncate_outbox(self, partition_id, seq_to_truncate)
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
+        truncate_outbox(self, partition_id, range)
     }
 }
 
@@ -150,8 +171,8 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
         get_outbox_message(self, partition_id, sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
-        truncate_outbox(self, partition_id, seq_to_truncate)
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
+        truncate_outbox(self, partition_id, range)
     }
 }
 
