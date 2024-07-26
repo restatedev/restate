@@ -34,7 +34,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::{Range, RangeInclusive};
+use std::ops::RangeInclusive;
 use tracing::{debug, warn};
 
 pub type ActionCollector = Vec<Action>;

@@ -90,11 +90,11 @@ fn truncate_outbox<S: StorageAccess>(
     {
         let start_key = OutboxKey::default()
             .partition_id(partition_id)
-            .message_index(range.start().clone());
+            .message_index(*range.start());
 
         let end_key = OutboxKey::default()
             .partition_id(partition_id)
-            .message_index(range.end().clone());
+            .message_index(*range.end());
 
         let mut iter = storage.iterator_from(TableScan::KeyRangeInclusiveInSinglePartition(
             partition_id,

@@ -74,6 +74,7 @@ pub(crate) enum Effect {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
+    /// Delete all outbox entries up to and including [MessageIndex].
     TruncateOutbox(MessageIndex),
     DeleteInboxEntry {
         service_id: ServiceId,
