@@ -207,8 +207,6 @@ where
             }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
-                // Typically the range should contain a single key, but it's specified as a range to
-                // accommodate dropped hints (see https://github.com/restatedev/restate/issues/1639)
                 effects.truncate_outbox(RangeInclusive::new(self.outbox_head_seq_number, index));
                 self.outbox_head_seq_number = index;
                 Ok(())
