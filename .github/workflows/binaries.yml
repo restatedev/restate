@@ -155,7 +155,6 @@ jobs:
           merge-multiple: true
 
       - name: Extract metadata (tags, labels) for Docker
-        if: ${{ github.event_name == 'push' }}
         id: meta
         uses: docker/metadata-action@v5
         with:
