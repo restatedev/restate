@@ -85,13 +85,11 @@ fn truncate_outbox<S: StorageAccess>(
     range: RangeInclusive<u64>,
 ) {
     let _x = RocksDbPerfGuard::new("truncate-outbox");
-    range
-        .map(|sn| {
-            OutboxKey::default()
-                .partition_id(partition_id)
-                .message_index(sn)
-        })
-        .for_each(|key| storage.delete_key(&key));
+    let mut key = OutboxKey::default().partition_id(partition_id);
+    for seq in range {
+        key.message_index = Some(seq);
+        storage.delete_key(&key);
+    }
 }
 
 impl OutboxTable for PartitionStore {
