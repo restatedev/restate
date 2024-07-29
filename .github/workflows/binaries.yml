@@ -97,7 +97,7 @@ jobs:
         if: ${{ matrix.build.os == 'ubuntu-latest' }}
         uses: addnab/docker-run-action@v3
         with:
-          image: ghcr.io/restatedev/dev-tools:latest
+          image: ghcr.io/restatedev/dev-tools:1.3.0
           options: -v ${{ github.workspace }}:/restate -w /restate -e ACTIONS_CACHE_URL -e ACTIONS_RUNTIME_TOKEN -e SCCACHE_GHA_ENABLED
           run: |
             cargo build --release --bins --target ${{ matrix.build.target }}
