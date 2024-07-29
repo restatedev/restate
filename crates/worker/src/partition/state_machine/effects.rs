@@ -380,7 +380,11 @@ impl Effect {
                 );
             }
             Effect::TruncateOutbox(range) => {
-                trace!(restate.outbox.seq = range.end(), "Effect: Truncate outbox")
+                trace!(
+                    restate.outbox.seq_from = range.start(),
+                    restate.outbox.seq_to = range.end(),
+                    "Effect: Truncate outbox"
+                )
             }
             Effect::DropJournal { journal_length, .. } => {
                 debug_if_leader!(
