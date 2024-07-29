@@ -111,7 +111,7 @@ pub trait StateReader {
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
-    /// Position of the start of outbox commands
+    /// Position of the start of outbox messages
     outbox_head_seq_number: MessageIndex,
     /// Position of the tail of the outbox
     outbox_seq_number: MessageIndex,
