@@ -121,6 +121,76 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  docker-cli:
+    name: Push CLI Docker image
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      GHCR_REGISTRY: "ghcr.io"
+      GHCR_REGISTRY_USERNAME: ${{ github.actor }}
+      GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE_NAME: "restate-cli"
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ env.GHCR_REGISTRY_USERNAME }}
+          password: ${{ env.GHCR_REGISTRY_TOKEN }}
+
+      - name: Log into DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Download linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: restate.*-unknown-linux-musl.tar.gz
+          merge-multiple: true
+
+      - name: Extract metadata (tags, labels) for Docker
+        if: ${{ github.event_name == 'push' }}
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
+            ${{ format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) }}
+
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.ref }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.ref }}
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile << EOF
+          FROM --platform=${BUILDPLATFORM} alpine as builder
+          ADD restate.aarch64-unknown-linux-musl.tar.gz /restate-arm64
+          ADD restate.x86_64-unknown-linux-musl.tar.gz /restate-amd64
+          # keep output image small by removing the server binary
+          RUN rm /restate-*/restate-server
+
+          FROM scratch
+          ARG TARGETARCH
+          COPY --from=builder /restate-${TARGETARCH} /
+          ENTRYPOINT [ "/restate" ]
+          EOF
+
+      - name: Build and push multiplatform image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/arm64,linux/amd64
+
   publish-npm:
     name: Publish to NPM
     if: ${{ inputs.npmVersion != '' }}
