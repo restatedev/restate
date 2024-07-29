@@ -13,7 +13,7 @@ use crate::TableKind::Outbox;
 use crate::{PartitionStore, RocksDBTransaction, StorageAccess, TableScan};
 
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageCodec;
@@ -37,6 +37,33 @@ fn add_message<S: StorageAccess>(
         .message_index(message_index);
 
     storage.put_kv(key, outbox_message);
+}
+
+fn get_outbox_head_seq_number<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<Option<u64>> {
+    let _x = RocksDbPerfGuard::new("get-head-outbox");
+    let start = OutboxKey::default().partition_id(partition_id);
+
+    let end = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(u64::MAX);
+
+    let mut iter = storage.iterator_from(TableScan::KeyRangeInclusiveInSinglePartition(
+        partition_id,
+        start,
+        end,
+    ));
+
+    iter.seek_to_first();
+    if iter.valid() {
+        let k = iter.key().unwrap();
+        let key = OutboxKey::deserialize_from(&mut Cursor::new(k))?;
+        Ok(key.message_index)
+    } else {
+        Ok(None)
+    }
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -92,6 +119,15 @@ fn truncate_outbox<S: StorageAccess>(
     }
 }
 
+impl ReadOnlyOutboxTable for PartitionStore {
+    async fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, partition_id)
+    }
+}
+
 impl OutboxTable for PartitionStore {
     async fn add_message(
         &mut self,
@@ -120,6 +156,15 @@ impl OutboxTable for PartitionStore {
 
     async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
         truncate_outbox(self, partition_id, range)
+    }
+}
+
+impl<'a> ReadOnlyOutboxTable for RocksDBTransaction<'a> {
+    async fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, partition_id)
     }
 }
 

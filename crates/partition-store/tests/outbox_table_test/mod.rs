@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mock_random_service_invocation;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
+use restate_test_util::let_assert;
 use restate_types::identifiers::PartitionId;
+
+use crate::mock_random_service_invocation;
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())
@@ -34,6 +36,14 @@ pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T) {
         .await;
     txn.add_message(PartitionId::from(1338), 0, mock_outbox_message())
         .await;
+}
+
+pub(crate) async fn verify_outbox_head_seq_number<T: OutboxTable>(txn: &mut T) {
+    let head = txn
+        .get_outbox_head_seq_number(PartitionId::from(1337))
+        .await
+        .expect("should not fail");
+    let_assert!(Some(0) = head);
 }
 
 pub(crate) async fn consume_message_and_truncate<T: OutboxTable>(txn: &mut T) {
@@ -96,6 +106,9 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn).await;
+
+    verify_outbox_head_seq_number(&mut txn).await;
+
     consume_message_and_truncate(&mut txn).await;
 
     txn.commit().await.expect("should not fail");

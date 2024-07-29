@@ -25,7 +25,7 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::promise_table::{OwnedPromiseRow, Promise};
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
@@ -116,6 +116,7 @@ async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
 impl<Storage> PartitionStorage<Storage>
 where
     Storage: ReadOnlyFsmTable
+        + ReadOnlyOutboxTable
         + ReadOnlyInvocationStatusTable
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyJournalTable
@@ -145,6 +146,15 @@ where
             self.partition_id,
             fsm_variable::OUTBOX_SEQ_NUMBER,
         )
+    }
+
+    // TODO: get vs. scan vs. load? I think get is most appropriate here; we load this by scanning
+    //  but only return a single element; it's not a load as it's not a pre-computed variable
+    pub async fn get_outbox_head_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
+        self.storage
+            .get_outbox_head_seq_number(self.partition_id)
+            .await
+            .map(|seq_number| seq_number.map(Into::into).unwrap_or_default())
     }
 
     pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {

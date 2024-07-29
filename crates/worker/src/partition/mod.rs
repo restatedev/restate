@@ -179,9 +179,14 @@ where
     {
         let inbox_seq_number = partition_storage.load_inbox_seq_number().await?;
         let outbox_seq_number = partition_storage.load_outbox_seq_number().await?;
+        let outbox_head_seq_number = partition_storage.get_outbox_head_seq_number().await?;
 
-        let state_machine =
-            StateMachine::new(inbox_seq_number, outbox_seq_number, partition_key_range);
+        let state_machine = StateMachine::new(
+            inbox_seq_number,
+            outbox_seq_number,
+            outbox_head_seq_number,
+            partition_key_range,
+        );
 
         Ok(state_machine)
     }

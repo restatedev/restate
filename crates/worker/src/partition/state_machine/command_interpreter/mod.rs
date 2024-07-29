@@ -111,9 +111,9 @@ pub trait StateReader {
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
-    /// Position of the start of outbox messages
+    /// First outbox message
     outbox_head_seq_number: MessageIndex,
-    /// Position of the tail of the outbox
+    /// Last outbox message
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
@@ -132,16 +132,26 @@ impl<Codec> Debug for CommandInterpreter<Codec> {
 }
 
 impl<Codec> CommandInterpreter<Codec> {
+    #[allow(unused)]
     pub(crate) fn new(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
+        partition_key_range: RangeInclusive<PartitionKey>,
+    ) -> Self {
+        Self::new_with_outbox_start(inbox_seq_number, outbox_seq_number, 0, partition_key_range)
+    }
+
+    pub(crate) fn new_with_outbox_start(
+        inbox_seq_number: MessageIndex,
+        outbox_seq_number: MessageIndex,
+        outbox_head_seq_number: MessageIndex,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
-            outbox_head_seq_number: outbox_seq_number, // initially the same as the tail
+            outbox_head_seq_number,
             partition_key_range,
             _codec: PhantomData,
             latency,

@@ -7,7 +7,6 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-
 use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
@@ -39,7 +38,14 @@ impl WithPartitionKey for OutboxMessage {
     }
 }
 
-pub trait OutboxTable {
+pub trait ReadOnlyOutboxTable {
+    fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+}
+
+pub trait OutboxTable: ReadOnlyOutboxTable {
     fn add_message(
         &mut self,
         partition_id: PartitionId,
