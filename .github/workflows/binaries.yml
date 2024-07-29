@@ -168,7 +168,7 @@ jobs:
 
       - name: Create Dockerfile
         run: |
-          cat > Dockerfile << EOF
+          cat > Dockerfile << 'EOF'
           FROM --platform=${BUILDPLATFORM} alpine as builder
           ADD restate.aarch64-unknown-linux-musl.tar.gz /restate-arm64
           ADD restate.x86_64-unknown-linux-musl.tar.gz /restate-amd64
