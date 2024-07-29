@@ -21,6 +21,26 @@ use super::builder::LogsBuilder;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::{flexbuffers_storage_encode_decode, Version, Versioned};
 
+// Starts with 0 being the oldest loglet in the chain.
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Debug,
+    Hash,
+    Serialize,
+    Deserialize,
+    derive_more::From,
+    derive_more::Display,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct SegmentIndex(pub(crate) u32);
+
 /// Log metadata is the map of logs known to the system with the corresponding chain.
 /// Metadata updates are versioned and atomic.
 #[serde_as]
@@ -40,6 +60,7 @@ impl Default for Logs {
         }
     }
 }
+
 /// the chain is a list of segments in (from Lsn) order.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,11 +82,26 @@ pub struct Segment<'a> {
     pub config: &'a LogletConfig,
 }
 
+impl<'a> Segment<'a> {
+    pub fn index(&'a self) -> SegmentIndex {
+        self.config.index()
+    }
+}
+
 /// A segment in the chain of loglet instances.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogletConfig {
     pub kind: ProviderKind,
     pub params: LogletParams,
+    /// This is a cheap and collision-free way to identify loglets within the same log without
+    /// using random numbers. Globally, the tuple (log_id, index) is unqiue.
+    ///
+    // serde(default) to v1.0 compatibility. This can be removed once we are confident that all
+    // persisted metadata have this index set. For v1.0 multi-segment logs are not supported so we
+    // only expect logs with 1 segment. Therefore, a default of 0 matches what we create on new
+    // loglet chains already.
+    #[serde(default)]
+    index: SegmentIndex,
 }
 
 /// The configuration of a single loglet segment. This holds information needed
@@ -117,8 +153,16 @@ pub enum ProviderKind {
 }
 
 impl LogletConfig {
-    pub fn new(kind: ProviderKind, params: LogletParams) -> Self {
-        Self { kind, params }
+    pub(crate) fn new(index: SegmentIndex, kind: ProviderKind, params: LogletParams) -> Self {
+        Self {
+            kind,
+            params,
+            index,
+        }
+    }
+
+    pub fn index(&self) -> SegmentIndex {
+        self.index
     }
 }
 
@@ -186,7 +230,10 @@ impl Chain {
     /// Create a chain with `base_lsn` as its oldest Lsn.
     pub fn with_base_lsn(base_lsn: Lsn, kind: ProviderKind, config: LogletParams) -> Self {
         let mut chain = BTreeMap::new();
-        chain.insert(base_lsn, LogletConfig::new(kind, config));
+        chain.insert(
+            base_lsn,
+            LogletConfig::new(SegmentIndex::default(), kind, config),
+        );
         Self { chain }
     }
 
@@ -199,6 +246,14 @@ impl Chain {
                 tail_lsn: None,
                 config,
             })
+            .expect("Chain must have at least one segment")
+    }
+
+    #[track_caller]
+    pub fn tail_index(&self) -> SegmentIndex {
+        self.chain
+            .last_key_value()
+            .map(|(_, v)| v.index())
             .expect("Chain must have at least one segment")
     }
 

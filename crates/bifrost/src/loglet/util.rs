@@ -13,46 +13,42 @@ use tokio_stream::wrappers::WatchStream;
 
 use restate_core::ShutdownError;
 
+use crate::TailState;
+
 use super::LogletOffset;
 
 #[derive(Debug)]
-pub struct OffsetWatch {
-    sender: watch::Sender<LogletOffset>,
-    receive: watch::Receiver<LogletOffset>,
+pub struct TailOffsetWatch {
+    sender: watch::Sender<TailState<LogletOffset>>,
+    receiver: watch::Receiver<TailState<LogletOffset>>,
 }
 
-impl OffsetWatch {
-    pub fn new(offset: LogletOffset) -> Self {
-        let (send, receive) = watch::channel(offset);
-        Self {
-            sender: send,
-            receive,
-        }
+impl TailOffsetWatch {
+    pub fn new(tail: TailState<LogletOffset>) -> Self {
+        let (sender, receiver) = watch::channel(tail);
+        Self { sender, receiver }
     }
 
-    /// Inform the watch that the offset has changed.
-    pub fn notify(&self, offset: LogletOffset) {
-        self.sender.send_if_modified(|v| {
-            if offset > *v {
-                *v = offset;
-                true
-            } else {
-                false
-            }
-        });
+    /// Inform the watch that the tail might have changed.
+    pub fn notify(&self, sealed: bool, offset: LogletOffset) {
+        self.sender.send_if_modified(|v| v.combine(sealed, offset));
     }
 
-    /// Blocks until the offset is greater or equal to the given offset.
+    pub fn notify_seal(&self) {
+        self.sender.send_if_modified(|v| v.seal());
+    }
+
+    /// Blocks until the tail is beyond the given offset.
     pub async fn wait_for(&self, offset: LogletOffset) -> Result<(), ShutdownError> {
-        self.receive
+        self.receiver
             .clone()
-            .wait_for(|v| *v >= offset)
+            .wait_for(|v| v.offset() > offset)
             .await
             .map_err(|_| ShutdownError)?;
         Ok(())
     }
 
-    pub fn to_stream(&self) -> WatchStream<LogletOffset> {
-        WatchStream::new(self.receive.clone())
+    pub fn to_stream(&self) -> WatchStream<TailState<LogletOffset>> {
+        WatchStream::new(self.receiver.clone())
     }
 }

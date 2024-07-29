@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use restate_types::logs::metadata::{LogletParams, ProviderKind};
+use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
+use restate_types::logs::LogId;
 
 use super::{Loglet, OperationError};
 use crate::Result;
@@ -29,7 +30,12 @@ pub trait LogletProviderFactory: Send + 'static {
 #[async_trait]
 pub trait LogletProvider: Send + Sync {
     /// Create a loglet client for a given segment and configuration.
-    async fn get_loglet(&self, params: &LogletParams) -> Result<Arc<dyn Loglet>>;
+    async fn get_loglet(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        params: &LogletParams,
+    ) -> Result<Arc<dyn Loglet>>;
 
     /// A hook that's called after provider is started.
     async fn post_start(&self) {}

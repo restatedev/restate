@@ -90,8 +90,7 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
-datafusion = { version = "35.0.0", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
-datafusion-expr = { version = "35.0.0" }
+datafusion = { git = "https://github.com/restatedev/datafusion.git", tag = "35.0.0-object-store", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
 derive-getters = {  version = "0.4.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "0.99.17" }
@@ -122,13 +121,14 @@ opentelemetry_sdk = { version = "0.22.1" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
-prost = "0.12.1"
-prost-build = "0.12.1"
+prost = { version = "0.13.1" }
+prost-build = { version = "0.13.1" }
 prost-dto = { version = "0.0.2" }
-prost-types = "0.12.1"
+prost-types = { version = "0.13.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
 regress = { version = "0.10" }
+reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev="c7ccbbcd261bdec011c4976c441676512a1a4841" }
 rustls = {version = "0.23.11", default-features = false, features = ["ring"]}
@@ -149,13 +149,14 @@ test-log = { version = "0.2.11", default-features = false, features = ["trace"] 
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
-tokio = { version = "1.29", default-features = false, features = ["rt-multi-thread", "signal", "macros", ] }
-tokio-stream = "0.1.14"
-tokio-util = { version = "0.7.10" }
-tonic = { version = "0.10.2", default-features = false }
-tonic-reflection = { version = "0.10.2" }
-tonic-health = "0.10.2"
-tonic-build = "0.11.0"
+tokio = { version = "1.39.1", default-features = false, features = ["rt-multi-thread", "signal", "macros", "parking_lot" ] }
+tokio-stream = "0.1.15"
+tokio-util = { version = "0.7.11" }
+tonic = { version = "0.12.1", default-features = false }
+tonic-0-10 = { package = "tonic", version = "0.10.2", default-features = false }
+tonic-reflection = { version = "0.12.1" }
+tonic-health = { version = "0.12.1" }
+tonic-build = { version = "0.12.1" }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }
 tracing = "0.1"

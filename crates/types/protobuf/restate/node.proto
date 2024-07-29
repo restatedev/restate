@@ -17,7 +17,12 @@ package restate.node;
 // # Wire Protocol Of Streaming Connections
 // -------------------------------------
 //
-message Header { restate.common.Version my_nodes_config_version = 1; }
+message Header {
+  restate.common.Version my_nodes_config_version = 1;
+  optional restate.common.Version my_logs_version = 2;
+  optional restate.common.Version my_schema_version = 3;
+  optional restate.common.Version my_partition_table_version = 4;
+}
 
 // First message sent to an ingress after starting the connection. The message
 // must be sent before any other message.

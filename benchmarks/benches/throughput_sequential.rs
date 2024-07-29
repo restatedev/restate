@@ -12,8 +12,8 @@
 //! running on localhost:9080 in order to run.
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use hyper_0_14::client::HttpConnector;
-use hyper_0_14::{Body, Uri};
+use http::header::CONTENT_TYPE;
+use http::Uri;
 use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
@@ -32,7 +32,9 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         Uri::from_static("http://localhost:9080"),
     );
 
-    let client = hyper_0_14::Client::new();
+    let client = reqwest::Client::builder()
+        .build()
+        .expect("reqwest client should build");
 
     let num_requests = 1;
     let mut group = criterion.benchmark_group("throughput");
@@ -48,18 +50,13 @@ fn throughput_benchmark(criterion: &mut Criterion) {
     current_thread_rt.block_on(RocksDbManager::get().shutdown());
 }
 
-async fn send_sequential_counter_requests(
-    client: &hyper_0_14::Client<HttpConnector>,
-    num_requests: u64,
-) {
+async fn send_sequential_counter_requests(client: &reqwest::Client, num_requests: u64) {
     for _ in 0..num_requests {
         let response = client
-            .request(
-                hyper_0_14::Request::post("http://localhost:8080/Counter/1/getAndAdd")
-                    .header(hyper_0_14::header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("10"))
-                    .expect("building discovery request should not fail"),
-            )
+            .post("http://localhost:8080/Counter/1/getAndAdd")
+            .header(CONTENT_TYPE, "application/json")
+            .body("10")
+            .send()
             .await
             .expect("Counter/1/getAndAdd should not fail");
 

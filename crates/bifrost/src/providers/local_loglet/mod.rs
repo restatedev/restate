@@ -18,6 +18,7 @@ mod read_stream;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::stream::BoxStream;
 pub use log_store::LogStoreError;
 use metrics::{counter, histogram, Histogram};
 pub use provider::Factory;
@@ -42,7 +43,7 @@ use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
 use self::read_stream::LocalLogletReadStream;
-use crate::loglet::util::OffsetWatch;
+use crate::loglet::util::TailOffsetWatch;
 
 struct LocalLoglet {
     loglet_id: u64,
@@ -56,7 +57,8 @@ struct LocalLoglet {
     last_committed_offset: AtomicU64,
     next_write_offset: Mutex<LogletOffset>,
     sealed: AtomicBool,
-    release_watch: OffsetWatch,
+    // watches the tail state of this loglet
+    tail_watch: TailOffsetWatch,
     append_latency: Histogram,
 }
 
@@ -73,7 +75,7 @@ impl std::fmt::Debug for LocalLoglet {
 }
 
 impl LocalLoglet {
-    pub async fn create(
+    pub fn create(
         loglet_id: u64,
         log_store: RocksDbLogStore,
         log_writer: RocksDbLogWriterHandle,
@@ -101,7 +103,10 @@ impl LocalLoglet {
             next_write_offset,
             last_committed_offset,
             sealed,
-            release_watch: OffsetWatch::new(release_pointer),
+            tail_watch: TailOffsetWatch::new(TailState::new(
+                log_state.seal,
+                release_pointer.next(),
+            )),
             append_latency,
         };
         debug!(
@@ -115,8 +120,9 @@ impl LocalLoglet {
     }
 
     #[inline]
-    fn notify_readers(&self, release_pointer: LogletOffset) {
-        self.release_watch.notify(release_pointer);
+    fn notify_readers(&self, sealed: bool, release_pointer: LogletOffset) {
+        // tail is beyond the release pointer
+        self.tail_watch.notify(sealed, release_pointer.next());
     }
 
     fn read_from(
@@ -200,6 +206,10 @@ impl LogletBase for LocalLoglet {
         ))
     }
 
+    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+        Box::pin(self.tail_watch.to_stream())
+    }
+
     async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
         // An initial check if we are sealed or not, we are not worried about accepting an
         // append while sealing is taking place. We only care about *not* acknowledging
@@ -240,10 +250,11 @@ impl LogletBase for LocalLoglet {
                 .fetch_max(offset.into(), Ordering::AcqRel)
                 .max(offset.into()),
         );
-        self.notify_readers(release_pointer);
+        let is_sealed = self.sealed.load(Ordering::Relaxed);
+        self.notify_readers(is_sealed, release_pointer);
         // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
         // has been sealed already.
-        if self.sealed.load(Ordering::Relaxed) {
+        if is_sealed {
             return Err(AppendError::Sealed);
         }
         self.append_latency.record(start_time.elapsed());
@@ -291,10 +302,11 @@ impl LogletBase for LocalLoglet {
                 .fetch_max(offset.into(), Ordering::AcqRel)
                 .max(offset.into()),
         );
-        self.notify_readers(release_pointer);
-        // Ensure that we don't acknowledge the append (albeit durable) if the loglet
+        let is_sealed = self.sealed.load(Ordering::Relaxed);
+        self.notify_readers(is_sealed, release_pointer);
+        // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
         // has been sealed already.
-        if self.sealed.load(Ordering::Relaxed) {
+        if is_sealed {
             return Err(AppendError::Sealed);
         }
         self.append_latency.record(start_time.elapsed());
@@ -370,6 +382,8 @@ impl LogletBase for LocalLoglet {
             Err(ShutdownError.into())
         })?;
         self.sealed.store(true, Ordering::Relaxed);
+        self.tail_watch.notify_seal();
+
         Ok(())
     }
 
@@ -383,7 +397,7 @@ impl LogletBase for LocalLoglet {
                 break Ok(next_record);
             }
             // Wait and respond when available.
-            self.release_watch.wait_for(from).await?;
+            self.tail_watch.wait_for(from).await?;
         }
     }
 
@@ -431,17 +445,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 gapless_loglet_smoke_test(loglet).await?;
                 Ok(())
@@ -473,17 +484,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 single_loglet_readstream_test(loglet).await?;
                 Ok(())
@@ -515,17 +523,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 single_loglet_readstream_test_with_trims(loglet).await?;
                 Ok(())
@@ -556,17 +561,14 @@ mod tests {
                     .create_writer()
                     .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
 
-                let loglet = Arc::new(
-                    LocalLoglet::create(
-                        params
-                            .as_str()
-                            .parse()
-                            .expect("loglet params can be converted into u64"),
-                        log_store,
-                        log_writer,
-                    )
-                    .await?,
-                );
+                let loglet = Arc::new(LocalLoglet::create(
+                    params
+                        .as_str()
+                        .parse()
+                        .expect("loglet params can be converted into u64"),
+                    log_store,
+                    log_writer,
+                )?);
 
                 loglet_test_append_after_seal(loglet).await?;
                 Ok(())
@@ -599,9 +601,11 @@ mod tests {
 
                 // Run the test 10 times
                 for i in 1..=10 {
-                    let loglet = Arc::new(
-                        LocalLoglet::create(i, log_store.clone(), log_writer.clone()).await?,
-                    );
+                    let loglet = Arc::new(LocalLoglet::create(
+                        i,
+                        log_store.clone(),
+                        log_writer.clone(),
+                    )?);
                     loglet_test_append_after_seal_concurrent(loglet).await?;
                 }
 

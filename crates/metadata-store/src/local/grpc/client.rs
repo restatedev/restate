@@ -16,7 +16,7 @@ use tonic::{Code, Status};
 use restate_core::metadata_store::{
     MetadataStore, Precondition, ReadError, VersionedValue, WriteError,
 };
-use restate_core::network::grpc_util::create_grpc_channel_from_advertised_address;
+use restate_core::network::net_util::create_tonic_channel_from_advertised_address;
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 
@@ -31,7 +31,7 @@ pub struct LocalMetadataStoreClient {
 }
 impl LocalMetadataStoreClient {
     pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
-        let channel = create_grpc_channel_from_advertised_address(metadata_store_address)
+        let channel = create_tonic_channel_from_advertised_address(metadata_store_address)
             .expect("should not fail");
 
         Self {

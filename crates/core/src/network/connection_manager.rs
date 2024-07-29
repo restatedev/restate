@@ -1,4 +1,4 @@
-// Copyright (c) 2024 -  Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2024-2024 - Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,30 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{hash_map, HashMap};
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
-
+use enum_map::EnumMap;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rand::seq::SliceRandom;
 use restate_types::net::codec::try_unwrap_binary_message;
+use std::collections::{hash_map, HashMap};
+use std::ops::{Index, IndexMut};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tracing::{debug, info, trace, warn, Instrument, Span};
 
-use restate_types::live::Pinned;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::AdvertisedAddress;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::protobuf::node::message::{self, ConnectionControl};
 use restate_types::protobuf::node::{Header, Hello, Message, Welcome};
-use restate_types::{GenerationalNodeId, NodeId, PlainNodeId};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
 use super::connection::{Connection, ConnectionSender};
 use super::error::{NetworkError, ProtocolError};
-use super::grpc_util::create_grpc_channel_from_advertised_address;
 use super::handshake::{negotiate_protocol_version, wait_for_hello, wait_for_welcome};
 use super::metric_definitions::{
     self, CONNECTION_DROPPED, INCOMING_CONNECTION, MESSAGE_PROCESSING_DURATION, MESSAGE_RECEIVED,
@@ -39,8 +38,10 @@ use super::metric_definitions::{
 };
 use super::protobuf::node_svc::node_svc_client::NodeSvcClient;
 use super::{Handler, MessageRouter};
+use crate::metadata::Urgency;
+use crate::network::net_util::create_tonic_channel_from_advertised_address;
+use crate::Metadata;
 use crate::{cancellation_watcher, current_task_id, task_center, TaskId, TaskKind};
-use crate::{Metadata, TargetVersion};
 
 // todo: make this configurable
 const SEND_QUEUE_SIZE: usize = 1;
@@ -79,11 +80,11 @@ impl Default for ConnectionManagerInner {
     fn default() -> Self {
         metric_definitions::describe_metrics();
         Self {
-            router: Default::default(),
-            connections: Default::default(),
-            connection_by_gen_id: Default::default(),
-            observed_generations: Default::default(),
-            channel_cache: Default::default(),
+            router: MessageRouter::default(),
+            connections: HashMap::default(),
+            connection_by_gen_id: HashMap::default(),
+            observed_generations: HashMap::default(),
+            channel_cache: HashMap::default(),
         }
     }
 }
@@ -95,11 +96,11 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
+    /// Creates the connection manager.
     pub(super) fn new(metadata: Metadata) -> Self {
-        Self {
-            metadata,
-            inner: Arc::new(Mutex::new(ConnectionManagerInner::default())),
-        }
+        let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
+
+        Self { metadata, inner }
     }
     /// Updates the message router. Note that this only impacts new connections.
     /// In general, this should be called once on application start after
@@ -142,12 +143,9 @@ impl ConnectionManager {
         let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
         // NodeId **must** be generational at this layer
-        let peer_node_id = hello
-            .my_node_id
-            .clone()
-            .ok_or(ProtocolError::HandshakeFailed(
-                "NodeId is not set in the Hello message",
-            ))?;
+        let peer_node_id = hello.my_node_id.ok_or(ProtocolError::HandshakeFailed(
+            "NodeId is not set in the Hello message",
+        ))?;
 
         if peer_node_id.generation() == 0 {
             return Err(
@@ -179,26 +177,22 @@ impl ConnectionManager {
             selected_protocol_version
         );
 
-        let nodes_config = self
-            .verify_node_id(peer_node_id, header, nodes_config)
-            .await?;
+        self.verify_node_id(peer_node_id, header, &nodes_config)?;
 
         let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version);
 
-        let welcome = Message::new(Header::new(nodes_config.version()), welcome);
+        let welcome = Message::new(
+            Header::new(nodes_config.version(), None, None, None),
+            welcome,
+        );
 
         tx.try_send(welcome)
             .expect("channel accept Welcome message");
 
         INCOMING_CONNECTION.increment(1);
-        let connection = Connection::new(
-            peer_node_id,
-            selected_protocol_version,
-            tx,
-            self.metadata.updateable_nodes_config(),
-        );
+        let connection = Connection::new(peer_node_id, selected_protocol_version, tx);
         // Register the connection.
         let _ = self.start_connection_reactor(connection, incoming)?;
         // For uniformity with outbound connections, we map all responses to Ok, we never rely on
@@ -209,42 +203,38 @@ impl ConnectionManager {
         Ok(Box::pin(transformed))
     }
 
-    async fn verify_node_id(
+    fn verify_node_id(
         &self,
         peer_node_id: GenerationalNodeId,
         header: Header,
-        mut nodes_config: Pinned<NodesConfiguration>,
-    ) -> Result<Pinned<NodesConfiguration>, NetworkError> {
+        nodes_config: &NodesConfiguration,
+    ) -> Result<(), NetworkError> {
         if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
             // If nodeId is unrecognized and peer is at higher nodes configuration version,
             // then we have to update our NodesConfiguration
-            let peer_is_in_the_future = header
-                .my_nodes_config_version
-                .as_ref()
-                .is_some_and(|v| v.value > nodes_config.version().into());
+            if let Some(other_nodes_config_version) = header.my_nodes_config_version.map(Into::into)
+            {
+                let peer_is_in_the_future = other_nodes_config_version > nodes_config.version();
 
-            if peer_is_in_the_future {
-                // don't keep pinned nodes configuration beyond await point
-                drop(nodes_config);
-                // todo: Replace with notifying metadata manager about newer version
-                self.metadata
-                    .sync(
+                if peer_is_in_the_future {
+                    self.metadata.notify_observed_version(
                         MetadataKind::NodesConfiguration,
-                        TargetVersion::from(header.my_nodes_config_version.clone().map(Into::into)),
-                    )
-                    .await?;
-                nodes_config = self.metadata.nodes_config_ref();
-
-                if let Err(e) = nodes_config.find_node_by_id(peer_node_id) {
-                    warn!("Could not find remote node {} after syncing nodes configuration. Local version '{}', remote version '{:?}'.", peer_node_id, nodes_config.version(), header.my_nodes_config_version.expect("must be present"));
-                    return Err(NetworkError::UnknownNode(e));
+                        other_nodes_config_version,
+                        None,
+                        Urgency::High,
+                    );
+                    debug!("Remote node '{}' with newer nodes configuration '{}' tried to connect. Trying to fetch newer version before accepting connection.", peer_node_id, other_nodes_config_version);
+                } else {
+                    info!("Unknown remote node '{}' tried to connect to cluster. Rejecting connection.", peer_node_id);
                 }
             } else {
-                return Err(NetworkError::UnknownNode(e));
+                info!("Unknown remote node '{}' w/o specifying its node configuration tried to connect to cluster. Rejecting connection.", peer_node_id);
             }
+
+            return Err(NetworkError::UnknownNode(e));
         }
 
-        Ok(nodes_config)
+        Ok(())
     }
 
     /// Always attempts to create a new connection with peer
@@ -253,7 +243,7 @@ impl ConnectionManager {
         node_id: GenerationalNodeId,
     ) -> Result<ConnectionSender, NetworkError> {
         let connection = self.connect(node_id).await?;
-        Ok(connection.sender())
+        Ok(connection.sender(&self.metadata))
     }
 
     /// Gets an existing connection or creates a new one if no active connection exists. If
@@ -270,12 +260,12 @@ impl ConnectionManager {
         };
 
         if let Some(connection) = maybe_connection {
-            return Ok(connection.sender());
+            return Ok(connection.sender(&self.metadata));
         }
         // We have no connection, or the connection we picked is stale. We attempt to create a
         // new connection anyway.
         let connection = self.connect(node_id).await?;
-        Ok(connection.sender())
+        Ok(connection.sender(&self.metadata))
     }
 
     async fn connect(&self, node_id: GenerationalNodeId) -> Result<Arc<Connection>, NetworkError> {
@@ -291,7 +281,7 @@ impl ConnectionManager {
         let channel = {
             let mut guard = self.inner.lock().unwrap();
             if let hash_map::Entry::Vacant(entry) = guard.channel_cache.entry(address.clone()) {
-                let channel = create_grpc_channel_from_advertised_address(address)
+                let channel = create_tonic_channel_from_advertised_address(address)
                     .map_err(|e| NetworkError::BadNodeAddress(node_id.into(), e))?;
                 entry.insert(channel.clone());
                 channel
@@ -311,12 +301,7 @@ impl ConnectionManager {
         node_id: GenerationalNodeId,
     ) -> Result<Arc<Connection>, NetworkError> {
         let (tx, rx) = mpsc::channel(SEND_QUEUE_SIZE);
-        let connection = Connection::new(
-            node_id,
-            restate_types::net::CURRENT_PROTOCOL_VERSION,
-            tx,
-            self.metadata.updateable_nodes_config(),
-        );
+        let connection = Connection::new(node_id, restate_types::net::CURRENT_PROTOCOL_VERSION, tx);
 
         let transformed = ReceiverStream::new(rx).map(Ok);
         let incoming = Box::pin(transformed);
@@ -331,7 +316,6 @@ impl ConnectionManager {
         channel: Channel,
     ) -> Result<Arc<Connection>, NetworkError> {
         let mut client = NodeSvcClient::new(channel);
-        let nodes_config_version = self.metadata.nodes_config_version();
         let cluster_name = self.metadata.nodes_config_ref().cluster_name().to_owned();
         let my_node_id = self.metadata.my_node_id();
 
@@ -339,7 +323,10 @@ impl ConnectionManager {
         let hello = Hello::new(my_node_id, cluster_name);
 
         // perform handshake.
-        let hello = Message::new(Header::new(nodes_config_version), hello);
+        let hello = Message::new(
+            Header::new(self.metadata.nodes_config_version(), None, None, None),
+            hello,
+        );
 
         // Prime the channel with the hello message before connecting.
         tx.send(hello).await.expect("Channel accept hello message");
@@ -384,7 +371,6 @@ impl ConnectionManager {
                 .expect("must be generational id"),
             protocol_version,
             tx,
-            self.metadata.updateable_nodes_config(),
         );
 
         self.start_connection_reactor(connection, transformed)
@@ -443,7 +429,14 @@ impl ConnectionManager {
             TaskKind::ConnectionReactor,
             "network-connection-reactor",
             None,
-            run_reactor(self.inner.clone(), connection.clone(), router, incoming).instrument(span),
+            run_reactor(
+                self.inner.clone(),
+                connection.clone(),
+                router,
+                incoming,
+                self.metadata.clone(),
+            )
+            .instrument(span),
         )?;
         debug!(
             peer_node_id = %peer_node_id,
@@ -469,6 +462,7 @@ async fn run_reactor<S>(
     connection: Arc<Connection>,
     router: MessageRouter,
     mut incoming: S,
+    metadata: Metadata,
 ) -> anyhow::Result<()>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin + Send,
@@ -478,6 +472,8 @@ where
         tracing::field::display(current_task_id().unwrap()),
     );
     let mut cancellation = std::pin::pin!(cancellation_watcher());
+    let mut seen_versions = MetadataVersions::default();
+
     // Receive loop
     loop {
         // read a message from the stream
@@ -506,8 +502,25 @@ where
         MESSAGE_RECEIVED.increment(1);
         let processing_started = Instant::now();
         // header is optional on non-hello messages.
-        if let Some(_header) = msg.header {
-            // todo: if header contains newer config or metadata versions, notify metadata().
+        if let Some(header) = msg.header {
+            seen_versions
+                .update(
+                    header.my_nodes_config_version.map(Into::into),
+                    header.my_partition_table_version.map(Into::into),
+                    header.my_schema_version.map(Into::into),
+                    header.my_logs_version.map(Into::into),
+                )
+                .into_iter()
+                .for_each(|(kind, version)| {
+                    if let Some(version) = version {
+                        metadata.notify_observed_version(
+                            kind,
+                            version,
+                            Some(NodeId::from(connection.peer)),
+                            Urgency::Normal,
+                        );
+                    }
+                })
         };
 
         // body are not allowed to be empty.
@@ -626,21 +639,88 @@ fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
     guard.drop_connection(task_id);
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataVersions {
+    versions: EnumMap<MetadataKind, Version>,
+}
+
+impl Default for MetadataVersions {
+    fn default() -> Self {
+        Self {
+            versions: EnumMap::from_fn(|_| Version::INVALID),
+        }
+    }
+}
+
+impl MetadataVersions {
+    pub fn update(
+        &mut self,
+        nodes_config_version: Option<Version>,
+        partition_table_version: Option<Version>,
+        schema_version: Option<Version>,
+        logs_version: Option<Version>,
+    ) -> EnumMap<MetadataKind, Option<Version>> {
+        let mut result = EnumMap::default();
+        result[MetadataKind::NodesConfiguration] =
+            self.update_internal(MetadataKind::NodesConfiguration, nodes_config_version);
+        result[MetadataKind::PartitionTable] =
+            self.update_internal(MetadataKind::PartitionTable, partition_table_version);
+        result[MetadataKind::Schema] = self.update_internal(MetadataKind::Schema, schema_version);
+        result[MetadataKind::Logs] = self.update_internal(MetadataKind::Logs, logs_version);
+
+        result
+    }
+
+    fn update_internal(
+        &mut self,
+        metadata_kind: MetadataKind,
+        version: Option<Version>,
+    ) -> Option<Version> {
+        if let Some(version) = version {
+            if version > self.versions[metadata_kind] {
+                self.versions[metadata_kind] = version;
+                return Some(version);
+            }
+        }
+        None
+    }
+}
+
+impl Index<MetadataKind> for MetadataVersions {
+    type Output = Version;
+
+    fn index(&self, index: MetadataKind) -> &Self::Output {
+        &self.versions[index]
+    }
+}
+
+impl IndexMut<MetadataKind> for MetadataVersions {
+    fn index_mut(&mut self, index: MetadataKind) -> &mut Self::Output {
+        &mut self.versions[index]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::network::handshake::HANDSHAKE_TIMEOUT;
 
     use super::*;
 
+    use crate::{MetadataBuilder, MockNetworkSender, TestCoreEnv, TestCoreEnvBuilder};
     use googletest::prelude::*;
-
-    use crate::TestCoreEnv;
-    use restate_test_util::assert_eq;
+    use restate_test_util::{assert_eq, let_assert};
+    use restate_types::net::codec::{serialize_message, Targeted, WireDecode, WireEncode};
+    use restate_types::net::metadata::{GetMetadataRequest, MetadataMessage};
+    use restate_types::net::partition_processor_manager::GetProcessorsState;
     use restate_types::net::{
-        ProtocolVersion, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
+        ProtocolVersion, RequestId, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
     };
-    use restate_types::nodes_config::NodesConfigError;
+    use restate_types::nodes_config::{NodeConfig, NodesConfigError, Role};
     use restate_types::protobuf::node::message;
+    use restate_types::protobuf::node::message::Body;
+    use restate_types::Version;
+    use test_log::test;
+    use tonic::Status;
 
     // Test handshake with a client
     #[tokio::test]
@@ -650,33 +730,10 @@ mod tests {
             .tc
             .run_in_scope("test", None, async {
                 let metadata = crate::metadata();
-                let (tx, rx) = mpsc::channel(1);
                 let connections = ConnectionManager::new(metadata.clone());
 
-                let hello = Hello::new(
-                    metadata.my_node_id(),
-                    metadata.nodes_config_ref().cluster_name().to_owned(),
-                );
-                let hello = Message::new(Header::new(metadata.nodes_config_version()), hello);
-                tx.send(Ok(hello))
-                    .await
-                    .expect("Channel accept hello message");
+                let _ = establish_connection(metadata.my_node_id(), &metadata, &connections).await;
 
-                let incoming = ReceiverStream::new(rx);
-                let mut output_stream = connections
-                    .accept_incoming_connection(incoming)
-                    .await
-                    .expect("handshake");
-                let msg = output_stream
-                    .next()
-                    .await
-                    .expect("welcome message")
-                    .expect("ok");
-                let welcome = match msg.body {
-                    Some(message::Body::Welcome(welcome)) => welcome,
-                    _ => panic!("unexpected message"),
-                };
-                assert_eq!(welcome.my_node_id, Some(metadata.my_node_id().into()));
                 Ok(())
             })
             .await
@@ -725,7 +782,10 @@ mod tests {
                     my_node_id: Some(my_node_id.into()),
                     cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
                 };
-                let hello = Message::new(Header::new(metadata.nodes_config_version()), hello);
+                let hello = Message::new(
+                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    hello,
+                );
                 tx.send(Ok(hello))
                     .await
                     .expect("Channel accept hello message");
@@ -750,7 +810,10 @@ mod tests {
                     my_node_id: Some(my_node_id.into()),
                     cluster_name: "Random-cluster".to_owned(),
                 };
-                let hello = Message::new(Header::new(metadata.nodes_config_version()), hello);
+                let hello = Message::new(
+                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    hello,
+                );
                 tx.send(Ok(hello)).await?;
 
                 let connections = ConnectionManager::new(metadata);
@@ -788,7 +851,10 @@ mod tests {
                     my_node_id,
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
-                let hello = Message::new(Header::new(metadata.nodes_config_version()), hello);
+                let hello = Message::new(
+                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    hello,
+                );
                 tx.send(Ok(hello))
                     .await
                     .expect("Channel accept hello message");
@@ -801,7 +867,6 @@ mod tests {
                     .await
                     .err()
                     .unwrap();
-                println!("{:?}", err);
 
                 assert!(matches!(
                     err,
@@ -818,7 +883,10 @@ mod tests {
                     my_node_id,
                     metadata.nodes_config_ref().cluster_name().to_owned(),
                 );
-                let hello = Message::new(Header::new(metadata.nodes_config_version()), hello);
+                let hello = Message::new(
+                    Header::new(metadata.nodes_config_version(), None, None, None),
+                    hello,
+                );
                 tx.send(Ok(hello))
                     .await
                     .expect("Channel accept hello message");
@@ -838,5 +906,168 @@ mod tests {
                 Ok(())
             })
             .await
+    }
+
+    #[test(tokio::test(start_paused = true))]
+    async fn fetching_metadata_updates_through_message_headers() -> Result<()> {
+        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+
+        let node_id = GenerationalNodeId::new(42, 42);
+        let node_config = NodeConfig::new(
+            "42".to_owned(),
+            node_id,
+            AdvertisedAddress::Uds("foobar1".into()),
+            Role::Worker.into(),
+        );
+        nodes_config.upsert_node(node_config);
+
+        let (network_tx, mut network_rx) = mpsc::unbounded_channel();
+        let metadata_builder = MetadataBuilder::default();
+
+        let test_env = TestCoreEnvBuilder::new(
+            MockNetworkSender::from_sender(network_tx, metadata_builder.to_metadata()),
+            metadata_builder,
+        )
+        .with_nodes_config(nodes_config)
+        .build()
+        .await;
+
+        test_env
+            .tc
+            .run_in_scope("test", None, async {
+                let metadata = crate::metadata();
+                let connections = ConnectionManager::new(metadata.clone());
+
+                let (connection, _rx) =
+                    establish_connection(node_id, &metadata, &connections).await;
+
+                let request = GetProcessorsState {
+                    request_id: RequestId::default(),
+                };
+                let partition_table_version = metadata.partition_table_version().next();
+                let header = Header::new(
+                    metadata.nodes_config_version(),
+                    None,
+                    None,
+                    Some(partition_table_version),
+                );
+
+                connection.send(request, header).await?;
+
+                let (target, message) = network_rx.recv().await.expect("some message");
+                assert_eq!(NodeId::from(target), node_id);
+                assert_get_metadata_request(
+                    message,
+                    connection.protocol_version,
+                    MetadataKind::PartitionTable,
+                    partition_table_version,
+                );
+
+                Ok(())
+            })
+            .await
+    }
+
+    fn assert_get_metadata_request(
+        message: Message,
+        protocol_version: ProtocolVersion,
+        metadata_kind: MetadataKind,
+        version: Version,
+    ) {
+        let metadata_message =
+            decode_metadata_message(message, protocol_version).expect("valid message");
+        assert_that!(
+            metadata_message,
+            pat!(MetadataMessage::GetMetadataRequest(pat!(
+                GetMetadataRequest {
+                    metadata_kind: eq(metadata_kind),
+                    min_version: eq(Some(version))
+                }
+            )))
+        );
+    }
+
+    fn decode_metadata_message(
+        message: Message,
+        protocol_version: ProtocolVersion,
+    ) -> Result<MetadataMessage> {
+        let_assert!(Some(Body::Encoded(mut binary_message)) = message.body);
+
+        let metadata_message =
+            MetadataMessage::decode(&mut binary_message.payload, protocol_version)?;
+        Ok(metadata_message)
+    }
+
+    async fn establish_connection(
+        node_id: GenerationalNodeId,
+        metadata: &Metadata,
+        connections: &ConnectionManager,
+    ) -> (
+        TestConnection,
+        BoxStream<'static, std::result::Result<Message, Status>>,
+    ) {
+        let (tx, rx) = mpsc::channel(1);
+
+        let hello = Hello::new(
+            node_id,
+            metadata.nodes_config_ref().cluster_name().to_owned(),
+        );
+        let hello = Message::new(
+            Header::new(metadata.nodes_config_version(), None, None, None),
+            hello,
+        );
+        tx.send(Ok(hello))
+            .await
+            .expect("Channel accept hello message");
+
+        let incoming = ReceiverStream::new(rx);
+        let mut output_stream = connections
+            .accept_incoming_connection(incoming)
+            .await
+            .expect("handshake");
+        let msg = output_stream
+            .next()
+            .await
+            .expect("welcome message")
+            .expect("ok");
+        let welcome = match msg.body {
+            Some(message::Body::Welcome(welcome)) => welcome,
+            _ => panic!("unexpected message"),
+        };
+        assert_eq!(welcome.my_node_id, Some(metadata.my_node_id().into()));
+
+        (
+            TestConnection::new(welcome.protocol_version(), tx),
+            output_stream,
+        )
+    }
+
+    struct TestConnection {
+        protocol_version: ProtocolVersion,
+        tx: mpsc::Sender<std::result::Result<Message, ProtocolError>>,
+    }
+
+    impl TestConnection {
+        fn new(
+            protocol_version: ProtocolVersion,
+            tx: mpsc::Sender<std::result::Result<Message, ProtocolError>>,
+        ) -> Self {
+            Self {
+                protocol_version,
+                tx,
+            }
+        }
+
+        async fn send<M>(&self, message: M, header: Header) -> Result<()>
+        where
+            M: WireEncode + Targeted,
+        {
+            let body = serialize_message(message, self.protocol_version)?;
+            let message = Message::new(header, body);
+
+            self.tx.send(Ok(message)).await?;
+
+            Ok(())
+        }
     }
 }

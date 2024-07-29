@@ -42,8 +42,7 @@ impl InvocationStorageReaderImpl {
 impl InvocationStorageReader for InvocationStorageReaderImpl {
     async fn get_output(&self, query: InvocationQuery) -> Result<GetOutputResult, Error> {
         let partition_id = metadata()
-            .partition_table()
-            .ok_or_else(|| anyhow!("Can't find partition table"))?
+            .partition_table_ref()
             .find_partition_id(query.partition_key())?;
         let mut partition_storage = self
             .partition_store_manager

@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
-use std::str::FromStr;
-
 use enumset::EnumSet;
-use humantime::Duration;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::path::PathBuf;
+use std::str::FromStr;
 
 use restate_serde_util::NonZeroByteCount;
 
@@ -93,7 +91,7 @@ pub struct CommonOptions {
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub shutdown_timeout: Duration,
+    pub shutdown_timeout: humantime::Duration,
 
     /// # Default async runtime thread pool
     ///
@@ -228,6 +226,14 @@ pub struct CommonOptions {
     /// RocksDb base settings and memory limits that get applied on every database
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
+
+    /// # Metadata update interval
+    ///
+    /// The interval at which each node checks for metadata updates it has observed from different
+    /// nodes or other sources.
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_update_interval: humantime::Duration,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -353,6 +359,7 @@ impl Default for CommonOptions {
             rocksdb_enable_stall_on_memory_limit: false,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
+            metadata_update_interval: std::time::Duration::from_secs(3).into(),
         }
     }
 }

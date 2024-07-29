@@ -81,9 +81,17 @@ pub mod node {
     }
 
     impl Header {
-        pub fn new(nodes_config_version: crate::Version) -> Self {
+        pub fn new(
+            nodes_config_version: crate::Version,
+            logs_version: Option<crate::Version>,
+            schema_version: Option<crate::Version>,
+            partition_table_version: Option<crate::Version>,
+        ) -> Self {
             Self {
                 my_nodes_config_version: Some(nodes_config_version.into()),
+                my_logs_version: logs_version.map(Into::into),
+                my_schema_version: schema_version.map(Into::into),
+                my_partition_table_version: partition_table_version.map(Into::into),
             }
         }
     }

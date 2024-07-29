@@ -43,6 +43,15 @@ pub struct FixedPartitionTable {
     num_partitions: u64,
 }
 
+impl Default for FixedPartitionTable {
+    fn default() -> Self {
+        Self {
+            version: Version::INVALID,
+            num_partitions: 0,
+        }
+    }
+}
+
 impl FixedPartitionTable {
     const PARTITION_KEY_RANGE_END: u128 = 1 << 64;
 

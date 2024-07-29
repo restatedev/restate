@@ -8,44 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::Poll;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use pin_project::pin_project;
 use rocksdb::{DBRawIteratorWithThreadMode, DB};
-use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::SequenceNumber;
 
-use crate::loglet::{LogletOffset, LogletReadStream, OperationError};
+use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
-use crate::{LogRecord, Result};
+use crate::{LogRecord, Result, TailState};
 
 use super::keys::RecordKey;
 use super::LocalLoglet;
 
-#[pin_project]
 pub(crate) struct LocalLogletReadStream {
     log_id: u64,
-    loglet: Arc<LocalLoglet>,
     // the next record this stream will attempt to read
     read_pointer: LogletOffset,
-    release_pointer: LogletOffset,
+    /// stop when read_pointer is at or beyond this offset
+    last_known_tail: LogletOffset,
     /// Last offset to read before terminating the stream. None means "tailing" reader.
     read_to: Option<LogletOffset>,
-    #[pin]
     iterator: DBRawIteratorWithThreadMode<'static, DB>,
-    #[pin]
-    release_watch: WatchStream<LogletOffset>,
-    #[pin]
+    tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     terminated: bool,
+    // IMPORTANT: Do not reorder, this should be dropped last since `iterator` holds a reference
+    // into the underlying database.
+    loglet: Arc<LocalLoglet>,
 }
 
 // ## Safety
@@ -87,11 +84,12 @@ impl LocalLogletReadStream {
         read_opts.set_iterate_upper_bound(RecordKey::upper_bound(loglet.loglet_id).to_bytes());
 
         let log_store = &loglet.log_store;
-        let mut release_watch = loglet.release_watch.to_stream();
-        let release_pointer = release_watch
+        let mut tail_watch = loglet.watch_tail();
+        let last_known_tail = tail_watch
             .next()
             .await
-            .expect("loglet watch returns release pointer");
+            .expect("loglet watch returns tail pointer")
+            .offset();
 
         // ## Safety:
         // the iterator is guaranteed to be dropped before the loglet is dropped, we hold to the
@@ -112,8 +110,8 @@ impl LocalLogletReadStream {
             read_pointer: from_offset,
             iterator: iter,
             terminated: false,
-            release_watch,
-            release_pointer,
+            tail_watch,
+            last_known_tail,
             read_to: to,
         })
     }
@@ -145,17 +143,15 @@ impl Stream for LocalLogletReadStream {
 
         let perf_guard = RocksDbPerfGuard::new("local-loglet-next");
         loop {
-            let mut this = self.as_mut().project();
-
             // We have reached the limit we are allowed to read
-            if this.read_to.is_some_and(|read_to| next_offset > read_to) {
-                this.terminated.set(true);
+            if self.read_to.is_some_and(|read_to| next_offset > read_to) {
+                self.terminated = true;
                 return Poll::Ready(None);
             }
             // Are we reading after commit offset?
             // We are at tail. We need to wait until new records have been released.
-            if next_offset > *this.release_pointer {
-                let updated_release_pointer = match this.release_watch.poll_next(cx) {
+            if next_offset >= self.last_known_tail {
+                let maybe_tail_state = match self.tail_watch.poll_next_unpin(cx) {
                     Poll::Ready(t) => t,
                     Poll::Pending => {
                         perf_guard.forget();
@@ -163,27 +159,27 @@ impl Stream for LocalLogletReadStream {
                     }
                 };
 
-                match updated_release_pointer {
-                    Some(updated_release_pointer) => {
-                        *this.release_pointer = updated_release_pointer;
+                match maybe_tail_state {
+                    Some(tail_state) => {
+                        self.last_known_tail = tail_state.offset();
                         continue;
                     }
                     None => {
                         // system shutdown. Or that the loglet has been unexpectedly shutdown.
-                        this.terminated.set(true);
+                        self.terminated = true;
                         return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
                     }
                 }
             }
-            // release_pointer has been updated.
-            let release_pointer = *this.release_pointer;
+            // tail has been updated.
+            let last_known_tail = self.last_known_tail;
 
-            // assert that we are newer
-            assert!(release_pointer >= next_offset);
+            // assert that we are behind tail
+            assert!(last_known_tail > next_offset);
 
             // Trim point is the the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
-            let trim_point = LogletOffset(this.loglet.trim_point_offset.load(Ordering::Relaxed));
+            let trim_point = LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
             let head_offset = trim_point.next();
             // Are we reading behind the loglet head? -> TrimGap
             assert!(next_offset > LogletOffset::from(0));
@@ -198,23 +194,23 @@ impl Stream for LocalLogletReadStream {
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
 
-            let key = RecordKey::new(*this.log_id, next_offset);
-            if this.iterator.valid() {
+            let key = RecordKey::new(self.log_id, next_offset);
+            if self.iterator.valid() {
                 // can move to next.
-                this.iterator.next();
+                self.iterator.next();
             } else {
-                this.iterator.seek(key.to_bytes());
+                self.iterator.seek(key.to_bytes());
             }
             //  todo: If status is not ok(), we should retry
-            if let Err(e) = this.iterator.status() {
-                this.terminated.set(true);
+            if let Err(e) = self.iterator.status() {
+                self.terminated = true;
                 return Poll::Ready(Some(Err(OperationError::other(LogStoreError::Rocksdb(e)))));
             }
 
-            if !this.iterator.valid() || this.iterator.key().is_none() {
+            if !self.iterator.valid() || self.iterator.key().is_none() {
                 // trim point might have been updated.
                 let potentially_different_trim_point =
-                    LogletOffset(this.loglet.trim_point_offset.load(Ordering::Relaxed));
+                    LogletOffset(self.loglet.trim_point_offset.load(Ordering::Relaxed));
                 if potentially_different_trim_point != trim_point {
                     debug!("Trim point has been updated, fast-forwarding the stream");
                     continue;
@@ -222,35 +218,35 @@ impl Stream for LocalLogletReadStream {
                 // We have a bug! we shouldn't be in this location where the record
                 // doesn't exist but we expect it to!
                 error!(
-                    log_id = *this.log_id,
+                    log_id = self.log_id,
                     next_offset = %next_offset,
                     trim_point = %potentially_different_trim_point,
-                    release_pointer = %this.release_pointer,
+                    last_known_tail = %self.last_known_tail,
                     "poll_next() has moved to a non-existent record, that should not happen!"
                 );
                 panic!("poll_next() has moved to a non-existent record, that should not happen!");
             }
 
-            assert!(this.iterator.valid());
-            let loaded_key = RecordKey::from_slice(this.iterator.key().expect("log record exists"));
+            assert!(self.iterator.valid());
+            let loaded_key = RecordKey::from_slice(self.iterator.key().expect("log record exists"));
             debug_assert_eq!(loaded_key.offset, key.offset);
 
             // Defensive, the upper_bound set on the iterator should prevent this.
-            if loaded_key.loglet_id != *this.log_id {
+            if loaded_key.loglet_id != self.log_id {
                 warn!(
-                    log_id = *this.log_id,
+                    log_id = self.log_id,
                     "read_after moved to the adjacent log {}, that should not happen.\
                     This is harmless but needs to be investigated!",
                     key.loglet_id,
                 );
-                this.terminated.set(true);
+                self.terminated = true;
                 return Poll::Ready(None);
             }
 
-            let raw_value = this.iterator.value().expect("log record exists");
+            let raw_value = self.iterator.value().expect("log record exists");
             let mut buf = BytesMut::with_capacity(raw_value.len());
             buf.put_slice(raw_value);
-            *this.read_pointer = loaded_key.offset.next();
+            self.read_pointer = loaded_key.offset.next();
 
             return Poll::Ready(Some(Ok(LogRecord::new_data(key.offset, buf.freeze()))));
         }

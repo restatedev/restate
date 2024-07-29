@@ -22,8 +22,9 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-hyper-0-14 = { package = "hyper", version = "0.14", features = ["client"] }
+http = { workspace = true }
 pprof = { version = "0.13", features = ["criterion", "flamegraph"] }
+reqwest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

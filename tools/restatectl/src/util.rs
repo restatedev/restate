@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use hyper_util::rt::TokioIo;
 use restate_cli_util::CliContext;
 use restate_types::net::AdvertisedAddress;
+use tokio::io;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
@@ -22,20 +24,19 @@ pub async fn grpc_connect(address: AdvertisedAddress) -> Result<Channel, tonic::
             Endpoint::try_from("http://127.0.0.1")
                 .expect("/ should be a valid Uri")
                 .connect_with_connector(service_fn(move |_: Uri| {
-                    UnixStream::connect(uds_path.clone())
-                }))
-                .await
+                    let uds_path = uds_path.clone();
+                    async move {
+                        Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
+                    }
+                })).await
         }
         AdvertisedAddress::Http(uri) => {
-            Channel::builder(
-                // TODO we need this conversion because tonic still relies on http 0.1
-                uri.to_string().parse().unwrap(),
-            )
-            .connect_timeout(ctx.connect_timeout())
-            .timeout(ctx.request_timeout())
-            .http2_adaptive_window(true)
-            .connect()
-            .await
+            Channel::builder(uri)
+                .connect_timeout(ctx.connect_timeout())
+                .timeout(ctx.request_timeout())
+                .http2_adaptive_window(true)
+                .connect()
+                .await
         }
     }
 }

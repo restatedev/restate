@@ -16,6 +16,7 @@ pub(crate) mod util;
 
 // exports
 pub use error::*;
+use futures::stream::BoxStream;
 pub use provider::{LogletProvider, LogletProviderFactory};
 
 use std::ops::Add;
@@ -123,13 +124,26 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
     /// An optional optimization that loglets can implement. Offsets returned by this call **MUST**
     /// be offsets that were observed before a sealing point. For instance, the maximum acknowleged
-    /// append offset, or, the cached result of the last `find_tail` call that returned an Open
+    /// append offset + 1, or the result of the last `find_tail` call that returned a `TailState::Open(tail)`
     /// result.
     fn last_known_unsealed_tail(&self) -> Option<Self::Offset> {
         // default implementation that will require upper layers to call find_tail or do their own
         // caching.
         None
     }
+
+    /// Create a stream watching the state of tail for this loglet
+    ///
+    /// The stream will return the last known TailState with seal notification semantics
+    /// similar to `find_tail()` except that it won't trigger a linearizable tail check when
+    /// polled. This can be used as a trailing tail indicator.
+    ///
+    /// Note that it's legal to observe the last unsealed tail becoming sealed. The
+    /// last_known_unsealed (or the last unsealed offset emitted on this stream) defines the
+    /// point at which readers should stop **before**, therefore, when reading, if the next offset
+    /// to read == the tail, it means that you can only read this offset if the tail watch moves
+    /// beyond it to a higher tail while remaining unsealed.
+    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>>;
 
     /// Append a batch of records to the loglet. The returned offset (on success) if the offset of
     /// the first record in the batch)

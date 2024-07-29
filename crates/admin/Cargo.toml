@@ -51,6 +51,7 @@ serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic-0-10 = { workspace = true }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tracing = { workspace = true }
 

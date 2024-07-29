@@ -15,8 +15,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::Stream;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{Lsn, SequenceNumber};
 
 use crate::loglet::{
@@ -34,22 +36,40 @@ enum LogletWrapperError {
 /// Wraps loglets with the base LSN of the segment
 #[derive(Clone, Debug)]
 pub struct LogletWrapper {
+    segment_index: SegmentIndex,
     /// The offset of the first record in the segment (if exists).
     /// A segment on a clean chain is created with Lsn::OLDEST but this doesn't mean that this
     /// record exists. It only means that we want to offset the loglet offsets by base_lsn -
     /// Loglet::Offset::OLDEST.
     pub(crate) base_lsn: Lsn,
+    /// If set, it points to the first first LSN outside the boundary of this loglet (bifrost's tail semantics)
     pub(crate) tail_lsn: Option<Lsn>,
     loglet: Arc<dyn Loglet>,
 }
 
 impl LogletWrapper {
-    pub fn new(base_lsn: Lsn, tail_lsn: Option<Lsn>, loglet: Arc<dyn Loglet>) -> Self {
+    pub fn new(
+        segment_index: SegmentIndex,
+        base_lsn: Lsn,
+        tail_lsn: Option<Lsn>,
+        loglet: Arc<dyn Loglet>,
+    ) -> Self {
         Self {
+            segment_index,
             base_lsn,
             tail_lsn,
             loglet,
         }
+    }
+
+    /// Panics if `tail_lsn` is lower than the loglet's `base_lsn`
+    pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
+        debug_assert!(tail_lsn >= self.base_lsn);
+        self.tail_lsn = Some(tail_lsn)
+    }
+
+    pub fn segment_index(&self) -> SegmentIndex {
+        self.segment_index
     }
 
     pub async fn create_wrapped_read_stream(
@@ -58,10 +78,11 @@ impl LogletWrapper {
     ) -> Result<LogletReadStreamWrapper> {
         // Translates LSN to loglet offset
         Ok(LogletReadStreamWrapper::new(
+            self.clone(),
             self.loglet
                 .create_read_stream(
                     start_lsn.into_offset(self.base_lsn),
-                    // We go back one lsn because `to` is inclusive and `tail_lsn` is exclusive.
+                    // We go back one LSN because `to` is inclusive and `tail_lsn` is exclusive.
                     // transposed to loglet offset (if set)
                     self.tail_lsn
                         .map(|tail| tail.prev().into_offset(self.base_lsn)),
@@ -74,7 +95,7 @@ impl LogletWrapper {
 
 impl PartialEq for LogletWrapper {
     fn eq(&self, other: &Self) -> bool {
-        self.base_lsn == other.base_lsn && Arc::ptr_eq(&self.loglet, &other.loglet)
+        self.segment_index == other.segment_index
     }
 }
 
@@ -99,6 +120,17 @@ impl LogletBase for LogletWrapper {
         let offset = self.loglet.append(data).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
+    }
+
+    fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {
+        let base_lsn = self.base_lsn;
+        self.loglet
+            .watch_tail()
+            .map(move |tail_state| {
+                let offset = std::cmp::max(tail_state.offset(), LogletOffset::OLDEST);
+                TailState::new(tail_state.is_sealed(), base_lsn.offset_by(offset))
+            })
+            .boxed()
     }
 
     async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, AppendError> {
@@ -188,12 +220,37 @@ impl LogletBase for LogletWrapper {
 /// Wraps loglet read streams with the base LSN of the segment
 pub struct LogletReadStreamWrapper {
     pub(crate) base_lsn: Lsn,
-    inner: SendableLogletReadStream<LogletOffset>,
+    loglet: LogletWrapper,
+    inner_read_stream: SendableLogletReadStream<LogletOffset>,
 }
 
 impl LogletReadStreamWrapper {
-    pub fn new(inner: SendableLogletReadStream<LogletOffset>, base_lsn: Lsn) -> Self {
-        Self { inner, base_lsn }
+    pub fn new(
+        loglet: LogletWrapper,
+        inner_read_stream: SendableLogletReadStream<LogletOffset>,
+        base_lsn: Lsn,
+    ) -> Self {
+        Self {
+            loglet,
+            inner_read_stream,
+            base_lsn,
+        }
+    }
+
+    /// The first LSN outside the boundary of this stream (bifrost's tail semantics)
+    /// The read stream will return None and terminate before it reads this LSN
+    #[inline(always)]
+    pub fn tail_lsn(&self) -> Option<Lsn> {
+        self.loglet.tail_lsn
+    }
+
+    pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
+        self.loglet.set_tail_lsn(tail_lsn)
+    }
+
+    #[inline(always)]
+    pub fn loglet(&self) -> &LogletWrapper {
+        &self.loglet
     }
 }
 
@@ -204,7 +261,15 @@ impl Stream for LogletReadStreamWrapper {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        match self.inner.as_mut().poll_next(cx) {
+        if self.tail_lsn().is_some_and(|tail| {
+            self.base_lsn
+                .offset_by(self.inner_read_stream.read_pointer())
+                >= tail
+        }) {
+            // Read until the permitted tail already.
+            return Poll::Ready(None);
+        }
+        match self.inner_read_stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(record))) => {
                 Poll::Ready(Some(Ok(record.with_base_lsn(self.base_lsn))))
             }

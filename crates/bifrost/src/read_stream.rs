@@ -8,81 +8,115 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::ready;
 use std::task::Poll;
 
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use futures::stream::FusedStream;
 use futures::Stream;
 use pin_project::pin_project;
 
+use restate_core::MetadataKind;
+use restate_core::ShutdownError;
+use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::{LogId, Lsn};
+use restate_types::Version;
+use restate_types::Versioned;
 
 use crate::bifrost::BifrostInner;
+use crate::loglet::LogletBase;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
 use crate::loglet_wrapper::LogletWrapper;
-use crate::FindTailAttributes;
+use crate::Error;
 use crate::LogRecord;
 use crate::Result;
+use crate::TailState;
 
+/// A read stream reads from the virtual log. The stream provides a unified view over
+/// the virtual log addressing space in the face of seals, reconfiguration, and trims.
+///
+// The use of [pin_project] is not strictly necessary but it's left to allow future
+// substream implementations to be !Unpin without changing the read_stream.
+#[must_use = "streams do nothing unless polled"]
 #[pin_project]
 pub struct LogReadStream {
-    #[pin]
-    current_loglet_stream: LogletReadStreamWrapper,
-    current_loglet: LogletWrapper,
-    inner: Arc<BifrostInner>,
-    _last_known_tail: Lsn,
     log_id: LogId,
-    // inclusive max lsn to read to
+    /// inclusive max LSN to read to
     end_lsn: Lsn,
-    terminated: bool,
-    /// Represents the next possible record to be read.
-    //  This is akin to the lsn that can be passed to `read(from)` to read the
-    //  next record in the log.
+    /// Represents the next record to read.
+    ///
+    ///  This is akin to the lsn that can be passed to `read(from)` to read the
+    ///  next record in the log.
     read_pointer: Lsn,
+    #[pin]
+    state: State,
+    /// Current substream we are reading from
+    #[pin]
+    substream: Option<LogletReadStreamWrapper>,
+    // IMPORTANT: Do not re-order this field. `inner` must be dropped last. This allows
+    // `state` to reference its lifetime as 'static.
+    bifrost_inner: Arc<BifrostInner>,
+}
+
+/// The state machine encodes the necessary state changes in the read stream.
+/// The order of variants roughly reflects the order of transitions in a typical case.
+///
+#[pin_project(project = StateProj)]
+enum State {
+    /// Initial state of the stream. No work has been done at this point
+    New,
+    /// Stream is waiting for bifrost to get a loglet that maps to the `read_pointer`
+    FindingLoglet {
+        /// The future to continue finding the loglet instance via Bifrost
+        #[pin]
+        find_loglet_fut: BoxFuture<'static, Result<LogletWrapper>>,
+    },
+    /// Waiting for the loglet read stream (substream) to be initialized
+    CreatingSubstream {
+        /// Future to continue creating the substream
+        #[pin]
+        create_stream_fut: BoxFuture<'static, Result<LogletReadStreamWrapper>>,
+    },
+    /// Reading records from `substream`
+    Reading {
+        /// The tail LSN which is safe to use when the loglet is unsealed
+        safe_known_tail: Option<Lsn>,
+        #[pin]
+        tail_watch: Option<BoxStream<'static, TailState>>,
+    },
+    /// Waiting for the tail LSN of the substream's loglet to be determined (sealing in-progress)
+    AwaitingReconfiguration {
+        /// Future to continue waiting on log metadata updates
+        #[pin]
+        log_metadata_watch_fut: Option<BoxFuture<'static, Result<Version, ShutdownError>>>,
+    },
+    Terminated,
 }
 
 impl LogReadStream {
-    pub(crate) async fn create(
-        inner: Arc<BifrostInner>,
+    pub(crate) fn create(
+        bifrost_inner: Arc<BifrostInner>,
         log_id: LogId,
         start_lsn: Lsn,
-        // Inclusive. Use Lsn::MAX for a tailing stream. Once reached, stream will terminate
-        // (return Ready(None)).
+        // Inclusive. Use [`Lsn::MAX`] for a tailing stream.
+        // Once reached, the stream terminates.
         end_lsn: Lsn,
     ) -> Result<Self> {
         // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
         let start_lsn = std::cmp::max(Lsn::OLDEST, start_lsn);
-        // todo: support switching loglets. At the moment, this is hard-wired to a single loglet
-        // implementation.
-        let current_loglet = inner
-            // find the loglet where the _next_ lsn resides.
-            .find_loglet_for_lsn(log_id, start_lsn)
-            .await?;
-        let (last_loglet, last_known_tail) = inner
-            .find_tail(log_id, FindTailAttributes::default())
-            .await?;
-        debug_assert_eq!(last_loglet, current_loglet);
-
-        let current_loglet_stream = current_loglet.create_wrapped_read_stream(start_lsn).await?;
         Ok(Self {
-            current_loglet_stream,
-            // reserved for future use
-            current_loglet: last_loglet,
-            // reserved for future use
-            _last_known_tail: last_known_tail.offset(),
-            inner,
+            bifrost_inner,
             log_id,
             read_pointer: start_lsn,
             end_lsn,
-            terminated: false,
+            substream: None,
+            state: State::New,
         })
-    }
-
-    pub fn is_terminated(&self) -> bool {
-        self.terminated
     }
 
     /// Current read pointer. This is the next (possible) record to be read.
@@ -90,8 +124,13 @@ impl LogReadStream {
         self.read_pointer
     }
 
-    /// The read pointer will point to the potential next LSN that we will read from on the next
-    /// poll_next() call.
+    /// Inclusive max LSN to read to
+    pub fn end_lsn(&self) -> Lsn {
+        self.end_lsn
+    }
+
+    /// The read pointer points to the next LSN will be attempted on the next
+    /// `poll_next()`.
     fn calculate_read_pointer(record: &LogRecord) -> Lsn {
         match &record.record {
             // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
@@ -106,13 +145,13 @@ impl LogReadStream {
 
 impl FusedStream for LogReadStream {
     fn is_terminated(&self) -> bool {
-        self.terminated
+        matches!(self.state, State::Terminated)
     }
 }
 
-/// Read the next record from the log after the current read pointer. The stream will yield
+/// Read the next record from the log at the current read pointer. The stream will yield
 /// after the record is available to read, this will async-block indefinitely if no records are
-/// ever written to the log beyond the read pointer.
+/// ever written and released at the read pointer.
 impl Stream for LogReadStream {
     type Item = Result<LogRecord>;
 
@@ -120,33 +159,247 @@ impl Stream for LogReadStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if self.read_pointer > self.end_lsn {
-            self.as_mut().terminated = true;
-            return Poll::Ready(None);
-        }
-        // Are we after the known tail?
-        // todo: refresh the tail (in a multi-loglet universe)
-        let maybe_record = ready!(self
-            .as_mut()
-            .project()
-            .current_loglet_stream
-            .as_mut()
-            .poll_next(cx));
-        match maybe_record {
-            Some(Ok(record)) => {
-                let record = record
-                    .decode()
-                    .expect("decoding a bifrost envelope succeeds");
-                let new_pointer = Self::calculate_read_pointer(&record);
-                debug_assert!(new_pointer > self.read_pointer);
-                self.read_pointer = new_pointer;
-                Poll::Ready(Some(Ok(record)))
+        // # Safety
+        // BifrostInner is dropped last, we can safely lift it's lifetime to 'static as
+        // long as we don't leak this externally. External users should not see any `'static`
+        // lifetime as a result.
+        let bifrost_inner = unsafe { &*Arc::as_ptr(&self.bifrost_inner) };
+
+        let mut this = self.as_mut().project();
+        loop {
+            let state = this.state.as_mut().project();
+            // We have reached the end of the stream.
+            if *this.read_pointer == Lsn::MAX || *this.read_pointer > *this.end_lsn {
+                this.state.set(State::Terminated);
+                return Poll::Ready(None);
             }
-            Some(Err(e)) => Poll::Ready(Some(Err(e.into()))),
-            None => {
-                // todo: check if we should switch the loglet.
-                self.as_mut().terminated = true;
-                Poll::Ready(None)
+
+            match state {
+                StateProj::New => {
+                    let find_loglet_fut = Box::pin(
+                        bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
+                    );
+                    // => Find Loglet
+                    this.state.set(State::FindingLoglet { find_loglet_fut });
+                }
+
+                // Finding a loglet and creating the loglet instance through the provider
+                StateProj::FindingLoglet { find_loglet_fut } => {
+                    let loglet = match ready!(find_loglet_fut.poll(cx)) {
+                        Ok(loglet) => loglet,
+                        Err(e) => {
+                            this.state.set(State::Terminated);
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                    };
+                    // create sub-stream to read from this loglet.
+                    let create_stream_fut =
+                        Box::pin(loglet.create_wrapped_read_stream(*this.read_pointer));
+                    // => Create Substream
+                    this.state
+                        .set(State::CreatingSubstream { create_stream_fut });
+                }
+
+                // Creating a new substream
+                StateProj::CreatingSubstream { create_stream_fut } => {
+                    let substream = match ready!(create_stream_fut.poll(cx)) {
+                        Ok(substream) => substream,
+                        Err(e) => {
+                            this.state.set(State::Terminated);
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                    };
+                    let safe_known_tail = substream.tail_lsn();
+                    // If the substream's tail is unknown, we will need to watch the tail updates.
+                    let tail_watch = if safe_known_tail.is_none() {
+                        Some(substream.loglet().watch_tail())
+                    } else {
+                        None
+                    };
+                    // => Start Reading
+                    this.substream.set(Some(substream));
+                    this.state.set(State::Reading {
+                        safe_known_tail,
+                        tail_watch,
+                    });
+                }
+
+                // Reading from the current substream
+                StateProj::Reading {
+                    safe_known_tail,
+                    tail_watch,
+                } => {
+                    // Continue driving the substream
+                    //
+                    // This depends on whether we know its tail (if sealed), or if the value of
+                    // `safe_known_tail` is higher than the `read_pointer` of the substream.
+                    let Some(substream) = this.substream.as_mut().as_pin_mut() else {
+                        panic!("substream must be set at this point");
+                    };
+
+                    // If the loglet's `tail_lsn` is known, this is the tail we should always respect.
+                    match substream.tail_lsn() {
+                        // Next LSN is beyond the boundaries of this substream
+                        Some(tail) if *this.read_pointer >= tail => {
+                            // Switch loglets.
+                            let find_loglet_fut = Box::pin(
+                                bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
+                            );
+                            // => Find the next loglet. We know we _probably_ have one, otherwise
+                            // `stream_tail_lsn` wouldn't have been set.
+                            this.substream.set(None);
+                            this.state.set(State::FindingLoglet { find_loglet_fut });
+                            continue;
+                        }
+                        // Unsealed loglet, we can only read as far as the safe unsealed tail.
+                        None => {
+                            if safe_known_tail.is_none()
+                                || safe_known_tail
+                                    .is_some_and(|known_tail| *this.read_pointer >= known_tail)
+                            {
+                                // Wait for tail update...
+                                let Some(tail_watch) = tail_watch.as_pin_mut() else {
+                                    panic!("tail_watch must be set on non-sealed read streams");
+                                };
+                                // If the loglet is being sealed, we must wait for reconfiguration to complete.
+                                let maybe_tail = ready!(tail_watch.poll_next(cx));
+                                match maybe_tail {
+                                    None => {
+                                        // Shutdown....
+                                        this.substream.set(None);
+                                        this.state.set(State::Terminated);
+                                        return Poll::Ready(Some(Err(ShutdownError.into())));
+                                    }
+                                    Some(TailState::Open(tail)) => {
+                                        // Safe to consider this as a tail.
+                                        *safe_known_tail = Some(tail);
+                                    }
+                                    Some(TailState::Sealed(_)) => {
+                                        // Wait for reconfiguration to complete.
+                                        //
+                                        // Note that we don't reset the substream here because
+                                        // reconfiguration might bring us back to Reading on the
+                                        // same substream, we don't want to lose the resources
+                                        // allocated by underlying the stream.
+                                        this.state.set(State::AwaitingReconfiguration {
+                                            log_metadata_watch_fut: None,
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        // We are well within the bounds of this loglet. Continue reading.
+                        Some(_) => { /* fall-through */ }
+                    }
+                    let maybe_record = ready!(substream.poll_next(cx));
+                    match maybe_record {
+                        Some(Ok(record)) => {
+                            let record = record
+                                .decode()
+                                .expect("decoding a bifrost envelope succeeds");
+                            let new_pointer = Self::calculate_read_pointer(&record);
+                            debug_assert!(new_pointer > *this.read_pointer);
+                            *this.read_pointer = new_pointer;
+                            return Poll::Ready(Some(Ok(record)));
+                        }
+                        // The assumption here is that underlying stream won't move its read
+                        // pointer on error.
+                        Some(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
+                        None => {
+                            // We should, almost never, reach this.
+                            this.substream.set(None);
+                            this.state.set(State::Terminated);
+                            return Poll::Ready(None);
+                        }
+                    }
+                }
+
+                // Waiting for the substream's loglet to be sealed
+                StateProj::AwaitingReconfiguration {
+                    mut log_metadata_watch_fut,
+                } => {
+                    // If a metadata watch is set, poll it.
+                    if let Some(watch_fut) = log_metadata_watch_fut.as_mut().as_pin_mut() {
+                        let _ = ready!(watch_fut.poll(cx))?;
+                    }
+
+                    let Some(mut substream) = this.substream.as_mut().as_pin_mut() else {
+                        panic!("substream must be set at this point");
+                    };
+
+                    let log_metadata = bifrost_inner.metadata.logs();
+
+                    // The log is gone!
+                    let Some(chain) = log_metadata.chain(this.log_id) else {
+                        this.substream.set(None);
+                        this.state.set(State::Terminated);
+                        return Poll::Ready(Some(Err(Error::UnknownLogId(*this.log_id))));
+                    };
+
+                    match chain.find_segment_for_lsn(*this.read_pointer) {
+                        MaybeSegment::Some(segment) => {
+                            // This is a different segment now, we need to recreate the substream.
+                            // This could mean that this is a new segment replacing the existing
+                            // one (if it was an empty sealed loglet) or that the loglet has been
+                            // sealed and the read_pointer points to the next segment. In all
+                            // cases, we want to get the right loglet.
+                            if segment.index() != substream.loglet().segment_index() {
+                                this.substream.set(None);
+                                let find_loglet_fut = Box::pin(
+                                    bifrost_inner
+                                        .find_loglet_for_lsn(*this.log_id, *this.read_pointer),
+                                );
+                                // => Find Loglet
+                                this.state.set(State::FindingLoglet { find_loglet_fut });
+                                continue;
+                            }
+                            if segment.tail_lsn.is_some() {
+                                let sealed_tail = segment.tail_lsn.unwrap();
+                                substream.set_tail_lsn(segment.tail_lsn.unwrap());
+                                // go back to reading.
+                                this.state.set(State::Reading {
+                                    safe_known_tail: Some(sealed_tail),
+                                    // No need for the tail watch since we know the tail already.
+                                    tail_watch: None,
+                                });
+                                continue;
+                            }
+                            // Segment is not sealed yet.
+                            // fall-through
+                        }
+                        // Oh, we have a prefix trim, deliver the trim-gap and fast-forward.
+                        MaybeSegment::Trim { next_base_lsn } => {
+                            let read_pointer = *this.read_pointer;
+                            let record = LogRecord::new_trim_gap(read_pointer, next_base_lsn);
+                            // fast-forward.
+                            *this.read_pointer = next_base_lsn;
+                            let find_loglet_fut = Box::pin(
+                                bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
+                            );
+                            // => Find Loglet
+                            this.substream.set(None);
+                            this.state.set(State::FindingLoglet { find_loglet_fut });
+                            // Deliver the trim gap
+                            return Poll::Ready(Some(Ok(record)));
+                        }
+                    };
+
+                    // Reconfiguration still ongoing...
+                    let metadata_version = log_metadata.version();
+
+                    // No hope at this metadata version, wait for the next update.
+                    let metadata_watch_fut = Box::pin(
+                        bifrost_inner
+                            .metadata
+                            .wait_for_version(MetadataKind::Logs, metadata_version.next()),
+                    );
+                    log_metadata_watch_fut.set(Some(metadata_watch_fut));
+                    continue;
+                }
+                StateProj::Terminated => {
+                    return Poll::Ready(None);
+                }
             }
         }
     }
@@ -157,17 +410,24 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
-    use crate::{BifrostService, Record, TrimGap};
+    use crate::loglet::LogletBase;
+    use crate::{
+        setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, Record, TrimGap,
+    };
 
     use super::*;
     use bytes::Bytes;
     use googletest::prelude::*;
 
-    use restate_core::{metadata, task_center, TaskKind, TestCoreEnvBuilder};
+    use restate_core::{
+        metadata, task_center, MetadataKind, TargetVersion, TaskKind, TestCoreEnvBuilder,
+    };
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{CommonOptions, Configuration};
     use restate_types::live::{Constant, Live};
-    use restate_types::logs::metadata::ProviderKind;
+    use restate_types::logs::metadata::{new_single_node_loglet_params, ProviderKind};
+    use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+    use restate_types::Versioned;
     use tokio_stream::StreamExt;
     use tracing::info;
     use tracing_test::traced_test;
@@ -177,13 +437,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_readstream_one_loglet() -> anyhow::Result<()> {
-        // Make sure that panics exits the process.
-        let orig_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic_info| {
-            // invoke the default handler and exit the process
-            orig_hook(panic_info);
-            std::process::exit(1);
-        }));
+        setup_panic_handler();
 
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
@@ -202,7 +456,7 @@ mod tests {
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
 
-            let mut reader = bifrost.create_reader(log_id, read_from, Lsn::MAX).await?;
+            let mut reader = bifrost.create_reader(log_id, read_from, Lsn::MAX)?;
 
             let tail = bifrost
                 .find_tail(log_id, FindTailAttributes::default())
@@ -274,13 +528,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
     async fn test_read_stream_with_trim() -> anyhow::Result<()> {
-        // Make sure that panics exits the process.
-        let orig_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |panic_info| {
-            // invoke the default handler and exit the process
-            orig_hook(panic_info);
-            std::process::exit(1);
-        }));
+        setup_panic_handler();
 
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
@@ -296,6 +544,12 @@ mod tests {
                 let svc =
                     BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
                 let bifrost = svc.handle();
+
+                let bifrost_admin = BifrostAdmin::new(
+                    &bifrost,
+                    &node_env.metadata_writer,
+                    &node_env.metadata_store_client,
+                );
                 svc.start().await.expect("loglet must start");
 
                 assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
@@ -307,7 +561,7 @@ mod tests {
                 }
 
                 // [1..5] trimmed. trim_point = 5
-                bifrost.trim(log_id, Lsn::from(5)).await?;
+                bifrost_admin.trim(log_id, Lsn::from(5)).await?;
 
                 assert_eq!(
                     Lsn::from(11),
@@ -318,7 +572,7 @@ mod tests {
                 );
                 assert_eq!(Lsn::from(5), bifrost.get_trim_point(log_id).await?);
 
-                let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX).await?;
+                let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX)?;
 
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
@@ -349,7 +603,7 @@ mod tests {
                     .await?
                     .offset();
                 // trimming beyond the release point will fall back to the release point
-                bifrost.trim(log_id, Lsn::from(u64::MAX)).await?;
+                bifrost_admin.trim(log_id, Lsn::from(u64::MAX)).await?;
                 let trim_point = bifrost.get_trim_point(log_id).await?;
                 assert_eq!(Lsn::from(10), bifrost.get_trim_point(log_id).await?);
                 // trim point becomes the point before the next slot available for writes (aka. the
@@ -398,5 +652,313 @@ mod tests {
                 Ok(())
             })
             .await
+    }
+
+    // Note: This test doesn't validate read stream behaviour with zombie records at seal boundary.
+    #[tokio::test(start_paused = true)]
+    async fn test_readstream_simple_multi_loglet() -> anyhow::Result<()> {
+        setup_panic_handler();
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        let tc = node_env.tc;
+        tc.run_in_scope("test", None, async {
+            let config = Live::from_value(Configuration::default());
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+
+            // enable both in-memory and local loglet types
+            let svc = BifrostService::new(task_center(), metadata())
+                .enable_local_loglet(&config)
+                .enable_in_memory_loglet();
+            let bifrost = svc.handle();
+            svc.start().await.expect("loglet must start");
+
+            // create the reader and put it on the side.
+            let mut reader = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+            // We should be at tail, any attempt to read will yield `pending`.
+            assert_that!(
+                futures::poll!(std::pin::pin!(reader.next())),
+                pat!(Poll::Pending)
+            );
+
+            let tail = bifrost
+                .find_tail(LOG_ID, FindTailAttributes::default())
+                .await?;
+            // no records have been written
+            assert!(!tail.is_sealed());
+            assert_eq!(Lsn::OLDEST, tail.offset());
+            assert_eq!(Lsn::OLDEST, reader.read_pointer());
+
+            // Nothing is trimmed
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
+
+            // append 10 records [1..10]
+            for i in 1..=10 {
+                let lsn = bifrost
+                    .append(LOG_ID, Payload::new(format!("segment-1-{}", i)))
+                    .await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // read 5 records.
+            for i in 1..=5 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(reader.read_pointer(), record.offset.next());
+                assert_eq!(
+                    Payload::new(format!("segment-1-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
+
+            // manually seal the loglet, create a new in-memory loglet at base_lsn=11
+            let raw_loglet = bifrost
+                .inner()
+                .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
+                .await?;
+            raw_loglet.seal().await?;
+            // In fact, reader is allowed to go as far as the last known unsealed tail which
+            // in our case could be the real tail since we didn't have in-flight appends at seal
+            // time. It's legal for loglets to have lagging indicator of the unsealed pointer but
+            // we know that local loglet won't do this.
+            //
+            // read 5 more records.
+            println!("reading records at sealed loglet");
+            for i in 6..=10 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(reader.read_pointer(), record.offset.next());
+                assert_eq!(
+                    Payload::new(format!("segment-1-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
+
+            // reads should yield pending since we are at the last known unsealed tail
+            // loglet.
+            assert_that!(
+                futures::poll!(std::pin::pin!(reader.next())),
+                pat!(Poll::Pending)
+            );
+            // again.
+            assert_that!(
+                futures::poll!(std::pin::pin!(reader.next())),
+                pat!(Poll::Pending)
+            );
+
+            let tail = bifrost
+                .find_tail(LOG_ID, FindTailAttributes::default())
+                .await?;
+
+            assert!(tail.is_sealed());
+            assert_eq!(Lsn::from(11), tail.offset());
+            // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
+            // when it's implemented)
+            let old_version = bifrost.inner().metadata.logs_version();
+            let mut builder = bifrost.inner().metadata.logs().clone().into_builder();
+            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
+            assert_eq!(1, chain_builder.num_segments());
+            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+            chain_builder.append_segment(
+                Lsn::new(11),
+                ProviderKind::InMemory,
+                new_segment_params,
+            )?;
+
+            let new_metadata = builder.build();
+            let new_version = new_metadata.version();
+            assert_eq!(new_version, old_version.next());
+            node_env
+                .metadata_store_client
+                .put(
+                    BIFROST_CONFIG_KEY.clone(),
+                    new_metadata,
+                    restate_metadata_store::Precondition::MatchesVersion(old_version),
+                )
+                .await?;
+
+            // make sure we have updated metadata.
+            bifrost
+                .inner()
+                .metadata
+                .sync(MetadataKind::Logs, TargetVersion::Latest)
+                .await?;
+
+            // append 5 more records into the new loglet.
+            for i in 11..=15 {
+                let lsn = bifrost
+                    .append(LOG_ID, Payload::new(format!("segment-2-{}", i)))
+                    .await?;
+                println!("appended record={}", lsn);
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // read stream should jump across segments.
+            for i in 11..=15 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(reader.read_pointer(), record.offset.next());
+                assert_eq!(
+                    Payload::new(format!("segment-2-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
+            // We are at tail. validate.
+            assert_that!(
+                futures::poll!(std::pin::pin!(reader.next())),
+                pat!(Poll::Pending)
+            );
+
+            assert_eq!(
+                Lsn::from(16),
+                bifrost
+                    .append(LOG_ID, Payload::new("segment-2-1000"))
+                    .await?
+            );
+
+            let record = reader.next().await.expect("to stay alive")?;
+            assert_eq!(Lsn::from(16), record.offset);
+            assert_eq!(
+                Payload::new("segment-2-1000").body(),
+                record.record.into_payload_unchecked().body()
+            );
+
+            anyhow::Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_readstream_sealed_multi_loglet() -> anyhow::Result<()> {
+        setup_panic_handler();
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        let tc = node_env.tc;
+        tc.run_in_scope("test", None, async {
+            let config = Live::from_value(Configuration::default());
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+
+            // enable both in-memory and local loglet types
+            let svc = BifrostService::new(task_center(), metadata())
+                .enable_local_loglet(&config)
+                .enable_in_memory_loglet();
+            let bifrost = svc.handle();
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
+            svc.start().await.expect("loglet must start");
+
+            let tail = bifrost
+                .find_tail(LOG_ID, FindTailAttributes::default())
+                .await?;
+            // no records have been written
+            assert!(!tail.is_sealed());
+            assert_eq!(Lsn::OLDEST, tail.offset());
+
+            // append 10 records [1..10]
+            for i in 1..=10 {
+                let lsn = bifrost
+                    .append(LOG_ID, Payload::new(format!("segment-1-{}", i)))
+                    .await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // seal the loglet and extend with an in-memory one
+            let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+            bifrost_admin
+                .seal_and_extend_chain(
+                    LOG_ID,
+                    None,
+                    Version::MIN,
+                    ProviderKind::InMemory,
+                    new_segment_params,
+                )
+                .await?;
+
+            let tail = bifrost
+                .find_tail(LOG_ID, FindTailAttributes::default())
+                .await?;
+
+            assert!(!tail.is_sealed());
+            assert_eq!(Lsn::from(11), tail.offset());
+
+            // validate that we have 2 segments now
+            assert_eq!(
+                2,
+                node_env
+                    .metadata
+                    .logs()
+                    .chain(&LOG_ID)
+                    .unwrap()
+                    .num_segments()
+            );
+
+            // validate that the first segment is sealed
+            let segment_1_loglet = bifrost
+                .inner
+                .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
+                .await?;
+
+            assert_that!(
+                segment_1_loglet.find_tail().await?,
+                pat!(TailState::Sealed(eq(Lsn::from(11))))
+            );
+
+            // append 5 more records into the new loglet.
+            for i in 11..=15 {
+                let lsn = bifrost
+                    .append(LOG_ID, Payload::new(format!("segment-2-{}", i)))
+                    .await?;
+                info!(?lsn, "appended record");
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // start a reader (from 3) and read everything. [3..15]
+            let mut reader = bifrost.create_reader(LOG_ID, Lsn::new(3), Lsn::MAX)?;
+
+            // first segment records
+            for i in 3..=10 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(reader.read_pointer(), record.offset.next());
+                assert_eq!(
+                    Payload::new(format!("segment-1-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
+
+            // first segment records
+            for i in 11..=15 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(reader.read_pointer(), record.offset.next());
+                assert_eq!(
+                    Payload::new(format!("segment-2-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
+
+            // We are at tail. validate.
+            assert_that!(
+                futures::poll!(std::pin::pin!(reader.next())),
+                pat!(Poll::Pending)
+            );
+
+            anyhow::Ok(())
+        })
+        .await?;
+        Ok(())
     }
 }

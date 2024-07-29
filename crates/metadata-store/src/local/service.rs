@@ -8,18 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tonic::server::NamedService;
-
-use restate_core::network::grpc_util;
-use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
-use restate_rocksdb::RocksError;
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
-use restate_types::live::BoxedLiveLoad;
-
 use crate::grpc_svc;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::grpc::handler::LocalMetadataStoreHandler;
 use crate::local::store::LocalMetadataStore;
+use http::Request;
+use hyper::body::Incoming;
+use hyper_util::service::TowerToHyperService;
+use restate_core::network::net_util;
+use restate_core::{task_center, ShutdownError, TaskKind};
+use restate_rocksdb::RocksError;
+use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::live::BoxedLiveLoad;
+use tonic::body::boxed;
+use tonic::server::NamedService;
+use tower::ServiceExt;
 
 pub struct LocalMetadataStoreService {
     opts: BoxedLiveLoad<MetadataStoreOptions>,
@@ -29,7 +32,7 @@ pub struct LocalMetadataStoreService {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed running grpc server: {0}")]
-    GrpcServer(#[from] grpc_util::Error),
+    GrpcServer(#[from] net_util::Error),
     #[error("error while running server server grpc reflection service: {0}")]
     GrpcReflection(#[from] tonic_reflection::server::Error),
     #[error("system is shutting down")]
@@ -62,7 +65,7 @@ impl LocalMetadataStoreService {
         let bind_address = options.bind_address.clone();
         let store = LocalMetadataStore::create(options, rocksdb_options).await?;
         // Trace layer
-        let span_factory = tower_http_0_4::trace::DefaultMakeSpan::new()
+        let span_factory = tower_http::trace::DefaultMakeSpan::new()
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
@@ -75,27 +78,25 @@ impl LocalMetadataStoreService {
             .await;
 
         let server_builder = tonic::transport::Server::builder()
-            .layer(tower_http_0_4::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
+            .layer(tower_http::trace::TraceLayer::new_for_grpc().make_span_with(span_factory))
             .add_service(health_service)
             .add_service(MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(
                 store.request_sender(),
             )))
             .add_service(reflection_service_builder.build()?);
 
-        let service = server_builder.into_service();
+        let service = TowerToHyperService::new(
+            server_builder
+                .into_service()
+                .map_request(|req: Request<Incoming>| req.map(boxed)),
+        );
 
         task_center().spawn_child(
             TaskKind::RpcServer,
             "metadata-store-grpc",
             None,
             async move {
-                grpc_util::run_hyper_server(
-                    &bind_address,
-                    service,
-                    cancellation_watcher(),
-                    "metadata-store-grpc",
-                )
-                .await?;
+                net_util::run_hyper_server(&bind_address, service, "metadata-store-grpc").await?;
                 Ok(())
             },
         )?;

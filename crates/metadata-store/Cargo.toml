@@ -23,7 +23,10 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 humantime = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 rocksdb = { workspace = true }
@@ -32,11 +35,13 @@ serde = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 tonic-reflection = { workspace = true }
 tonic-health = { workspace = true }
 tower = { workspace = true }
-tower-http-0-4 = { package = "tower-http", version = "0.4", features = ["trace"] }
+tower-http = { workspace =  true, features = ["trace"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

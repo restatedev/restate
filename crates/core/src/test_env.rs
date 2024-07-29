@@ -73,7 +73,8 @@ impl NetworkSender for MockNetworkSender {
             },
         };
 
-        let header = Header::new(metadata().nodes_config_version());
+        let metadata = metadata();
+        let header = Header::new(metadata.nodes_config_version(), None, None, None);
         let body =
             serialize_message(message, CURRENT_PROTOCOL_VERSION).map_err(ProtocolError::Codec)?;
         sender
@@ -171,8 +172,7 @@ impl<N> TestCoreEnvBuilder<N>
 where
     N: NetworkSender + 'static,
 {
-    pub fn new(network_sender: N) -> Self {
-        let metadata_builder = MetadataBuilder::default();
+    pub fn new(network_sender: N, metadata_builder: MetadataBuilder) -> Self {
         TestCoreEnvBuilder::new_with_network_tx_rx(network_sender, None, metadata_builder)
     }
 

@@ -8,16 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use axum_0_6::routing::get;
+use axum::routing::get;
+use http::Request;
+use hyper::body::Incoming;
+use hyper_util::service::TowerToHyperService;
+use tonic::body::boxed;
 use tonic::codec::CompressionEncoding;
-use tower_http_0_4::trace::TraceLayer;
+use tower::ServiceExt;
+use tower_http::trace::TraceLayer;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_core::network::grpc_util::run_hyper_server;
+use restate_core::network::net_util::run_hyper_server;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::ConnectionManager;
-use restate_core::{cancellation_watcher, task_center};
+use restate_core::task_center;
 use restate_metadata_store::MetadataStoreClient;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::config::CommonOptions;
@@ -61,12 +66,12 @@ impl NetworkServer {
         let shared_state = state_builder.build().expect("should be infallible");
 
         // Trace layer
-        let span_factory = tower_http_0_4::trace::DefaultMakeSpan::new()
+        let span_factory = tower_http::trace::DefaultMakeSpan::new()
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
         // -- HTTP service (for prometheus et al.)
-        let router = axum_0_6::Router::new()
+        let router = axum::Router::new()
             .route("/metrics", get(handler::render_metrics))
             .with_state(shared_state)
             .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
@@ -107,24 +112,21 @@ impl NetworkServer {
             .add_service(reflection_service_builder.build()?);
 
         // Multiplex both grpc and http based on content-type
-        let service = MultiplexService::new(router, server_builder.into_service());
+        let service = TowerToHyperService::new(
+            MultiplexService::new(router, server_builder.into_service())
+                .map_request(|req: Request<Incoming>| req.map(boxed)),
+        );
 
-        run_hyper_server(
-            &options.bind_address,
-            service,
-            cancellation_watcher(),
-            "node-grpc",
-        )
-        .await?;
+        run_hyper_server(&options.bind_address, service, "node-grpc").await?;
 
         Ok(())
     }
 }
 
 // handle 404
-async fn handler_404() -> (axum_0_6::http::StatusCode, &'static str) {
+async fn handler_404() -> (axum::http::StatusCode, &'static str) {
     (
-        axum_0_6::http::StatusCode::NOT_FOUND,
+        axum::http::StatusCode::NOT_FOUND,
         "Are you lost? Maybe visit https://restate.dev instead!",
     )
 }

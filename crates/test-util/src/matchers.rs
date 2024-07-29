@@ -74,7 +74,7 @@ mod prost {
 
             assert_that!(
                 bytes::Bytes::from(expected.encode_to_vec()),
-                protobuf_decoded(eq(expected.clone()))
+                protobuf_decoded(eq(expected))
             );
             assert_that!(
                 expected.encode_to_vec().as_slice(),

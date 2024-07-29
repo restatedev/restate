@@ -13,12 +13,12 @@
 //! Mostly copied from axum example: https://github.com/tokio-rs/axum/blob/791d5038a927add3f8ff1d5c1010cd0b24fdda77/examples/rest-grpc-multiplex/src/multiplex_service.rs
 //! License MIT
 
-use axum_0_6::{
+use axum::{
     http::header::CONTENT_TYPE,
     response::{IntoResponse, Response},
 };
 use futures::{future::BoxFuture, ready};
-use hyper_0_14::Request;
+use hyper::Request;
 use std::{
     convert::Infallible,
     task::{Context, Poll},
@@ -59,14 +59,15 @@ where
     }
 }
 
-impl<A, B> Service<Request<hyper_0_14::Body>> for MultiplexService<A, B>
+impl<A, B, R> Service<Request<R>> for MultiplexService<A, B>
 where
-    A: Service<Request<hyper_0_14::Body>, Error = Infallible>,
+    A: Service<Request<R>, Error = Infallible>,
     A::Response: IntoResponse,
     A::Future: Send + 'static,
-    B: Service<Request<hyper_0_14::Body>>,
+    B: Service<Request<R>>,
     B::Response: IntoResponse,
     B::Future: Send + 'static,
+    R: http_body::Body + Send + 'static,
 {
     type Response = Response;
     type Error = B::Error;
@@ -91,7 +92,7 @@ where
         }
     }
 
-    fn call(&mut self, req: Request<hyper_0_14::Body>) -> Self::Future {
+    fn call(&mut self, req: Request<R>) -> Self::Future {
         // require users to call `poll_ready` first, if they don't we're allowed to panic
         // as per the `tower::Service` contract
         assert!(

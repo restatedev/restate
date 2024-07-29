@@ -11,10 +11,10 @@
 mod connection;
 mod connection_manager;
 mod error;
-pub mod grpc_util;
 mod handshake;
 mod message_router;
 pub(crate) mod metric_definitions;
+pub mod net_util;
 mod network_sender;
 mod networking;
 pub mod protobuf;

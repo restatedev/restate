@@ -248,8 +248,7 @@ where
                 LogId::from(self.partition_id),
                 last_applied_lsn.next(),
                 Lsn::MAX,
-            )
-            .await?
+            )?
             .map_ok(|record| {
                 let LogRecord { record, offset } = record;
                 match record {

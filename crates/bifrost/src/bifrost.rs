@@ -39,7 +39,7 @@ use crate::{
 /// Bifrost handle is relatively cheap to clone.
 #[derive(Clone)]
 pub struct Bifrost {
-    inner: Arc<BifrostInner>,
+    pub(crate) inner: Arc<BifrostInner>,
 }
 
 impl Bifrost {
@@ -128,15 +128,15 @@ impl Bifrost {
     ///        log_id,
     ///        bifrost.get_trim_point(log_id).await.next(),
     ///        bifrost.find_tail(log_id).await().offset().prev(),
-    ///     ).await;
+    ///     );
     /// ```
-    pub async fn create_reader(
+    pub fn create_reader(
         &self,
         log_id: LogId,
         start_lsn: Lsn,
         end_lsn: Lsn,
     ) -> Result<LogReadStream> {
-        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn).await
+        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn)
     }
 
     /// The tail is *the first unwritten LSN* in the log
@@ -161,18 +161,6 @@ impl Bifrost {
     /// Returns Lsn::INVALID if the log was never trimmed
     pub async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
         self.inner.get_trim_point(log_id).await
-    }
-
-    /// Trim the log prefix up to and including the `trim_point`.
-    /// Set `trim_point` to the value returned from `find_tail()` or `Lsn::MAX` to
-    /// trim all records of the log.
-    ///
-    /// Note that trim does not promise that the log will be trimmed immediately and atomically,
-    /// but they are promise to trim prefixes, earlier segments in the log will be trimmed
-    /// before later segments and the log will not be in an inconsistent state at any point.
-    #[instrument(level = "debug", skip(self), err)]
-    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
-        self.inner.trim(log_id, trim_point).await
     }
 
     /// The version of the currently loaded logs metadata
@@ -200,9 +188,7 @@ impl Bifrost {
             return Ok(Vec::default());
         }
 
-        let reader = self
-            .create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())
-            .await?;
+        let reader = self.create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())?;
         reader.try_collect().await
     }
 }
@@ -213,7 +199,7 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    metadata: Metadata,
+    pub(crate) metadata: Metadata,
     #[allow(unused)]
     watchdog: WatchdogSender,
     // Initialized after BifrostService::start completes.
@@ -371,7 +357,7 @@ impl BifrostInner {
         // todo: support multiple segments.
         // todo: dispatch loglet deletion in the background when entire segments are trimmed
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(segment).await?;
+            let loglet = self.get_loglet(log_id, segment).await?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
 
             // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
@@ -385,7 +371,7 @@ impl BifrostInner {
         Ok(trim_point.unwrap_or(Lsn::INVALID))
     }
 
-    async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+    pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
         self.fail_if_shutting_down()?;
 
         let log_metadata = self.metadata.logs();
@@ -395,7 +381,7 @@ impl BifrostInner {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(segment).await?;
+            let loglet = self.get_loglet(log_id, segment).await?;
 
             if loglet.base_lsn > trim_point {
                 break;
@@ -439,36 +425,39 @@ impl BifrostInner {
             .ok_or_else(|| Error::Disabled(kind.to_string()))
     }
 
-    async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
+    pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
         let log_metadata = self.metadata.logs();
         let tail_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .tail();
-        self.get_loglet(tail_segment).await
+        self.get_loglet(log_id, tail_segment).await
     }
 
-    pub(crate) async fn find_loglet_for_lsn(
-        &self,
-        log_id: LogId,
-        lsn: Lsn,
-    ) -> Result<LogletWrapper> {
+    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper> {
         let log_metadata = self.metadata.logs();
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .find_segment_for_lsn(lsn);
         match maybe_segment {
-            MaybeSegment::Some(segment) => self.get_loglet(segment).await,
+            MaybeSegment::Some(segment) => self.get_loglet(log_id, segment).await,
             // todo: handle trimmed segments
             MaybeSegment::Trim { .. } => todo!("trimmed segments is not supported yet"),
         }
     }
 
-    async fn get_loglet(&self, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
+    pub async fn get_loglet(
+        &self,
+        log_id: LogId,
+        segment: Segment<'_>,
+    ) -> Result<LogletWrapper, Error> {
         let provider = self.provider_for(segment.config.kind)?;
-        let loglet = provider.get_loglet(&segment.config.params).await?;
+        let loglet = provider
+            .get_loglet(log_id, segment.index(), &segment.config.params)
+            .await?;
         Ok(LogletWrapper::new(
+            segment.index(),
             segment.base_lsn,
             segment.tail_lsn,
             loglet,
@@ -489,7 +478,7 @@ mod tests {
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
 
-    use crate::{Record, TrimGap};
+    use crate::{BifrostAdmin, Record, TrimGap};
     use restate_core::{metadata, TestCoreEnv};
     use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
@@ -609,6 +598,11 @@ mod tests {
 
                 let log_id = LogId::from(0);
                 let bifrost = Bifrost::init_local(metadata()).await;
+                let bifrost_admin = BifrostAdmin::new(
+                    &bifrost,
+                    &node_env.metadata_writer,
+                    &node_env.metadata_store_client,
+                );
 
                 assert_eq!(
                     Lsn::OLDEST,
@@ -625,7 +619,7 @@ mod tests {
                     bifrost.append(log_id, Payload::default()).await?;
                 }
 
-                bifrost.trim(log_id, Lsn::from(5)).await?;
+                bifrost_admin.trim(log_id, Lsn::from(5)).await?;
 
                 let tail = bifrost
                     .find_tail(log_id, FindTailAttributes::default())
@@ -660,7 +654,7 @@ mod tests {
                 }
 
                 // trimming beyond the release point will fall back to the release point
-                bifrost.trim(log_id, Lsn::MAX).await?;
+                bifrost_admin.trim(log_id, Lsn::MAX).await?;
 
                 assert_eq!(
                     Lsn::from(11),
@@ -707,6 +701,11 @@ mod tests {
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
             let bifrost = Bifrost::init_in_memory(metadata()).await;
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
 
             // Lsns [1..5]
             for i in 1..=5 {
@@ -731,7 +730,9 @@ mod tests {
                 .await?;
 
             // seal the segment
-            segment_1.seal().await?;
+            bifrost_admin
+                .seal(LOG_ID, segment_1.segment_index())
+                .await?;
 
             // sealed, tail is what we expect
             assert_that!(

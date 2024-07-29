@@ -29,7 +29,7 @@ pub enum NetworkError {
     #[error("operation aborted, node is shutting down")]
     Shutdown(#[from] ShutdownError),
     #[error("node {0} address is bad: {1}")]
-    BadNodeAddress(NodeId, http_0_2::Error),
+    BadNodeAddress(NodeId, http::Error),
     #[error("timeout: {0}")]
     Timeout(&'static str),
     #[error("protocol error: {0}")]
@@ -44,6 +44,8 @@ pub enum NetworkError {
     Unavailable(String),
     #[error("failed syncing metadata: {0}")]
     Metadata(#[from] SyncError),
+    #[error("network channel is full and sending would block")]
+    Full,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -52,6 +52,7 @@ define_message! {
     Serialize,
     Deserialize,
     strum_macros::Display,
+    strum_macros::EnumCount,
 )]
 pub enum MetadataKind {
     NodesConfiguration,

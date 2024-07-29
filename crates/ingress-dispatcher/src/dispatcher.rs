@@ -321,8 +321,7 @@ mod tests {
                 // Let's check we correct have generated a bifrost write
                 let partition_id = node_env
                     .metadata
-                    .partition_table()
-                    .unwrap()
+                    .partition_table_snapshot()
                     .find_partition_id(invocation_id.partition_key())?;
                 let log_id = LogId::from(partition_id);
                 let log_record = bifrost.read(log_id, Lsn::OLDEST).await?.unwrap();
@@ -415,8 +414,7 @@ mod tests {
                 // Let's check the command was written to bifrost
                 let partition_id = node_env
                     .metadata
-                    .partition_table()
-                    .unwrap()
+                    .partition_table_snapshot()
                     .find_partition_id(invocation_id.partition_key())?;
                 let bifrost_messages = bifrost.read_all(LogId::from(partition_id)).await?;
 

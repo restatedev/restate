@@ -14,8 +14,8 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use hyper_0_14::client::HttpConnector;
-use hyper_0_14::{Body, Uri};
+use http::header::CONTENT_TYPE;
+use http::Uri;
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distributions::{Alphanumeric, DistString};
 use restate_benchmarks::{parse_benchmark_settings, BenchmarkSettings};
@@ -42,7 +42,9 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         Uri::from_static("http://localhost:9080"),
     );
 
-    let client = hyper_0_14::Client::new();
+    let client = reqwest::Client::builder()
+        .build()
+        .expect("build reqwest client");
 
     let mut group = criterion.benchmark_group("throughput");
     group
@@ -60,7 +62,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
 }
 
 async fn send_parallel_counter_requests(
-    client: hyper_0_14::Client<HttpConnector>,
+    client: reqwest::Client,
     num_requests: u32,
     num_parallel_requests: usize,
 ) {
@@ -75,14 +77,12 @@ async fn send_parallel_counter_requests(
             let counter_name = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
             pending_requests.push(async move {
                 client
-                    .request(
-                        hyper_0_14::Request::post(format!(
-                            "http://localhost:8080/Counter/{counter_name}/getAndAdd"
-                        ))
-                        .header(hyper_0_14::header::CONTENT_TYPE, "application/json")
-                        .body(Body::from("10"))
-                        .expect("building discovery request should not fail"),
-                    )
+                    .post(format!(
+                        "http://localhost:8080/Counter/{counter_name}/getAndAdd"
+                    ))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body("10")
+                    .send()
                     .await
             });
         } else {

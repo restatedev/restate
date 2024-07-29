@@ -34,7 +34,7 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-axum-0-6 = { package = "axum", version = "0.6" }
+axum = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
@@ -44,8 +44,10 @@ enum-map = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+http-body = { workspace = true }
 humantime = { workspace = true }
-hyper-0-14 = { package = "hyper", version = "0.14", features = ["full"] }
+hyper = { workspace = true, features = ["full"] }
+hyper-util = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 metrics-tracing-context = { version = "0.16.0" }
@@ -65,9 +67,10 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 tonic = { workspace = true }
+tonic-0-10 = { workspace = true }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
-tower-http-0-4 = { package = "tower-http", version = "0.4", features = ["trace"] }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
