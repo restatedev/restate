@@ -111,6 +111,9 @@ pub trait StateReader {
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
+    /// Position of the start of outbox commands
+    outbox_head_seq_number: MessageIndex,
+    /// Position of the tail of the outbox
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
@@ -122,6 +125,7 @@ impl<Codec> Debug for CommandInterpreter<Codec> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EffectCollector")
             .field("inbox_seq_number", &self.inbox_seq_number)
+            .field("outbox_head_seq_number", &self.outbox_head_seq_number)
             .field("outbox_seq_number", &self.outbox_seq_number)
             .finish()
     }
@@ -137,6 +141,7 @@ impl<Codec> CommandInterpreter<Codec> {
         Self {
             inbox_seq_number,
             outbox_seq_number,
+            outbox_head_seq_number: outbox_seq_number, // initially the same as the tail
             partition_key_range,
             _codec: PhantomData,
             latency,
@@ -192,7 +197,10 @@ where
             }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
-                effects.truncate_outbox(index);
+                // Typically the range should contain a single key, but it's specified as a range to
+                // accommodate dropped hints (see https://github.com/restatedev/restate/issues/1639)
+                effects.truncate_outbox(RangeInclusive::new(self.outbox_head_seq_number, index));
+                self.outbox_head_seq_number = index;
                 Ok(())
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,

@@ -85,33 +85,13 @@ fn truncate_outbox<S: StorageAccess>(
     range: RangeInclusive<u64>,
 ) {
     let _x = RocksDbPerfGuard::new("truncate-outbox");
-
-    let mut keys = vec![];
-    {
-        let start_key = OutboxKey::default()
-            .partition_id(partition_id)
-            .message_index(*range.start());
-
-        let end_key = OutboxKey::default()
-            .partition_id(partition_id)
-            .message_index(*range.end());
-
-        let mut iter = storage.iterator_from(TableScan::KeyRangeInclusiveInSinglePartition(
-            partition_id,
-            start_key,
-            end_key,
-        ));
-
-        iter.seek_to_last();
-        while iter.valid() {
-            keys.push(iter.key().unwrap().to_vec());
-            iter.prev();
-        }
-    }
-
-    for key in keys {
-        storage.delete_cf(Outbox, key);
-    }
+    range
+        .map(|sn| {
+            OutboxKey::default()
+                .partition_id(partition_id)
+                .message_index(sn)
+        })
+        .for_each(|key| storage.delete_key(&key));
 }
 
 impl OutboxTable for PartitionStore {

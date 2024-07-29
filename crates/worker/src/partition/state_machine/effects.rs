@@ -39,6 +39,7 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::collections::HashSet;
 use std::fmt;
+use std::ops::RangeInclusive;
 use std::time::Duration;
 use std::vec::Drain;
 use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level};
@@ -74,8 +75,8 @@ pub(crate) enum Effect {
         seq_number: MessageIndex,
         message: OutboxMessage,
     },
-    /// Delete all outbox entries up to and including [MessageIndex].
-    TruncateOutbox(MessageIndex),
+    /// Delete all outbox entries in the specified range.
+    TruncateOutbox(RangeInclusive<MessageIndex>),
     DeleteInboxEntry {
         service_id: ServiceId,
         sequence_number: MessageIndex,
@@ -378,8 +379,8 @@ impl Effect {
                     "Effect: Unlock service id",
                 );
             }
-            Effect::TruncateOutbox(seq_number) => {
-                trace!(restate.outbox.seq = seq_number, "Effect: Truncate outbox")
+            Effect::TruncateOutbox(range) => {
+                trace!(restate.outbox.seq = range.end(), "Effect: Truncate outbox")
             }
             Effect::DropJournal { journal_length, .. } => {
                 debug_if_leader!(
@@ -965,9 +966,8 @@ impl Effects {
         })
     }
 
-    pub(crate) fn truncate_outbox(&mut self, outbox_sequence_number: MessageIndex) {
-        self.effects
-            .push(Effect::TruncateOutbox(outbox_sequence_number));
+    pub(crate) fn truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) {
+        self.effects.push(Effect::TruncateOutbox(range));
     }
 
     pub(crate) fn store_completion(&mut self, invocation_id: InvocationId, completion: Completion) {

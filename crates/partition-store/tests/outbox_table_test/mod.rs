@@ -38,13 +38,29 @@ pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T) {
 
 pub(crate) async fn consume_message_and_truncate<T: OutboxTable>(txn: &mut T) {
     let partition1337 = PartitionId::from(1337);
-    let mut sequence = 0;
-    while let Ok(Some((seq, _))) = txn.get_next_outbox_message(partition1337, sequence).await {
-        sequence = seq + 1;
+    let mut count = 0;
+    let mut max_seq_id = 0;
+    while let Ok(Some((seq, _))) = txn.get_next_outbox_message(partition1337, count).await {
+        count += 1;
+        max_seq_id = seq;
     }
-    assert_eq!(sequence, 4);
+    assert_eq!(count, 4);
 
-    txn.truncate_outbox(partition1337, 0..=sequence).await;
+    // truncate range
+    txn.truncate_outbox(partition1337, 0..=max_seq_id - 1).await;
+
+    let result = txn
+        .get_next_outbox_message(partition1337, 0)
+        .await
+        .expect("should not fail");
+    assert!(
+        result.is_some(),
+        "one message should remain in outbox after the first truncation"
+    );
+
+    // truncate single key
+    txn.truncate_outbox(partition1337, max_seq_id..=max_seq_id)
+        .await;
 }
 
 pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn: &mut T) {
