@@ -299,7 +299,6 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .enqueue_into_outbox(seq_number, message.clone())
                     .await?;
                 // need to store the next outbox sequence number
-                // PPT: this is where we bump the outbox seq in stable storage
                 state_storage
                     .store_outbox_seq_number(seq_number + 1)
                     .await?;
