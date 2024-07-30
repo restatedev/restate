@@ -190,6 +190,10 @@ impl Payload {
     pub fn into_header(self) -> Header {
         self.header
     }
+
+    pub fn body_size(&self) -> usize {
+        self.body.len()
+    }
 }
 
 flexbuffers_storage_encode_decode!(Payload);

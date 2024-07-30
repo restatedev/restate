@@ -25,7 +25,7 @@ pub use provider::Factory;
 use restate_core::ShutdownError;
 use restate_types::logs::SequenceNumber;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -238,7 +238,7 @@ impl LogletBase for LocalLoglet {
             // lock dropped
         };
 
-        debug!("Written entry to {offset:?}");
+        trace!("Written entry to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
@@ -289,6 +289,8 @@ impl LogletBase for LocalLoglet {
             (receiver, next_offset_guard.prev())
             // lock dropped
         };
+
+        trace!("Written batch to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
