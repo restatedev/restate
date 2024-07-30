@@ -748,6 +748,9 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn truncate_outbox_from_empty() -> Result<(), Error> {
+    // An outbox message with index 0 has been successfully processed, and must now be truncated
+    let outbox_index = 0;
+
     let mut command_interpreter =
         CommandInterpreter::<ProtobufRawEntryCodec>::new_with_outbox_start(
             0,
@@ -758,12 +761,9 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
-    // An outbox item with sequence number 0 has been successfully processed, and must now be truncated
-    let index = 0;
-
     command_interpreter
         .on_apply(
-            Command::TruncateOutbox(index),
+            Command::TruncateOutbox(outbox_index),
             &mut effects,
             &mut state_reader,
         )
@@ -774,7 +774,8 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
     assert_that!(
         effects,
         unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
-            index, index
+            outbox_index,
+            outbox_index
         ))))]
     );
 
@@ -785,22 +786,23 @@ async fn truncate_outbox_from_empty() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn truncate_outbox_with_gap() -> Result<(), Error> {
+    // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
+    let outbox_head_index = 3;
+    let outbox_tail_index = 5;
+
     let mut command_interpreter =
         CommandInterpreter::<ProtobufRawEntryCodec>::new_with_outbox_start(
             0,
-            5,
-            Some(3),
+            outbox_tail_index,
+            Some(outbox_head_index),
             PartitionKey::MIN..=PartitionKey::MAX,
         );
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
-    // The outbox contains items [3..=5], and we want to truncate the entire range after 5 is successfully processed
-    let index = 5;
-
     command_interpreter
         .on_apply(
-            Command::TruncateOutbox(index),
+            Command::TruncateOutbox(outbox_tail_index),
             &mut effects,
             &mut state_reader,
         )
@@ -811,11 +813,15 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
     assert_that!(
         effects,
         unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
-            3, index
+            outbox_head_index,
+            outbox_tail_index
         ))))]
     );
 
-    assert_eq!(command_interpreter.outbox_head_seq_number, Some(6));
+    assert_eq!(
+        command_interpreter.outbox_head_seq_number,
+        Some(outbox_tail_index + 1)
+    );
 
     Ok(())
 }
