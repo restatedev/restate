@@ -71,8 +71,8 @@ restate-worker = { path = "crates/worker" }
 ahash = "0.8.5"
 anyhow = "1.0.68"
 arc-swap = "1.6"
-arrow = { version = "50.0.0", default-features = false }
-arrow-flight = { version = "50.0.0" }
+arrow = { version = "52.0.0", default-features = false }
+arrow-flight = { version = "52.0.0" }
 assert2 = "0.3.11"
 async-channel = "2.1.1"
 async-trait = "0.1.73"
@@ -90,8 +90,14 @@ cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
 dashmap = { version = "5.5.3" }
-datafusion = { git = "https://github.com/restatedev/datafusion.git", tag = "35.0.0-object-store", default-features = false, features = ["crypto_expressions", "encoding_expressions", "regex_expressions", "unicode_expressions"] }
-derive-getters = {  version = "0.4.0" }
+datafusion = { version = "40.0.0", default-features = false, features = [
+    "crypto_expressions",
+    "encoding_expressions",
+    "regex_expressions",
+    "unicode_expressions",
+] }
+datafusion-expr = { version = "40.0.0" }
+derive-getters = { version = "0.4.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "0.99.17" }
 dialoguer = { version = "0.11.0" }
@@ -109,11 +115,20 @@ http-body-util = "0.1.2"
 http-serde = { version = "2.1.1" }
 humantime = "2.1.0"
 hyper = { version = "1.4.1", default-features = false }
-hyper-rustls = { version = "0.27.2", default-features = false, features = ["http1", "http2", "ring", "native-tokio", "tls12", "logging"] }
+hyper-rustls = { version = "0.27.2", default-features = false, features = [
+    "http1",
+    "http2",
+    "ring",
+    "native-tokio",
+    "tls12",
+    "logging",
+] }
 hyper-util = { version = "0.1" }
 itertools = "0.13.0"
 metrics = { version = "0.23" }
-metrics-exporter-prometheus = { version = "0.15", default-features = false, features = ["async-runtime"] }
+metrics-exporter-prometheus = { version = "0.15", default-features = false, features = [
+    "async-runtime",
+] }
 once_cell = "1.18"
 opentelemetry = { version = "0.22.0" }
 opentelemetry-http = { version = "0.11.1" }
@@ -128,10 +143,16 @@ prost-types = { version = "0.13.1" }
 rand = "0.8.5"
 rayon = { version = "1.10" }
 regress = { version = "0.10" }
-reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12.5", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "stream",
+] }
 rlimit = { version = "0.10.1" }
-rocksdb = { version = "0.22.0", features = ["multi-threaded-cf"], git = "https://github.com/restatedev/rust-rocksdb", rev="c7ccbbcd261bdec011c4976c441676512a1a4841" }
-rustls = {version = "0.23.11", default-features = false, features = ["ring"]}
+rocksdb = { version = "0.22.0", features = [
+    "multi-threaded-cf",
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "c7ccbbcd261bdec011c4976c441676512a1a4841" }
+rustls = { version = "0.23.11", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -145,18 +166,25 @@ strum_macros = { version = "0.26.1" }
 sync_wrapper = "1.0.1"
 smallvec = { version = "1.13.2", features = ["serde"] }
 tempfile = "3.6.0"
-test-log = { version = "0.2.11", default-features = false, features = ["trace"] }
+test-log = { version = "0.2.11", default-features = false, features = [
+    "trace",
+] }
 # tikv-jemallocator has not yet been released with musl target support, so we pin a main commit
 tikv-jemallocator = { git = "https://github.com/restatedev/jemallocator", rev = "7c32f6e3d6ad5e4e492cc08d6bdb8307acf9afa0", default-features = false }
 thiserror = "1.0"
-tokio = { version = "1.39.1", default-features = false, features = ["rt-multi-thread", "signal", "macros", "parking_lot" ] }
+tokio = { version = "1.39.1", default-features = false, features = [
+    "rt-multi-thread",
+    "signal",
+    "macros",
+    "parking_lot",
+] }
 tokio-stream = "0.1.15"
 tokio-util = { version = "0.7.11" }
 tonic = { version = "0.12.1", default-features = false }
-tonic-0-10 = { package = "tonic", version = "0.10.2", default-features = false }
 tonic-reflection = { version = "0.12.1" }
 tonic-health = { version = "0.12.1" }
 tonic-build = { version = "0.12.1" }
+tonic-0-11 = { package = "tonic", version = "0.11.0", default-features = false }
 tower = "0.4"
 tower-http = { version = "0.5.2", default-features = false }
 tracing = "0.1"

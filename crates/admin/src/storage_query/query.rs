@@ -81,7 +81,7 @@ pub async fn query(
                 data_body: response.data,
                 ..FlightData::default()
             })
-            .map_err(|status| FlightError::from(tonic_status_012_to_010(status))),
+            .map_err(|status| FlightError::from(tonic_status_012_to_011(status))),
     );
 
     // create a stream without LargeUtf8 or LargeBinary columns as JS doesn't support these yet
@@ -272,33 +272,33 @@ impl Stream for ConvertRecordBatchStream {
 }
 
 // todo: Remove once arrow-flight works with tonic 0.12
-fn tonic_status_012_to_010(status: Status) -> tonic_0_10::Status {
-    let code = tonic_0_10::Code::from(status.code() as i32);
+fn tonic_status_012_to_011(status: Status) -> tonic_0_11::Status {
+    let code = tonic_0_11::Code::from(status.code() as i32);
     let message = status.message().to_owned();
     let details = Bytes::copy_from_slice(status.details());
-    let metadata = tonic_metadata_map_012_to_010(status.metadata());
-    tonic_0_10::Status::with_details_and_metadata(code, message, details, metadata)
+    let metadata = tonic_metadata_map_012_to_011(status.metadata());
+    tonic_0_11::Status::with_details_and_metadata(code, message, details, metadata)
 }
 
 // todo: Remove once arrow-flight works with tonic 0.12
-fn tonic_metadata_map_012_to_010(metadata_map: &MetadataMap) -> tonic_0_10::metadata::MetadataMap {
+fn tonic_metadata_map_012_to_011(metadata_map: &MetadataMap) -> tonic_0_11::metadata::MetadataMap {
     let mut resulting_metadata_map =
-        tonic_0_10::metadata::MetadataMap::with_capacity(metadata_map.len());
+        tonic_0_11::metadata::MetadataMap::with_capacity(metadata_map.len());
     for key_value in metadata_map.iter() {
         match key_value {
             KeyAndValueRef::Ascii(key, value) => {
                 // ignore metadata map entries if conversion fails
                 if let Ok(value) =
-                    tonic_0_10::metadata::MetadataValue::from_str(value.to_str().unwrap_or(""))
+                    tonic_0_11::metadata::MetadataValue::from_str(value.to_str().unwrap_or(""))
                 {
-                    if let Ok(key) = tonic_0_10::metadata::MetadataKey::from_str(key.as_str()) {
+                    if let Ok(key) = tonic_0_11::metadata::MetadataKey::from_str(key.as_str()) {
                         resulting_metadata_map.insert(key, value);
                     }
                 }
             }
             KeyAndValueRef::Binary(key, value) => {
-                if let Ok(key) = tonic_0_10::metadata::MetadataKey::from_bytes(key.as_ref()) {
-                    let value = tonic_0_10::metadata::MetadataValue::from_bytes(value.as_ref());
+                if let Ok(key) = tonic_0_11::metadata::MetadataKey::from_bytes(key.as_ref()) {
+                    let value = tonic_0_11::metadata::MetadataValue::from_bytes(value.as_ref());
                     resulting_metadata_map.insert_bin(key, value);
                 }
             }
