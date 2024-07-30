@@ -46,7 +46,7 @@ strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
 tower = { workspace = true }
 tracing = { workspace = true }

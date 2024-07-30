@@ -34,6 +34,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::{ExternalStateMutation, StateMutationVersion};
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 use tracing::{debug, warn};
 
 pub type ActionCollector = Vec<Action>;
@@ -108,7 +109,7 @@ pub trait StateStorage {
 
     fn truncate_outbox(
         &mut self,
-        outbox_sequence_number: MessageIndex,
+        outbox_sequence_number: RangeInclusive<MessageIndex>,
     ) -> impl Future<Output = StorageResult<()>> + Send;
 
     fn pop_inbox(
@@ -376,10 +377,8 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
                     .drop_journal(&invocation_id, journal_length)
                     .await?;
             }
-            Effect::TruncateOutbox(outbox_sequence_number) => {
-                state_storage
-                    .truncate_outbox(outbox_sequence_number)
-                    .await?;
+            Effect::TruncateOutbox(range) => {
+                state_storage.truncate_outbox(range).await?;
             }
             Effect::StoreCompletion {
                 invocation_id,

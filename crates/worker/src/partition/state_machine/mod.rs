@@ -45,11 +45,13 @@ impl<Codec> StateMachine<Codec> {
     pub fn new(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
+        outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         Self(CommandInterpreter::new(
             inbox_seq_number,
             outbox_seq_number,
+            outbox_head_seq_number,
             partition_key_range,
         ))
     }
@@ -174,8 +176,9 @@ mod tests {
 
             Self {
                 state_machine: StateMachine::new(
-                    0, /* inbox_seq_number */
-                    0, /* outbox_seq_number */
+                    0,    /* inbox_seq_number */
+                    0,    /* outbox_seq_number */
+                    None, /* outbox_head_seq_number */
                     PartitionKey::MIN..=PartitionKey::MAX,
                 ),
                 rocksdb_storage,

@@ -111,6 +111,9 @@ pub trait StateReader {
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
+    /// First outbox message index.
+    outbox_head_seq_number: Option<MessageIndex>,
+    /// Sequence number of the next outbox message to be appended.
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
@@ -122,21 +125,26 @@ impl<Codec> Debug for CommandInterpreter<Codec> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EffectCollector")
             .field("inbox_seq_number", &self.inbox_seq_number)
+            .field("outbox_head_seq_number", &self.outbox_head_seq_number)
             .field("outbox_seq_number", &self.outbox_seq_number)
             .finish()
     }
 }
 
 impl<Codec> CommandInterpreter<Codec> {
+    /// When starting with a non-empty outbox, [outbox_head_seq_number] must be set to the index of
+    /// the first message in the outbox.
     pub(crate) fn new(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
+        outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
             inbox_seq_number,
             outbox_seq_number,
+            outbox_head_seq_number,
             partition_key_range,
             _codec: PhantomData,
             latency,
@@ -192,7 +200,11 @@ where
             }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
-                effects.truncate_outbox(index);
+                effects.truncate_outbox(RangeInclusive::new(
+                    self.outbox_head_seq_number.unwrap_or(index),
+                    index,
+                ));
+                self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,

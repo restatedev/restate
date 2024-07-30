@@ -25,7 +25,7 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::promise_table::{OwnedPromiseRow, Promise};
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
@@ -116,6 +116,7 @@ async fn load_seq_number<F: ReadOnlyFsmTable + Send>(
 impl<Storage> PartitionStorage<Storage>
 where
     Storage: ReadOnlyFsmTable
+        + ReadOnlyOutboxTable
         + ReadOnlyInvocationStatusTable
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyJournalTable
@@ -145,6 +146,14 @@ where
             self.partition_id,
             fsm_variable::OUTBOX_SEQ_NUMBER,
         )
+    }
+
+    pub async fn get_outbox_head_seq_number(
+        &mut self,
+    ) -> Result<Option<MessageIndex>, StorageError> {
+        self.storage
+            .get_outbox_head_seq_number(self.partition_id)
+            .await
     }
 
     pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {
@@ -479,13 +488,8 @@ where
             .await
     }
 
-    async fn truncate_outbox(&mut self, outbox_sequence_number: MessageIndex) -> StorageResult<()> {
-        self.inner
-            .truncate_outbox(
-                self.partition_id,
-                outbox_sequence_number..outbox_sequence_number + 1,
-            )
-            .await;
+    async fn truncate_outbox(&mut self, range: RangeInclusive<MessageIndex>) -> StorageResult<()> {
+        self.inner.truncate_outbox(self.partition_id, range).await;
 
         Ok(())
     }

@@ -305,8 +305,9 @@ impl ReadOnlyPromiseTable for StateReaderMock {
 
 #[test(tokio::test)]
 async fn awakeable_with_success() {
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -358,8 +359,9 @@ async fn awakeable_with_success() {
 
 #[test(tokio::test)]
 async fn awakeable_with_failure() {
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -412,8 +414,9 @@ async fn awakeable_with_failure() {
 
 #[test(tokio::test)]
 async fn send_response_using_invocation_id() {
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
     let mut state_machine: CommandInterpreter<ProtobufRawEntryCodec> =
-        CommandInterpreter::new(0, 0, PartitionKey::MIN..=PartitionKey::MAX);
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut effects = Effects::default();
     let mut state_reader = StateReaderMock::default();
 
@@ -449,11 +452,9 @@ async fn send_response_using_invocation_id() {
 
 #[test(tokio::test)]
 async fn kill_inboxed_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
-        0,
-        0,
-        PartitionKey::MIN..=PartitionKey::MAX,
-    );
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
 
     let mut effects = Effects::default();
     let mut state_mock = StateReaderMock::default();
@@ -527,11 +528,9 @@ async fn kill_inboxed_invocation() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn kill_call_tree() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
-        0,
-        0,
-        PartitionKey::MIN..=PartitionKey::MAX,
-    );
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
@@ -640,11 +639,9 @@ fn uncompleted_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
 
 #[test(tokio::test)]
 async fn cancel_invoked_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
-        0,
-        0,
-        PartitionKey::MIN..=PartitionKey::MAX,
-    );
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
@@ -693,11 +690,9 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
 
 #[test(tokio::test)]
 async fn cancel_suspended_invocation() -> Result<(), Error> {
-    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
-        0,
-        0,
-        PartitionKey::MIN..=PartitionKey::MAX,
-    );
+    let partition_key_range = PartitionKey::MIN..=PartitionKey::MAX;
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new(0, 0, None, partition_key_range);
     let mut state_reader = StateReaderMock::default();
     let mut effects = Effects::default();
 
@@ -741,6 +736,89 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 invocation_id: eq(invocation_id),
             }),
         ]
+    );
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn truncate_outbox_from_empty() -> Result<(), Error> {
+    // An outbox message with index 0 has been successfully processed, and must now be truncated
+    let outbox_index = 0;
+
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        0,
+        None,
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
+    let mut state_reader = StateReaderMock::default();
+    let mut effects = Effects::default();
+
+    command_interpreter
+        .on_apply(
+            Command::TruncateOutbox(outbox_index),
+            &mut effects,
+            &mut state_reader,
+        )
+        .await?;
+
+    let effects = effects.into_inner();
+
+    assert_that!(
+        effects,
+        unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
+            outbox_index,
+            outbox_index
+        ))))]
+    );
+
+    // The head catches up to the next available sequence number on truncation. Since we don't know
+    // in advance whether we will get asked to truncate a range of more than one outbox message, we
+    // explicitly track the head sequence number as the next position beyond the last known
+    // truncation point. It's only safe to leave the head as None when the outbox is known to be
+    // empty.
+    assert_eq!(command_interpreter.outbox_head_seq_number, Some(1));
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn truncate_outbox_with_gap() -> Result<(), Error> {
+    // The outbox contains items [3..=5], and the range must be truncated after message 5 is processed
+    let outbox_head_index = 3;
+    let outbox_tail_index = 5;
+
+    let mut command_interpreter = CommandInterpreter::<ProtobufRawEntryCodec>::new(
+        0,
+        outbox_tail_index,
+        Some(outbox_head_index),
+        PartitionKey::MIN..=PartitionKey::MAX,
+    );
+    let mut state_reader = StateReaderMock::default();
+    let mut effects = Effects::default();
+
+    command_interpreter
+        .on_apply(
+            Command::TruncateOutbox(outbox_tail_index),
+            &mut effects,
+            &mut state_reader,
+        )
+        .await?;
+
+    let effects = effects.into_inner();
+
+    assert_that!(
+        effects,
+        unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
+            outbox_head_index,
+            outbox_tail_index
+        ))))]
+    );
+
+    assert_eq!(
+        command_interpreter.outbox_head_seq_number,
+        Some(outbox_tail_index + 1)
     );
 
     Ok(())

@@ -566,11 +566,12 @@ impl UpdateTask {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
 
     use googletest::prelude::*;
+    use test_log::test;
+
     use restate_test_util::assert_eq;
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, Role};
@@ -578,8 +579,9 @@ mod tests {
 
     use crate::metadata::spawn_metadata_manager;
     use crate::test_env::MockNetworkSender;
-    use crate::{TaskCenterBuilder, TaskKind};
+    use crate::TaskCenterBuilder;
 
+    #[test]
     fn test_nodes_config_updates() -> Result<()> {
         test_updates(
             create_mock_nodes_config(),
@@ -589,7 +591,8 @@ mod tests {
         )
     }
 
-    async fn test_partition_table_updates() -> Result<()> {
+    #[test]
+    fn test_partition_table_updates() -> Result<()> {
         test_updates(
             FixedPartitionTable::new(Version::MIN, 42),
             MetadataKind::PartitionTable,
@@ -639,30 +642,19 @@ mod tests {
                 .unwrap();
             assert_eq!(version, version2);
 
-            let updated = Arc::new(AtomicBool::new(false));
-            tc.spawn(TaskKind::Disposable, "store", None, {
-                let metadata = metadata.clone();
-                let updated = Arc::clone(&updated);
-                async move {
-                    let _ = metadata.wait_for_version(kind, Version::from(3)).await;
-                    updated.store(true, Ordering::Release);
-                    Ok(())
-                }
-            })
-            .unwrap();
-
             // let's set the version to 3
             let mut update_value = value.clone();
             set_version_to(&mut update_value, Version::from(3));
-
             metadata_writer.update(update_value).await?;
-            assert_eq!(true, updated.load(Ordering::Acquire));
+
+            let _ = metadata.wait_for_version(kind, Version::from(3)).await;
 
             tc.cancel_tasks(None, None).await;
             Ok(())
         })
     }
 
+    #[test]
     fn test_nodes_config_watchers() -> Result<()> {
         test_watchers(
             create_mock_nodes_config(),
@@ -672,6 +664,7 @@ mod tests {
         )
     }
 
+    #[test]
     fn test_partition_table_watchers() -> Result<()> {
         test_watchers(
             FixedPartitionTable::new(Version::MIN, 42),
