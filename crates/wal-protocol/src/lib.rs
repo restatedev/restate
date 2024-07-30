@@ -128,7 +128,7 @@ pub enum Command {
     PurgeInvocation(PurgeInvocationRequest),
     /// Start an invocation on this partition
     Invoke(ServiceInvocation),
-    /// Outbox can be truncated up to this index
+    /// Truncate the message outbox up to, and including, the specified index.
     TruncateOutbox(MessageIndex),
     /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
     ProxyThrough(ServiceInvocation),

@@ -13,12 +13,12 @@ use crate::TableKind::Outbox;
 use crate::{PartitionStore, RocksDBTransaction, StorageAccess, TableScan};
 
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::PartitionId;
 use restate_types::storage::StorageCodec;
 use std::io::Cursor;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 define_table_key!(
     Outbox,
@@ -37,6 +37,30 @@ fn add_message<S: StorageAccess>(
         .message_index(message_index);
 
     storage.put_kv(key, outbox_message);
+}
+
+fn get_outbox_head_seq_number<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<Option<u64>> {
+    let _x = RocksDbPerfGuard::new("get-head-outbox");
+    let start = OutboxKey::default().partition_id(partition_id);
+
+    let end = OutboxKey::default()
+        .partition_id(partition_id)
+        .message_index(u64::MAX);
+
+    storage.get_first_blocking(
+        TableScan::KeyRangeInclusiveInSinglePartition(partition_id, start, end),
+        |kv| {
+            if let Some((k, v)) = kv {
+                let (seq_no, _) = decode_key_value(k, v)?;
+                Ok(Some(seq_no))
+            } else {
+                Ok(None)
+            }
+        },
+    )
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
@@ -82,14 +106,22 @@ fn get_outbox_message<S: StorageAccess>(
 fn truncate_outbox<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
-    seq_to_truncate: Range<u64>,
+    range: RangeInclusive<u64>,
 ) {
+    let _x = RocksDbPerfGuard::new("truncate-outbox");
     let mut key = OutboxKey::default().partition_id(partition_id);
-    let k = &mut key;
+    for seq in range {
+        key.message_index = Some(seq);
+        storage.delete_key(&key);
+    }
+}
 
-    for seq in seq_to_truncate {
-        k.message_index = Some(seq);
-        storage.delete_key(k);
+impl ReadOnlyOutboxTable for PartitionStore {
+    async fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, partition_id)
     }
 }
 
@@ -119,8 +151,17 @@ impl OutboxTable for PartitionStore {
         get_outbox_message(self, partition_id, sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
-        truncate_outbox(self, partition_id, seq_to_truncate)
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
+        truncate_outbox(self, partition_id, range)
+    }
+}
+
+impl<'a> ReadOnlyOutboxTable for RocksDBTransaction<'a> {
+    async fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> Result<Option<u64>> {
+        get_outbox_head_seq_number(self, partition_id)
     }
 }
 
@@ -150,8 +191,8 @@ impl<'a> OutboxTable for RocksDBTransaction<'a> {
         get_outbox_message(self, partition_id, sequence_number)
     }
 
-    async fn truncate_outbox(&mut self, partition_id: PartitionId, seq_to_truncate: Range<u64>) {
-        truncate_outbox(self, partition_id, seq_to_truncate)
+    async fn truncate_outbox(&mut self, partition_id: PartitionId, range: RangeInclusive<u64>) {
+        truncate_outbox(self, partition_id, range)
     }
 }
 

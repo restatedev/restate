@@ -7,12 +7,11 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-
 use crate::{protobuf_storage_encode_decode, Result};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationResponse, InvocationTermination, ServiceInvocation};
 use std::future::Future;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 
 /// Types of outbox messages.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -39,7 +38,14 @@ impl WithPartitionKey for OutboxMessage {
     }
 }
 
-pub trait OutboxTable {
+pub trait ReadOnlyOutboxTable {
+    fn get_outbox_head_seq_number(
+        &mut self,
+        partition_id: PartitionId,
+    ) -> impl Future<Output = Result<Option<u64>>> + Send;
+}
+
+pub trait OutboxTable: ReadOnlyOutboxTable {
     fn add_message(
         &mut self,
         partition_id: PartitionId,
@@ -62,6 +68,6 @@ pub trait OutboxTable {
     fn truncate_outbox(
         &mut self,
         partition_id: PartitionId,
-        seq_to_truncate: Range<u64>,
+        range: RangeInclusive<u64>,
     ) -> impl Future<Output = ()> + Send;
 }
