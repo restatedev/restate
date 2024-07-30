@@ -132,21 +132,9 @@ impl<Codec> Debug for CommandInterpreter<Codec> {
 }
 
 impl<Codec> CommandInterpreter<Codec> {
-    #[allow(unused)]
+    /// When starting with a non-empty outbox, [outbox_head_seq_number] must be set to the index of
+    /// the first message in the outbox.
     pub(crate) fn new(
-        inbox_seq_number: MessageIndex,
-        outbox_seq_number: MessageIndex,
-        partition_key_range: RangeInclusive<PartitionKey>,
-    ) -> Self {
-        Self::new_with_outbox_start(
-            inbox_seq_number,
-            outbox_seq_number,
-            None,
-            partition_key_range,
-        )
-    }
-
-    pub(crate) fn new_with_outbox_start(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,

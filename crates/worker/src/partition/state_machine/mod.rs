@@ -48,7 +48,7 @@ impl<Codec> StateMachine<Codec> {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
-        Self(CommandInterpreter::new_with_outbox_start(
+        Self(CommandInterpreter::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
