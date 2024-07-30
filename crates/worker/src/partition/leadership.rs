@@ -667,6 +667,7 @@ mod tests {
         LeadershipState, PartitionProcessorMetadata, PartitionStorage, State,
     };
     use assert2::let_assert;
+    use googletest::prelude::*;
     use restate_bifrost::Bifrost;
     use restate_core::TestCoreEnv;
     use restate_invoker_api::test_util::MockInvokerHandle;
@@ -689,7 +690,7 @@ mod tests {
         PartitionProcessorMetadata::new(NODE_ID, PARTITION_ID, PARTITION_KEY_RANGE);
 
     #[test(tokio::test)]
-    async fn become_leader_then_step_down() -> googletest::Result<()> {
+    async fn become_leader_then_step_down() -> Result<()> {
         let env = TestCoreEnv::create_with_mock_nodes_config(0, 0).await;
         let tc = env.tc.clone();
         let storage_options = StorageOptions::default();
@@ -707,68 +708,73 @@ mod tests {
             )
             .await;
 
-        tc.run_in_scope("test", None, async {
-            let partition_store_manager = PartitionStoreManager::create(
-                Constant::new(storage_options.clone()).boxed(),
-                Constant::new(rocksdb_options.clone()).boxed(),
-                &[(PARTITION_ID, PARTITION_KEY_RANGE)],
-            )
-            .await?;
-
-            let invoker_tx = MockInvokerHandle::default();
-            let mut state = LeadershipState::new(
-                PARTITION_PROCESSOR_METADATA,
-                None,
-                42,
-                invoker_tx,
-                bifrost.clone(),
-                env.network_sender.clone(),
-                None,
-            );
-
-            assert!(matches!(state.state, State::Follower));
-
-            let leader_epoch = LeaderEpoch::from(1);
-            state.run_for_leader(leader_epoch).await?;
-
-            assert!(matches!(state.state, State::Candidate(_)));
-
-            let record = bifrost
-                .read(PARTITION_ID.into(), Lsn::OLDEST)
-                .await?
-                .unwrap();
-            let envelope = Envelope::from_bytes(record.record.into_payload_unchecked().body())?;
-            let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
-            assert_eq!(
-                announce_leader,
-                AnnounceLeader {
-                    node_id: Some(NODE_ID),
-                    leader_epoch
-                }
-            );
-
-            let storage = partition_store_manager
-                .open_partition_store(
-                    PARTITION_ID,
-                    PARTITION_KEY_RANGE,
-                    OpenMode::CreateIfMissing,
-                    &rocksdb_options,
+        let res = tc
+            .run_in_scope("test", None, async {
+                let partition_store_manager = PartitionStoreManager::create(
+                    Constant::new(storage_options.clone()).boxed(),
+                    Constant::new(rocksdb_options.clone()).boxed(),
+                    &[(PARTITION_ID, PARTITION_KEY_RANGE)],
                 )
                 .await?;
-            let mut partition_storage =
-                PartitionStorage::new(PARTITION_ID, PARTITION_KEY_RANGE, storage);
-            state
-                .on_announce_leader(announce_leader, &mut partition_storage)
-                .await?;
 
-            assert!(matches!(state.state, State::Leader(_)));
+                let invoker_tx = MockInvokerHandle::default();
+                let mut state = LeadershipState::new(
+                    PARTITION_PROCESSOR_METADATA,
+                    None,
+                    42,
+                    invoker_tx,
+                    bifrost.clone(),
+                    env.network_sender.clone(),
+                    None,
+                );
 
-            state.step_down().await?;
+                assert!(matches!(state.state, State::Follower));
 
-            assert!(matches!(state.state, State::Follower));
+                let leader_epoch = LeaderEpoch::from(1);
+                state.run_for_leader(leader_epoch).await?;
 
-            Ok(())
-        })
-        .await
+                assert!(matches!(state.state, State::Candidate(_)));
+
+                let record = bifrost
+                    .read(PARTITION_ID.into(), Lsn::OLDEST)
+                    .await?
+                    .unwrap();
+                let envelope = Envelope::from_bytes(record.record.into_payload_unchecked().body())?;
+                let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+                assert_eq!(
+                    announce_leader,
+                    AnnounceLeader {
+                        node_id: Some(NODE_ID),
+                        leader_epoch
+                    }
+                );
+
+                let storage = partition_store_manager
+                    .open_partition_store(
+                        PARTITION_ID,
+                        PARTITION_KEY_RANGE,
+                        OpenMode::CreateIfMissing,
+                        &rocksdb_options,
+                    )
+                    .await?;
+                let mut partition_storage =
+                    PartitionStorage::new(PARTITION_ID, PARTITION_KEY_RANGE, storage);
+                state
+                    .on_announce_leader(announce_leader, &mut partition_storage)
+                    .await?;
+
+                assert!(matches!(state.state, State::Leader(_)));
+
+                state.step_down().await?;
+
+                assert!(matches!(state.state, State::Follower));
+
+                Ok(())
+            })
+            .await;
+
+        tc.shutdown_node("test_completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        res
     }
 }
