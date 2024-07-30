@@ -50,20 +50,17 @@ fn get_outbox_head_seq_number<S: StorageAccess>(
         .partition_id(partition_id)
         .message_index(u64::MAX);
 
-    let mut iter = storage.iterator_from(TableScan::KeyRangeInclusiveInSinglePartition(
-        partition_id,
-        start,
-        end,
-    ));
-
-    iter.seek_to_first();
-    if iter.valid() {
-        let k = iter.key().unwrap();
-        let key = OutboxKey::deserialize_from(&mut Cursor::new(k))?;
-        Ok(key.message_index)
-    } else {
-        Ok(None)
-    }
+    storage.get_first_blocking(
+        TableScan::KeyRangeInclusiveInSinglePartition(partition_id, start, end),
+        |kv| {
+            if let Some((k, v)) = kv {
+                let (seq_no, _) = decode_key_value(k, v)?;
+                Ok(Some(seq_no))
+            } else {
+                Ok(None)
+            }
+        },
+    )
 }
 
 fn get_next_outbox_message<S: StorageAccess>(
