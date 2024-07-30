@@ -112,7 +112,7 @@ pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
     /// First outbox message
-    outbox_head_seq_number: MessageIndex,
+    outbox_head_seq_number: Option<MessageIndex>,
     /// Last outbox message
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
@@ -138,13 +138,18 @@ impl<Codec> CommandInterpreter<Codec> {
         outbox_seq_number: MessageIndex,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
-        Self::new_with_outbox_start(inbox_seq_number, outbox_seq_number, 0, partition_key_range)
+        Self::new_with_outbox_start(
+            inbox_seq_number,
+            outbox_seq_number,
+            None,
+            partition_key_range,
+        )
     }
 
     pub(crate) fn new_with_outbox_start(
         inbox_seq_number: MessageIndex,
         outbox_seq_number: MessageIndex,
-        outbox_head_seq_number: MessageIndex,
+        outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Self {
         let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
@@ -207,8 +212,11 @@ where
             }
             Command::InvokerEffect(effect) => self.try_invoker_effect(effects, state, effect).await,
             Command::TruncateOutbox(index) => {
-                effects.truncate_outbox(RangeInclusive::new(self.outbox_head_seq_number, index));
-                self.outbox_head_seq_number = index;
+                effects.truncate_outbox(RangeInclusive::new(
+                    self.outbox_head_seq_number.unwrap_or(index),
+                    index,
+                ));
+                self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
             Command::Timer(timer) => self.on_timer(timer, state, effects).await,

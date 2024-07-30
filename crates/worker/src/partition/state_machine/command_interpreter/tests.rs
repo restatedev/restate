@@ -746,6 +746,80 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     Ok(())
 }
 
+#[test(tokio::test)]
+async fn truncate_outbox_from_empty() -> Result<(), Error> {
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new_with_outbox_start(
+            0,
+            0,
+            None,
+            PartitionKey::MIN..=PartitionKey::MAX,
+        );
+    let mut state_reader = StateReaderMock::default();
+    let mut effects = Effects::default();
+
+    // An outbox item with sequence number 0 has been successfully processed, and must now be truncated
+    let index = 0;
+
+    command_interpreter
+        .on_apply(
+            Command::TruncateOutbox(index),
+            &mut effects,
+            &mut state_reader,
+        )
+        .await?;
+
+    let effects = effects.into_inner();
+
+    assert_that!(
+        effects,
+        unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
+            index, index
+        ))))]
+    );
+
+    assert_eq!(command_interpreter.outbox_head_seq_number, Some(1));
+
+    Ok(())
+}
+
+#[test(tokio::test)]
+async fn truncate_outbox_with_gap() -> Result<(), Error> {
+    let mut command_interpreter =
+        CommandInterpreter::<ProtobufRawEntryCodec>::new_with_outbox_start(
+            0,
+            5,
+            Some(3),
+            PartitionKey::MIN..=PartitionKey::MAX,
+        );
+    let mut state_reader = StateReaderMock::default();
+    let mut effects = Effects::default();
+
+    // The outbox contains items [3..=5], and we want to truncate the entire range after 5 is successfully processed
+    let index = 5;
+
+    command_interpreter
+        .on_apply(
+            Command::TruncateOutbox(index),
+            &mut effects,
+            &mut state_reader,
+        )
+        .await?;
+
+    let effects = effects.into_inner();
+
+    assert_that!(
+        effects,
+        unordered_elements_are![pat!(Effect::TruncateOutbox(eq(RangeInclusive::new(
+            3, index
+        ))))]
+    );
+
+    assert_eq!(command_interpreter.outbox_head_seq_number, Some(6));
+
+    Ok(())
+}
+
 fn create_termination_journal(
     call_invocation_id: InvocationId,
     background_invocation_id: InvocationId,

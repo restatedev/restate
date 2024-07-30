@@ -150,11 +150,12 @@ where
 
     // TODO: get vs. scan vs. load? I think get is most appropriate here; we load this by scanning
     //  but only return a single element; it's not a load as it's not a pre-computed variable
-    pub async fn get_outbox_head_seq_number(&mut self) -> Result<MessageIndex, StorageError> {
+    pub async fn get_outbox_head_seq_number(
+        &mut self,
+    ) -> Result<Option<MessageIndex>, StorageError> {
         self.storage
             .get_outbox_head_seq_number(self.partition_id)
             .await
-            .map(|seq_number| seq_number.map(Into::into).unwrap_or_default())
     }
 
     pub async fn load_applied_lsn(&mut self) -> StorageResult<Option<Lsn>> {
