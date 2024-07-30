@@ -121,8 +121,11 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     cargo nextest run {{ _target-option }} --all-features
 
+doctest:
+    cargo test --doc
+
 # Runs lints and tests
-verify: lint test
+verify: lint test doctest
 
 docker:
     # podman builds do not work without --platform set, even though it claims to default to host arch

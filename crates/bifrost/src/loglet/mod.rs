@@ -80,7 +80,7 @@ impl SequenceNumber for LogletOffset {
 /// - Loglets are allowed to buffer writes internally as long as the order of records
 ///   follows the order of append calls.
 ///
-///
+///  ```text
 ///       Semantics of offsets
 ///       [  1  2  3  4  5  6  7  ]
 ///       [  ----  A  B  C  ----- ]
@@ -88,10 +88,11 @@ impl SequenceNumber for LogletOffset {
 //     Trim Point           Tail
 ///                      ^ Last Committed
 ///                   ^  -- Last released - can be delivered to readers
-///
+/// ```
 ///
 ///  An empty loglet. A log is empty when trim_point.next() == tail.prev()
 ///
+/// ```text
 ///       Semantics of offsets
 ///       [  1  2  3  4  5  6  7  ]
 ///       [  -------------------- ]
@@ -102,6 +103,7 @@ impl SequenceNumber for LogletOffset {
 ///
 ///       1 -> Offset::OLDEST
 ///       0 -> Offset::INVALID
+/// ```
 pub trait Loglet: LogletBase<Offset = LogletOffset> {}
 impl<T> Loglet for T where T: LogletBase<Offset = LogletOffset> {}
 
