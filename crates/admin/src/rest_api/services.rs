@@ -148,7 +148,7 @@ pub async fn modify_service<V>(
     )
 )]
 pub async fn modify_service_state<V>(
-    State(mut state): State<AdminServiceState<V>>,
+    State(state): State<AdminServiceState<V>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
@@ -186,7 +186,7 @@ pub async fn modify_service_state<V>(
             "modify_service_state",
             None,
             append_envelope_to_bifrost(
-                &mut state.bifrost,
+                &state.bifrost,
                 Envelope::new(
                     create_envelope_header(partition_key),
                     Command::PatchState(patch_state),
