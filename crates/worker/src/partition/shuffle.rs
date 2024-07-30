@@ -228,9 +228,9 @@ where
             metadata,
             outbox_reader,
             |msg| {
-                let mut bifrost = bifrost.clone();
+                let bifrost = bifrost.clone();
                 async move {
-                    append_envelope_to_bifrost(&mut bifrost, msg).await?;
+                    append_envelope_to_bifrost(&bifrost, msg).await?;
                     Ok(())
                 }
             },
