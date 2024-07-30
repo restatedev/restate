@@ -19,9 +19,10 @@ use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
 };
 
 use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -89,11 +90,23 @@ where
             .await
             .map_err(DataFusionError::External)?;
 
+        let eq_properties = if let Some(ordering) = compute_ordering(projected_schema.clone()) {
+            EquivalenceProperties::new_with_orderings(projected_schema.clone(), &[ordering])
+        } else {
+            EquivalenceProperties::new(projected_schema.clone())
+        };
+
+        let plan = PlanProperties::new(
+            eq_properties,
+            Partitioning::UnknownPartitioning(live_partitions.len()),
+            ExecutionMode::Bounded,
+        );
+
         Ok(Arc::new(PartitionedExecutionPlan {
             live_partitions,
-            output_ordering: compute_ordering(projected_schema.clone()),
             projected_schema,
             scanner: self.partition_scanner.clone(),
+            plan,
         }))
     }
 
@@ -113,15 +126,19 @@ where
 #[derive(Debug, Clone)]
 struct PartitionedExecutionPlan<T> {
     live_partitions: Vec<PartitionId>,
-    output_ordering: Option<Vec<PhysicalSortExpr>>,
     projected_schema: SchemaRef,
     scanner: T,
+    plan: PlanProperties,
 }
 
 impl<T> ExecutionPlan for PartitionedExecutionPlan<T>
 where
     T: ScanPartition,
 {
+    fn name(&self) -> &str {
+        "PartitionedExecutionPlan"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -130,15 +147,11 @@ where
         self.projected_schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(self.live_partitions.len())
+    fn properties(&self) -> &PlanProperties {
+        &self.plan
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        self.output_ordering.as_deref()
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
@@ -263,6 +276,7 @@ struct GenericExecutionPlan {
     scanner: ScannerRef,
     limit: Option<usize>,
     filters: Vec<Expr>,
+    plan_properties: PlanProperties,
 }
 
 impl GenericExecutionPlan {
@@ -272,16 +286,29 @@ impl GenericExecutionPlan {
         limit: Option<usize>,
         scanner: ScannerRef,
     ) -> Self {
+        let eq_properties = EquivalenceProperties::new(projected_schema.clone());
+
+        let plan_properties = PlanProperties::new(
+            eq_properties,
+            Partitioning::UnknownPartitioning(1),
+            ExecutionMode::Bounded,
+        );
+
         Self {
             projected_schema,
             scanner,
             limit,
             filters: filters.to_vec(),
+            plan_properties,
         }
     }
 }
 
 impl ExecutionPlan for GenericExecutionPlan {
+    fn name(&self) -> &str {
+        "GenericExecutionPlan"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -290,15 +317,11 @@ impl ExecutionPlan for GenericExecutionPlan {
         self.projected_schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        Partitioning::UnknownPartitioning(1)
+    fn properties(&self) -> &PlanProperties {
+        &self.plan_properties
     }
 
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
