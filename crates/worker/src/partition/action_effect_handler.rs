@@ -100,18 +100,14 @@ impl ActionEffectHandler {
         let mut batches = FuturesUnordered::new();
 
         // Attempt to write batches to different log ids concurrently
-        for (log_id, payloads) in buffer {
-            let bifrost = self.bifrost.clone();
-            batches.push(async move {
-                bifrost.append_batch(log_id, &payloads).await?;
-                anyhow::Ok(())
-            });
+        for (log_id, payloads) in &buffer {
+            batches.push(self.bifrost.append_batch(*log_id, payloads));
         }
         while let Some(o) = batches.next().await {
             // fail if any write fails. This is not the best approach to handle write errors,
             // however this is how it was.
             // todo: we should implement a better error handling mechanism
-            o?
+            let _ = o?;
         }
         Ok(())
     }

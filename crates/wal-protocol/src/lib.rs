@@ -178,7 +178,7 @@ pub enum Error {
 /// Important: This method must only be called in the context of a [`TaskCenter`] task because
 /// it needs access to [`metadata()`].
 pub async fn append_envelope_to_bifrost(
-    bifrost: &mut Bifrost,
+    bifrost: &Bifrost,
     envelope: Envelope,
 ) -> Result<(LogId, Lsn), Error> {
     let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
