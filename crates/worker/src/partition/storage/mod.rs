@@ -148,8 +148,6 @@ where
         )
     }
 
-    // TODO: get vs. scan vs. load? I think get is most appropriate here; we load this by scanning
-    //  but only return a single element; it's not a load as it's not a pre-computed variable
     pub async fn get_outbox_head_seq_number(
         &mut self,
     ) -> Result<Option<MessageIndex>, StorageError> {

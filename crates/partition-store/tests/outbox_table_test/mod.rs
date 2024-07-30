@@ -8,29 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::mock_random_service_invocation;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::Transaction;
 use restate_types::identifiers::PartitionId;
-
-use crate::mock_random_service_invocation;
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())
 }
 
 pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T, initial: Vec<u64>) {
-    txn.add_message(PartitionId::from(1336), 0, mock_outbox_message())
-        .await;
+    let predecessor = PartitionId::from(1336);
+    txn.add_message(predecessor, 0, mock_outbox_message()).await;
 
-    let partition1337 = PartitionId::from(1337);
+    let partition = PartitionId::from(1337);
     for seq_no in initial {
-        txn.add_message(partition1337, seq_no, mock_outbox_message())
+        txn.add_message(partition, seq_no, mock_outbox_message())
             .await;
     }
 
-    txn.add_message(PartitionId::from(1338), 0, mock_outbox_message())
-        .await;
+    let successor = PartitionId::from(1338);
+    txn.add_message(successor, 0, mock_outbox_message()).await;
 }
 
 pub(crate) async fn verify_outbox_head_seq_number<T: OutboxTable>(

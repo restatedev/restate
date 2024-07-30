@@ -111,9 +111,9 @@ pub trait StateReader {
 pub(crate) struct CommandInterpreter<Codec> {
     // initialized from persistent storage
     inbox_seq_number: MessageIndex,
-    /// First outbox message
+    /// First outbox message index.
     outbox_head_seq_number: Option<MessageIndex>,
-    /// Last outbox message
+    /// Sequence number of the next outbox message to be appended.
     outbox_seq_number: MessageIndex,
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
