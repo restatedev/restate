@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A core aspect of Restate it's the ability to retry invocations. This module contains the types defining retries.
+//! A core aspect of Restate is its ability to retry invocations. This module contains the types defining retries.
 
 use std::cmp;
 use std::future::Future;
@@ -67,7 +67,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 pub enum RetryPolicy {
     /// # None
     ///
-    /// No retries strategy.
+    /// No retry strategy.
     None,
     /// # Fixed delay
     ///
