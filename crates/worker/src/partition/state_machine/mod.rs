@@ -12,23 +12,69 @@ use crate::metric_definitions::PARTITION_APPLY_COMMAND;
 use crate::partition::storage::Transaction;
 use command_interpreter::CommandInterpreter;
 use metrics::histogram;
+use restate_types::identifiers::PartitionKey;
+use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_types::message::MessageIndex;
+use restate_wal_protocol::Command;
 use std::ops::RangeInclusive;
 use std::time::Instant;
 
 mod actions;
 mod command_interpreter;
+mod commands;
 mod effect_interpreter;
 mod effects;
+mod tracing;
 
+use crate::partition::state_machine::commands::{CommandContext, MaybeApplicableCommand};
 pub use actions::Action;
 pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 pub use effects::Effects;
-use restate_types::identifiers::PartitionKey;
-use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
-use restate_wal_protocol::Command;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+
+/// --- New state machine infrastructure
+
+/// State machine context, instantiated on leader election and kept for the whole leader epoch
+pub(crate) struct StateMachineContext {
+    pub(crate) inbox_seq_number: MessageIndex,
+    pub(crate) outbox_seq_number: MessageIndex,
+    #[allow(dead_code)]
+    pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
+    pub(crate) is_leader: bool,
+}
+
+impl StateMachineContext {
+    pub(crate) fn new(
+        inbox_seq_number: MessageIndex,
+        outbox_seq_number: MessageIndex,
+        partition_key_range: RangeInclusive<PartitionKey>,
+        is_leader: bool,
+    ) -> Self {
+        Self {
+            inbox_seq_number,
+            outbox_seq_number,
+            partition_key_range,
+            is_leader,
+        }
+    }
+
+    // pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
+    //     &mut self,
+    //     command: Command,
+    //     transaction: &mut Transaction<TransactionType>,
+    //     action_collector: &mut ActionCollector,
+    // ) -> Result<(), commands::Error> {
+    //     command.apply(CommandContext::prepare(
+    //         self,
+    //         transaction.inner(),
+    //         action_collector,
+    //     ))
+    // }
+}
+
+/// --- Old state machine infrastructure
 
 #[derive(Debug)]
 pub struct StateMachine<Codec>(CommandInterpreter<Codec>);
@@ -39,6 +85,15 @@ pub enum Error {
     Codec(#[from] RawEntryCodecError),
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+}
+
+impl From<commands::Error> for Error {
+    fn from(value: commands::Error) -> Self {
+        match value {
+            commands::Error::Codec(e) => Error::Codec(e),
+            commands::Error::Storage(e) => Error::Storage(e),
+        }
+    }
 }
 
 impl<Codec> StateMachine<Codec> {
@@ -56,6 +111,8 @@ impl<Codec> StateMachine<Codec> {
 }
 
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
+    // TODO this method can be removed and we can directly use StateMachineContext
+    //  once we ported all the commands to the new infra, see the commented code above!
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
@@ -64,6 +121,32 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         action_collector: &mut ActionCollector,
         is_leader: bool,
     ) -> Result<(), Error> {
+        // Try to process with new infra first
+        let mut state_machine_context = StateMachineContext::new(
+            self.0.inbox_seq_number,
+            self.0.outbox_seq_number,
+            self.0.partition_key_range.clone(),
+            is_leader,
+        );
+
+        let command = match command
+            .apply(CommandContext::<_, _, ProtobufRawEntryCodec>::prepare(
+                &mut state_machine_context,
+                transaction.inner(),
+                action_collector,
+            ))
+            .await
+        {
+            Ok(res) => {
+                self.0.inbox_seq_number = state_machine_context.inbox_seq_number;
+                self.0.outbox_seq_number = state_machine_context.outbox_seq_number;
+                res?;
+                return Ok(());
+            }
+            // The new infra doesn't support yet processing this command.
+            Err(cmd) => cmd,
+        };
+
         let start = Instant::now();
         // Handle the command, returns the span_relation to use to log effects
         let command_type = command.name();
@@ -89,6 +172,7 @@ mod tests {
     use super::*;
 
     use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+    use ::tracing::info;
     use assert2::assert;
     use bytes::Bytes;
     use bytestring::ByteString;
@@ -130,7 +214,6 @@ mod tests {
     use restate_types::{ingress, GenerationalNodeId};
     use std::collections::{HashMap, HashSet};
     use test_log::test;
-    use tracing::info;
 
     // Test utility to test the StateMachine
     pub struct MockStateMachine {

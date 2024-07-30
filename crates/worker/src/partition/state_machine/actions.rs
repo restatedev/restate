@@ -20,6 +20,22 @@ use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
+pub trait ActionCollector {
+    fn append(&mut self, action: Action);
+}
+
+impl ActionCollector for Vec<Action> {
+    fn append(&mut self, action: Action) {
+        self.push(action)
+    }
+}
+
+impl ActionCollector for () {
+    fn append(&mut self, _: Action) {
+        // No-op
+    }
+}
+
 #[derive(Debug, strum_macros::IntoStaticStr)]
 pub enum Action {
     Invoke {
