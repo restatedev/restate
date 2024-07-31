@@ -419,12 +419,26 @@ mod tests {
     use restate_types::live::Live;
     use restate_types::logs::metadata::{LogletParams, ProviderKind};
 
-    use crate::loglet::loglet_tests::*;
+    use crate::loglet::Loglet;
 
     use super::*;
 
-    #[tokio::test(start_paused = true)]
-    async fn local_loglet_smoke_test() -> googletest::Result<()> {
+    macro_rules! run_test {
+        ($test:ident) => {
+            paste::paste! {
+                #[tokio::test(start_paused = true)]
+                async fn [<local_loglet_  $test>]() -> googletest::Result<()> {
+                    run_in_test_env(crate::loglet::loglet_tests::$test).await
+                }
+            }
+        };
+    }
+
+    async fn run_in_test_env<F, O>(mut future: F) -> googletest::Result<()>
+    where
+        F: FnMut(Arc<dyn Loglet>) -> O,
+        O: std::future::Future<Output = googletest::Result<()>>,
+    {
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
             .build()
@@ -456,8 +470,7 @@ mod tests {
                     log_writer,
                 )?);
 
-                gapless_loglet_smoke_test(loglet).await?;
-                googletest::Result::Ok(())
+                future(loglet).await
             })
             .await?;
         node_env.tc.shutdown_node("test completed", 0).await;
@@ -465,134 +478,14 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn local_loglet_readstream_test() -> googletest::Result<()> {
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .set_provider_kind(ProviderKind::Local)
-            .build()
-            .await;
-
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(config.clone().map(|c| &c.common));
-                let params = LogletParams::from("42".to_string());
-
-                let log_store = RocksDbLogStore::create(
-                    &config.pinned().bifrost.local,
-                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-                )
-                .await?;
-
-                let log_writer = log_store
-                    .create_writer()
-                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
-
-                let loglet = Arc::new(LocalLoglet::create(
-                    params
-                        .as_str()
-                        .parse()
-                        .expect("loglet params can be converted into u64"),
-                    log_store,
-                    log_writer,
-                )?);
-
-                single_loglet_readstream_test(loglet).await?;
-                googletest::Result::Ok(())
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn local_loglet_readstream_test_with_trims() -> googletest::Result<()> {
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .set_provider_kind(ProviderKind::Local)
-            .build()
-            .await;
-
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(config.clone().map(|c| &c.common));
-                let params = LogletParams::from("99".to_string());
-
-                let log_store = RocksDbLogStore::create(
-                    &config.pinned().bifrost.local,
-                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-                )
-                .await?;
-
-                let log_writer = log_store
-                    .create_writer()
-                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
-
-                let loglet = Arc::new(LocalLoglet::create(
-                    params
-                        .as_str()
-                        .parse()
-                        .expect("loglet params can be converted into u64"),
-                    log_store,
-                    log_writer,
-                )?);
-
-                single_loglet_readstream_test_with_trims(loglet).await?;
-                googletest::Result::Ok(())
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn local_loglet_test_append_after_seal() -> googletest::Result<()> {
-        let node_env = TestCoreEnvBuilder::new_with_mock_network()
-            .set_provider_kind(ProviderKind::Local)
-            .build()
-            .await;
-
-        node_env
-            .tc
-            .run_in_scope("test", None, async {
-                let config = Live::from_value(Configuration::default());
-                RocksDbManager::init(config.clone().map(|c| &c.common));
-                let params = LogletParams::from("99".to_string());
-
-                let log_store = RocksDbLogStore::create(
-                    &config.pinned().bifrost.local,
-                    config.clone().map(|c| &c.bifrost.local.rocksdb).boxed(),
-                )
-                .await?;
-
-                let log_writer = log_store
-                    .create_writer()
-                    .start(config.clone().map(|c| &c.bifrost.local).boxed())?;
-
-                let loglet = Arc::new(LocalLoglet::create(
-                    params
-                        .as_str()
-                        .parse()
-                        .expect("loglet params can be converted into u64"),
-                    log_store,
-                    log_writer,
-                )?);
-
-                loglet_test_append_after_seal(loglet).await?;
-                googletest::Result::Ok(())
-            })
-            .await?;
-        node_env.tc.shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-        Ok(())
-    }
+    run_test!(gapless_loglet_smoke_test);
+    run_test!(single_loglet_readstream);
+    run_test!(single_loglet_readstream_with_trims);
+    run_test!(append_after_seal);
+    run_test!(seal_empty);
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn local_loglet_test_append_after_seal_concurrent() -> googletest::Result<()> {
+    async fn local_loglet_append_after_seal_concurrent() -> googletest::Result<()> {
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
             .build()
@@ -621,7 +514,7 @@ mod tests {
                         log_store.clone(),
                         log_writer.clone(),
                     )?);
-                    loglet_test_append_after_seal_concurrent(loglet).await?;
+                    crate::loglet::loglet_tests::append_after_seal_concurrent(loglet).await?;
                 }
 
                 googletest::Result::Ok(())
