@@ -73,7 +73,7 @@ pub struct DeleteInvocationParams {
     )
 )]
 pub async fn delete_invocation<V>(
-    State(mut state): State<AdminServiceState<V>>,
+    State(state): State<AdminServiceState<V>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -99,7 +99,7 @@ pub async fn delete_invocation<V>(
             "delete_invocation",
             None,
             append_envelope_to_bifrost(
-                &mut state.bifrost,
+                &state.bifrost,
                 Envelope::new(create_envelope_header(partition_key), cmd),
             ),
         )

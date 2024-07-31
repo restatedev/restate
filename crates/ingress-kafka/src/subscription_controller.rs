@@ -188,7 +188,7 @@ mod task_orchestrator {
         // We use this to restart the consumer task in case of a failure
         consumer_task_clone: consumer_task::ConsumerTask,
         task_state_inner: TaskStateInner,
-        retry_iter: RetryIter,
+        retry_iter: RetryIter<'static>,
     }
 
     enum TaskStateInner {

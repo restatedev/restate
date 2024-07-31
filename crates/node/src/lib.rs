@@ -142,7 +142,7 @@ impl Node {
         };
 
         let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_address.clone(),
+            config.common.metadata_store_client.clone(),
         );
 
         let mut router_builder = MessageRouterBuilder::default();
@@ -234,7 +234,7 @@ impl Node {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
                     restate_metadata_store::local::create_client(
-                        config.common.metadata_store_address.clone(),
+                        config.common.metadata_store_client.clone(),
                     ),
                 )
             }),
@@ -278,7 +278,7 @@ impl Node {
         }
 
         let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_address.clone(),
+            config.common.metadata_store_client.clone(),
         );
 
         let metadata_writer = self.metadata_manager.writer();

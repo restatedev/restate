@@ -22,7 +22,7 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     invocation_state: InvocationState,
-    retry_iter: retries::RetryIter,
+    retry_iter: retries::RetryIter<'static>,
 }
 
 /// This struct tracks which entries the invocation task generates,

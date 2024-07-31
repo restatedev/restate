@@ -425,38 +425,24 @@ impl LogletBase for MemoryLoglet {
 
 #[cfg(test)]
 mod tests {
-    use crate::loglet::loglet_tests::*;
-
     use super::*;
 
-    #[tokio::test(start_paused = true)]
-    async fn memory_loglet_smoke_test() -> googletest::Result<()> {
-        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-        gapless_loglet_smoke_test(loglet).await
+    macro_rules! run_test {
+        ($test:ident) => {
+            paste::paste! {
+                #[tokio::test(start_paused = true)]
+                async fn [<memory_loglet_  $test>]() -> googletest::Result<()> {
+                    let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
+                    crate::loglet::loglet_tests::$test(loglet).await
+                }
+            }
+        };
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn memory_loglet_readstream_test() -> googletest::Result<()> {
-        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-        single_loglet_readstream_test(loglet).await
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn memory_loglet_readstream_test_with_trims() -> googletest::Result<()> {
-        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-        single_loglet_readstream_test_with_trims(loglet).await
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn memory_loglet_test_append_after_seal() -> googletest::Result<()> {
-        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-        loglet_test_append_after_seal(loglet).await
-    }
-
-    // multi-threaded to check correctness under parallel conditions
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn memory_loglet_test_append_after_seal_concurrent() -> googletest::Result<()> {
-        let loglet = MemoryLoglet::new(LogletParams::from("112".to_string()));
-        loglet_test_append_after_seal_concurrent(loglet).await
-    }
+    run_test!(gapless_loglet_smoke_test);
+    run_test!(single_loglet_readstream);
+    run_test!(single_loglet_readstream_with_trims);
+    run_test!(append_after_seal);
+    run_test!(append_after_seal_concurrent);
+    run_test!(seal_empty);
 }

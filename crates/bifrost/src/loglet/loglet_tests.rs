@@ -200,7 +200,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 /// The test requires that the loglet is empty and unsealed. It assumes that the loglet
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
 /// starts from LogletOffset::OLDEST.
-pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
+pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
 
     let read_from_offset = LogletOffset::from(6);
@@ -270,7 +270,7 @@ pub async fn single_loglet_readstream_test(loglet: Arc<dyn Loglet>) -> googletes
 /// The test requires that the loglet is empty and unsealed. It assumes that the loglet
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
 /// starts from LogletOffset::OLDEST.
-pub async fn single_loglet_readstream_test_with_trims(
+pub async fn single_loglet_readstream_with_trims(
     loglet: Arc<dyn Loglet>,
 ) -> googletest::Result<()> {
     setup_panic_handler();
@@ -386,7 +386,7 @@ pub async fn single_loglet_readstream_test_with_trims(
 }
 
 /// Validates that appends fail after find_tail() returned Sealed()
-pub async fn loglet_test_append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
+pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
 
     assert_eq!(None, loglet.get_trim_point().await?);
@@ -417,9 +417,7 @@ pub async fn loglet_test_append_after_seal(loglet: Arc<dyn Loglet>) -> googletes
 }
 
 /// Validates that appends fail after find_tail() returned Sealed()
-pub async fn loglet_test_append_after_seal_concurrent(
-    loglet: Arc<dyn Loglet>,
-) -> googletest::Result<()> {
+pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     use futures::TryStreamExt as _;
 
     const WARMUP_APPENDS: usize = 200;
@@ -550,6 +548,43 @@ pub async fn loglet_test_append_after_seal_concurrent(
     // readstream to include more records.
     assert!(all_committed.len() <= records.len());
     assert!(all_committed.is_subset(&records));
+
+    Ok(())
+}
+
+/// Validates that an empty loglet can be sealed
+pub async fn seal_empty(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
+    setup_panic_handler();
+
+    assert_eq!(None, loglet.get_trim_point().await?);
+    {
+        let tail = loglet.find_tail().await?;
+        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert!(!tail.is_sealed());
+    }
+
+    let mut watch = loglet.watch_tail();
+    {
+        // last known tail should be immediately available through the tail watch
+        let tail = watch
+            .next()
+            .await
+            .expect("get the last known tail immediately");
+        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert!(!tail.is_sealed());
+    }
+
+    loglet.seal().await?;
+    let tail = loglet.find_tail().await?;
+    assert_eq!(LogletOffset::OLDEST, tail.offset());
+    assert!(tail.is_sealed());
+
+    {
+        // last known tail should be immediately available through the tail watch
+        let tail = watch.next().await.expect("see the sealed tail");
+        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert!(tail.is_sealed());
+    }
 
     Ok(())
 }

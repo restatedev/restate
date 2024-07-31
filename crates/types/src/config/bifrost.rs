@@ -44,7 +44,7 @@ pub struct BifrostOptions {
     /// Configuration of replicated loglet provider
     pub replicated_loglet: ReplicatedLogletOptions,
 
-    /// # Retry policy
+    /// # Read retry policy
     ///
     /// Retry policy to use when bifrost waits for reconfiguration to complete during
     /// read operations
@@ -56,6 +56,14 @@ pub struct BifrostOptions {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub seal_retry_interval: humantime::Duration,
+
+    /// # Append retry policy
+    ///
+    /// Retry policy to use when bifrost waits for reconfiguration to complete during
+    /// append operations.
+    ///
+    /// Note that appends will be retried forever by default.
+    pub append_retry_policy: RetryPolicy,
 }
 
 impl BifrostOptions {
@@ -76,6 +84,12 @@ impl Default for BifrostOptions {
                 Duration::from_millis(50),
                 2.0,
                 Some(50),
+                Some(Duration::from_secs(1)),
+            ),
+            append_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                None,
                 Some(Duration::from_secs(1)),
             ),
             seal_retry_interval: Duration::from_secs(2).into(),

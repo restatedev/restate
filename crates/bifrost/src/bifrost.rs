@@ -14,12 +14,14 @@ use std::sync::OnceLock;
 
 use bytes::BytesMut;
 use enum_map::EnumMap;
+use restate_types::retries::{RetryIter, RetryPolicy};
 use smallvec::SmallVec;
-use tracing::{info, instrument};
+use tokio::time::Instant;
+use tracing::{debug, info, instrument, Span};
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::config::Configuration;
-use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
+use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_types::Version;
@@ -94,17 +96,42 @@ impl Bifrost {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
-    #[instrument(level = "debug", skip(self, payload), err)]
+    #[instrument(
+        level = "debug",
+        skip(self, payload),
+        err,
+        fields(
+            log_id = %log_id,
+            size_in_bytes = payload.body_size(),
+            segment_index = tracing::field::Empty
+        )
+    )]
     pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn> {
-        self.inner.append(log_id, payload).await
+        // asoli (todo: use RetryIter<'a> when it's merged)
+        let retry_policy = Configuration::pinned().bifrost.append_retry_policy.clone();
+        self.inner.append(log_id, payload, retry_policy).await
     }
 
     /// Appends a batch of records to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the first
     /// record in this batch. This will only return after all records have been stored.
-    #[instrument(level = "debug", skip(self, payloads), err)]
+    #[instrument(
+        level = "debug",
+        skip(self, payloads),
+        err,
+        fields(
+            log_id = %log_id,
+            count = payloads.len(),
+            size_in_bytes = payloads.iter().fold(0, |acc, payload| acc + payload.body_size()),
+            segment_index = tracing::field::Empty
+        )
+    )]
     pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn> {
-        self.inner.append_batch(log_id, payloads).await
+        // asoli (todo: use RetryIter<'a> when it's merged)
+        let retry_policy = Configuration::pinned().bifrost.append_retry_policy.clone();
+        self.inner
+            .append_batch(log_id, payloads, retry_policy)
+            .await
     }
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
@@ -174,11 +201,6 @@ impl Bifrost {
         self.inner.metadata.logs_version()
     }
 
-    #[cfg(test)]
-    pub fn inner(&self) -> Arc<BifrostInner> {
-        self.inner.clone()
-    }
-
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
     pub async fn read_all(&self, log_id: LogId) -> Result<Vec<LogRecord>> {
@@ -232,23 +254,50 @@ impl BifrostInner {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
-    pub async fn append(&self, log_id: LogId, payload: Payload) -> Result<Lsn> {
+    pub async fn append(
+        &self,
+        log_id: LogId,
+        payload: Payload,
+        retry_policy: RetryPolicy,
+    ) -> Result<Lsn> {
         self.fail_if_shutting_down()?;
-        let loglet = self.writeable_loglet(log_id).await?;
         let mut buf = BytesMut::default();
         StorageCodec::encode(payload, &mut buf).expect("serialization to bifrost is infallible");
+        let buf = buf.freeze();
 
-        let res = loglet.append(buf.freeze()).await;
-        // todo: Handle retries, segment seals and other recoverable errors.
-        res.map_err(|e| match e {
-            AppendError::Sealed => todo!(),
-            AppendError::Shutdown(e) => Error::Shutdown(e),
-            AppendError::Other(e) => Error::LogletError(e),
-        })
+        let mut retry_iter = retry_policy.into_iter();
+        let mut attempt = 0;
+        let mut loglet = self.writeable_loglet(log_id).await?;
+        loop {
+            attempt += 1;
+            Span::current().record(
+                "segment_index",
+                tracing::field::display(loglet.segment_index()),
+            );
+            match loglet.append(buf.clone()).await {
+                Ok(lsn) => return Ok(lsn),
+                Err(AppendError::Sealed) => {
+                    info!(
+                        attempt = attempt,
+                        "Append will be retried (loglet being sealed), waiting for tail to be determined"
+                    );
+                    loglet = self
+                        .wait_next_unsealed_loglet(log_id, loglet.segment_index(), &mut retry_iter)
+                        .await?;
+                }
+                Err(AppendError::Shutdown(e)) => return Err(Error::Shutdown(e)),
+                Err(AppendError::Other(e)) => return Err(Error::LogletError(e)),
+            }
+        }
     }
 
-    pub async fn append_batch(&self, log_id: LogId, payloads: &[Payload]) -> Result<Lsn> {
-        let loglet = self.writeable_loglet(log_id).await?;
+    pub async fn append_batch(
+        &self,
+        log_id: LogId,
+        payloads: &[Payload],
+        retry_policy: RetryPolicy,
+    ) -> Result<Lsn> {
+        let mut loglet = self.writeable_loglet(log_id).await?;
         let raw_payloads: SmallVec<[_; SMALL_BATCH_THRESHOLD_COUNT]> = payloads
             .iter()
             .map(|payload| {
@@ -258,13 +307,29 @@ impl BifrostInner {
                 buf.freeze()
             })
             .collect();
-        let res = loglet.append_batch(&raw_payloads).await;
-        // todo: Handle retries, segment seals and other recoverable errors.
-        res.map_err(|e| match e {
-            AppendError::Sealed => todo!(),
-            AppendError::Shutdown(e) => Error::Shutdown(e),
-            AppendError::Other(e) => Error::LogletError(e),
-        })
+        let mut retry_iter = retry_policy.into_iter();
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            Span::current().record(
+                "segment_index",
+                tracing::field::display(loglet.segment_index()),
+            );
+            match loglet.append_batch(&raw_payloads).await {
+                Ok(lsn) => return Ok(lsn),
+                Err(AppendError::Sealed) => {
+                    info!(
+                        attempt = attempt,
+                        "Append batch will be retried (loglet being sealed), waiting for tail to be determined"
+                    );
+                    loglet = self
+                        .wait_next_unsealed_loglet(log_id, loglet.segment_index(), &mut retry_iter)
+                        .await?;
+                }
+                Err(AppendError::Shutdown(e)) => return Err(Error::Shutdown(e)),
+                Err(AppendError::Other(e)) => return Err(Error::LogletError(e)),
+            }
+        }
     }
 
     pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
@@ -281,7 +346,15 @@ impl BifrostInner {
         let mut attempts = 0;
         let (known_tail, loglet) = loop {
             attempts += 1;
-            let loglet = self.find_loglet_for_lsn(log_id, from).await?;
+            let loglet = match self.find_loglet_for_lsn(log_id, from).await? {
+                MaybeLoglet::Some(loglet) => loglet,
+                MaybeLoglet::Trim { next_base_lsn } => {
+                    // trim_gap's `to` field is inclusive, so we move back one offset from the
+                    // next_base_lsn
+                    return Ok(Some(LogRecord::new_trim_gap(from, next_base_lsn.prev())));
+                }
+            };
+
             // When reading from an open loglet segment, we need to make sure we need to be careful of
             // reading when the loglet is sealed (metadata is not updated yet, or reconfiguration is in
             // progress). If we observed that the loglet is sealed, we must wait until the tail is
@@ -345,6 +418,32 @@ impl BifrostInner {
         let loglet = self.writeable_loglet(log_id).await?;
         let tail = loglet.find_tail().await?;
         Ok((loglet, tail))
+    }
+
+    async fn wait_next_unsealed_loglet(
+        &self,
+        log_id: LogId,
+        sealed_segment: SegmentIndex,
+        retry_iter: &mut RetryIter<'_>,
+    ) -> Result<LogletWrapper> {
+        let start = Instant::now();
+        for sleep_dur in retry_iter.by_ref() {
+            self.fail_if_shutting_down()?;
+            tokio::time::sleep(sleep_dur).await;
+            let loglet = self.writeable_loglet(log_id).await?;
+            // Do we think that the last tail loglet is different and unsealed?
+            if loglet.tail_lsn.is_none() && loglet.segment_index() > sealed_segment {
+                let total_dur = start.elapsed();
+                debug!(
+                    "Found an unsealed segment {} after {:?}",
+                    loglet.segment_index(),
+                    total_dur
+                );
+                return Ok(loglet);
+            }
+        }
+
+        Err(Error::LogSealed(log_id))
     }
 
     async fn get_trim_point(&self, log_id: LogId) -> Result<Lsn, Error> {
@@ -440,16 +539,17 @@ impl BifrostInner {
         self.get_loglet(log_id, tail_segment).await
     }
 
-    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper> {
+    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
         let log_metadata = self.metadata.logs();
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .find_segment_for_lsn(lsn);
         match maybe_segment {
-            MaybeSegment::Some(segment) => self.get_loglet(log_id, segment).await,
-            // todo: handle trimmed segments
-            MaybeSegment::Trim { .. } => todo!("trimmed segments is not supported yet"),
+            MaybeSegment::Some(segment) => {
+                Ok(MaybeLoglet::Some(self.get_loglet(log_id, segment).await?))
+            }
+            MaybeSegment::Trim { next_base_lsn } => Ok(MaybeLoglet::Trim { next_base_lsn }),
         }
     }
 
@@ -471,8 +571,36 @@ impl BifrostInner {
     }
 }
 
+/// Result of a lookup by lsn in the chain
+#[derive(Debug)]
+pub enum MaybeLoglet {
+    /// Segment is not found in the chain.
+    Some(LogletWrapper),
+    /// No loglet was found, the log is trimmed until (at least) the next_base_lsn. When
+    /// generating trim gaps, this value should be considered exclusive (next_base_lsn doesn't
+    /// necessarily point to a gap)
+    Trim { next_base_lsn: Lsn },
+}
+
+impl MaybeLoglet {
+    #[allow(dead_code)]
+    pub fn unwrap(self) -> LogletWrapper {
+        match self {
+            MaybeLoglet::Some(loglet) => loglet,
+            MaybeLoglet::Trim { next_base_lsn } => {
+                panic!(
+                    "Expected Loglet, found Trim segment with next_base_lsn={}",
+                    next_base_lsn
+                )
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use tokio::time::Duration;
 
     use super::*;
@@ -485,7 +613,7 @@ mod tests {
     use restate_types::Versioned;
 
     use crate::{BifrostAdmin, Record, TrimGap};
-    use restate_core::{metadata, TestCoreEnv};
+    use restate_core::{metadata, TaskKind, TestCoreEnv};
     use restate_core::{task_center, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::CommonOptions;
@@ -731,9 +859,10 @@ mod tests {
             );
 
             let segment_1 = bifrost
-                .inner()
+                .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)
-                .await?;
+                .await?
+                .unwrap();
 
             // seal the segment
             bifrost_admin
@@ -760,9 +889,9 @@ mod tests {
                 )))
             );
 
-            let old_version = bifrost.inner().metadata.logs_version();
+            let old_version = bifrost.inner.metadata.logs_version();
 
-            let mut builder = bifrost.inner().metadata.logs().clone().into_builder();
+            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -789,11 +918,11 @@ mod tests {
             metadata()
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
-            assert_eq!(new_version, bifrost.inner().metadata.logs_version());
+            assert_eq!(new_version, bifrost.inner.metadata.logs_version());
 
             {
                 // validate that the stored metadata matches our expectations.
-                let new_metadata = bifrost.inner().metadata.logs().clone();
+                let new_metadata = bifrost.inner.metadata.logs().clone();
                 let chain_builder = new_metadata.chain(&LOG_ID).unwrap();
                 assert_eq!(2, chain_builder.num_segments());
             }
@@ -832,9 +961,10 @@ mod tests {
             );
 
             let segment_2 = bifrost
-                .inner()
+                .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-                .await?;
+                .await?
+                .unwrap();
 
             assert_ne!(segment_1, segment_2);
 
@@ -894,5 +1024,130 @@ mod tests {
             Ok(())
         })
         .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[traced_test]
+    async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .with_partition_table(FixedPartitionTable::new(Version::MIN, 1))
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+        let tc = node_env.tc;
+        tc.run_in_scope("test", None, async {
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+            let bifrost = Bifrost::init_local(metadata()).await;
+            let bifrost_admin = BifrostAdmin::new(
+                &bifrost,
+                &node_env.metadata_writer,
+                &node_env.metadata_store_client,
+            );
+
+            // create an appender
+            let stop_signal = Arc::new(AtomicBool::default());
+            let append_counter = Arc::new(AtomicUsize::new(0));
+            let _ = tc.spawn(TaskKind::TestRunner, "append-records", None, {
+                let append_counter = append_counter.clone();
+                let stop_signal = stop_signal.clone();
+                let bifrost = bifrost.clone();
+                async move {
+                    let mut i = 0;
+                    while !stop_signal.load(Ordering::Relaxed) {
+                        i += 1;
+                        if i % 2 == 0 {
+                            // append individual record
+                            let lsn = bifrost
+                                .append(LOG_ID, Payload::new(format!("record{}", i)))
+                                .await?;
+                            println!("Appended {}", lsn);
+                        } else {
+                            // append batch
+                            let mut payloads = Vec::with_capacity(10);
+                            for j in 1..=10 {
+                                payloads.push(Payload::new(format!("record-in-batch{}-{}", i, j)));
+                            }
+                            let lsn = bifrost.append_batch(LOG_ID, &payloads).await?;
+                            println!("Appended batch {}", lsn);
+                        }
+                        append_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    println!("Appender terminated");
+                    Ok(())
+                }
+            })?;
+
+            let mut append_counter_before_seal;
+            loop {
+                append_counter_before_seal = append_counter.load(Ordering::Relaxed);
+                if append_counter_before_seal < 100 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                } else {
+                    break;
+                }
+            }
+
+            // seal and don't extend the chain.
+            let _ = bifrost_admin.seal(LOG_ID, SegmentIndex::from(0)).await?;
+
+            // appends should stall!
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let append_counter_during_seal = append_counter.load(Ordering::Relaxed);
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let counter_now = append_counter.load(Ordering::Relaxed);
+                assert_that!(counter_now, eq(append_counter_during_seal));
+                println!("Appends are stalling, counter={}", counter_now);
+            }
+
+            for i in 1..=5 {
+                let last_segment = bifrost
+                    .inner
+                    .writeable_loglet(LOG_ID)
+                    .await?
+                    .segment_index();
+                // allow appender to run a little.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // seal the loglet and extend with an in-memory one
+                let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
+                bifrost_admin
+                    .seal_and_extend_chain(
+                        LOG_ID,
+                        None,
+                        Version::MIN,
+                        ProviderKind::Local,
+                        new_segment_params,
+                    )
+                    .await?;
+                println!("Seal {}", i);
+                assert_that!(
+                    bifrost
+                        .inner
+                        .writeable_loglet(LOG_ID)
+                        .await?
+                        .segment_index(),
+                    gt(last_segment)
+                );
+            }
+
+            // make sure that appends are still happening.
+            let mut append_counter_after_seal = append_counter.load(Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_that!(append_counter_after_seal, gt(append_counter_before_seal));
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let counter_now = append_counter.load(Ordering::Relaxed);
+                assert_that!(counter_now, gt(append_counter_after_seal));
+                append_counter_after_seal = counter_now;
+            }
+
+            googletest::Result::Ok(())
+        })
+        .await?;
+        tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 }
