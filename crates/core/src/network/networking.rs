@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use tracing::{info, instrument};
 
 use restate_types::net::codec::{Targeted, WireEncode};
@@ -64,7 +66,6 @@ impl NetworkSender for Networking {
         M: WireEncode + Targeted + Send + Sync,
     {
         let target_is_generational = to.is_generational();
-        // we try to reconnect to the node for N times.
         let mut attempts = 0;
         let mut retry_policy = self.retry_policy.clone().into_iter();
         loop {
@@ -100,11 +101,13 @@ impl NetworkSender for Networking {
                     | e @ NetworkError::ConnectionClosed,
                 ) => {
                     info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{:?}",
+                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy.max_attempts()
+                        self.retry_policy
+                            .max_attempts()
+                            .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
                     continue;
                 }
@@ -115,11 +118,13 @@ impl NetworkSender for Networking {
                         return Err(NetworkError::OldPeerGeneration(e));
                     }
                     info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{:?}",
+                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy.max_attempts()
+                        self.retry_policy
+                            .max_attempts()
+                            .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
                     continue;
                 }
@@ -132,10 +137,10 @@ impl NetworkSender for Networking {
                 Ok(_) => return Ok(()),
                 Err(NetworkError::ConnectionClosed) => {
                     info!(
-                        "Sending message to node {} failed due to connection reset, next retry is attempt {}/{:?}",
+                        "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
                         to,
                         attempts + 1,
-                        self.retry_policy.max_attempts()
+                        self.retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
                     continue;
                 }
