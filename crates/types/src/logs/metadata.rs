@@ -213,7 +213,7 @@ flexbuffers_storage_encode_decode!(Logs);
 /// Result of a segment lookup in the chain
 #[derive(Debug)]
 pub enum MaybeSegment<'a> {
-    /// Segment is not found in the chain.
+    /// Segment is found in the chain.
     Some(Segment<'a>),
     /// No segment was found, the log is trimmed until (at least) the next_base_lsn. When
     /// generating trim gaps, this value should be considered exclusive (next_base_lsn doesn't
