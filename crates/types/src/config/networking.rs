@@ -19,7 +19,7 @@ use crate::retries::RetryPolicy;
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schemars", schemars(rename = "WorkerOptions", default))]
+#[cfg_attr(feature = "schemars", schemars(rename = "NetworkingOptions", default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct NetworkingOptions {

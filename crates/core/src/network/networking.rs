@@ -24,21 +24,14 @@ pub struct Networking {
     connections: ConnectionManager,
     metadata: Metadata,
     retry_policy: RetryPolicy,
-    max_retry_attempts: usize,
 }
 
 impl Networking {
     pub fn new(metadata: Metadata, retry_policy: RetryPolicy) -> Self {
-        let max_retry_attempts = match retry_policy {
-            RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts,
-            RetryPolicy::Exponential { max_attempts, .. } => max_attempts,
-            _ => None,
-        };
         Self {
             connections: ConnectionManager::new(metadata.clone()),
             metadata,
             retry_policy,
-            max_retry_attempts: max_retry_attempts.map_or(0, usize::from),
         }
     }
 
@@ -107,11 +100,11 @@ impl NetworkSender for Networking {
                     | e @ NetworkError::ConnectionClosed,
                 ) => {
                     info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                        "Connection to node {} failed with {}, next retry is attempt {}/{:?}",
                         to,
                         e,
                         attempts + 1,
-                        self.max_retry_attempts
+                        self.retry_policy.max_retries()
                     );
                     continue;
                 }
@@ -122,11 +115,11 @@ impl NetworkSender for Networking {
                         return Err(NetworkError::OldPeerGeneration(e));
                     }
                     info!(
-                        "Connection to node {} failed with {}, next retry is attempt {}/{}",
+                        "Connection to node {} failed with {}, next retry is attempt {}/{:?}",
                         to,
                         e,
                         attempts + 1,
-                        self.max_retry_attempts
+                        self.retry_policy.max_retries()
                     );
                     continue;
                 }
@@ -139,10 +132,10 @@ impl NetworkSender for Networking {
                 Ok(_) => return Ok(()),
                 Err(NetworkError::ConnectionClosed) => {
                     info!(
-                        "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
+                        "Sending message to node {} failed due to connection reset, next retry is attempt {}/{:?}",
                         to,
                         attempts + 1,
-                        self.max_retry_attempts
+                        self.retry_policy.max_retries()
                     );
                     continue;
                 }

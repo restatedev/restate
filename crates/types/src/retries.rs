@@ -148,6 +148,14 @@ impl RetryPolicy {
         }
     }
 
+    pub fn max_retries(&self) -> Option<NonZeroUsize> {
+        match self {
+            RetryPolicy::None => None,
+            RetryPolicy::FixedDelay { max_attempts, .. }
+            | RetryPolicy::Exponential { max_attempts, .. } => *max_attempts,
+        }
+    }
+
     /// Retry the provided closure respecting this retry policy.
     pub async fn retry<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
     where
