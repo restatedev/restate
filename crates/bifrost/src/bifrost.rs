@@ -201,11 +201,6 @@ impl Bifrost {
         self.inner.metadata.logs_version()
     }
 
-    #[cfg(test)]
-    pub fn inner(&self) -> Arc<BifrostInner> {
-        self.inner.clone()
-    }
-
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
     pub async fn read_all(&self, log_id: LogId) -> Result<Vec<LogRecord>> {
@@ -351,7 +346,15 @@ impl BifrostInner {
         let mut attempts = 0;
         let (known_tail, loglet) = loop {
             attempts += 1;
-            let loglet = self.find_loglet_for_lsn(log_id, from).await?;
+            let loglet = match self.find_loglet_for_lsn(log_id, from).await? {
+                MaybeLoglet::Some(loglet) => loglet,
+                MaybeLoglet::Trim { next_base_lsn } => {
+                    // trim_gap's `to` field is inclusive, so we move back one offset from the
+                    // next_base_lsn
+                    return Ok(Some(LogRecord::new_trim_gap(from, next_base_lsn.prev())));
+                }
+            };
+
             // When reading from an open loglet segment, we need to make sure we need to be careful of
             // reading when the loglet is sealed (metadata is not updated yet, or reconfiguration is in
             // progress). If we observed that the loglet is sealed, we must wait until the tail is
@@ -536,16 +539,17 @@ impl BifrostInner {
         self.get_loglet(log_id, tail_segment).await
     }
 
-    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<LogletWrapper> {
+    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
         let log_metadata = self.metadata.logs();
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .find_segment_for_lsn(lsn);
         match maybe_segment {
-            MaybeSegment::Some(segment) => self.get_loglet(log_id, segment).await,
-            // todo: handle trimmed segments
-            MaybeSegment::Trim { .. } => todo!("trimmed segments is not supported yet"),
+            MaybeSegment::Some(segment) => {
+                Ok(MaybeLoglet::Some(self.get_loglet(log_id, segment).await?))
+            }
+            MaybeSegment::Trim { next_base_lsn } => Ok(MaybeLoglet::Trim { next_base_lsn }),
         }
     }
 
@@ -564,6 +568,32 @@ impl BifrostInner {
             segment.tail_lsn,
             loglet,
         ))
+    }
+}
+
+/// Result of a lookup by lsn in the chain
+#[derive(Debug)]
+pub enum MaybeLoglet {
+    /// Segment is not found in the chain.
+    Some(LogletWrapper),
+    /// No loglet was found, the log is trimmed until (at least) the next_base_lsn. When
+    /// generating trim gaps, this value should be considered exclusive (next_base_lsn doesn't
+    /// necessarily point to a gap)
+    Trim { next_base_lsn: Lsn },
+}
+
+impl MaybeLoglet {
+    #[allow(dead_code)]
+    pub fn unwrap(self) -> LogletWrapper {
+        match self {
+            MaybeLoglet::Some(loglet) => loglet,
+            MaybeLoglet::Trim { next_base_lsn } => {
+                panic!(
+                    "Expected Loglet, found Trim segment with next_base_lsn={}",
+                    next_base_lsn
+                )
+            }
+        }
     }
 }
 
@@ -829,9 +859,10 @@ mod tests {
             );
 
             let segment_1 = bifrost
-                .inner()
+                .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)
-                .await?;
+                .await?
+                .unwrap();
 
             // seal the segment
             bifrost_admin
@@ -858,9 +889,9 @@ mod tests {
                 )))
             );
 
-            let old_version = bifrost.inner().metadata.logs_version();
+            let old_version = bifrost.inner.metadata.logs_version();
 
-            let mut builder = bifrost.inner().metadata.logs().clone().into_builder();
+            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -887,11 +918,11 @@ mod tests {
             metadata()
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
-            assert_eq!(new_version, bifrost.inner().metadata.logs_version());
+            assert_eq!(new_version, bifrost.inner.metadata.logs_version());
 
             {
                 // validate that the stored metadata matches our expectations.
-                let new_metadata = bifrost.inner().metadata.logs().clone();
+                let new_metadata = bifrost.inner.metadata.logs().clone();
                 let chain_builder = new_metadata.chain(&LOG_ID).unwrap();
                 assert_eq!(2, chain_builder.num_segments());
             }
@@ -930,9 +961,10 @@ mod tests {
             );
 
             let segment_2 = bifrost
-                .inner()
+                .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-                .await?;
+                .await?
+                .unwrap();
 
             assert_ne!(segment_1, segment_2);
 

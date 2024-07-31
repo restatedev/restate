@@ -29,9 +29,9 @@ use restate_types::Version;
 use restate_types::Versioned;
 
 use crate::bifrost::BifrostInner;
+use crate::bifrost::MaybeLoglet;
 use crate::loglet::LogletBase;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
-use crate::loglet_wrapper::LogletWrapper;
 use crate::Error;
 use crate::LogRecord;
 use crate::Result;
@@ -43,7 +43,7 @@ use crate::TailState;
 // The use of [pin_project] is not strictly necessary but it's left to allow future
 // substream implementations to be !Unpin without changing the read_stream.
 #[must_use = "streams do nothing unless polled"]
-#[pin_project]
+#[pin_project(project = ReadStreamProj)]
 pub struct LogReadStream {
     log_id: LogId,
     /// inclusive max LSN to read to
@@ -74,7 +74,7 @@ enum State {
     FindingLoglet {
         /// The future to continue finding the loglet instance via Bifrost
         #[pin]
-        find_loglet_fut: BoxFuture<'static, Result<LogletWrapper>>,
+        find_loglet_fut: BoxFuture<'static, Result<MaybeLoglet>>,
     },
     /// Waiting for the loglet read stream (substream) to be initialized
     CreatingSubstream {
@@ -186,7 +186,12 @@ impl Stream for LogReadStream {
                 // Finding a loglet and creating the loglet instance through the provider
                 StateProj::FindingLoglet { find_loglet_fut } => {
                     let loglet = match ready!(find_loglet_fut.poll(cx)) {
-                        Ok(loglet) => loglet,
+                        Ok(MaybeLoglet::Some(loglet)) => loglet,
+                        Ok(MaybeLoglet::Trim { next_base_lsn }) => {
+                            // deliver trim gap and advance read pointer.
+                            let record = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                            return Poll::Ready(Some(Ok(record)));
+                        }
                         Err(e) => {
                             this.state.set(State::Terminated);
                             return Poll::Ready(Some(Err(e)));
@@ -370,16 +375,7 @@ impl Stream for LogReadStream {
                         }
                         // Oh, we have a prefix trim, deliver the trim-gap and fast-forward.
                         MaybeSegment::Trim { next_base_lsn } => {
-                            let read_pointer = *this.read_pointer;
-                            let record = LogRecord::new_trim_gap(read_pointer, next_base_lsn);
-                            // fast-forward.
-                            *this.read_pointer = next_base_lsn;
-                            let find_loglet_fut = Box::pin(
-                                bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                            );
-                            // => Find Loglet
-                            this.substream.set(None);
-                            this.state.set(State::FindingLoglet { find_loglet_fut });
+                            let record = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
                             // Deliver the trim gap
                             return Poll::Ready(Some(Ok(record)));
                         }
@@ -403,6 +399,23 @@ impl Stream for LogReadStream {
             }
         }
     }
+}
+
+fn deliver_trim_gap(
+    this: &mut ReadStreamProj,
+    next_base_lsn: Lsn,
+    bifrost_inner: &'static BifrostInner,
+) -> LogRecord {
+    let read_pointer = *this.read_pointer;
+    let record = LogRecord::new_trim_gap(read_pointer, next_base_lsn.prev());
+    // fast-forward.
+    *this.read_pointer = next_base_lsn;
+    let find_loglet_fut =
+        Box::pin(bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer));
+    // => Find Loglet
+    this.substream.set(None);
+    this.state.set(State::FindingLoglet { find_loglet_fut });
+    record
 }
 
 #[cfg(test)]
@@ -717,9 +730,10 @@ mod tests {
 
             // manually seal the loglet, create a new in-memory loglet at base_lsn=11
             let raw_loglet = bifrost
-                .inner()
+                .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-                .await?;
+                .await?
+                .unwrap();
             raw_loglet.seal().await?;
             // In fact, reader is allowed to go as far as the last known unsealed tail which
             // in our case could be the real tail since we didn't have in-flight appends at seal
@@ -758,8 +772,8 @@ mod tests {
             assert_eq!(Lsn::from(11), tail.offset());
             // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
             // when it's implemented)
-            let old_version = bifrost.inner().metadata.logs_version();
-            let mut builder = bifrost.inner().metadata.logs().clone().into_builder();
+            let old_version = bifrost.inner.metadata.logs_version();
+            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
             let mut chain_builder = builder.chain(&LOG_ID).unwrap();
             assert_eq!(1, chain_builder.num_segments());
             let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -783,7 +797,7 @@ mod tests {
 
             // make sure we have updated metadata.
             bifrost
-                .inner()
+                .inner
                 .metadata
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
@@ -909,7 +923,8 @@ mod tests {
             let segment_1_loglet = bifrost
                 .inner
                 .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
-                .await?;
+                .await?
+                .unwrap();
 
             assert_that!(
                 segment_1_loglet.find_tail().await?,
@@ -955,6 +970,99 @@ mod tests {
                 futures::poll!(std::pin::pin!(reader.next())),
                 pat!(Poll::Pending)
             );
+
+            anyhow::Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_readstream_prefix_trimmed() -> anyhow::Result<()> {
+        setup_panic_handler();
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder::new_with_mock_network()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+
+        let tc = node_env.tc;
+        tc.run_in_scope("test", None, async {
+            let config = Live::from_value(Configuration::default());
+            RocksDbManager::init(Constant::new(CommonOptions::default()));
+
+            // enable both in-memory and local loglet types
+            let svc = BifrostService::new(task_center(), metadata())
+                .enable_local_loglet(&config)
+                .enable_in_memory_loglet();
+            let bifrost = svc.handle();
+            svc.start().await.expect("loglet must start");
+
+            // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
+            let old_version = bifrost.inner.metadata.logs_version();
+            let mut builder = bifrost.inner.metadata.logs().clone().into_builder();
+            let mut chain_builder = builder.chain(&LOG_ID).unwrap();
+            assert_eq!(1, chain_builder.num_segments());
+            let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);
+            chain_builder.append_segment(Lsn::new(10), ProviderKind::Local, new_segment_params)?;
+            chain_builder.trim_prefix(Lsn::new(10));
+            assert_eq!(1, chain_builder.num_segments());
+            assert_eq!(Lsn::from(10), chain_builder.tail().base_lsn);
+
+            let new_metadata = builder.build();
+            let new_version = new_metadata.version();
+            assert_eq!(new_version, old_version.next());
+            node_env
+                .metadata_store_client
+                .put(
+                    BIFROST_CONFIG_KEY.clone(),
+                    new_metadata,
+                    restate_metadata_store::Precondition::MatchesVersion(old_version),
+                )
+                .await?;
+
+            // make sure we have updated metadata.
+            bifrost
+                .inner
+                .metadata
+                .sync(MetadataKind::Logs, TargetVersion::Latest)
+                .await?;
+
+            let mut reader = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+
+            // append a few records
+            for i in 10..=13 {
+                let lsn = bifrost
+                    .append(LOG_ID, Payload::new(format!("record-{}", i)))
+                    .await?;
+                assert_eq!(Lsn::from(i), lsn);
+            }
+
+            // first read should be the trim gap.
+            let record = reader.next().await.expect("to stay alive")?;
+
+            assert_that!(
+                record,
+                pat!(LogRecord {
+                    offset: eq(Lsn::OLDEST),
+                    record: pat!(Record::TrimGap(pat!(TrimGap {
+                        to: eq(Lsn::from(9)),
+                    })))
+                })
+            );
+
+            assert_that!(reader.read_pointer(), eq(Lsn::from(10)));
+
+            // read records
+            for i in 10..=13 {
+                let record = reader.next().await.expect("to stay alive")?;
+                assert_eq!(Lsn::from(i), record.offset);
+                assert_eq!(
+                    Payload::new(format!("record-{}", i)).body(),
+                    record.record.into_payload_unchecked().body()
+                );
+            }
 
             anyhow::Ok(())
         })
