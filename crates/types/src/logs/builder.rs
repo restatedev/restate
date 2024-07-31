@@ -89,29 +89,40 @@ impl<'a> ChainBuilder<'a> {
         self.inner.chain = self.inner.chain.split_off(&found_base_lsn);
     }
 
-    /// base_lsn must be higher than all previous base_lsns.
+    /// `base_lsn` must be higher than all previous base_lsns.
+    /// If `base_lsn` is identical to the tail segment, the new segment will **replace**
+    /// the last segment but will still acquire a higher segment index.
+    /// This behaviour is designed to support empty loglets.
     pub fn append_segment(
         &mut self,
         base_lsn: Lsn,
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<(), BuilderError> {
-        let last_entry = self
+        let mut last_entry = self
             .inner
             .chain
             .last_entry()
             .expect("chain have at least one segment");
-        if *last_entry.key() < base_lsn {
-            // append
-            // validate that the base_lsn is higher than existing base_lsns.
-            let new_index = SegmentIndex(last_entry.get().index().0 + 1);
-            self.inner
-                .chain
-                .insert(base_lsn, LogletConfig::new(new_index, provider, params));
-            Ok(())
-        } else {
-            // can't add to the back.
-            Err(BuilderError::SegmentConflict(*last_entry.key()))
+        match *last_entry.key() {
+            key if key < base_lsn => {
+                // append
+                let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                self.inner
+                    .chain
+                    .insert(base_lsn, LogletConfig::new(new_index, provider, params));
+                Ok(())
+            }
+            key if key == base_lsn => {
+                // Replace the last segment (empty segment)
+                let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                last_entry.insert(LogletConfig::new(new_index, provider, params));
+                Ok(())
+            }
+            _ => {
+                // can't add to the back.
+                Err(BuilderError::SegmentConflict(*last_entry.key()))
+            }
         }
     }
 }
@@ -253,15 +264,21 @@ mod tests {
             err(pat!(BuilderError::SegmentConflict(eq(Lsn::from(10)))))
         );
 
-        // can't, conflict with tail
-        assert_that!(
-            chain.append_segment(
-                Lsn::from(10),
-                ProviderKind::InMemory,
-                LogletParams::from("test4")
-            ),
-            err(pat!(BuilderError::SegmentConflict(eq(Lsn::from(10)))))
-        );
+        assert_eq!(2, chain.num_segments());
+        // replace the tail, same base_lsn
+        chain.append_segment(
+            Lsn::from(10),
+            ProviderKind::InMemory,
+            LogletParams::from("test55"),
+        )?;
+        assert_eq!(2, chain.num_segments());
+
+        assert_eq!(Lsn::OLDEST, chain.head().base_lsn);
+        assert_eq!(Lsn::from(10), chain.tail().base_lsn);
+        assert_that!(chain.tail().config.kind, eq(ProviderKind::InMemory));
+
+        assert_eq!(SegmentIndex(2), chain.tail_index());
+        assert_eq!(SegmentIndex(2), chain.tail().index());
 
         // Add another segment
         chain.append_segment(
@@ -270,8 +287,8 @@ mod tests {
             LogletParams::from("test5"),
         )?;
         assert_eq!(3, chain.num_segments());
-        assert_eq!(SegmentIndex(2), chain.tail_index());
-        assert_eq!(SegmentIndex(2), chain.tail().index());
+        assert_eq!(SegmentIndex(3), chain.tail_index());
+        assert_eq!(SegmentIndex(3), chain.tail().index());
         let base_lsns: Vec<_> = chain.iter().map(|s| s.base_lsn).collect();
         assert_that!(
             base_lsns,

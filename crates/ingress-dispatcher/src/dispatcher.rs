@@ -92,7 +92,6 @@ impl DispatchIngressRequest for IngressDispatcher {
         &self,
         ingress_request: IngressDispatcherRequest,
     ) -> Result<(), IngressDispatchError> {
-        let mut bifrost = self.bifrost.clone();
         let IngressDispatcherRequest {
             inner,
             request_mode,
@@ -133,7 +132,7 @@ impl DispatchIngressRequest for IngressDispatcher {
             dedup_source,
             msg_index,
         );
-        let (log_id, lsn) = append_envelope_to_bifrost(&mut bifrost, envelope).await?;
+        let (log_id, lsn) = append_envelope_to_bifrost(&self.bifrost, envelope).await?;
 
         debug!(
             log_id = %log_id,
