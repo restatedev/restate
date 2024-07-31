@@ -150,7 +150,7 @@ impl Node {
         let metadata = metadata_builder.to_metadata();
         let networking = Networking::new(
             metadata_builder.to_metadata(),
-            config.networking.retry_policy.clone(), // TODO: is this a reasonable way to access config & pass it in?
+            config.networking.retry_policy.clone(),
         );
         let metadata_manager = MetadataManager::new(
             metadata_builder,
