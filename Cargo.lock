@@ -5545,6 +5545,7 @@ dependencies = [
  "metrics 0.23.0",
  "once_cell",
  "parking_lot",
+ "paste",
  "pin-project",
  "restate-core",
  "restate-metadata-store",

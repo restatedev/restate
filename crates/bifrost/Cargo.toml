@@ -57,8 +57,9 @@ restate-types = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true, features = ["anyhow"] }
-test-log = { workspace = true }
+paste = { workspace = true }
 tempfile = { workspace = true }
+test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
