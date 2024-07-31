@@ -185,11 +185,39 @@ impl QueryContext {
         //
         let mut state = SessionState::new_with_config_rt(session_config, runtime);
 
-        state = state.add_analyzer_rule(Arc::new(
+        // Rewrite the logical plan,  to transparently add a 'partition_key' column to Join's
+        // To tables that have a partition key in their schema.
+        //
+        // For example:
+        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key'
+        //
+        // Will be rewritten to:
+        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key AND a.partition_key = b.partition_key'
+        //
+        // This would be used by the SymmetricHashJoin as a watermark.
+        state.add_analyzer_rule(Arc::new(
             analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
         ));
-        state = state.add_physical_optimizer_rule(Arc::new(physical_optimizer::JoinRewrite::new()));
 
+        //
+        // Prepend the join rewrite optimizer to the list of physical optimizers.
+        //
+        // It is important that the join rewrite optimizer will run before ProjectionPushdown::try_embed_to_hash_join.
+        // because the SymmetricHashJoin doesn't support embedded projections out of the box
+        //
+        // If we don't do that, then when translating a HashJoinExc to SymmetricHashJoinExc we will lose the embedded projection
+        // and the query will fail.
+        // For example try the following query without prepending but rather appending:
+        //
+        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key'
+        //
+        // A far more involved but potentially more robust solution would be wrap the SymmetricHashJoin in a ProjectionExec
+        // If this would become an issue for any reason, then we can explore that alternative.
+        //
+        let mut physical_optimizers = state.physical_optimizers().to_vec();
+        physical_optimizers.insert(0, Arc::new(physical_optimizer::JoinRewrite::new()));
+
+        state = state.with_physical_optimizer_rules(physical_optimizers);
         let ctx = SessionContext::new_with_state(state);
 
         let sql_options = SQLOptions::new()

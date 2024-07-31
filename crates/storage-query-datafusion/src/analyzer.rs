@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion::common::Column;
 use datafusion::config::ConfigOptions;
-use datafusion::logical_expr::{col, Join, LogicalPlan};
+use datafusion::logical_expr::{Join, LogicalPlan};
 use datafusion::optimizer::analyzer::AnalyzerRule;
+use datafusion::prelude::Expr;
 
 pub(crate) struct UseSymmetricHashJoinWhenPartitionKeyIsPresent;
 
@@ -27,7 +29,7 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
         plan: LogicalPlan,
         _config: &ConfigOptions,
     ) -> datafusion::common::Result<LogicalPlan> {
-        plan.transform_up(&|plan| {
+        let res = plan.transform_up(&|plan| {
             let LogicalPlan::Join(Join {
                 left,
                 right,
@@ -39,32 +41,38 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 null_equals_null,
             }) = &plan
             else {
-                return Ok(Transformed::No(plan));
+                return Ok(Transformed::no(plan));
             };
 
             // if a partition_key exists add that to the join, otherwise use u64::max.
             let left_pk = left
                 .schema()
-                .field_with_unqualified_name("partition_key")
-                .map(|df| col(df.qualified_column()))
-                .ok();
+                .qualified_fields_with_unqualified_name("partition_key")
+                .first()
+                .cloned()
+                .map(|c| Column::new(c.0.cloned(), c.1.name().to_owned()));
 
             // if a partition_key exists add that to the join, otherwise use u64::max.
             let right_pk = right
                 .schema()
-                .field_with_unqualified_name("partition_key")
-                .map(|df| col(df.qualified_column()))
-                .ok();
+                .qualified_fields_with_unqualified_name("partition_key")
+                .first()
+                .cloned()
+                .map(|c| Column::new(c.0.cloned(), c.1.name().to_owned()));
 
             let both_have_pk = left_pk.is_some() && right_pk.is_some();
             if !both_have_pk {
-                return Ok(Transformed::No(plan));
+                return Ok(Transformed::no(plan));
             }
             //
             // both sides have a partition_key, lets do a equijoin.
             //
             let mut new_on = on.to_vec();
-            new_on.push((left_pk.unwrap(), right_pk.unwrap()));
+            new_on.push((
+                Expr::Column(left_pk.unwrap()),
+                Expr::Column(right_pk.unwrap()),
+            ));
+
             let new_plan = LogicalPlan::Join(Join {
                 left: left.clone(),
                 right: right.clone(),
@@ -76,8 +84,10 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 null_equals_null: *null_equals_null,
             });
 
-            Ok(Transformed::Yes(new_plan))
-        })
+            Ok(Transformed::yes(new_plan))
+        });
+
+        res.data()
     }
 
     fn name(&self) -> &str {

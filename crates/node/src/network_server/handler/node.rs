@@ -138,7 +138,7 @@ fn flight_error_to_tonic_status(err: FlightError) -> Status {
 }
 
 // todo: Remove once arrow-flight works with tonic 0.12
-fn tonic_status_010_to_012(status: tonic_0_10::Status) -> Status {
+fn tonic_status_010_to_012(status: tonic_0_11::Status) -> Status {
     let code = Code::from(status.code() as i32);
     let message = status.message().to_owned();
     let details = Bytes::copy_from_slice(status.details());
@@ -147,11 +147,11 @@ fn tonic_status_010_to_012(status: tonic_0_10::Status) -> Status {
 }
 
 // todo: Remove once arrow-flight works with tonic 0.12
-fn tonic_metadata_map_010_to_012(metadata_map: &tonic_0_10::metadata::MetadataMap) -> MetadataMap {
+fn tonic_metadata_map_010_to_012(metadata_map: &tonic_0_11::metadata::MetadataMap) -> MetadataMap {
     let mut resulting_metadata_map = MetadataMap::with_capacity(metadata_map.len());
     for key_value in metadata_map.iter() {
         match key_value {
-            tonic_0_10::metadata::KeyAndValueRef::Ascii(key, value) => {
+            tonic_0_11::metadata::KeyAndValueRef::Ascii(key, value) => {
                 // ignore metadata map entries if conversion fails
                 if let Ok(value) = MetadataValue::from_str(value.to_str().unwrap_or("")) {
                     if let Ok(key) = MetadataKey::from_str(key.as_str()) {
@@ -159,7 +159,7 @@ fn tonic_metadata_map_010_to_012(metadata_map: &tonic_0_10::metadata::MetadataMa
                     }
                 }
             }
-            tonic_0_10::metadata::KeyAndValueRef::Binary(key, value) => {
+            tonic_0_11::metadata::KeyAndValueRef::Binary(key, value) => {
                 if let Ok(key) = MetadataKey::from_bytes(key.as_ref()) {
                     let value = MetadataValue::from_bytes(value.as_ref());
                     resulting_metadata_map.insert_bin(key, value);
