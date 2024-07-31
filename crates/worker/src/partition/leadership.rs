@@ -767,8 +767,12 @@ mod tests {
 
             assert!(matches!(state.state, State::Follower));
 
-            Ok(())
+            googletest::Result::Ok(())
         })
-        .await
+        .await?;
+
+        tc.shutdown_node("test_completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 }
