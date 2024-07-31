@@ -44,14 +44,16 @@ pub use worker::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::live::{LiveLoad, Pinned};
-use crate::errors::GenericError;
-use crate::live::Live;
-use crate::nodes_config::Role;
 use arc_swap::ArcSwap;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use crate::errors::GenericError;
+use crate::live::Live;
+use crate::nodes_config::Role;
+
+use super::live::{LiveLoad, Pinned};
 
 #[cfg(any(test, feature = "test-util"))]
 enum TempOrPath {

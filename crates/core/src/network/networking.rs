@@ -16,8 +16,7 @@ use restate_types::NodeId;
 
 use crate::Metadata;
 
-use super::{ConnectionManager, ConnectionSender};
-use super::{NetworkError, NetworkSender};
+use super::{ConnectionManager, ConnectionSender, NetworkError, NetworkSender};
 
 /// Access to node-to-node networking infrastructure.
 #[derive(Clone)]
