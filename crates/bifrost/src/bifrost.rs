@@ -121,14 +121,20 @@ impl Bifrost {
     /// When using this in conjunction with `find_tail()` or `get_trim_point()`, note that
     /// you'll need to offset start and end to ensure you are reading within the bounds of the log.
     ///
-    /// For instance, if you intend to read all records from a log
+    /// For instance, if you intend to read all records from a log you can construct a reader as
+    /// follows:
     ///
     /// ```no_run
-    /// let reader = bifrost.create_reader(
+    /// use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream};
+    /// use restate_types::logs::{LogId, SequenceNumber};
+    ///
+    /// async fn reader(bifrost: &Bifrost, log_id: LogId) -> LogReadStream {
+    ///     bifrost.create_reader(
     ///        log_id,
-    ///        bifrost.get_trim_point(log_id).await.next(),
-    ///        bifrost.find_tail(log_id).await().offset().prev(),
-    ///     );
+    ///        bifrost.get_trim_point(log_id).await.unwrap(),
+    ///        bifrost.find_tail(log_id, FindTailAttributes::default()).await.unwrap().offset().prev(),
+    ///     ).unwrap()
+    /// }
     /// ```
     pub fn create_reader(
         &self,
@@ -143,7 +149,7 @@ impl Bifrost {
     ///
     /// Finds the first available LSN after the durable tail of the log.
     ///
-    /// If the log is empty, it return TailState::Open(Lsn::OLDEST).
+    /// If the log is empty, it returns TailState::Open(Lsn::OLDEST).
     /// This should never return Err(Error::LogSealed). Sealed state is represented as
     /// TailState::Sealed(..)
     pub async fn find_tail(
