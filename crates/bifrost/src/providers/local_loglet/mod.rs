@@ -25,7 +25,7 @@ pub use provider::Factory;
 use restate_core::ShutdownError;
 use restate_types::logs::SequenceNumber;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -238,7 +238,7 @@ impl LogletBase for LocalLoglet {
             // lock dropped
         };
 
-        debug!("Written entry to {offset:?}");
+        trace!("Written entry to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
@@ -289,6 +289,8 @@ impl LogletBase for LocalLoglet {
             (receiver, next_offset_guard.prev())
             // lock dropped
         };
+
+        trace!("Written batch to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");
@@ -455,9 +457,12 @@ mod tests {
                 )?);
 
                 gapless_loglet_smoke_test(loglet).await?;
-                Ok(())
+                googletest::Result::Ok(())
             })
-            .await
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
@@ -494,9 +499,12 @@ mod tests {
                 )?);
 
                 single_loglet_readstream_test(loglet).await?;
-                Ok(())
+                googletest::Result::Ok(())
             })
-            .await
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
@@ -533,10 +541,14 @@ mod tests {
                 )?);
 
                 single_loglet_readstream_test_with_trims(loglet).await?;
-                Ok(())
+                googletest::Result::Ok(())
             })
-            .await
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
+
     #[tokio::test(start_paused = true)]
     async fn local_loglet_test_append_after_seal() -> googletest::Result<()> {
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
@@ -571,9 +583,12 @@ mod tests {
                 )?);
 
                 loglet_test_append_after_seal(loglet).await?;
-                Ok(())
+                googletest::Result::Ok(())
             })
-            .await
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -609,8 +624,11 @@ mod tests {
                     loglet_test_append_after_seal_concurrent(loglet).await?;
                 }
 
-                Ok(())
+                googletest::Result::Ok(())
             })
-            .await
+            .await?;
+        node_env.tc.shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 }
