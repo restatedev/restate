@@ -148,7 +148,7 @@ impl RetryPolicy {
         }
     }
 
-    pub fn max_retries(&self) -> Option<NonZeroUsize> {
+    pub fn max_attempts(&self) -> Option<NonZeroUsize> {
         match self {
             RetryPolicy::None => None,
             RetryPolicy::FixedDelay { max_attempts, .. }

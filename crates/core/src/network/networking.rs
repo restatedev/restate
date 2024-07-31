@@ -104,7 +104,7 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy.max_retries()
+                        self.retry_policy.max_attempts()
                     );
                     continue;
                 }
@@ -119,7 +119,7 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy.max_retries()
+                        self.retry_policy.max_attempts()
                     );
                     continue;
                 }
@@ -135,7 +135,7 @@ impl NetworkSender for Networking {
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{:?}",
                         to,
                         attempts + 1,
-                        self.retry_policy.max_retries()
+                        self.retry_policy.max_attempts()
                     );
                     continue;
                 }
