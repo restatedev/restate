@@ -64,7 +64,7 @@ struct RestateArguments {
     /// Wipes the configured data before starting Restate.
     ///
     /// **WARNING** all the wiped data will be lost permanently!
-    #[arg(value_enum, long = "destroy-persisted-data", hide = true)]
+    #[arg(value_enum, long = "wipe", hide = true)]
     wipe: Option<WipeMode>,
 
     #[clap(flatten)]
