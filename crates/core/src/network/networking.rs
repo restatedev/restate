@@ -112,7 +112,7 @@ impl NetworkSender for Networking {
                         attempts + 1,
                         self.connect_retry_policy
                             .max_attempts()
-                            .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
+                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
@@ -129,7 +129,7 @@ impl NetworkSender for Networking {
                         attempts + 1,
                         self.connect_retry_policy
                             .max_attempts()
-                            .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
+                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
@@ -145,7 +145,7 @@ impl NetworkSender for Networking {
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
                         to,
                         attempts + 1,
-                        self.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
+                        self.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
