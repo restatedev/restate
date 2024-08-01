@@ -26,23 +26,19 @@ pub struct NetworkingOptions {
     /// # Retry policy
     ///
     /// Retry policy to use for internal node-to-node networking.
-    pub retry_policy: RetryPolicy,
+    pub connect_retry_policy: RetryPolicy,
 }
 
 impl NetworkingOptions {}
 
-const NETWORKING_DEFAULT_RETRY_INITIAL_INTERVAL: Duration = Duration::from_millis(10);
-const NETWORKING_DEFAULT_RETRY_MAX_INTERVAL: Duration = Duration::from_millis(500);
-const NETWORKING_DEFAULT_RETRY_MAX_ATTEMPTS: usize = 10;
-
 impl Default for NetworkingOptions {
     fn default() -> Self {
         Self {
-            retry_policy: RetryPolicy::exponential(
-                NETWORKING_DEFAULT_RETRY_INITIAL_INTERVAL,
+            connect_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
                 2.0,
-                Some(NETWORKING_DEFAULT_RETRY_MAX_ATTEMPTS),
-                Some(NETWORKING_DEFAULT_RETRY_MAX_INTERVAL),
+                Some(10),
+                Some(Duration::from_millis(500)),
             ),
         }
     }

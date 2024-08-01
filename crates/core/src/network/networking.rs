@@ -10,7 +10,7 @@
 
 use std::num::NonZeroUsize;
 
-use tracing::{info, instrument};
+use tracing::{info, instrument, trace};
 
 use restate_types::net::codec::{Targeted, WireEncode};
 use restate_types::retries::RetryPolicy;
@@ -25,15 +25,15 @@ use super::{ConnectionManager, ConnectionSender, NetworkError, NetworkSender};
 pub struct Networking {
     connections: ConnectionManager,
     metadata: Metadata,
-    retry_policy: RetryPolicy,
+    connect_retry_policy: RetryPolicy,
 }
 
 impl Networking {
-    pub fn new(metadata: Metadata, retry_policy: RetryPolicy) -> Self {
+    pub fn new(metadata: Metadata, connect_retry_policy: RetryPolicy) -> Self {
         Self {
             connections: ConnectionManager::new(metadata.clone()),
             metadata,
-            retry_policy,
+            connect_retry_policy,
         }
     }
 
@@ -67,7 +67,7 @@ impl NetworkSender for Networking {
     {
         let target_is_generational = to.is_generational();
         let mut attempts = 0;
-        let mut retry_policy = self.retry_policy.iter();
+        let mut retry_policy = self.connect_retry_policy.iter();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
@@ -82,6 +82,11 @@ impl NetworkSender for Networking {
             attempts += 1;
             if attempts > 1 {
                 if let Some(next_retry_interval) = retry_policy.next() {
+                    trace!(
+                        attempt = ?attempts,
+                        delay = ?next_retry_interval,
+                        "Delaying retry",
+                    );
                     tokio::time::sleep(next_retry_interval).await;
                 } else {
                     return Err(NetworkError::Unavailable(format!(
@@ -105,7 +110,7 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy
+                        self.connect_retry_policy
                             .max_attempts()
                             .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
@@ -122,7 +127,7 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        self.retry_policy
+                        self.connect_retry_policy
                             .max_attempts()
                             .unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
@@ -140,7 +145,7 @@ impl NetworkSender for Networking {
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
                         to,
                         attempts + 1,
-                        self.retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
+                        self.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // always Some, unreachable by RetryPolicy::None
                     );
                     continue;
                 }

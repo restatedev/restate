@@ -150,7 +150,7 @@ impl Node {
         let metadata = metadata_builder.to_metadata();
         let networking = Networking::new(
             metadata_builder.to_metadata(),
-            config.networking.retry_policy.clone(),
+            config.networking.connect_retry_policy.clone(),
         );
         let metadata_manager = MetadataManager::new(
             metadata_builder,
