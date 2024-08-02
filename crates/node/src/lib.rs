@@ -445,7 +445,7 @@ impl Node {
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
     ) -> Result<FixedPartitionTable, Error> {
-        Self::retry_on_network_error(|| {
+        Self::retry_on_network_error(config.common.network_error_retry_policy(), || {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
                 FixedPartitionTable::new(Version::MIN, config.common.bootstrap_num_partitions())
             })
@@ -459,7 +459,7 @@ impl Node {
         config: &Configuration,
         num_partitions: u64,
     ) -> Result<Logs, Error> {
-        Self::retry_on_network_error(|| {
+        Self::retry_on_network_error(config.common.network_error_retry_policy(), || {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                 bootstrap_logs_metadata(config.bifrost.default_provider, num_partitions)
             })
@@ -472,7 +472,7 @@ impl Node {
         metadata_store_client: &MetadataStoreClient,
         common_opts: &CommonOptions,
     ) -> Result<NodesConfiguration, Error> {
-        Self::retry_on_network_error(|| {
+        Self::retry_on_network_error(common_opts.network_error_retry_policy(), || {
             let mut previous_node_generation = None;
             metadata_store_client.read_modify_write(NODES_CONFIG_KEY.clone(), move |nodes_config| {
                 let mut nodes_config = if common_opts.allow_bootstrap {
@@ -553,22 +553,17 @@ impl Node {
         .map_err(|err| err.transpose())
     }
 
-    async fn retry_on_network_error<Fn, Fut, T, E>(action: Fn) -> Result<T, E>
+    async fn retry_on_network_error<Fn, Fut, T, E, P>(retry_policy: P, action: Fn) -> Result<T, E>
     where
+        P: Into<RetryPolicy>,
         Fn: FnMut() -> Fut,
         Fut: Future<Output = Result<T, E>>,
         E: MetadataStoreClientError + std::fmt::Display,
     {
-        // todo: Make upsert timeout configurable
-        let retry_policy = RetryPolicy::exponential(
-            Duration::from_millis(10),
-            2.0,
-            Some(15),
-            Some(Duration::from_secs(5)),
-        );
         let upsert_start = Instant::now();
 
         retry_policy
+            .into()
             .retry_if(action, |err: &E| {
                 if err.is_network_error() {
                     if upsert_start.elapsed() < Duration::from_secs(5) {

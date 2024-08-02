@@ -233,6 +233,11 @@ pub struct CommonOptions {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub metadata_update_interval: humantime::Duration,
+
+    /// # Network error retry policy
+    ///
+    /// The retry policy for node network error
+    network_error_retry_policy: Option<RetryPolicy>,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -317,6 +322,10 @@ impl CommonOptions {
                 .expect("number of cpu cores fits in u32"),
         )
     }
+
+    pub fn network_error_retry_policy(&self) -> RetryPolicy {
+        self.network_error_retry_policy.clone().unwrap_or_default()
+    }
 }
 
 impl Default for CommonOptions {
@@ -357,6 +366,12 @@ impl Default for CommonOptions {
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: std::time::Duration::from_secs(3).into(),
+            network_error_retry_policy: Some(RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                Some(15),
+                Some(Duration::from_secs(5)),
+            )),
         }
     }
 }
