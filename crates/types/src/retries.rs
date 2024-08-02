@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A core aspect of Restate it's the ability to retry invocations. This module contains the types defining retries.
+//! A core aspect of Restate is its ability to retry invocations. This module contains the types defining retries.
 
 use std::borrow::Cow;
 use std::cmp;
@@ -68,7 +68,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 pub enum RetryPolicy {
     /// # None
     ///
-    /// No retries strategy.
+    /// No retry strategy.
     None,
     /// # Fixed delay
     ///
@@ -146,6 +146,14 @@ impl RetryPolicy {
             factor,
             max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
             max_interval: max_interval.map(Into::into),
+        }
+    }
+
+    pub fn max_attempts(&self) -> Option<NonZeroUsize> {
+        match self {
+            RetryPolicy::None => None,
+            RetryPolicy::FixedDelay { max_attempts, .. }
+            | RetryPolicy::Exponential { max_attempts, .. } => *max_attempts,
         }
     }
 

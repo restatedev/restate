@@ -8,34 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
+use std::num::NonZeroUsize;
 
-use restate_types::retries::with_jitter;
 use tracing::{info, instrument, trace};
 
 use restate_types::net::codec::{Targeted, WireEncode};
+use restate_types::retries::RetryPolicy;
 use restate_types::NodeId;
 
-use super::{ConnectionManager, ConnectionSender};
-use super::{NetworkError, NetworkSender};
 use crate::Metadata;
 
-const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 10;
-// todo: make this configurable
-const SEND_RETRY_BASE_DURATION: Duration = Duration::from_millis(250);
+use super::{ConnectionManager, ConnectionSender, NetworkError, NetworkSender};
 
-/// Access to node-to-node networking infrastructure;
+/// Access to node-to-node networking infrastructure.
 #[derive(Clone)]
 pub struct Networking {
     connections: ConnectionManager,
     metadata: Metadata,
+    connect_retry_policy: RetryPolicy,
 }
 
 impl Networking {
-    pub fn new(metadata: Metadata) -> Self {
+    pub fn new(metadata: Metadata, connect_retry_policy: RetryPolicy) -> Self {
         Self {
             connections: ConnectionManager::new(metadata.clone()),
             metadata,
+            connect_retry_policy,
         }
     }
 
@@ -68,8 +66,8 @@ impl NetworkSender for Networking {
         M: WireEncode + Targeted + Send + Sync,
     {
         let target_is_generational = to.is_generational();
-        // we try to reconnect to the node for N times.
         let mut attempts = 0;
+        let mut retry_policy = self.connect_retry_policy.iter();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
@@ -82,14 +80,21 @@ impl NetworkSender for Networking {
             };
 
             attempts += 1;
-            if attempts > DEFAULT_MAX_CONNECT_ATTEMPTS {
-                return Err(NetworkError::Unavailable(format!(
-                    "failed to connect to node {} after {} attempts",
-                    to, DEFAULT_MAX_CONNECT_ATTEMPTS
-                )));
-            }
             if attempts > 1 {
-                sleep_with_jitter(SEND_RETRY_BASE_DURATION).await;
+                if let Some(next_retry_interval) = retry_policy.next() {
+                    trace!(
+                        attempt = ?attempts,
+                        delay = ?next_retry_interval,
+                        "Delaying retry",
+                    );
+                    tokio::time::sleep(next_retry_interval).await;
+                } else {
+                    return Err(NetworkError::Unavailable(format!(
+                        "failed to connect to node {} after {} attempts",
+                        to,
+                        attempts + 1
+                    )));
+                }
             }
 
             let mut sender = match self.connections.get_node_sender(to).await {
@@ -105,7 +110,9 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        DEFAULT_MAX_CONNECT_ATTEMPTS
+                        self.connect_retry_policy
+                            .max_attempts()
+                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
@@ -120,7 +127,9 @@ impl NetworkSender for Networking {
                         to,
                         e,
                         attempts + 1,
-                        DEFAULT_MAX_CONNECT_ATTEMPTS
+                        self.connect_retry_policy
+                            .max_attempts()
+                            .unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
@@ -134,7 +143,9 @@ impl NetworkSender for Networking {
                 Err(NetworkError::ConnectionClosed) => {
                     info!(
                         "Sending message to node {} failed due to connection reset, next retry is attempt {}/{}",
-                        to, attempts + 1, DEFAULT_MAX_CONNECT_ATTEMPTS
+                        to,
+                        attempts + 1,
+                        self.connect_retry_policy.max_attempts().unwrap_or(NonZeroUsize::MAX), // max_attempts() be Some at this point
                     );
                     continue;
                 }
@@ -142,13 +153,6 @@ impl NetworkSender for Networking {
             }
         }
     }
-}
-
-// todo: replace with RetryPolicy
-async fn sleep_with_jitter(duration: Duration) {
-    let retry_after = with_jitter(duration, 0.3);
-    trace!("sleeping for {:?}", retry_after);
-    tokio::time::sleep(retry_after).await;
 }
 
 static_assertions::assert_impl_all!(Networking: Send, Sync);

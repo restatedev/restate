@@ -21,6 +21,7 @@ mod http;
 mod ingress;
 mod kafka;
 mod metadata_store;
+mod networking;
 mod query_engine;
 mod rocksdb;
 mod worker;
@@ -35,6 +36,7 @@ pub use http::*;
 pub use ingress::*;
 pub use kafka::*;
 pub use metadata_store::*;
+pub use networking::*;
 pub use query_engine::*;
 pub use rocksdb::*;
 pub use worker::*;
@@ -47,10 +49,11 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use super::live::{LiveLoad, Pinned};
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::nodes_config::Role;
+
+use super::live::{LiveLoad, Pinned};
 
 #[cfg(any(test, feature = "test-util"))]
 enum TempOrPath {
@@ -151,6 +154,7 @@ pub struct Configuration {
     pub ingress: IngressOptions,
     pub bifrost: BifrostOptions,
     pub metadata_store: MetadataStoreOptions,
+    pub networking: NetworkingOptions,
 }
 
 impl Configuration {
