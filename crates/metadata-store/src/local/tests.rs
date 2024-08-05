@@ -27,7 +27,7 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::grpc::client::GrpcMetadataStoreClient;
 use crate::local::service::LocalMetadataStoreService;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
@@ -276,7 +276,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`MetadataStoreClient`]
+/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataStoreClient`]
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
@@ -341,9 +341,9 @@ async fn start_metadata_store(
         .wait_for_value(MetadataServerStatus::Ready)
         .await;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
+    let grpc_client = GrpcMetadataStoreClient::new(address, &metadata_store_client_options);
     let client = MetadataStoreClient::new(
-        rocksdb_client,
+        grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     );
 
