@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod grpc;
 mod store;
 
 mod service;
@@ -17,14 +16,14 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_types::config::MetadataStoreClientOptions;
 pub use service::LocalMetadataStoreService;
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::grpc::client::GrpcMetadataStoreClient;
 
-/// Creates a [`MetadataStoreClient`] for the [`LocalMetadataStoreService`].
+/// Creates a [`GrpcMetadataStoreClient`] for the [`LocalMetadataStoreService`].
 pub fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> MetadataStoreClient {
     MetadataStoreClient::new(
-        LocalMetadataStoreClient::new(metadata_store_client_options.metadata_store_address),
+        GrpcMetadataStoreClient::new(metadata_store_client_options.metadata_store_address),
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     )
 }
