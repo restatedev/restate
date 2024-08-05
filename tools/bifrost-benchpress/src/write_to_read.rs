@@ -18,7 +18,7 @@ use tracing::info;
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_bifrost::{LogRecord, Record};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
-use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 
 use crate::util::print_latencies;
 use crate::Arguments;
@@ -89,13 +89,13 @@ pub async fn run(
         async move {
             let mut append_latencies = Histogram::<u64>::new(3)?;
             let mut counter = 0;
+            let mut appender = bifrost.create_appender(log_id)?;
             loop {
                 counter += 1;
                 let start = Instant::now();
                 let mut bytes = BytesMut::default();
                 bytes.put_u64(clock.raw());
-                let payload = Payload::new(bytes);
-                if bifrost.append(log_id, payload).await.is_err() {
+                if appender.append_raw(bytes.freeze()).await.is_err() {
                     println!("Total records written: {}", counter);
                     print_latencies("append latency", append_latencies);
                     break;

@@ -19,7 +19,7 @@ use tokio::sync::Barrier;
 use tokio::task::{JoinHandle, JoinSet};
 
 use restate_test_util::let_assert;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{Keys, SequenceNumber};
 use tokio_stream::StreamExt;
 use tracing::info;
 
@@ -68,7 +68,9 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     let end: u64 = start + 3;
     for i in start..end {
         // Append i
-        let offset = loglet.append(Bytes::from(format!("record{}", i))).await?;
+        let offset = loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
         assert_eq!(LogletOffset::from(i), offset);
         assert_eq!(None, loglet.get_trim_point().await?);
         {
@@ -139,7 +141,9 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     );
 
     // Append 4
-    let offset = loglet.append(Bytes::from_static(b"record4")).await?;
+    let offset = loglet
+        .append(&Bytes::from_static(b"record4"), &Keys::None)
+        .await?;
     assert_eq!(LogletOffset(4), offset);
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -242,7 +246,9 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // append 5 records to the log (offsets [1-5])
     for i in 1..=5 {
-        let offset = loglet.append(Bytes::from(format!("record{}", i))).await?;
+        let offset = loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
         info!(?offset, "appended record");
         assert_eq!(LogletOffset::from(i), offset);
     }
@@ -255,7 +261,9 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // write 5 more records.
     for i in 6..=10 {
-        loglet.append(Bytes::from(format!("record{}", i))).await?;
+        loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
     }
 
     // reader has finished
@@ -284,7 +292,9 @@ pub async fn single_loglet_readstream_with_trims(
 
     // append 10 records. Offsets [1..10]
     for i in 1..=10 {
-        loglet.append(Bytes::from(format!("record{}", i))).await?;
+        loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
     }
 
     // Lsn(5) is trimmed, 5 records left [6..10]
@@ -351,7 +361,9 @@ pub async fn single_loglet_readstream_with_trims(
 
     // Add 10 more records [11..20]
     for i in 11..=20 {
-        loglet.append(Bytes::from(format!("record{}", i))).await?;
+        loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
     }
 
     // read stream should send a gap from 8->10
@@ -398,14 +410,18 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
 
     // append 5 records. Offsets [1..5]
     for i in 1..=5 {
-        loglet.append(Bytes::from(format!("record{}", i))).await?;
+        loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await?;
     }
 
     loglet.seal().await?;
 
     // attempt to append 5 records. Offsets [6..10]. Expected to fail since seal happened on the same client.
     for i in 6..=10 {
-        let res = loglet.append(Bytes::from(format!("record{}", i))).await;
+        let res = loglet
+            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
+            .await;
         assert_that!(res, err(pat!(AppendError::Sealed)));
     }
 
@@ -445,7 +461,10 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
                 let mut warmup = true;
                 loop {
                     let res = loglet
-                        .append(Bytes::from(format!("appender-{}-record{}", appender_id, i)))
+                        .append(
+                            &Bytes::from(format!("appender-{}-record{}", appender_id, i)),
+                            &Keys::None,
+                        )
                         .await;
                     i += 1;
                     if i > WARMUP_APPENDS && warmup {
@@ -498,7 +517,9 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     loglet.seal().await?;
     // fails immediately
     assert_that!(
-        loglet.append(Bytes::from_static(b"failed-record")).await,
+        loglet
+            .append(&Bytes::from_static(b"failed-record"), &Keys::None)
+            .await,
         err(pat!(AppendError::Sealed))
     );
 
