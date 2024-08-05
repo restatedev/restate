@@ -324,7 +324,14 @@ impl CommonOptions {
     }
 
     pub fn network_error_retry_policy(&self) -> RetryPolicy {
-        self.network_error_retry_policy.clone().unwrap_or_default()
+        self.network_error_retry_policy.clone().unwrap_or_else(|| {
+            RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                Some(15),
+                Some(Duration::from_secs(5)),
+            )
+        })
     }
 }
 
