@@ -10,17 +10,16 @@
 
 use restate_types::health::HealthStatus;
 
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc_svc;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::local::store::LocalMetadataStore;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
 use restate_types::protobuf::common::MetadataServerStatus;
-
-use crate::grpc_svc;
-use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::grpc::handler::LocalMetadataStoreHandler;
-use crate::local::store::LocalMetadataStore;
 
 pub struct LocalMetadataStoreService {
     health_status: HealthStatus<MetadataServerStatus>,
@@ -51,7 +50,7 @@ impl LocalMetadataStoreService {
         let store = LocalMetadataStore::create(options, rocksdb_options).await?;
 
         server_builder.register_grpc_service(
-            MetadataStoreSvcServer::new(LocalMetadataStoreHandler::new(store.request_sender())),
+            MetadataStoreSvcServer::new(MetadataStoreHandler::new(store.request_sender())),
             grpc_svc::FILE_DESCRIPTOR_SET,
         );
 
