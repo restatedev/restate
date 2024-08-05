@@ -19,7 +19,7 @@ use restate_rocksdb::{DbName, RocksDbManager};
 use restate_types::config::{
     BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder, LocalLogletOptionsBuilder,
 };
-use restate_types::logs::{LogId, Payload};
+use restate_types::logs::LogId;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 mod util;
@@ -31,7 +31,8 @@ async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u64>, co
             let bifrost = bifrost.clone();
             appends.push(async move {
                 let _ = bifrost
-                    .append(LogId::from(log_id), Payload::default())
+                    .create_appender(LogId::new(log_id))
+                    .append_raw("")
                     .await
                     .unwrap();
             })
@@ -44,15 +45,22 @@ async fn append_records_concurrent_single_log(bifrost: Bifrost, log_id: LogId, c
     let mut appends = FuturesOrdered::new();
     for _ in 0..count_per_log {
         let bifrost = bifrost.clone();
-        appends.push_back(async move { bifrost.append(log_id, Payload::default()).await.unwrap() })
+        appends.push_back(async move {
+            bifrost
+                .create_appender(log_id)
+                .append_raw("")
+                .await
+                .unwrap()
+        })
     }
     while appends.next().await.is_some() {}
 }
 
 async fn append_seq(bifrost: Bifrost, log_id: LogId, count: u64) {
+    let mut appender = bifrost.create_appender(log_id);
     for _ in 1..=count {
-        let _ = bifrost
-            .append(log_id, Payload::default())
+        let _ = appender
+            .append_raw("")
             .await
             .expect("bifrost accept record");
     }

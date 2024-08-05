@@ -10,17 +10,16 @@
 
 use super::leadership::ActionEffect;
 use futures::stream::FuturesUnordered;
-use restate_bifrost::{Bifrost, SMALL_BATCH_THRESHOLD_COUNT};
+use restate_bifrost::Bifrost;
 use restate_core::Metadata;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
-use restate_types::logs::{LogId, Payload};
+use restate_types::logs::LogId;
 use restate_types::partition_table::FindPartition;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
-use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::time::SystemTime;
@@ -58,8 +57,7 @@ impl ActionEffectHandler {
     ) -> anyhow::Result<()> {
         let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
         // groups envelopes write to Bifrost in batches
-        let mut buffer: BTreeMap<LogId, SmallVec<[Payload; SMALL_BATCH_THRESHOLD_COUNT]>> =
-            Default::default();
+        let mut buffer: BTreeMap<LogId, Vec<Envelope>> = Default::default();
 
         for actuator_output in effects {
             let envelope = match actuator_output {
@@ -91,17 +89,14 @@ impl ActionEffectHandler {
                 }
             };
             let log_id = LogId::from(partition_table.find_partition_id(envelope.partition_key())?);
-            buffer
-                .entry(log_id)
-                .or_default()
-                .push(Payload::new(envelope.to_bytes()?));
+            buffer.entry(log_id).or_default().push(envelope);
         }
 
         let mut batches = FuturesUnordered::new();
 
         // Attempt to write batches to different log ids concurrently
-        for (log_id, payloads) in &buffer {
-            batches.push(self.bifrost.append_batch(*log_id, payloads));
+        for (log_id, envelopes) in &buffer {
+            batches.push(self.bifrost.append_batch(*log_id, envelopes));
         }
         while let Some(o) = batches.next().await {
             // fail if any write fails. This is not the best approach to handle write errors,
