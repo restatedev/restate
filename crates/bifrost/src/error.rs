@@ -44,6 +44,14 @@ pub enum Error {
     MetadataStoreError(#[from] restate_core::metadata_store::ReadWriteError),
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum EnqueueError<T> {
+    #[error("the operation rejected due to backpressure")]
+    WouldBlock(T),
+    #[error("appender is draining, closed, or crashed")]
+    Closed(T),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AdminError {
     #[error("segment conflicts with existing segment with base_lsn={0}")]
