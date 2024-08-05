@@ -237,7 +237,7 @@ pub struct CommonOptions {
     /// # Network error retry policy
     ///
     /// The retry policy for node network error
-    network_error_retry_policy: Option<RetryPolicy>,
+    pub network_error_retry_policy: RetryPolicy,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -322,17 +322,6 @@ impl CommonOptions {
                 .expect("number of cpu cores fits in u32"),
         )
     }
-
-    pub fn network_error_retry_policy(&self) -> RetryPolicy {
-        self.network_error_retry_policy.clone().unwrap_or_else(|| {
-            RetryPolicy::exponential(
-                Duration::from_millis(10),
-                2.0,
-                Some(15),
-                Some(Duration::from_secs(5)),
-            )
-        })
-    }
 }
 
 impl Default for CommonOptions {
@@ -373,12 +362,12 @@ impl Default for CommonOptions {
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: std::time::Duration::from_secs(3).into(),
-            network_error_retry_policy: Some(RetryPolicy::exponential(
+            network_error_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
                 Some(15),
                 Some(Duration::from_secs(5)),
-            )),
+            ),
         }
     }
 }
