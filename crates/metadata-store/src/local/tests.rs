@@ -32,7 +32,7 @@ use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::grpc::client::GrpcMetadataStoreClient;
 use crate::local::service::LocalMetadataStoreService;
-use crate::{MetadataStoreClient, Precondition, WriteError};
+use crate::{MetadataStoreClient, MetadataStoreService, Precondition, WriteError};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
