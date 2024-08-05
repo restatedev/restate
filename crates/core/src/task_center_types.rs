@@ -80,6 +80,10 @@ pub enum TaskKind {
     /// A background task that the system needs for its operation. The task requires a system
     /// shutdown on errors and the system will wait for its graceful cancellation on shutdown.
     BifrostBackgroundHighPriority,
+    /// A background appender. The task will log on errors but the system will wait for its
+    /// graceful cancellation on shutdown.
+    #[strum(props(OnCancel = "wait", OnError = "log"))]
+    BifrostAppender,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
     LogletProvider,
