@@ -30,7 +30,7 @@ use restate_types::net::{AdvertisedAddress, BindAddress};
 use restate_types::retries::RetryPolicy;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
+use crate::grpc::client::GrpcMetadataStoreClient;
 use crate::local::service::LocalMetadataStoreService;
 use crate::{MetadataStoreClient, Precondition, WriteError};
 
@@ -309,7 +309,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`MetadataStoreClient`]
+/// Creates a test environment with the [`RocksDBMetadataStore`] and a [`GrpcMetadataStoreClient`]
 /// connected to it.
 async fn create_test_environment(
     opts: &MetadataStoreOptions,
@@ -354,7 +354,7 @@ async fn start_metadata_store(
     task_center: &TaskCenter,
 ) -> anyhow::Result<MetadataStoreClient> {
     let service = LocalMetadataStoreService::from_options(opts, updateables_rocksdb_options);
-    let grpc_service_name = service.grpc_service_name().to_owned();
+    let grpc_service_name = LocalMetadataStoreService::grpc_service_name().to_owned();
 
     task_center.spawn(
         TaskKind::MetadataStore,
@@ -387,9 +387,9 @@ async fn start_metadata_store(
         })
         .await?;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(address);
+    let grpc_client = GrpcMetadataStoreClient::new(address);
     let client = MetadataStoreClient::new(
-        rocksdb_client,
+        grpc_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     );
 

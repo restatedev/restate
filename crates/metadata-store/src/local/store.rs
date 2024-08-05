@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::{Error, MetadataStoreRequest, RequestReceiver, RequestSender, Result};
 use bytes::BytesMut;
 use bytestring::ByteString;
 use restate_core::cancellation_watcher;
@@ -18,74 +19,15 @@ use restate_rocksdb::{
 };
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{
-    StorageCodec, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-};
+use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{debug, trace};
-
-pub type RequestSender = mpsc::Sender<MetadataStoreRequest>;
-pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
-
-type Result<T> = std::result::Result<T, Error>;
 
 const DB_NAME: &str = "local-metadata-store";
 const KV_PAIRS: &str = "kv_pairs";
-
-#[derive(Debug)]
-pub enum MetadataStoreRequest {
-    Get {
-        key: ByteString,
-        result_tx: oneshot::Sender<Result<Option<VersionedValue>>>,
-    },
-    GetVersion {
-        key: ByteString,
-        result_tx: oneshot::Sender<Result<Option<Version>>>,
-    },
-    Put {
-        key: ByteString,
-        value: VersionedValue,
-        precondition: Precondition,
-        result_tx: oneshot::Sender<Result<()>>,
-    },
-    Delete {
-        key: ByteString,
-        precondition: Precondition,
-        result_tx: oneshot::Sender<Result<()>>,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("storage error: {0}")]
-    Storage(#[from] rocksdb::Error),
-    #[error("rocksdb error: {0}")]
-    RocksDb(#[from] RocksError),
-    #[error("failed precondition: {0}")]
-    FailedPrecondition(String),
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
-    #[error("encode error: {0}")]
-    Encode(#[from] StorageEncodeError),
-    #[error("decode error: {0}")]
-    Decode(#[from] StorageDecodeError),
-}
-
-impl Error {
-    fn kv_pair_exists() -> Self {
-        Error::FailedPrecondition("key-value pair already exists".to_owned())
-    }
-
-    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
-        Error::FailedPrecondition(format!(
-            "Expected version '{}' but found version '{:?}'",
-            expected, actual
-        ))
-    }
-}
 
 /// Single node metadata store which stores the key value pairs in RocksDB.
 ///
@@ -217,7 +159,10 @@ impl LocalMetadataStore {
 
     fn get(&self, key: &ByteString) -> Result<Option<VersionedValue>> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
+        let slice = self
+            .db
+            .get_pinned_cf(&cf_handle, key)
+            .map_err(|err| Error::Storage(err.into()))?;
 
         if let Some(bytes) = slice {
             Ok(Some(Self::decode(bytes)?))
@@ -228,7 +173,10 @@ impl LocalMetadataStore {
 
     fn get_version(&self, key: &ByteString) -> Result<Option<Version>> {
         let cf_handle = self.kv_cf_handle();
-        let slice = self.db.get_pinned_cf(&cf_handle, key)?;
+        let slice = self
+            .db
+            .get_pinned_cf(&cf_handle, key)
+            .map_err(|err| Error::Storage(err.into()))?;
 
         if let Some(bytes) = slice {
             // todo only deserialize the version part
@@ -278,8 +226,7 @@ impl LocalMetadataStore {
         let cf_handle = self.kv_cf_handle();
         let mut wb = WriteBatch::default();
         wb.put_cf(&cf_handle, key, self.buffer.as_ref());
-        Ok(self
-            .rocksdb
+        self.rocksdb
             .write_batch(
                 "local-metadata-write-batch",
                 Priority::High,
@@ -287,7 +234,8 @@ impl LocalMetadataStore {
                 write_options,
                 wb,
             )
-            .await?)
+            .await
+            .map_err(|err| Error::Storage(err.into()))
     }
 
     fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<()> {
@@ -320,7 +268,7 @@ impl LocalMetadataStore {
         let write_options = self.write_options();
         self.db
             .delete_cf_opt(&self.kv_cf_handle(), key, &write_options)
-            .map_err(Into::into)
+            .map_err(|err| Error::Storage(err.into()))
     }
 
     fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<()> {

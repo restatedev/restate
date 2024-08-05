@@ -20,16 +20,16 @@ use restate_core::network::net_util::create_tonic_channel_from_advertised_addres
 use restate_types::net::AdvertisedAddress;
 use restate_types::Version;
 
+use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_client::MetadataStoreSvcClient;
 use crate::grpc_svc::{DeleteRequest, GetRequest, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
 
-/// Client end to interact with the [`LocalMetadataStore`].
+/// Client end to interact with the metadata store.
 #[derive(Debug, Clone)]
-pub struct LocalMetadataStoreClient {
+pub struct GrpcMetadataStoreClient {
     svc_client: MetadataStoreSvcClient<Channel>,
 }
-impl LocalMetadataStoreClient {
+impl GrpcMetadataStoreClient {
     pub fn new(metadata_store_address: AdvertisedAddress) -> Self {
         let channel = create_tonic_channel_from_advertised_address(metadata_store_address)
             .expect("should not fail");
@@ -41,7 +41,7 @@ impl LocalMetadataStoreClient {
 }
 
 #[async_trait]
-impl MetadataStore for LocalMetadataStoreClient {
+impl MetadataStore for GrpcMetadataStoreClient {
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         let response = self
             .svc_client
