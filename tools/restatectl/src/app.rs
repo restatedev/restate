@@ -18,6 +18,7 @@ use restate_cli_util::CommonOpts;
 
 use crate::commands::dump::Dump;
 use crate::commands::log::Log;
+use crate::commands::node::Node;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -46,6 +47,9 @@ pub enum Command {
     /// Cluster distributed log operations
     #[clap(subcommand)]
     Logs(Log),
+    /// Cluster node status
+    #[clap(subcommand)]
+    Nodes(Node),
 }
 
 fn init(common_opts: &CommonOpts) {

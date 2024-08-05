@@ -8,12 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod get;
+mod get_state;
 
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Log {
     /// Print the log state by partition
-    State(get::StateOpts),
+    State(get_state::StateOpts),
 }

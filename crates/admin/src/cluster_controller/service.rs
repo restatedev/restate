@@ -63,8 +63,8 @@ pub struct Service<N> {
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
     metadata_store_client: MetadataStoreClient,
-    heartbeat_interval: time::Interval,
-    log_trim_interval: Option<time::Interval>,
+    heartbeat_interval: Interval,
+    log_trim_interval: Option<Interval>,
     log_trim_threshold: Lsn,
 }
 
@@ -346,7 +346,7 @@ where
         let networking = self.networking.clone();
         let response = self.create_attachment_response(&partition_table, from, request.request_id);
         self.task_center.spawn(
-            restate_core::TaskKind::Disposable,
+            TaskKind::Disposable,
             "attachment-response",
             None,
             async move { Ok(networking.send(from.into(), &response).await?) },
