@@ -57,18 +57,33 @@ pub struct BifrostOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub seal_retry_interval: humantime::Duration,
 
-    /// # Append retry policy
+    /// # Append retry minimum interval
     ///
-    /// Retry policy to use when bifrost waits for reconfiguration to complete during
-    /// append operations.
+    /// Minimum retry duration used by the exponential backoff mechanism for bifrost appends.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    append_retry_min_interval: humantime::Duration,
+    /// # Append retry maximum interval
     ///
-    /// Note that appends will be retried forever by default.
-    pub append_retry_policy: RetryPolicy,
+    /// Maximum retry duration used by the exponential backoff mechanism for bifrost appends.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    append_retry_max_interval: humantime::Duration,
 }
 
 impl BifrostOptions {
     pub fn default_provider_config(&self) -> Option<&str> {
         self.default_provider_config.as_deref()
+    }
+
+    pub fn append_retry_policy(&self) -> RetryPolicy {
+        // Appends are retried with exponential backoff, forever.
+        RetryPolicy::exponential(
+            self.append_retry_min_interval.into(),
+            2.0,
+            None,
+            Some(self.append_retry_max_interval.into()),
+        )
     }
 }
 
@@ -86,12 +101,8 @@ impl Default for BifrostOptions {
                 Some(50),
                 Some(Duration::from_secs(1)),
             ),
-            append_retry_policy: RetryPolicy::exponential(
-                Duration::from_millis(10),
-                2.0,
-                None,
-                Some(Duration::from_secs(1)),
-            ),
+            append_retry_min_interval: Duration::from_millis(10).into(),
+            append_retry_max_interval: Duration::from_secs(1).into(),
             seal_retry_interval: Duration::from_secs(2).into(),
         }
     }
