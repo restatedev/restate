@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::leadership::ActionEffect;
-use futures::stream::FuturesUnordered;
+use std::collections::{btree_map, BTreeMap};
+use std::ops::RangeInclusive;
+use std::time::SystemTime;
+
 use restate_bifrost::Bifrost;
-use restate_core::Metadata;
+use restate_core::{task_center, Metadata};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::LogId;
@@ -20,10 +22,8 @@ use restate_types::time::MillisSinceEpoch;
 use restate_types::Version;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
-use std::collections::BTreeMap;
-use std::ops::RangeInclusive;
-use std::time::SystemTime;
-use tokio_stream::StreamExt;
+
+use super::leadership::ActionEffect;
 
 /// Responsible for proposing [ActionEffect].
 pub(super) struct ActionEffectHandler {
@@ -31,6 +31,7 @@ pub(super) struct ActionEffectHandler {
     epoch_sequence_number: EpochSequenceNumber,
     partition_key_range: RangeInclusive<PartitionKey>,
     bifrost: Bifrost,
+    bifrost_appenders: BTreeMap<LogId, restate_bifrost::AppenderHandle<Envelope>>,
     metadata: Metadata,
 }
 
@@ -47,6 +48,7 @@ impl ActionEffectHandler {
             epoch_sequence_number,
             partition_key_range,
             bifrost,
+            bifrost_appenders: Default::default(),
             metadata,
         }
     }
@@ -56,8 +58,6 @@ impl ActionEffectHandler {
         effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
         let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
-        // groups envelopes write to Bifrost in batches
-        let mut buffer: BTreeMap<LogId, Vec<Envelope>> = Default::default();
 
         for actuator_output in effects {
             let envelope = match actuator_output {
@@ -89,21 +89,19 @@ impl ActionEffectHandler {
                 }
             };
             let log_id = LogId::from(partition_table.find_partition_id(envelope.partition_key())?);
-            buffer.entry(log_id).or_default().push(envelope);
+            let sender = match self.bifrost_appenders.entry(log_id) {
+                btree_map::Entry::Vacant(entry) => {
+                    let appender = self
+                        .bifrost
+                        .create_background_appender(log_id, 1000, 100)?
+                        .start(task_center(), "effect-appender", Some(self.partition_id))?;
+                    entry.insert(appender).sender()
+                }
+                btree_map::Entry::Occupied(sender) => sender.into_mut().sender(),
+            };
+            sender.enqueue(envelope).await?;
         }
 
-        let mut batches = FuturesUnordered::new();
-
-        // Attempt to write batches to different log ids concurrently
-        for (log_id, envelopes) in &buffer {
-            batches.push(self.bifrost.append_batch(*log_id, envelopes));
-        }
-        while let Some(o) = batches.next().await {
-            // fail if any write fails. This is not the best approach to handle write errors,
-            // however this is how it was.
-            // todo: we should implement a better error handling mechanism
-            let _ = o?;
-        }
         Ok(())
     }
 
