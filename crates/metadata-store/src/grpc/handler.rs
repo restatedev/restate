@@ -8,28 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
 use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::local::grpc::pb_conversions::ConversionError;
-use crate::local::store::{Error, MetadataStoreRequest, RequestSender};
+use crate::{Error, MetadataStoreRequest, RequestSender};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
-/// Grpc svc handler for the [`LocalMetadataStore`].
+/// Grpc svc handler for the metadata store.
 #[derive(Debug)]
-pub struct LocalMetadataStoreHandler {
+pub struct MetadataStoreHandler {
     request_tx: RequestSender,
 }
 
-impl LocalMetadataStoreHandler {
+impl MetadataStoreHandler {
     pub fn new(request_tx: RequestSender) -> Self {
         Self { request_tx }
     }
 }
 
 #[async_trait]
-impl MetadataStoreSvc for LocalMetadataStoreHandler {
+impl MetadataStoreSvc for MetadataStoreHandler {
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let (result_tx, result_rx) = oneshot::channel();
 
