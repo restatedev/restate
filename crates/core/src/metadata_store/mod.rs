@@ -16,11 +16,10 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use restate_types::errors::GenericError;
-use restate_types::retries::{RetryIter, RetryPolicy};
+use restate_types::retries::RetryPolicy;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::debug;
 
 #[derive(Debug, thiserror::Error)]
@@ -101,21 +100,26 @@ pub trait MetadataStore {
 pub struct MetadataStoreClient {
     // premature optimization? Maybe introduce trait object once we have multiple implementations?
     inner: Arc<dyn MetadataStore + Send + Sync>,
+    backoff_policy: Option<RetryPolicy>,
 }
 
 impl MetadataStoreClient {
-    pub fn new<S>(metadata_store: S) -> Self
+    pub fn new<S>(metadata_store: S, backoff_policy: Option<RetryPolicy>) -> Self
     where
         S: MetadataStore + Send + Sync + 'static,
     {
         Self {
             inner: Arc::new(metadata_store),
+            backoff_policy,
         }
     }
 
     #[cfg(any(test, feature = "test-util"))]
     pub fn new_in_memory() -> Self {
-        MetadataStoreClient::new(InMemoryMetadataStore::default())
+        MetadataStoreClient::new(
+            InMemoryMetadataStore::default(),
+            None, // not needed since no concurrent modifications happening
+        )
     }
 
     /// Gets the value and its current version for the given key. If key-value pair is not present,
@@ -196,8 +200,7 @@ impl MetadataStoreClient {
         T: Versioned + Clone + StorageEncode + StorageDecode,
         F: FnMut() -> T,
     {
-        let max_backoff = Duration::from_millis(100);
-        let mut backoff_policy = Self::exponential_retry_policy(max_backoff);
+        let mut backoff_policy = self.backoff_policy.as_ref().map(|p| p.iter());
 
         loop {
             let value = self.get::<T>(key.clone()).await?;
@@ -214,22 +217,20 @@ impl MetadataStoreClient {
                 {
                     Ok(()) => return Ok(init_value),
                     Err(WriteError::FailedPrecondition(msg)) => {
-                        let backoff = backoff_policy.next().unwrap_or(max_backoff);
-                        debug!(
-                            "concurrent value update: {msg}; retrying in '{}'",
-                            humantime::format_duration(backoff)
-                        );
-                        tokio::time::sleep(backoff).await;
+                        if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
+                            debug!(
+                                "Concurrent value update: {msg}; retrying in '{}'",
+                                humantime::format_duration(backoff)
+                            );
+                            tokio::time::sleep(backoff).await;
+                        } else {
+                            return Err(ReadWriteError::RetriesExhausted(key));
+                        }
                     }
                     Err(err) => return Err(err.into()),
                 }
             }
         }
-    }
-
-    fn exponential_retry_policy(max_backoff: Duration) -> RetryIter {
-        RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, Some(max_backoff))
-            .into_iter()
     }
 
     /// Reads the value under the given key from the metadata store, then modifies it and writes
@@ -245,8 +246,7 @@ impl MetadataStoreClient {
         T: Versioned + Clone + StorageEncode + StorageDecode,
         F: FnMut(Option<T>) -> Result<T, E>,
     {
-        let max_backoff = Duration::from_millis(100);
-        let mut backoff_policy = Self::exponential_retry_policy(max_backoff);
+        let mut backoff_policy = self.backoff_policy.as_ref().map(|p| p.iter());
 
         loop {
             let old_value = self
@@ -266,12 +266,15 @@ impl MetadataStoreClient {
                     match self.put(key.clone(), new_value.clone(), precondition).await {
                         Ok(()) => return Ok(new_value),
                         Err(WriteError::FailedPrecondition(msg)) => {
-                            let backoff = backoff_policy.next().unwrap_or(max_backoff);
-                            debug!(
-                                "concurrent value update: {msg}; retrying in '{}'",
-                                humantime::format_duration(backoff)
-                            );
-                            tokio::time::sleep(backoff).await;
+                            if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
+                                debug!(
+                                    "Concurrent value update: {msg}; retrying in '{}'",
+                                    humantime::format_duration(backoff)
+                                );
+                                tokio::time::sleep(backoff).await;
+                            } else {
+                                return Err(ReadWriteError::RetriesExhausted(key).into());
+                            }
                         }
                         Err(err) => return Err(ReadModifyWriteError::ReadWrite(err.into())),
                     }
@@ -290,6 +293,8 @@ pub enum ReadWriteError {
     Internal(String),
     #[error("codec error: {0}")]
     Codec(GenericError),
+    #[error("retries for operation on key '{0}' exhausted")]
+    RetriesExhausted(ByteString),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -354,6 +359,7 @@ impl MetadataStoreClientError for ReadWriteError {
             ReadWriteError::Network(_) => true,
             ReadWriteError::Internal(_) => false,
             ReadWriteError::Codec(_) => false,
+            ReadWriteError::RetriesExhausted(_) => false,
         }
     }
 }

@@ -8,8 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A core aspect of Restate it's the ability to retry invocations. This module contains the types defining retries.
+//! A core aspect of Restate is its ability to retry invocations. This module contains the types defining retries.
 
+use std::borrow::Cow;
 use std::cmp;
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -67,7 +68,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 pub enum RetryPolicy {
     /// # None
     ///
-    /// No retries strategy.
+    /// No retry strategy.
     None,
     /// # Fixed delay
     ///
@@ -148,6 +149,14 @@ impl RetryPolicy {
         }
     }
 
+    pub fn max_attempts(&self) -> Option<NonZeroUsize> {
+        match self {
+            RetryPolicy::None => None,
+            RetryPolicy::FixedDelay { max_attempts, .. }
+            | RetryPolicy::Exponential { max_attempts, .. } => *max_attempts,
+        }
+    }
+
     /// Retry the provided closure respecting this retry policy.
     pub async fn retry<T, E, Fn, Fut>(self, mut operation: Fn) -> Result<T, E>
     where
@@ -195,15 +204,24 @@ impl RetryPolicy {
             }
         }
     }
+
+    pub fn iter(&self) -> RetryIter<'_> {
+        let policy = Cow::Borrowed(self);
+        RetryIter {
+            policy,
+            attempts: 0,
+            last_retry: None,
+        }
+    }
 }
 
 impl IntoIterator for RetryPolicy {
     type Item = Duration;
-    type IntoIter = RetryIter;
+    type IntoIter = RetryIter<'static>;
 
     fn into_iter(self) -> Self::IntoIter {
         RetryIter {
-            policy: self,
+            policy: Cow::Owned(self),
             attempts: 0,
             last_retry: None,
         }
@@ -211,19 +229,19 @@ impl IntoIterator for RetryPolicy {
 }
 
 #[derive(Debug)]
-pub struct RetryIter {
-    policy: RetryPolicy,
+pub struct RetryIter<'a> {
+    policy: Cow<'a, RetryPolicy>,
     attempts: usize,
     last_retry: Option<Duration>,
 }
 
-impl Iterator for RetryIter {
+impl<'a> Iterator for RetryIter<'a> {
     type Item = Duration;
 
     /// adds up to 1/3 target duration as jitter
     fn next(&mut self) -> Option<Self::Item> {
         self.attempts += 1;
-        match self.policy {
+        match self.policy.as_ref() {
             RetryPolicy::None => None,
             RetryPolicy::FixedDelay {
                 interval,
@@ -232,7 +250,7 @@ impl Iterator for RetryIter {
                 if max_attempts.is_some_and(|limit| self.attempts > limit.into()) {
                     None
                 } else {
-                    Some(with_jitter(interval.into(), DEFAULT_JITTER_MULTIPLIER))
+                    Some(with_jitter((*interval).into(), DEFAULT_JITTER_MULTIPLIER))
                 }
             }
             RetryPolicy::Exponential {
@@ -245,21 +263,24 @@ impl Iterator for RetryIter {
                     None
                 } else if self.last_retry.is_some() {
                     let new_retry = cmp::min(
-                        self.last_retry.unwrap().mul_f32(factor),
+                        self.last_retry.unwrap().mul_f32(*factor),
                         max_interval.map(Into::into).unwrap_or(Duration::MAX),
                     );
                     self.last_retry = Some(new_retry);
                     return Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER));
                 } else {
-                    self.last_retry = Some(*initial_interval);
-                    return Some(with_jitter(*initial_interval, DEFAULT_JITTER_MULTIPLIER));
+                    self.last_retry = Some((*initial_interval).into());
+                    return Some(with_jitter(
+                        (*initial_interval).into(),
+                        DEFAULT_JITTER_MULTIPLIER,
+                    ));
                 }
             }
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let max_attempts = match self.policy {
+        let max_attempts = match self.policy.as_ref() {
             RetryPolicy::None => return (0, Some(0)),
             RetryPolicy::FixedDelay { max_attempts, .. } => max_attempts,
             RetryPolicy::Exponential { max_attempts, .. } => max_attempts,
@@ -289,7 +310,7 @@ pub fn with_jitter(duration: Duration, max_multiplier: f32) -> Duration {
     }
 }
 
-impl ExactSizeIterator for RetryIter {}
+impl<'a> ExactSizeIterator for RetryIter<'a> {}
 
 #[cfg(test)]
 mod tests {

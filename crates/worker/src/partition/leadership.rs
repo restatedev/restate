@@ -34,7 +34,7 @@ use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNu
 use restate_timer::TokioClock;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionLeaderEpoch};
-use restate_types::logs::{LogId, Payload};
+use restate_types::logs::LogId;
 use restate_types::net::ingress;
 use restate_types::storage::StorageEncodeError;
 use restate_types::GenerationalNodeId;
@@ -221,12 +221,11 @@ where
                 leader_epoch,
             }),
         );
-        let payload = Payload::new(envelope.to_bytes()?);
 
         self.bifrost
             .append(
                 LogId::from(self.partition_processor_metadata.partition_id),
-                payload,
+                envelope,
             )
             .await?;
 

@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{LogId, SequenceNumber};
+use restate_types::logs::{Keys, LogId, SequenceNumber};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
@@ -313,7 +313,7 @@ impl LogletBase for MemoryLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
+    async fn append(&self, payload: &Bytes, _keys: &Keys) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
             return Err(AppendError::Sealed);
@@ -323,14 +323,14 @@ impl LogletBase for MemoryLoglet {
             "Appending record to in-memory loglet {:?} at offset {}",
             self.params, offset,
         );
-        log.push(payload);
+        log.push(payload.clone());
         // mark as committed immediately.
         let offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
         self.advance_commit_offset(offset);
         Ok(offset)
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, AppendError> {
+    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
             return Err(AppendError::Sealed);
@@ -343,7 +343,7 @@ impl LogletBase for MemoryLoglet {
                 "Appending record to in-memory loglet {:?} at offset {}",
                 self.params, offset,
             );
-            log.push(payload.clone());
+            log.push(payload.0.clone());
         }
         // mark as committed immediately.
         self.advance_commit_offset(first_offset + num_payloads);

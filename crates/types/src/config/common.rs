@@ -10,19 +10,19 @@
 
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
+use restate_serde_util::NonZeroByteCount;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
-
-use restate_serde_util::NonZeroByteCount;
-
-use crate::net::{AdvertisedAddress, BindAddress};
-use crate::nodes_config::Role;
-use crate::PlainNodeId;
+use std::time::Duration;
 
 use super::{AwsOptions, HttpOptions, PerfStatsLevel, RocksDbOptions};
+use crate::net::{AdvertisedAddress, BindAddress};
+use crate::nodes_config::Role;
+use crate::retries::RetryPolicy;
+use crate::PlainNodeId;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 
@@ -61,9 +61,8 @@ pub struct CommonOptions {
     #[builder(setter(strip_option))]
     base_dir: Option<PathBuf>,
 
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    /// Address of the metadata store server to bootstrap the node from.
-    pub metadata_store_address: AdvertisedAddress,
+    #[serde(flatten)]
+    pub metadata_store_client: MetadataStoreClientOptions,
 
     /// Address to bind for the Node server. Default is `0.0.0.0:5122`
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
@@ -234,6 +233,11 @@ pub struct CommonOptions {
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub metadata_update_interval: humantime::Duration,
+
+    /// # Network error retry policy
+    ///
+    /// The retry policy for node network error
+    pub network_error_retry_policy: RetryPolicy,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -332,9 +336,7 @@ impl Default for CommonOptions {
             // compatible and easy for users.
             allow_bootstrap: true,
             base_dir: None,
-            metadata_store_address: "http://127.0.0.1:5123"
-                .parse()
-                .expect("valid metadata store address"),
+            metadata_store_client: MetadataStoreClientOptions::default(),
             bind_address: "0.0.0.0:5122".parse().unwrap(),
             advertised_address: AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap(),
             bootstrap_num_partitions: NonZeroU64::new(24).unwrap(),
@@ -360,6 +362,12 @@ impl Default for CommonOptions {
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: std::time::Duration::from_secs(3).into(),
+            network_error_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                Some(15),
+                Some(Duration::from_secs(5)),
+            ),
         }
     }
 }
@@ -412,4 +420,42 @@ pub enum LogFormat {
     ///
     /// Enables json logging. You can use a json log collector to ingest these logs and further process them.
     Json,
+}
+
+/// # Service Client options
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "MetadataStoreClientOptions", default)
+)]
+#[builder(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct MetadataStoreClientOptions {
+    /// Address of the metadata store server to bootstrap the node from.
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub metadata_store_address: AdvertisedAddress,
+
+    /// # Backoff policy used by the metadata store client
+    ///
+    /// Backoff policy used by the metadata store client when it encounters concurrent
+    /// modifications.
+    pub metadata_store_client_backoff_policy: RetryPolicy,
+}
+
+impl Default for MetadataStoreClientOptions {
+    fn default() -> Self {
+        Self {
+            metadata_store_address: "http://127.0.0.1:5123"
+                .parse()
+                .expect("valid metadata store address"),
+            metadata_store_client_backoff_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                None,
+                Some(Duration::from_millis(100)),
+            ),
+        }
+    }
 }

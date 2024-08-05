@@ -200,7 +200,7 @@ impl ServiceDiscovery {
         &self,
         endpoint: &DiscoverEndpoint,
     ) -> Result<DiscoveredMetadata, DiscoveryError> {
-        let retry_policy = self.retry_policy.clone().into_iter();
+        let retry_policy = self.retry_policy.iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &self.client,
             endpoint.address(),
@@ -347,7 +347,7 @@ impl ServiceDiscovery {
         client: &ServiceClient,
         address: impl Display,
         build_request: impl Fn() -> Request<Empty<Bytes>>,
-        mut retry_iter: RetryIter,
+        mut retry_iter: RetryIter<'_>,
     ) -> Result<(ResponseParts, Bytes), DiscoveryError> {
         loop {
             let response_fut = client.call(build_request());

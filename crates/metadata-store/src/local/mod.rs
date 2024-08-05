@@ -14,14 +14,19 @@ mod store;
 mod service;
 
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_types::net::AdvertisedAddress;
+use restate_types::config::MetadataStoreClientOptions;
 pub use service::LocalMetadataStoreService;
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 
 /// Creates a [`MetadataStoreClient`] for the [`LocalMetadataStoreService`].
-pub fn create_client(advertised_address: AdvertisedAddress) -> MetadataStoreClient {
-    MetadataStoreClient::new(LocalMetadataStoreClient::new(advertised_address))
+pub fn create_client(
+    metadata_store_client_options: MetadataStoreClientOptions,
+) -> MetadataStoreClient {
+    MetadataStoreClient::new(
+        LocalMetadataStoreClient::new(metadata_store_client_options.metadata_store_address),
+        Some(metadata_store_client_options.metadata_store_client_backoff_policy),
+    )
 }
 
 #[cfg(test)]

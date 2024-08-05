@@ -22,7 +22,8 @@ use restate_core::network::net_util::create_tonic_channel_from_advertised_addres
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    reset_base_temp_dir_and_retain, Configuration, MetadataStoreOptions, RocksDbOptions,
+    reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
+    MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
 };
 use restate_types::live::{BoxedLiveLoad, Live};
 use restate_types::net::{AdvertisedAddress, BindAddress};
@@ -266,12 +267,15 @@ async fn durable_storage() -> anyhow::Result<()> {
 
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
-    let advertised_address = AdvertisedAddress::Uds(uds_path);
+    let metadata_store_client_opts = MetadataStoreClientOptionsBuilder::default()
+        .metadata_store_address(AdvertisedAddress::Uds(uds_path))
+        .build()
+        .expect("valid metadata store client options");
     let mut metadata_store_opts = opts.clone();
     metadata_store_opts.bind_address = bind_address;
     let metadata_store_opts = Live::from_value(metadata_store_opts);
     let client = start_metadata_store(
-        advertised_address,
+        metadata_store_client_opts,
         metadata_store_opts.clone().boxed(),
         metadata_store_opts.map(|c| &c.rocksdb).boxed(),
         &env.tc,
@@ -315,7 +319,7 @@ async fn create_test_environment(
     let advertised_address = AdvertisedAddress::Uds(uds_path);
     config.metadata_store = opts.clone();
     config.metadata_store.bind_address = bind_address;
-    config.common.metadata_store_address = advertised_address.clone();
+    config.common.metadata_store_client.metadata_store_address = advertised_address.clone();
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
@@ -328,7 +332,7 @@ async fn create_test_environment(
     });
 
     let client = start_metadata_store(
-        advertised_address,
+        config.pinned().common.metadata_store_client.clone(),
         config.clone().map(|c| &c.metadata_store).boxed(),
         config.clone().map(|c| &c.metadata_store.rocksdb).boxed(),
         task_center,
@@ -339,7 +343,7 @@ async fn create_test_environment(
 }
 
 async fn start_metadata_store(
-    advertised_address: AdvertisedAddress,
+    metadata_store_client_options: MetadataStoreClientOptions,
     opts: BoxedLiveLoad<MetadataStoreOptions>,
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
     task_center: &TaskCenter,
@@ -359,7 +363,7 @@ async fn start_metadata_store(
 
     // await start-up of metadata store
     let health_client = HealthClient::new(create_tonic_channel_from_advertised_address(
-        advertised_address.clone(),
+        metadata_store_client_options.metadata_store_address.clone(),
     )?);
     let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);
 
@@ -374,8 +378,12 @@ async fn start_metadata_store(
         })
         .await?;
 
-    let rocksdb_client = LocalMetadataStoreClient::new(advertised_address);
-    let client = MetadataStoreClient::new(rocksdb_client);
+    let rocksdb_client =
+        LocalMetadataStoreClient::new(metadata_store_client_options.metadata_store_address);
+    let client = MetadataStoreClient::new(
+        rocksdb_client,
+        Some(metadata_store_client_options.metadata_store_client_backoff_policy),
+    );
 
     Ok(client)
 }

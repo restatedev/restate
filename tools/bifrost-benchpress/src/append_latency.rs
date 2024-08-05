@@ -16,7 +16,7 @@ use tracing::info;
 
 use restate_bifrost::Bifrost;
 use restate_core::TaskCenter;
-use restate_types::logs::{LogId, Payload};
+use restate_types::logs::LogId;
 
 use crate::util::print_latencies;
 use crate::Arguments;
@@ -37,16 +37,17 @@ pub async fn run(
     let mut bytes = BytesMut::default();
     let raw_data = [1u8; 1024];
     bytes.put_slice(&raw_data);
+    let bytes = bytes.freeze();
     let mut append_latencies = Histogram::<u64>::new(3)?;
     let mut counter = 0;
+    let mut appender = bifrost.create_appender(log_id);
     loop {
         if counter >= opts.num_records {
             break;
         }
         counter += 1;
         let start = Instant::now();
-        let payload = Payload::new(bytes.clone());
-        let _ = bifrost.append(log_id, payload).await?;
+        let _ = appender.append_raw(bytes.clone()).await?;
         append_latencies.record(start.elapsed().as_nanos() as u64)?;
         if counter % 1000 == 0 {
             info!("Appended {} records", counter);

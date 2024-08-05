@@ -76,6 +76,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check Cargo.lock file is updated
+        run: cargo update -w --locked
+
       - name: Clippy Check
         run: just clippy
 
