@@ -92,6 +92,20 @@ jobs:
       uploadImageAsTarball: true
       platforms: linux/amd64
 
+  sdk-java:
+    name: Run SDK-Java integration tests
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+
   e2e:
     name: Run e2e tests
     permissions:
