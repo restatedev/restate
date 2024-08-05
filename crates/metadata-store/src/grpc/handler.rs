@@ -11,7 +11,7 @@
 use crate::grpc::pb_conversions::ConversionError;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvc;
 use crate::grpc_svc::{DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest};
-use crate::{Error, MetadataStoreRequest, RequestSender};
+use crate::{MetadataStoreRequest, RequestError, RequestSender};
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
@@ -129,10 +129,10 @@ impl MetadataStoreSvc for MetadataStoreHandler {
     }
 }
 
-impl From<Error> for Status {
-    fn from(err: Error) -> Self {
+impl From<RequestError> for Status {
+    fn from(err: RequestError) -> Self {
         match err {
-            Error::FailedPrecondition(msg) => Status::failed_precondition(msg),
+            RequestError::FailedPrecondition(msg) => Status::failed_precondition(msg),
             err => Status::internal(err.to_string()),
         }
     }
