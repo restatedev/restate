@@ -19,7 +19,7 @@ use restate_types::{
     errors::GenericError,
 };
 
-pub use service::{BuildError, Error, LocalMetadataStoreService};
+pub use service::{BuildError, LocalMetadataStoreService};
 
 use crate::grpc::client::GrpcMetadataStoreClient;
 

@@ -14,6 +14,7 @@ use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::MetadataStoreService;
 use restate_types::config;
 use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
