@@ -22,10 +22,8 @@ use crate::app::ConnectionInfo;
 use crate::commands::display_util;
 use crate::util::grpc_connect;
 use restate_cli_util::{c_println, c_title};
-use restate_types::protobuf::cluster::{
-    node_state, AliveNode, DeadNode, RunMode,
-};
-use restate_types::{PlainNodeId};
+use restate_types::protobuf::cluster::{node_state, AliveNode, DeadNode, RunMode};
+use restate_types::PlainNodeId;
 use tonic::codec::CompressionEncoding;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -67,28 +65,40 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListOpts) -> anyhow::Re
     }
 
     let mut nodes_table = Table::new_styled();
-    nodes_table.set_styled_header(vec!["NODE", "LEADER", "FOLLOWER", "LAST REFRESH"]);
+    nodes_table.set_styled_header(vec![
+        "NODE",
+        "LEADER",
+        "FOLLOWER",
+        "UNKNOWN",
+        "LAST REFRESH",
+    ]);
     for (node_id, details) in nodes {
-        let (leader_partitions, follower_partitions) =
-            details
-                .partitions
-                .iter()
-                .fold((0, 0), |(mut leader, mut follower), (_, status)| {
-                    match status.effective_mode() {
-                        RunMode::Leader => leader += 1,
-                        RunMode::Follower => follower += 1,
-                        _ => panic!("unexpected mode"), // TODO: count unknowns
-                    }
-                    (leader, follower)
-                });
-        nodes_table.add_row(vec![
+        let (leader_partitions, follower_partitions, unknown) = details.partitions.iter().fold(
+            (0, 0, 0),
+            |(mut leader, mut follower, mut unknown), (_, status)| {
+                match status.effective_mode() {
+                    RunMode::Leader => leader += 1,
+                    RunMode::Follower => follower += 1,
+                    RunMode::Unknown => unknown += 1,
+                }
+                (leader, follower, unknown)
+            },
+        );
+        let header = vec![
             Cell::new(node_id),
             Cell::new(leader_partitions)
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),
             Cell::new(follower_partitions).fg(Color::DarkBlue),
+            match unknown {
+                0 => Cell::new(unknown).fg(Color::DarkGrey),
+                _ => Cell::new(unknown)
+                    .fg(Color::Red)
+                    .add_attribute(Attribute::Bold),
+            },
             display_util::render_as_duration(details.last_heartbeat_at, Tense::Past),
-        ]);
+        ];
+        nodes_table.add_row(header);
     }
     c_println!("{}", nodes_table);
 
