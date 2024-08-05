@@ -11,11 +11,10 @@
 use restate_types::health::HealthStatus;
 
 use crate::grpc::handler::MetadataStoreHandler;
-use crate::grpc_svc;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
 use crate::local::store::LocalMetadataStore;
+use crate::{grpc_svc, Error, MetadataStoreService};
 use restate_core::network::NetworkServerBuilder;
-use restate_core::ShutdownError;
 use restate_rocksdb::RocksError;
 use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
 use restate_types::live::BoxedLiveLoad;
@@ -30,14 +29,6 @@ pub struct LocalMetadataStoreService {
 pub enum BuildError {
     #[error("building local metadata store failed: {0}")]
     LocalMetadataStore(#[from] RocksError),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("system is shutting down")]
-    Shutdown(#[from] ShutdownError),
-    #[error("rocksdb error: {0}")]
-    RocksDB(#[from] RocksError),
 }
 
 impl LocalMetadataStoreService {
@@ -61,8 +52,11 @@ impl LocalMetadataStoreService {
             store,
         })
     }
+}
 
-    pub async fn run(self) -> Result<(), Error> {
+#[async_trait::async_trait]
+impl MetadataStoreService for LocalMetadataStoreService {
+    async fn run(self) -> Result<(), Error> {
         let LocalMetadataStoreService {
             health_status,
             store,
