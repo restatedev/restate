@@ -18,9 +18,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde::de::Error;
+use serde::de::{Error, IntoDeserializer};
 use serde::{Deserialize, Deserializer, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
+use std::time::Duration;
 
 /// Serializable/Deserializable duration to use with serde_with.
 ///
@@ -31,6 +32,12 @@ use serde_with::{DeserializeAs, SerializeAs};
 /// * ISO8601 durations
 /// * Humantime durations
 pub struct DurationString;
+
+impl DurationString {
+    pub fn parse_duration(s: &str) -> Result<Duration, serde::de::value::Error> {
+        serde_with::As::<DurationString>::deserialize(s.into_deserializer())
+    }
+}
 
 impl<'de> DeserializeAs<'de, std::time::Duration> for DurationString {
     fn deserialize_as<D>(deserializer: D) -> Result<std::time::Duration, D::Error>

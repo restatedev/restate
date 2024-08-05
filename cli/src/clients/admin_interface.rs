@@ -22,6 +22,11 @@ pub trait AdminClientInterface {
     async fn health(&self) -> reqwest::Result<Envelope<()>>;
     async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
     async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
+    async fn patch_service(
+        &self,
+        name: &str,
+        modify_service_request: ModifyServiceRequest,
+    ) -> reqwest::Result<Envelope<ServiceMetadata>>;
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
     async fn get_deployment<D: Display>(
         &self,
@@ -65,6 +70,20 @@ impl AdminClientInterface for AdminClient {
             .expect("Bad url!");
 
         self.run(reqwest::Method::GET, url).await
+    }
+
+    async fn patch_service(
+        &self,
+        name: &str,
+        modify_service_request: ModifyServiceRequest,
+    ) -> reqwest::Result<Envelope<ServiceMetadata>> {
+        let url = self
+            .base_url
+            .join(&format!("/services/{}", name))
+            .expect("Bad url!");
+
+        self.run_with_body(reqwest::Method::PATCH, url, modify_service_request)
+            .await
     }
 
     async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>> {
