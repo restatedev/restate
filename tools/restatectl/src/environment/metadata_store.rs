@@ -13,6 +13,7 @@ use tracing::info;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::{TaskCenter, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::MetadataStoreService;
 use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
 use restate_types::health::HealthStatus;
 use restate_types::live::BoxedLiveLoad;

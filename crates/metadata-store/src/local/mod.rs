@@ -18,9 +18,9 @@ use restate_types::{
     errors::GenericError,
 };
 
-pub use service::{Error, LocalMetadataStoreService};
-
 use crate::grpc::client::GrpcMetadataStoreClient;
+
+pub use service::LocalMetadataStoreService;
 
 /// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataStoreClient`].
 pub async fn create_client(
