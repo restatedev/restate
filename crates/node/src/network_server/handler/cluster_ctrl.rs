@@ -8,21 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::{BytesMut};
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, TrimLogRequest,
+    ClusterStateRequest, ClusterStateResponse, LogStateRequest, LogStateResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
+use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::storage::StorageCodec;
 
 use crate::network_server::AdminDependencies;
 
 pub struct ClusterCtrlSvcHandler {
-    _metadata_store_client: MetadataStoreClient,
+    metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
 }
 
@@ -30,7 +34,7 @@ impl ClusterCtrlSvcHandler {
     pub fn new(admin_deps: AdminDependencies) -> Self {
         Self {
             controller_handle: admin_deps.cluster_controller_handle,
-            _metadata_store_client: admin_deps.metadata_store_client,
+            metadata_store_client: admin_deps.metadata_store_client,
         }
     }
 }
@@ -45,12 +49,33 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .controller_handle
             .get_cluster_state()
             .await
-            .map_err(|_| tonic::Status::aborted("Node is shutting down"))?;
+            .map_err(|_| Status::aborted("Node is shutting down"))?;
 
         let resp = ClusterStateResponse {
             cluster_state: Some((*cluster_state).clone().into()),
         };
         Ok(Response::new(resp))
+    }
+
+    async fn get_log_state(
+        &self,
+        _request: Request<LogStateRequest>,
+    ) -> Result<Response<LogStateResponse>, Status> {
+        match self
+            .metadata_store_client
+            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+            .await
+            .map_err(|_| Status::unknown("Failed to get log metadata"))?
+        {
+            Some(logs) => {
+                let mut buf = BytesMut::default();
+                StorageCodec::encode(logs, &mut buf).unwrap();
+                let log_state = buf.freeze();
+
+                Ok(Response::new(LogStateResponse { log_state }))
+            }
+            None => Err(Status::not_found("Log metadata not found")),
+        }
     }
 
     /// Internal operations API to trigger the log truncation

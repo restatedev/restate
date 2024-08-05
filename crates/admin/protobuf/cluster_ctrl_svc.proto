@@ -18,6 +18,8 @@ package restate.cluster_ctrl;
 service ClusterCtrlSvc {
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 
+  rpc GetLogState(LogStateRequest) returns (LogStateResponse);
+
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 }
 
@@ -25,6 +27,12 @@ message ClusterStateRequest {}
 
 message ClusterStateResponse {
   restate.cluster.ClusterState cluster_state = 1;
+}
+
+message LogStateRequest {}
+
+message LogStateResponse {
+  bytes log_state = 1;
 }
 
 message TrimLogRequest {

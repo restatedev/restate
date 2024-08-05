@@ -35,7 +35,7 @@ pub mod metadata;
 pub struct LogId(u64);
 
 impl LogId {
-    // This is allows the usage of the first 62 bits for log ids while keeping a space for
+    // Allows us to use the first 62 bits for log ids, while reserving space for
     // internal logs as needed. Partitions cannot be larger than 2^62.
     pub const MAX_PARTITION_LOG: LogId = LogId((1 << 62) - 1);
     pub const MIN: LogId = LogId(0);

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -88,13 +89,26 @@ impl<'a> Segment<'a> {
     }
 }
 
+impl fmt::Display for Segment<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}..{}",
+            self.base_lsn,
+            self.tail_lsn
+                .map(|lsn| format!("{}]", lsn))
+                .unwrap_or(String::from("∞)"))
+        )
+    }
+}
+
 /// A segment in the chain of loglet instances.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogletConfig {
     pub kind: ProviderKind,
     pub params: LogletParams,
     /// This is a cheap and collision-free way to identify loglets within the same log without
-    /// using random numbers. Globally, the tuple (log_id, index) is unqiue.
+    /// using random numbers. Globally, the tuple (log_id, index) is unique.
     ///
     // serde(default) to v1.0 compatibility. This can be removed once we are confident that all
     // persisted metadata have this index set. For v1.0 multi-segment logs are not supported so we
@@ -193,6 +207,10 @@ impl Logs {
         self.logs.len()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&LogId, &Chain)> {
+        self.logs.iter()
+    }
+
     pub fn chain(&self, log_id: &LogId) -> Option<&Chain> {
         self.logs.get(log_id)
     }
@@ -276,13 +294,13 @@ impl Chain {
         self.chain.len()
     }
 
-    /// Finds the segment that may contains the given Lsn.
+    /// Finds the segment that contains the given Lsn.
     /// Returns `MaybeSegment::Trim` if the Lsn is behind the oldest segment (trimmed).
     pub fn find_segment_for_lsn(&self, lsn: Lsn) -> MaybeSegment<'_> {
-        // Ensure we we don't actually consider INVALID as INVALID.
+        // Ensure we don't actually consider INVALID as INVALID.
         let lsn = lsn.max(Lsn::OLDEST);
         // NOTE: Hopefully at some point we will use the nightly Cursor API for
-        // effecient cursor seeks in the chain (or use nightly channel)
+        // efficient cursor seeks in the chain (or use nightly channel)
         // Reference: https://github.com/rust-lang/rust/issues/107540
 
         // The tail lsn is the base_lsn of the next segment (if exists)
@@ -364,8 +382,8 @@ pub fn bootstrap_logs_metadata(default_provider: ProviderKind, num_partitions: u
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+
     #[test]
     fn test_chain_new() {
         let chain = Chain::new(ProviderKind::Local, LogletParams::from("test".to_string()));

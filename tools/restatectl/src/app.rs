@@ -17,6 +17,7 @@ use restate_cli_util::CliContext;
 use restate_cli_util::CommonOpts;
 
 use crate::commands::dump::Dump;
+use crate::commands::log::Log;
 
 #[derive(Run, Parser, Clone)]
 #[command(author, version = crate::build_info::version(), about, infer_subcommands = true)]
@@ -42,6 +43,9 @@ pub enum Command {
     /// Dump various metadata from the cluster controller
     #[clap(subcommand)]
     Dump(Dump),
+    /// Cluster distributed log operations
+    #[clap(subcommand)]
+    Logs(Log),
 }
 
 fn init(common_opts: &CommonOpts) {
