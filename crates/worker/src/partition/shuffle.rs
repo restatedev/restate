@@ -19,9 +19,10 @@ use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
+use restate_types::logs::LogId;
 use restate_types::message::MessageIndex;
 use restate_types::GenerationalNodeId;
-use restate_wal_protocol::{append_envelope_to_bifrost, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Destination, Envelope, Header, Source};
 
 use crate::partition::shuffle::state_machine::StateMachine;
 use crate::partition::types::OutboxMessageExt;
@@ -224,13 +225,15 @@ where
         debug!(restate.node = %metadata.node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
 
         let node_id = metadata.node_id;
+        let log_id = LogId::from(metadata.partition_id);
+        let appender = bifrost.create_appender(log_id)?;
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
-            |msg| {
-                let bifrost = bifrost.clone();
+            move |msg| {
+                let mut appender = appender.clone();
                 async move {
-                    append_envelope_to_bifrost(&bifrost, msg).await?;
+                    appender.append(msg).await?;
                     Ok(())
                 }
             },
@@ -318,7 +321,7 @@ mod state_machine {
     impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
     where
         SendFuture: Future<Output = Result<(), anyhow::Error>>,
-        SendOp: Fn(Envelope) -> SendFuture,
+        SendOp: FnMut(Envelope) -> SendFuture,
         OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
     {
         pub(super) fn new(
