@@ -32,8 +32,10 @@ use restate_core::{
 };
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
-use restate_metadata_store::MetadataStoreClient;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_metadata_store::{
+    BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
+};
+use restate_types::config::{CommonOptions, Configuration, Kind};
 use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
@@ -101,7 +103,7 @@ pub struct Node {
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager<Networking>,
     bifrost: BifrostService,
-    metadata_store_role: Option<LocalMetadataStoreService>,
+    metadata_store_role: Option<BoxedMetadataStoreService>,
     admin_role: Option<AdminRole>,
     worker_role: Option<WorkerRole>,
     #[cfg(feature = "replicated-loglet")]
@@ -110,7 +112,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub async fn create(updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
+    pub async fn create(mut updateable_config: Live<Configuration>) -> Result<Self, BuildError> {
         let tc = task_center();
         let config = updateable_config.pinned();
         // ensure we have cluster admin role if bootstrapping.
@@ -130,13 +132,7 @@ impl Node {
         cluster_marker::validate_and_update_cluster_marker(config.common.cluster_name())?;
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
-            Some(LocalMetadataStoreService::from_options(
-                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
-                updateable_config
-                    .clone()
-                    .map(|config| &config.metadata_store.rocksdb)
-                    .boxed(),
-            ))
+            Some(Self::create_metadata_store(&mut updateable_config))
         } else {
             None
         };
@@ -255,6 +251,26 @@ impl Node {
             log_server,
             server,
         })
+    }
+
+    fn create_metadata_store(
+        updateable_config: &mut Live<Configuration>,
+    ) -> BoxedMetadataStoreService {
+        let config = updateable_config.live_load();
+
+        match config.metadata_store.kind {
+            Kind::Local => LocalMetadataStoreService::from_options(
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+                updateable_config
+                    .clone()
+                    .map(|config| &config.metadata_store.rocksdb)
+                    .boxed(),
+            )
+            .boxed(),
+            Kind::Raft => {
+                unimplemented!("not yet supported")
+            }
+        }
     }
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
