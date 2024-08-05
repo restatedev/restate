@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod appender;
+mod background_appender;
 mod bifrost;
 mod bifrost_admin;
 mod error;
@@ -22,6 +23,7 @@ mod types;
 mod watchdog;
 
 pub use appender::Appender;
+pub use background_appender::{AppenderHandle, BackgroundAppender, CommitToken, LogSender};
 pub use bifrost::Bifrost;
 pub use bifrost_admin::BifrostAdmin;
 pub use error::{Error, Result};
