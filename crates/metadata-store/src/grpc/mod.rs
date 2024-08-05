@@ -10,7 +10,6 @@
 
 pub mod client;
 pub mod handler;
-
 pub mod pb_conversions {
     use crate::grpc_svc;
     use crate::grpc_svc::{GetResponse, GetVersionResponse, PreconditionKind};

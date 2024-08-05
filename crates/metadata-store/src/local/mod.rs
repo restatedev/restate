@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod grpc;
 mod store;
 
 mod service;
@@ -20,10 +19,11 @@ use restate_types::{
     errors::GenericError,
 };
 
-use crate::local::grpc::client::LocalMetadataStoreClient;
 pub use service::{BuildError, Error, LocalMetadataStoreService};
 
-/// Creates a [`MetadataStoreClient`].
+use crate::grpc::client::GrpcMetadataStoreClient;
+
+/// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataStoreClient`].
 pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> Result<MetadataStoreClient, GenericError> {
@@ -35,8 +35,9 @@ pub async fn create_client(
 
     let client = match metadata_store_client_options.metadata_store_client.clone() {
         MetadataStoreClientConfig::Embedded { address } => {
-            let store = LocalMetadataStoreClient::new(address, &metadata_store_client_options);
-            MetadataStoreClient::new(store, backoff_policy)
+            let inner_client =
+                GrpcMetadataStoreClient::new(address, &metadata_store_client_options);
+            MetadataStoreClient::new(inner_client, backoff_policy)
         }
         MetadataStoreClientConfig::Etcd { addresses } => {
             let store = EtcdMetadataStore::new(addresses, &metadata_store_client_options).await?;
