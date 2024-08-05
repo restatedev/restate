@@ -445,7 +445,7 @@ impl Node {
         metadata_store_client: &MetadataStoreClient,
         config: &Configuration,
     ) -> Result<FixedPartitionTable, Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy(), || {
+        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(PARTITION_TABLE_KEY.clone(), || {
                 FixedPartitionTable::new(Version::MIN, config.common.bootstrap_num_partitions())
             })
@@ -459,7 +459,7 @@ impl Node {
         config: &Configuration,
         num_partitions: u64,
     ) -> Result<Logs, Error> {
-        Self::retry_on_network_error(config.common.network_error_retry_policy(), || {
+        Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
                 bootstrap_logs_metadata(config.bifrost.default_provider, num_partitions)
             })
@@ -472,7 +472,7 @@ impl Node {
         metadata_store_client: &MetadataStoreClient,
         common_opts: &CommonOptions,
     ) -> Result<NodesConfiguration, Error> {
-        Self::retry_on_network_error(common_opts.network_error_retry_policy(), || {
+        Self::retry_on_network_error(common_opts.network_error_retry_policy.clone(), || {
             let mut previous_node_generation = None;
             metadata_store_client.read_modify_write(NODES_CONFIG_KEY.clone(), move |nodes_config| {
                 let mut nodes_config = if common_opts.allow_bootstrap {
