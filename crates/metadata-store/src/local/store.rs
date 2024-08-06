@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
+use crate::{
+    MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, RequestError,
+    RequestReceiver, RequestSender,
+};
 use bytes::BytesMut;
 use bytestring::ByteString;
+use futures::FutureExt;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
 use restate_rocksdb::{
@@ -22,6 +26,7 @@ use restate_types::live::BoxedLiveLoad;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 use restate_types::Version;
 use rocksdb::{BoundColumnFamily, DBCompressionType, WriteBatch, WriteOptions, DB};
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
@@ -48,7 +53,7 @@ impl LocalMetadataStore {
     pub async fn create(
         options: &MetadataStoreOptions,
         updateable_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    ) -> std::result::Result<Self, RocksError> {
+    ) -> Result<Self, RocksError> {
         let (request_tx, request_rx) = mpsc::channel(options.request_queue_length());
 
         let db_name = DbName::new(DB_NAME);
@@ -163,7 +168,7 @@ impl LocalMetadataStore {
         let slice = self
             .db
             .get_pinned_cf(&cf_handle, key)
-            .map_err(|err| RequestError::Storage(err.into()))?;
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             Ok(Some(Self::decode(bytes)?))
@@ -177,7 +182,7 @@ impl LocalMetadataStore {
         let slice = self
             .db
             .get_pinned_cf(&cf_handle, key)
-            .map_err(|err| RequestError::Storage(err.into()))?;
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             // todo only deserialize the version part
@@ -201,7 +206,7 @@ impl LocalMetadataStore {
                 if current_version.is_none() {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(RequestError::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -209,7 +214,10 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(RequestError::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
@@ -236,7 +244,7 @@ impl LocalMetadataStore {
                 wb,
             )
             .await
-            .map_err(|err| RequestError::Storage(err.into()))
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
     fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<(), RequestError> {
@@ -250,7 +258,7 @@ impl LocalMetadataStore {
                     // nothing to do
                     Ok(())
                 } else {
-                    Err(RequestError::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -259,7 +267,10 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     self.delete_kv_pair(key)
                 } else {
-                    Err(RequestError::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
@@ -269,7 +280,7 @@ impl LocalMetadataStore {
         let write_options = self.write_options();
         self.db
             .delete_cf_opt(&self.kv_cf_handle(), key, &write_options)
-            .map_err(|err| RequestError::Storage(err.into()))
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
     fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<(), RequestError> {
@@ -327,4 +338,14 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
     opts.set_target_file_size_base(memtables_budget as u64 / 8);
     // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
     opts.set_max_bytes_for_level_base(memtables_budget as u64);
+}
+
+impl MetadataStoreBackend for LocalMetadataStore {
+    fn request_sender(&self) -> RequestSender {
+        self.request_sender()
+    }
+
+    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+        self.run().map(Ok)
+    }
 }
