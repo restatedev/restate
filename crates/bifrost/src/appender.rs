@@ -34,7 +34,7 @@ const INITIAL_SERDE_BUFFER_SIZE: usize = 16_000; // Initial capacity 16KB
 #[derive(Clone)]
 pub struct Appender {
     log_id: LogId,
-    config: Live<Configuration>,
+    pub(super) config: Live<Configuration>,
     pub(super) serde_buffer: BytesMut,
     loglet_cache: Option<LogletWrapper>,
     bifrost_inner: Arc<BifrostInner>,
@@ -175,7 +175,6 @@ impl Appender {
         &mut self,
         bodies_with_keys: &[(Bytes, Keys)],
     ) -> Result<Lsn> {
-        self.bifrost_inner.fail_if_shutting_down()?;
         let mut retry_iter = self
             .config
             .live_load()

@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 
 use bytes::BytesMut;
 use enum_map::EnumMap;
-use tracing::{info, instrument};
+use tracing::info;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::config::Configuration;
@@ -24,6 +24,7 @@ use restate_types::storage::StorageEncode;
 use restate_types::Version;
 
 use crate::appender::Appender;
+use crate::background_appender::BackgroundAppender;
 use crate::loglet::{LogletBase, LogletProvider};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
@@ -92,18 +93,8 @@ impl Bifrost {
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
     ///
-    /// It's recommended to use the [`Appender`] interface instead of this one. Use
-    /// [`Self::create_appender`] and reuse this appender to create a sequential write stream to
-    /// the virtual log.
-    #[instrument(
-        level = "debug",
-        skip(self, body),
-        err,
-        fields(
-            log_id = %log_id,
-            segment_index = tracing::field::Empty
-        )
-    )]
+    /// It's recommended to use the [`Appender`] interface. Use [`Self::create_appender`]
+    /// and reuse this appender to create a sequential write stream to the virtual log.
     pub async fn append<T>(&self, log_id: LogId, body: T) -> Result<Lsn>
     where
         T: HasRecordKeys + StorageEncode,
@@ -170,6 +161,22 @@ impl Bifrost {
         self.inner.fail_if_shutting_down()?;
         self.inner.check_log_id(log_id)?;
         Ok(Appender::new(log_id, self.inner.clone()))
+    }
+
+    pub fn create_background_appender<T>(
+        &self,
+        log_id: LogId,
+        queue_capacity: usize,
+        max_batch_size: usize,
+    ) -> Result<BackgroundAppender<T>>
+    where
+        T: HasRecordKeys + StorageEncode + 'static,
+    {
+        Ok(BackgroundAppender::new(
+            self.create_appender(log_id)?,
+            queue_capacity,
+            max_batch_size,
+        ))
     }
 
     /// Like [`Self::create_appender()`] except that it uses the supplied buffer space for
