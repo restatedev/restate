@@ -28,8 +28,10 @@ use restate_types::protobuf::common::NodeRpcStatus;
 use restate_types::{flexbuffers_storage_encode_decode, Version, Versioned};
 
 use crate::grpc::client::GrpcMetadataStoreClient;
-use crate::local::service::LocalMetadataStoreService;
-use crate::{MetadataStoreClient, MetadataStoreService, Precondition, WriteError};
+use crate::local::LocalMetadataStore;
+use crate::{
+    MetadataStoreClient, MetadataStoreRunner, MetadataStoreService, Precondition, WriteError,
+};
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Serialize, Deserialize)]
 struct Value {
@@ -303,13 +305,8 @@ async fn start_metadata_store(
     updateables_rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
-    let service = LocalMetadataStoreService::create(
-        HealthStatus::default(),
-        opts,
-        updateables_rocksdb_options,
-        &mut server_builder,
-    )
-    .await?;
+    let store = LocalMetadataStore::create(opts, updateables_rocksdb_options).await?;
+    let service = MetadataStoreRunner::new(store, HealthStatus::default(), &mut server_builder);
 
     let uds = tempfile::tempdir()?.into_path().join("metadata-rpc-server");
     let bind_address = BindAddress::Uds(uds.clone());
