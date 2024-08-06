@@ -33,7 +33,7 @@ impl RaftMetadataStoreService {
 impl MetadataStoreService for RaftMetadataStoreService {
     async fn run(mut self) -> Result<(), Error> {
         let store_options = self.options.live_load();
-        let store = RaftMetadataStore::new().map_err(Error::generic)?;
+        let store = RaftMetadataStore::create().await.map_err(Error::generic)?;
 
         let mut builder = GrpcServiceBuilder::default();
 
