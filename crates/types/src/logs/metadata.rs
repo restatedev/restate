@@ -337,6 +337,8 @@ impl Chain {
     }
 }
 
+flexbuffers_storage_encode_decode!(Chain);
+
 /// Creates appropriate [`LogletParams`] value that can be used to start a fresh
 /// single-node loglet instance.
 ///

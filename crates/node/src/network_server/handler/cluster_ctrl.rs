@@ -8,20 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BytesMut};
+use bytes::{Bytes, BytesMut};
 use tonic::{async_trait, Request, Response, Status};
 use tracing::info;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, LogStateRequest, LogStateResponse, TrimLogRequest,
+    ClusterStateRequest, ClusterStateResponse, DescribeLogRequest, DescribeLogResponse,
+    LogStateRequest, LogStateResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
-use restate_types::storage::StorageCodec;
+use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::network_server::AdminDependencies;
 
@@ -61,20 +62,40 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         _request: Request<LogStateRequest>,
     ) -> Result<Response<LogStateResponse>, Status> {
-        match self
+        let maybe_logs = self
             .metadata_store_client
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
             .await
-            .map_err(|_| Status::unknown("Failed to get log metadata"))?
-        {
-            Some(logs) => {
-                let mut buf = BytesMut::default();
-                StorageCodec::encode(logs, &mut buf).unwrap();
-                let log_state = buf.freeze();
+            .map_err(|_| Status::unknown("Failed to get log metadata"))?;
 
-                Ok(Response::new(LogStateResponse { log_state }))
-            }
+        match maybe_logs {
+            Some(logs) => Ok(Response::new(LogStateResponse {
+                log_state: serialize_value(logs),
+            })),
             None => Err(Status::not_found("Log metadata not found")),
+        }
+    }
+
+    async fn describe_log(
+        &self,
+        request: Request<DescribeLogRequest>,
+    ) -> Result<Response<DescribeLogResponse>, Status> {
+        let request = request.into_inner();
+
+        let maybe_chain = self
+            .controller_handle
+            .get_log_chain(LogId::from(request.log_id))
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?;
+
+        match maybe_chain {
+            Some(chain) => {
+                let resp = DescribeLogResponse {
+                    log_details: serialize_value((*chain).clone()),
+                };
+                Ok(Response::new(resp))
+            }
+            None => Err(Status::not_found("Log id not found")),
         }
     }
 
@@ -94,4 +115,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         }
         Ok(Response::new(()))
     }
+}
+
+fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
+    let mut buf = BytesMut::new();
+    StorageCodec::encode(value, &mut buf).expect("We can always serialize");
+    buf.freeze()
 }

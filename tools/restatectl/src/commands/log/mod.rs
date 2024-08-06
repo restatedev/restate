@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod describe_log_id;
 mod get_state;
 
 use cling::prelude::*;
@@ -16,4 +17,6 @@ use cling::prelude::*;
 pub enum Log {
     /// Print the log state by partition
     State(get_state::StateOpts),
+    /// Describe a log in detail
+    Describe(describe_log_id::DescribeLogIdOpts),
 }

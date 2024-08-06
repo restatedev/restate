@@ -31,6 +31,8 @@ pub struct ClusterState {
     #[proto(required)]
     pub partition_table_version: Version,
     pub nodes: BTreeMap<PlainNodeId, NodeState>,
+    // TODO: is this the right place to ship back chain segment info, or should we introduce a separate message?
+    // pub logs: BTreeMap<LogId, Chain>,
 }
 
 impl ClusterState {

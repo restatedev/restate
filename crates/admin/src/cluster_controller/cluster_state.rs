@@ -199,6 +199,7 @@ where
                 nodes_config_version: nodes_config.version(),
                 partition_table_version,
                 nodes,
+                // TODO: logs: metadata.logs()...,
             };
 
             // publish the new state

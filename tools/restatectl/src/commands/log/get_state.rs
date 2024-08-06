@@ -47,7 +47,7 @@ async fn get_log_state(connection: &ConnectionInfo, _opts: &StateOpts) -> anyhow
     let response = client.get_log_state(req).await?.into_inner();
 
     let mut logs_table = Table::new_styled();
-    logs_table.set_styled_header(vec!["P-ID", "HEAD", "TAIL"]);
+    logs_table.set_styled_header(vec!["P-ID", "HEAD", "TAIL", "KIND"]);
 
     let mut buf = response.log_state;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
@@ -64,6 +64,7 @@ async fn get_log_state(connection: &ConnectionInfo, _opts: &StateOpts) -> anyhow
             })
             .fg(Color::DarkGrey),
             Cell::new(format!("{}", chain.tail())).fg(Color::Green),
+            Cell::new(format!("{:?}", chain.tail().config.kind)),
         ]);
     }
 

@@ -27,6 +27,7 @@ use restate_types::net::cluster_controller::{Action, AttachRequest, AttachRespon
 use restate_types::net::RequestId;
 use restate_types::partition_table::{KeyRange, PartitionTable};
 
+use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_core::{
@@ -36,12 +37,11 @@ use restate_core::{
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
+use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::MessageEnvelope;
 use restate_types::{GenerationalNodeId, Version};
-
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -138,6 +138,11 @@ where
 
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<ClusterState>>),
+    GetLogChain {
+        #[allow(dead_code)]
+        log_id: LogId,
+        response_tx: oneshot::Sender<Option<Arc<Chain>>>,
+    },
     TrimLog {
         log_id: LogId,
         trim_point: Lsn,
@@ -156,6 +161,18 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::GetClusterState(tx))
+            .await;
+        rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn get_log_chain(&self, log_id: LogId) -> Result<Option<Arc<Chain>>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::GetLogChain {
+                log_id,
+                response_tx: tx,
+            })
             .await;
         rx.await.map_err(|_| ShutdownError)
     }
@@ -325,6 +342,15 @@ where
             ClusterControllerCommand::GetClusterState(tx) => {
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
             }
+            ClusterControllerCommand::GetLogChain { response_tx, .. } => {
+                // TODO:
+                //  let chain = self.cluster_state_refresher.get_cluster_state().logs...get(&log_id);
+                let chain = Some(Arc::new(Chain::new(
+                    ProviderKind::Local,
+                    LogletParams::from(""),
+                )));
+                let _ = response_tx.send(chain);
+            }
             ClusterControllerCommand::TrimLog {
                 log_id,
                 trim_point,
@@ -428,10 +454,17 @@ async fn signal_all_partitions_started(
 
 #[cfg(test)]
 mod tests {
-    use super::Service;
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use bytes::Bytes;
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
+    use test_log::test;
+
+    use crate::cluster_controller::Service;
     use restate_bifrost::{Bifrost, Record, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
@@ -446,7 +479,6 @@ mod tests {
     use restate_types::net::{AdvertisedAddress, MessageEnvelope};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
-    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
