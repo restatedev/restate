@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::{MetadataStoreRequest, RequestError, RequestReceiver, RequestSender};
+use crate::{
+    MetadataStoreRequest, PreconditionViolation, RequestError, RequestReceiver, RequestSender,
+};
 use bytes::BytesMut;
 use bytestring::ByteString;
 use restate_core::cancellation_watcher;
@@ -162,7 +164,7 @@ impl LocalMetadataStore {
         let slice = self
             .db
             .get_pinned_cf(&cf_handle, key)
-            .map_err(|err| RequestError::Storage(err.into()))?;
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             Ok(Some(Self::decode(bytes)?))
@@ -176,7 +178,7 @@ impl LocalMetadataStore {
         let slice = self
             .db
             .get_pinned_cf(&cf_handle, key)
-            .map_err(|err| RequestError::Storage(err.into()))?;
+            .map_err(|err| RequestError::Internal(err.into()))?;
 
         if let Some(bytes) = slice {
             // todo only deserialize the version part
@@ -200,7 +202,7 @@ impl LocalMetadataStore {
                 if current_version.is_none() {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(RequestError::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -208,7 +210,10 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     Ok(self.write_versioned_kv_pair(key, value).await?)
                 } else {
-                    Err(RequestError::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
@@ -235,7 +240,7 @@ impl LocalMetadataStore {
                 wb,
             )
             .await
-            .map_err(|err| RequestError::Storage(err.into()))
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
     fn delete(&mut self, key: &ByteString, precondition: Precondition) -> Result<(), RequestError> {
@@ -249,7 +254,7 @@ impl LocalMetadataStore {
                     // nothing to do
                     Ok(())
                 } else {
-                    Err(RequestError::kv_pair_exists())
+                    Err(PreconditionViolation::kv_pair_exists())?
                 }
             }
             Precondition::MatchesVersion(version) => {
@@ -258,7 +263,10 @@ impl LocalMetadataStore {
                 if current_version == Some(version) {
                     self.delete_kv_pair(key)
                 } else {
-                    Err(RequestError::version_mismatch(version, current_version))
+                    Err(PreconditionViolation::version_mismatch(
+                        version,
+                        current_version,
+                    ))?
                 }
             }
         }
@@ -268,7 +276,7 @@ impl LocalMetadataStore {
         let write_options = self.write_options();
         self.db
             .delete_cf_opt(&self.kv_cf_handle(), key, &write_options)
-            .map_err(|err| RequestError::Storage(err.into()))
+            .map_err(|err| RequestError::Internal(err.into()))
     }
 
     fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<(), RequestError> {

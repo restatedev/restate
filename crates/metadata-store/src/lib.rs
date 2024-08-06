@@ -11,6 +11,7 @@
 mod grpc;
 mod grpc_svc;
 pub mod local;
+pub mod raft;
 
 use bytestring::ByteString;
 use restate_core::metadata_store::VersionedValue;
@@ -30,16 +31,37 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
-    #[error("storage error: {0}")]
-    Storage(#[from] GenericError),
+    #[error("internal error: {0}")]
+    Internal(#[from] GenericError),
     #[error("failed precondition: {0}")]
-    FailedPrecondition(String),
+    FailedPrecondition(#[from] PreconditionViolation),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
     #[error("encode error: {0}")]
     Encode(#[from] StorageEncodeError),
     #[error("decode error: {0}")]
     Decode(#[from] StorageDecodeError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreconditionViolation {
+    #[error("key-value pair already exists")]
+    Exists,
+    #[error("expected version '{expected}' but found version '{actual:?}'")]
+    VersionMismatch {
+        expected: Version,
+        actual: Option<Version>,
+    },
+}
+
+impl PreconditionViolation {
+    fn kv_pair_exists() -> Self {
+        PreconditionViolation::Exists
+    }
+
+    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
+        PreconditionViolation::VersionMismatch { expected, actual }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +72,12 @@ pub enum Error {
     Shutdown(#[from] ShutdownError),
     #[error(transparent)]
     Generic(#[from] GenericError),
+}
+
+impl Error {
+    pub fn generic(err: impl Into<GenericError>) -> Error {
+        Error::Generic(err.into())
+    }
 }
 
 #[async_trait::async_trait]
@@ -104,17 +132,4 @@ pub enum MetadataStoreRequest {
         precondition: Precondition,
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
-}
-
-impl RequestError {
-    fn kv_pair_exists() -> Self {
-        RequestError::FailedPrecondition("key-value pair already exists".to_owned())
-    }
-
-    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
-        RequestError::FailedPrecondition(format!(
-            "Expected version '{}' but found version '{:?}'",
-            expected, actual
-        ))
-    }
 }
