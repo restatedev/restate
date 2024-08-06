@@ -32,6 +32,7 @@ use restate_core::{
 };
 use restate_core::{task_center, TaskKind};
 use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::raft::service::RaftMetadataStoreService;
 use restate_metadata_store::{
     BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
 };
@@ -267,9 +268,10 @@ impl Node {
                     .boxed(),
             )
             .boxed(),
-            Kind::Raft => {
-                unimplemented!("not yet supported")
-            }
+            Kind::Raft => RaftMetadataStoreService::new(
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+            )
+            .boxed(),
         }
     }
 

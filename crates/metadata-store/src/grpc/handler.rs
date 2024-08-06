@@ -132,7 +132,7 @@ impl MetadataStoreSvc for MetadataStoreHandler {
 impl From<RequestError> for Status {
     fn from(err: RequestError) -> Self {
         match err {
-            RequestError::FailedPrecondition(msg) => Status::failed_precondition(msg),
+            RequestError::FailedPrecondition(msg) => Status::failed_precondition(msg.to_string()),
             err => Status::internal(err.to_string()),
         }
     }
