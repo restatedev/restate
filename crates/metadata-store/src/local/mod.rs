@@ -8,10 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod store;
-
-mod service;
-
 use restate_core::metadata_store::providers::create_object_store_based_meta_store;
 use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
 use restate_types::{
@@ -19,9 +15,11 @@ use restate_types::{
     errors::GenericError,
 };
 
-pub use service::{BuildError, LocalMetadataStoreService};
-
 use crate::grpc::client::GrpcMetadataStoreClient;
+
+mod store;
+
+pub use store::LocalMetadataStore;
 
 /// Creates a [`MetadataStoreClient`] for the [`GrpcMetadataStoreClient`].
 pub async fn create_client(

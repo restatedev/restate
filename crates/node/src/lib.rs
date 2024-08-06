@@ -30,16 +30,13 @@ use restate_core::{
 };
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
-use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::{
     BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
 };
-use restate_types::config::{
-    CommonOptions, Configuration, Kind, MetadataStoreOptions, RocksDbOptions,
-};
+use restate_types::config::{CommonOptions, Configuration};
 use restate_types::errors::GenericError;
-use restate_types::health::{Health, HealthStatus};
-use restate_types::live::{BoxedLiveLoad, Live};
+use restate_types::health::Health;
+use restate_types::live::Live;
 #[cfg(feature = "replicated-loglet")]
 use restate_types::logs::RecordCache;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -108,7 +105,7 @@ pub enum BuildError {
 
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]
-    MetadataStore(#[from] restate_metadata_store::local::BuildError),
+    MetadataStore(#[from] anyhow::Error),
 }
 
 pub struct Node {
@@ -140,7 +137,7 @@ impl Node {
 
         let metadata_store_role = if config.has_role(Role::MetadataStore) {
             Some(
-                Self::create_metadata_store(
+                restate_metadata_store::create_metadata_store(
                     &config.metadata_store,
                     updateable_config
                         .clone()
@@ -317,27 +314,6 @@ impl Node {
             server_builder,
             networking,
         })
-    }
-
-    async fn create_metadata_store(
-        metadata_store_options: &MetadataStoreOptions,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-        health_status: HealthStatus<MetadataServerStatus>,
-        server_builder: &mut NetworkServerBuilder,
-    ) -> Result<BoxedMetadataStoreService, restate_metadata_store::local::BuildError> {
-        match metadata_store_options.kind {
-            Kind::Local => Ok(LocalMetadataStoreService::create(
-                health_status,
-                metadata_store_options,
-                rocksdb_options,
-                server_builder,
-            )
-            .await?
-            .boxed()),
-            Kind::Raft => {
-                unimplemented!("not yet supported")
-            }
-        }
     }
 
     pub async fn start(self) -> Result<(), anyhow::Error> {

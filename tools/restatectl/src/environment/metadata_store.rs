@@ -13,7 +13,6 @@ use tracing::info;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{TaskCenter, TaskKind};
-use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreService;
 use restate_types::config;
 use restate_types::config::{MetadataStoreClientOptions, MetadataStoreOptions, RocksDbOptions};
@@ -29,10 +28,10 @@ pub async fn start_metadata_store(
 ) -> anyhow::Result<MetadataStoreClient> {
     let mut server_builder = NetworkServerBuilder::default();
 
-    let service = LocalMetadataStoreService::create(
-        HealthStatus::default(),
+    let service = restate_metadata_store::create_metadata_store(
         opts,
         updateables_rocksdb_options,
+        HealthStatus::default(),
         &mut server_builder,
     )
     .await?;
