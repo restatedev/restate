@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::raft::storage;
+use crate::raft::storage::RocksDbStorage;
 use crate::{
     MetadataStoreBackend, MetadataStoreRequest, PreconditionViolation, RequestError,
     RequestReceiver, RequestSender,
@@ -18,10 +20,10 @@ use bytestring::ByteString;
 use futures::TryFutureExt;
 use protobuf::{Message as ProtobufMessage, ProtobufError};
 use raft::prelude::{ConfChange, ConfChangeV2, ConfState, Entry, EntryType, Message};
-use raft::storage::MemStorage;
 use raft::{Config, RawNode};
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
+use restate_types::config::Configuration;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::{flexbuffers_storage_encode_decode, Version};
 use slog::o;
@@ -36,8 +38,14 @@ use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed creating raft node: {0}")]
-pub struct BuildError(#[from] raft::Error);
+pub enum BuildError {
+    #[error("failed creating raft node: {0}")]
+    Raft(#[from] raft::Error),
+    #[error("failed creating raft storage: {0}")]
+    Storage(#[from] storage::BuildError),
+    #[error("failed bootstrapping conf state: {0}")]
+    BootstrapConfState(#[from] storage::Error),
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -49,11 +57,13 @@ pub enum Error {
     DecodeConf(ProtobufError),
     #[error("failed applying conf change: {0}")]
     ApplyConfChange(raft::Error),
+    #[error("failed reading/writing from/to storage: {0}")]
+    Storage(#[from] storage::Error),
 }
 
 pub struct RaftMetadataStore {
     _logger: slog::Logger,
-    raw_node: RawNode<MemStorage>,
+    raw_node: RawNode<RocksDbStorage>,
     tick_interval: time::Interval,
 
     callbacks: HashMap<Ulid, Callback>,
@@ -64,7 +74,7 @@ pub struct RaftMetadataStore {
 }
 
 impl RaftMetadataStore {
-    pub fn new() -> Result<Self, BuildError> {
+    pub async fn create() -> Result<Self, BuildError> {
         let (request_tx, request_rx) = mpsc::channel(2);
 
         let config = Config {
@@ -72,7 +82,16 @@ impl RaftMetadataStore {
             ..Default::default()
         };
 
-        let store = MemStorage::new_with_conf_state(ConfState::from((vec![1], vec![])));
+        let rocksdb_options = Configuration::updateable()
+            .map(|configuration| &configuration.common.rocksdb)
+            .boxed();
+        let mut metadata_store_options =
+            Configuration::updateable().map(|configuration| &configuration.metadata_store);
+        let mut store =
+            RocksDbStorage::create(metadata_store_options.live_load(), rocksdb_options).await?;
+        let conf_state = ConfState::from((vec![1], vec![]));
+        store.store_conf_state(conf_state).await?;
+
         let drain = TracingSlogDrain;
         let logger = slog::Logger::root(drain, o!());
 
@@ -128,7 +147,7 @@ impl RaftMetadataStore {
                 }
             }
 
-            self.on_ready()?;
+            self.on_ready().await?;
         }
 
         debug!("Stop running RaftMetadataStore.");
@@ -136,7 +155,7 @@ impl RaftMetadataStore {
         Ok(())
     }
 
-    fn on_ready(&mut self) -> Result<(), Error> {
+    async fn on_ready(&mut self) -> Result<(), Error> {
         if !self.raw_node.has_ready() {
             return Ok(());
         }
@@ -152,8 +171,7 @@ impl RaftMetadataStore {
         if !ready.snapshot().is_empty() {
             if let Err(err) = self
                 .raw_node
-                .store()
-                .wl()
+                .mut_store()
                 .apply_snapshot(ready.snapshot().clone())
             {
                 warn!("failed applying snapshot: {err}");
@@ -161,14 +179,18 @@ impl RaftMetadataStore {
         }
 
         // then handle committed entries
-        self.handle_committed_entries(ready.take_committed_entries())?;
+        self.handle_committed_entries(ready.take_committed_entries())
+            .await?;
 
         // append new Raft entries to storage
-        self.raw_node.store().wl().append(ready.entries())?;
+        self.raw_node.mut_store().append(ready.entries()).await?;
 
         // update the hard state if an update was produced (e.g. vote has happened)
         if let Some(hs) = ready.hs() {
-            self.raw_node.store().wl().set_hardstate(hs.clone());
+            self.raw_node
+                .mut_store()
+                .store_hard_state(hs.clone())
+                .await?;
         }
 
         // send persisted messages (after entries were appended and hard state was updated)
@@ -180,12 +202,8 @@ impl RaftMetadataStore {
         let mut light_ready = self.raw_node.advance(ready);
 
         // update the commit index if it changed
-        if let Some(commit) = light_ready.commit_index() {
-            self.raw_node
-                .store()
-                .wl()
-                .mut_hard_state()
-                .set_commit(commit);
+        if let Some(_commit) = light_ready.commit_index() {
+            // update commit index in cached hard_state; no need to persist it though
         }
 
         // send outgoing messages
@@ -195,7 +213,8 @@ impl RaftMetadataStore {
 
         // handle committed entries
         if !light_ready.committed_entries().is_empty() {
-            self.handle_committed_entries(light_ready.take_committed_entries())?;
+            self.handle_committed_entries(light_ready.take_committed_entries())
+                .await?;
         }
 
         self.raw_node.advance_apply();
@@ -211,7 +230,10 @@ impl RaftMetadataStore {
         // todo: Send messages to other peers
     }
 
-    fn handle_committed_entries(&mut self, committed_entries: Vec<Entry>) -> Result<(), Error> {
+    async fn handle_committed_entries(
+        &mut self,
+        committed_entries: Vec<Entry>,
+    ) -> Result<(), Error> {
         for entry in committed_entries {
             if entry.data.is_empty() {
                 // new leader was elected
@@ -220,8 +242,8 @@ impl RaftMetadataStore {
 
             match entry.get_entry_type() {
                 EntryType::EntryNormal => self.handle_normal_entry(entry)?,
-                EntryType::EntryConfChange => self.handle_conf_change(entry)?,
-                EntryType::EntryConfChangeV2 => self.handle_conf_change_v2(entry)?,
+                EntryType::EntryConfChange => self.handle_conf_change(entry).await?,
+                EntryType::EntryConfChangeV2 => self.handle_conf_change_v2(entry).await?,
             }
         }
 
@@ -341,7 +363,7 @@ impl RaftMetadataStore {
         Ok(())
     }
 
-    fn handle_conf_change(&mut self, entry: Entry) -> Result<(), Error> {
+    async fn handle_conf_change(&mut self, entry: Entry) -> Result<(), Error> {
         let mut cc = ConfChange::default();
         cc.merge_from_bytes(&entry.data)
             .map_err(Error::DecodeConf)?;
@@ -349,11 +371,11 @@ impl RaftMetadataStore {
             .raw_node
             .apply_conf_change(&cc)
             .map_err(Error::ApplyConfChange)?;
-        self.raw_node.store().wl().set_conf_state(cs);
+        self.raw_node.mut_store().store_conf_state(cs).await?;
         Ok(())
     }
 
-    fn handle_conf_change_v2(&mut self, entry: Entry) -> Result<(), Error> {
+    async fn handle_conf_change_v2(&mut self, entry: Entry) -> Result<(), Error> {
         let mut cc = ConfChangeV2::default();
         cc.merge_from_bytes(&entry.data)
             .map_err(Error::DecodeConf)?;
@@ -361,7 +383,7 @@ impl RaftMetadataStore {
             .raw_node
             .apply_conf_change(&cc)
             .map_err(Error::ApplyConfChange)?;
-        self.raw_node.store().wl().set_conf_state(cs);
+        self.raw_node.mut_store().store_conf_state(cs).await?;
         Ok(())
     }
 
