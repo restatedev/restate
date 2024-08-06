@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt;
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -86,19 +85,6 @@ pub struct Segment<'a> {
 impl<'a> Segment<'a> {
     pub fn index(&'a self) -> SegmentIndex {
         self.config.index()
-    }
-}
-
-impl fmt::Display for Segment<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}..{}",
-            self.base_lsn,
-            self.tail_lsn
-                .map(|lsn| format!("{}]", lsn))
-                .unwrap_or(String::from("∞)"))
-        )
     }
 }
 

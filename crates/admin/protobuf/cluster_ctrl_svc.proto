@@ -18,8 +18,7 @@ package restate.cluster_ctrl;
 service ClusterCtrlSvc {
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 
-  // TODO: log or plural logs? rename to list logs?
-  rpc GetLogState(LogStateRequest) returns (LogStateResponse);
+  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse);
 
   rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
 
@@ -32,10 +31,10 @@ message ClusterStateResponse {
   restate.cluster.ClusterState cluster_state = 1;
 }
 
-message LogStateRequest {}
+message ListLogsRequest {}
 
-message LogStateResponse {
-  bytes log_state = 1; // Serialized restate_types::logs::metadata::Logs
+message ListLogsResponse {
+  bytes data = 1; // Serialized restate_types::logs::metadata::Logs
 }
 
 message DescribeLogRequest {
@@ -43,8 +42,7 @@ message DescribeLogRequest {
 }
 
 message DescribeLogResponse {
-  // Serialized ???
-  bytes log_details = 1;
+  bytes data = 1; // Serialized restate_types::logs::metadata::Chain
 }
 
 message TrimLogRequest {

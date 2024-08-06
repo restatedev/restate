@@ -15,5 +15,5 @@ use cling::prelude::*;
 #[derive(Run, Subcommand, Clone)]
 pub enum Node {
     /// Print a summary of active nodes in cluster
-    List(list_nodes::ListOpts),
+    List(list_nodes::ListNodesOpts),
 }

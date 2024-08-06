@@ -199,7 +199,8 @@ where
                 nodes_config_version: nodes_config.version(),
                 partition_table_version,
                 nodes,
-                // TODO: logs: metadata.logs()...,
+                // TODO: do we want to keep adding more metadata here, e.g. to keep track of log status:
+                //  logs: metadata.logs()...,
             };
 
             // publish the new state

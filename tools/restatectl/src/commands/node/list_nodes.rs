@@ -29,9 +29,9 @@ use tonic::codec::CompressionEncoding;
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "nodes")]
 #[cling(run = "list_nodes")]
-pub struct ListOpts {}
+pub struct ListNodesOpts {}
 
-async fn list_nodes(connection: &ConnectionInfo, _opts: &ListOpts) -> anyhow::Result<()> {
+async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {

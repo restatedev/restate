@@ -14,26 +14,26 @@ use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
-use restate_cli_util::_comfy_table::{Cell, Table};
+use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Segment};
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
+use crate::commands::display_util::LsnRange;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
-#[cling(run = "describe_log_id")]
+#[cling(run = "describe_log")]
 pub struct DescribeLogIdOpts {
+    #[arg(short, long)]
+    /// The log id to describe
     log_id: u64,
 }
 
-async fn describe_log_id(
-    connection: &ConnectionInfo,
-    opts: &DescribeLogIdOpts,
-) -> anyhow::Result<()> {
+async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -51,9 +51,9 @@ async fn describe_log_id(
     let response = client.describe_log(req).await?.into_inner();
 
     let mut chain_table = Table::new_styled();
-    chain_table.set_styled_header(vec!["SEGMENT", "KIND", "LSN RANGE"]);
+    chain_table.set_styled_header(vec!["SEGMENT", "LSN RANGE", "KIND"]);
 
-    let mut buf = response.log_details;
+    let mut buf = response.data;
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
     let mut segments: Vec<Segment> = chain.iter().collect();
@@ -64,17 +64,16 @@ async fn describe_log_id(
     }
 
     for (idx, segment) in chain.iter().enumerate() {
+        let mut segment_range = Cell::new(format!("{}", LsnRange::from(&segment)));
+        if segment.base_lsn == chain.tail().base_lsn {
+            segment_range = segment_range
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold);
+        }
         chain_table.add_row(vec![
             Cell::new(idx),
+            segment_range,
             Cell::new(format!("{:?}", segment.config.kind)),
-            Cell::new(format!(
-                "[{}..{}",
-                segment.base_lsn,
-                segment
-                    .tail_lsn
-                    .map(|lsn| format!("{}]", lsn))
-                    .unwrap_or(String::from("∞)"))
-            )),
         ]);
     }
 

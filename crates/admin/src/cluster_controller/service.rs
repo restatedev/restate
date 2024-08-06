@@ -343,7 +343,7 @@ where
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
             }
             ClusterControllerCommand::GetLogChain { response_tx, .. } => {
-                // TODO:
+                // TODO: wire up detailed log status so it can be read by restatectl
                 //  let chain = self.cluster_state_refresher.get_cluster_state().logs...get(&log_id);
                 let chain = Some(Arc::new(Chain::new(
                     ProviderKind::Local,

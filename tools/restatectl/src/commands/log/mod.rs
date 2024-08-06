@@ -8,15 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod describe_log_id;
-mod get_state;
+mod describe_log;
+mod list_logs;
 
 use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Log {
-    /// Print the log state by partition
-    State(get_state::StateOpts),
-    /// Describe a log in detail
-    Describe(describe_log_id::DescribeLogIdOpts),
+    /// List the logs by partition
+    List(list_logs::ListLogsOpts),
+    /// Get the details of a specific log
+    Describe(describe_log::DescribeLogIdOpts),
 }

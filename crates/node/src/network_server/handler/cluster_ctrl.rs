@@ -15,7 +15,7 @@ use tracing::info;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, ClusterStateResponse, DescribeLogRequest, DescribeLogResponse,
-    LogStateRequest, LogStateResponse, TrimLogRequest,
+    ListLogsRequest, ListLogsResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_metadata_store::MetadataStoreClient;
@@ -58,10 +58,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         Ok(Response::new(resp))
     }
 
-    async fn get_log_state(
+    async fn list_logs(
         &self,
-        _request: Request<LogStateRequest>,
-    ) -> Result<Response<LogStateResponse>, Status> {
+        _request: Request<ListLogsRequest>,
+    ) -> Result<Response<ListLogsResponse>, Status> {
         let maybe_logs = self
             .metadata_store_client
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
@@ -69,8 +69,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .map_err(|_| Status::unknown("Failed to get log metadata"))?;
 
         match maybe_logs {
-            Some(logs) => Ok(Response::new(LogStateResponse {
-                log_state: serialize_value(logs),
+            Some(logs) => Ok(Response::new(ListLogsResponse {
+                data: serialize_value(logs),
             })),
             None => Err(Status::not_found("Log metadata not found")),
         }
@@ -91,7 +91,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         match maybe_chain {
             Some(chain) => {
                 let resp = DescribeLogResponse {
-                    log_details: serialize_value((*chain).clone()),
+                    data: serialize_value((*chain).clone()),
                 };
                 Ok(Response::new(resp))
             }

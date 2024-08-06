@@ -15,8 +15,8 @@ use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::LogStateRequest;
-use restate_cli_util::_comfy_table::{Cell, Color, Table};
+use restate_admin::cluster_controller::protobuf::ListLogsRequest;
+use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::logs::metadata::{Chain, Logs};
@@ -24,14 +24,15 @@ use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
+use crate::commands::display_util::LsnRange;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
-#[cling(run = "get_log_state")]
-pub struct StateOpts {}
+#[cling(run = "list_logs")]
+pub struct ListLogsOpts {}
 
-async fn get_log_state(connection: &ConnectionInfo, _opts: &StateOpts) -> anyhow::Result<()> {
+async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow::Result<()> {
     let channel = grpc_connect(connection.cluster_controller.clone())
         .await
         .with_context(|| {
@@ -43,13 +44,13 @@ async fn get_log_state(connection: &ConnectionInfo, _opts: &StateOpts) -> anyhow
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = LogStateRequest::default();
-    let response = client.get_log_state(req).await?.into_inner();
+    let req = ListLogsRequest::default();
+    let response = client.list_logs(req).await?.into_inner();
 
     let mut logs_table = Table::new_styled();
-    logs_table.set_styled_header(vec!["P-ID", "HEAD", "TAIL", "KIND"]);
+    logs_table.set_styled_header(vec!["P-ID", "HEAD", "TAIL SEGMENT", "KIND"]);
 
-    let mut buf = response.log_state;
+    let mut buf = response.data;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
@@ -63,7 +64,9 @@ async fn get_log_state(connection: &ConnectionInfo, _opts: &StateOpts) -> anyhow
                 3.. => format!("{} segments", chain.num_segments() - 1),
             })
             .fg(Color::DarkGrey),
-            Cell::new(format!("{}", chain.tail())).fg(Color::Green),
+            Cell::new(format!("{}", LsnRange::from(&chain.tail())))
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
             Cell::new(format!("{:?}", chain.tail().config.kind)),
         ]);
     }
