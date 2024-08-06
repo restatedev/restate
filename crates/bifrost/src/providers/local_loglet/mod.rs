@@ -23,7 +23,7 @@ pub use log_store::LogStoreError;
 use metrics::{counter, histogram, Histogram};
 pub use provider::Factory;
 use restate_core::ShutdownError;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{Keys, SequenceNumber};
 use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -210,7 +210,7 @@ impl LogletBase for LocalLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append(&self, payload: Bytes) -> Result<LogletOffset, AppendError> {
+    async fn append(&self, payload: &Bytes, keys: &Keys) -> Result<LogletOffset, AppendError> {
         // An initial check if we are sealed or not, we are not worried about accepting an
         // append while sealing is taking place. We only care about *not* acknowledging
         // it if we lost the race and the seal was completed while waiting on this append.
@@ -230,7 +230,7 @@ impl LogletBase for LocalLoglet {
             let offset = *next_offset_guard;
             let receiver = self
                 .log_writer
-                .enqueue_put_record(self.loglet_id, offset, payload)
+                .enqueue_put_record(self.loglet_id, offset, payload.clone(), keys.clone())
                 .await?;
             // next offset points to the next available slot.
             *next_offset_guard = offset.next();
@@ -261,7 +261,7 @@ impl LogletBase for LocalLoglet {
         Ok(offset)
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<LogletOffset, AppendError> {
+    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<LogletOffset, AppendError> {
         // An initial check if we are sealed or not, we are not worried about accepting an
         // append while sealing is taking place. We only care about *not* acknowledging
         // it if we lost the race and the seal was completed while waiting on this append.

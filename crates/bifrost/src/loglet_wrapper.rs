@@ -19,7 +19,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{Keys, Lsn, SequenceNumber};
 
 use crate::loglet::{
     AppendError, Loglet, LogletBase, LogletOffset, OperationError, SendableLogletReadStream,
@@ -112,12 +112,12 @@ impl LogletBase for LogletWrapper {
         unreachable!("create_read_stream on LogletWrapper should never be used directly")
     }
 
-    async fn append(&self, data: Bytes) -> Result<Lsn, AppendError> {
+    async fn append(&self, data: &Bytes, keys: &Keys) -> Result<Lsn, AppendError> {
         if self.tail_lsn.is_some() {
             return Err(AppendError::Sealed);
         }
 
-        let offset = self.loglet.append(data).await?;
+        let offset = self.loglet.append(data, keys).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
@@ -133,7 +133,7 @@ impl LogletBase for LogletWrapper {
             .boxed()
     }
 
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Lsn, AppendError> {
+    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<Lsn, AppendError> {
         if self.tail_lsn.is_some() {
             return Err(AppendError::Sealed);
         }

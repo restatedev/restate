@@ -451,6 +451,7 @@ mod tests {
     #[traced_test]
     async fn test_readstream_one_loglet() -> anyhow::Result<()> {
         setup_panic_handler();
+        const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
@@ -459,7 +460,6 @@ mod tests {
 
         let tc = node_env.tc;
         tc.run_in_scope("test", None, async {
-            let log_id = LogId::from(0);
             let read_from = Lsn::from(6);
 
             let config = Live::from_value(Configuration::default());
@@ -469,10 +469,11 @@ mod tests {
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
 
-            let mut reader = bifrost.create_reader(log_id, read_from, Lsn::MAX)?;
+            let mut reader = bifrost.create_reader(LOG_ID, read_from, Lsn::MAX)?;
+            let mut appender = bifrost.create_appender(LOG_ID)?;
 
             let tail = bifrost
-                .find_tail(log_id, FindTailAttributes::default())
+                .find_tail(LOG_ID, FindTailAttributes::default())
                 .await?;
             // no records have been written
             assert!(!tail.is_sealed());
@@ -480,7 +481,7 @@ mod tests {
             assert_eq!(read_from, reader.read_pointer());
 
             // Nothing is trimmed
-            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+            assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
             let read_counter = Arc::new(AtomicUsize::new(0));
             // spawn a reader that reads 5 records and exits.
@@ -508,9 +509,7 @@ mod tests {
 
             // append 5 records to the log
             for i in 1..=5 {
-                let lsn = bifrost
-                    .append(log_id, Payload::new(format!("record{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("record{}", i)).await?;
                 info!(?lsn, "appended record");
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -523,9 +522,7 @@ mod tests {
 
             // write 5 more records.
             for i in 6..=10 {
-                bifrost
-                    .append(log_id, Payload::new(format!("record{}", i)))
-                    .await?;
+                appender.append_raw(format!("record{}", i)).await?;
             }
 
             // reader has finished
@@ -542,6 +539,7 @@ mod tests {
     #[traced_test]
     async fn test_read_stream_with_trim() -> anyhow::Result<()> {
         setup_panic_handler();
+        const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::new_with_mock_network()
             .set_provider_kind(ProviderKind::Local)
@@ -553,7 +551,6 @@ mod tests {
                 let config = Live::from_value(Configuration::default());
                 RocksDbManager::init(Constant::new(CommonOptions::default()));
 
-                let log_id = LogId::from(0);
                 let svc =
                     BifrostService::new(task_center(), metadata()).enable_local_loglet(&config);
                 let bifrost = svc.handle();
@@ -565,27 +562,29 @@ mod tests {
                 );
                 svc.start().await.expect("loglet must start");
 
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+                let mut appender = bifrost.create_appender(LOG_ID)?;
+
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
                 // append 10 records [1..10]
                 for i in 1..=10 {
-                    let lsn = bifrost.append(log_id, Payload::default()).await?;
+                    let lsn = appender.append_raw("").await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
                 // [1..5] trimmed. trim_point = 5
-                bifrost_admin.trim(log_id, Lsn::from(5)).await?;
+                bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
 
                 assert_eq!(
                     Lsn::from(11),
                     bifrost
-                        .find_tail(log_id, FindTailAttributes::default())
+                        .find_tail(LOG_ID, FindTailAttributes::default())
                         .await?
                         .offset(),
                 );
-                assert_eq!(Lsn::from(5), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
 
-                let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX)?;
+                let mut read_stream = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
 
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
@@ -612,22 +611,20 @@ mod tests {
                 assert_eq!(Lsn::from(8), read_stream.read_pointer());
 
                 let tail = bifrost
-                    .find_tail(log_id, FindTailAttributes::default())
+                    .find_tail(LOG_ID, FindTailAttributes::default())
                     .await?
                     .offset();
                 // trimming beyond the release point will fall back to the release point
-                bifrost_admin.trim(log_id, Lsn::from(u64::MAX)).await?;
-                let trim_point = bifrost.get_trim_point(log_id).await?;
-                assert_eq!(Lsn::from(10), bifrost.get_trim_point(log_id).await?);
+                bifrost_admin.trim(LOG_ID, Lsn::from(u64::MAX)).await?;
+                let trim_point = bifrost.get_trim_point(LOG_ID).await?;
+                assert_eq!(Lsn::from(10), bifrost.get_trim_point(LOG_ID).await?);
                 // trim point becomes the point before the next slot available for writes (aka. the
                 // tail)
                 assert_eq!(tail.prev(), trim_point);
 
                 // append lsns [11..20]
                 for i in 11..=20 {
-                    let lsn = bifrost
-                        .append(log_id, Payload::new(format!("record{}", i)))
-                        .await?;
+                    let lsn = appender.append_raw(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
@@ -692,6 +689,7 @@ mod tests {
 
             // create the reader and put it on the side.
             let mut reader = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+            let mut appender = bifrost.create_appender(LOG_ID)?;
             // We should be at tail, any attempt to read will yield `pending`.
             assert_that!(
                 futures::poll!(std::pin::pin!(reader.next())),
@@ -711,9 +709,7 @@ mod tests {
 
             // append 10 records [1..10]
             for i in 1..=10 {
-                let lsn = bifrost
-                    .append(LOG_ID, Payload::new(format!("segment-1-{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("segment-1-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
@@ -804,9 +800,7 @@ mod tests {
 
             // append 5 more records into the new loglet.
             for i in 11..=15 {
-                let lsn = bifrost
-                    .append(LOG_ID, Payload::new(format!("segment-2-{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("segment-2-{}", i)).await?;
                 println!("appended record={}", lsn);
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -827,12 +821,7 @@ mod tests {
                 pat!(Poll::Pending)
             );
 
-            assert_eq!(
-                Lsn::from(16),
-                bifrost
-                    .append(LOG_ID, Payload::new("segment-2-1000"))
-                    .await?
-            );
+            assert_eq!(Lsn::from(16), appender.append_raw("segment-2-1000").await?);
 
             let record = reader.next().await.expect("to stay alive")?;
             assert_eq!(Lsn::from(16), record.offset);
@@ -874,6 +863,8 @@ mod tests {
             );
             svc.start().await.expect("loglet must start");
 
+            let mut appender = bifrost.create_appender(LOG_ID)?;
+
             let tail = bifrost
                 .find_tail(LOG_ID, FindTailAttributes::default())
                 .await?;
@@ -883,9 +874,7 @@ mod tests {
 
             // append 10 records [1..10]
             for i in 1..=10 {
-                let lsn = bifrost
-                    .append(LOG_ID, Payload::new(format!("segment-1-{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("segment-1-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
@@ -933,9 +922,7 @@ mod tests {
 
             // append 5 more records into the new loglet.
             for i in 11..=15 {
-                let lsn = bifrost
-                    .append(LOG_ID, Payload::new(format!("segment-2-{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("segment-2-{}", i)).await?;
                 info!(?lsn, "appended record");
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -998,6 +985,7 @@ mod tests {
                 .enable_in_memory_loglet();
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
+            let mut appender = bifrost.create_appender(LOG_ID)?;
 
             // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
             let old_version = bifrost.inner.metadata.logs_version();
@@ -1033,9 +1021,7 @@ mod tests {
 
             // append a few records
             for i in 10..=13 {
-                let lsn = bifrost
-                    .append(LOG_ID, Payload::new(format!("record-{}", i)))
-                    .await?;
+                let lsn = appender.append_raw(format!("record-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
