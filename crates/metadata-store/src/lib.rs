@@ -11,16 +11,26 @@
 mod grpc;
 mod grpc_svc;
 pub mod local;
+pub mod raft;
 
+use crate::grpc::handler::MetadataStoreHandler;
+use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
+use crate::local::LocalMetadataStore;
+use crate::raft::RaftMetadataStore;
 use bytestring::ByteString;
 use restate_core::metadata_store::VersionedValue;
 pub use restate_core::metadata_store::{
     MetadataStoreClient, Precondition, ReadError, ReadModifyWriteError, WriteError,
 };
-use restate_core::ShutdownError;
+use restate_core::network::NetworkServerBuilder;
+use restate_types::config::{Kind, MetadataStoreOptions, RocksDbOptions};
 use restate_types::errors::GenericError;
+use restate_types::health::HealthStatus;
+use restate_types::live::BoxedLiveLoad;
+use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::Version;
+use std::future::Future;
 use tokio::sync::{mpsc, oneshot};
 
 pub type BoxedMetadataStoreService = Box<dyn MetadataStoreService>;
@@ -30,10 +40,10 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
-    #[error("storage error: {0}")]
-    Storage(#[from] GenericError),
+    #[error("internal error: {0}")]
+    Internal(#[from] GenericError),
     #[error("failed precondition: {0}")]
-    FailedPrecondition(String),
+    FailedPrecondition(#[from] PreconditionViolation),
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
     #[error("encode error: {0}")]
@@ -43,28 +53,41 @@ pub enum RequestError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("system is shutting down")]
-    Shutdown(#[from] ShutdownError),
-    #[error(transparent)]
-    Generic(#[from] GenericError),
+pub enum PreconditionViolation {
+    #[error("key-value pair already exists")]
+    Exists,
+    #[error("expected version '{expected}' but found version '{actual:?}'")]
+    VersionMismatch {
+        expected: Version,
+        actual: Option<Version>,
+    },
+}
+
+impl PreconditionViolation {
+    fn kv_pair_exists() -> Self {
+        PreconditionViolation::Exists
+    }
+
+    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
+        PreconditionViolation::VersionMismatch { expected, actual }
+    }
 }
 
 #[async_trait::async_trait]
 pub trait MetadataStoreServiceBoxed {
-    async fn run_boxed(self: Box<Self>) -> Result<(), Error>;
+    async fn run_boxed(self: Box<Self>) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
 impl<T: MetadataStoreService> MetadataStoreServiceBoxed for T {
-    async fn run_boxed(self: Box<Self>) -> Result<(), Error> {
+    async fn run_boxed(self: Box<Self>) -> anyhow::Result<()> {
         (*self).run().await
     }
 }
 
 #[async_trait::async_trait]
 pub trait MetadataStoreService: MetadataStoreServiceBoxed + Send {
-    async fn run(self) -> Result<(), Error>;
+    async fn run(self) -> anyhow::Result<()>;
 
     fn boxed(self) -> BoxedMetadataStoreService
     where
@@ -76,7 +99,7 @@ pub trait MetadataStoreService: MetadataStoreServiceBoxed + Send {
 
 #[async_trait::async_trait]
 impl<T: MetadataStoreService + ?Sized> MetadataStoreService for Box<T> {
-    async fn run(self) -> Result<(), Error> {
+    async fn run(self) -> anyhow::Result<()> {
         self.run_boxed().await
     }
 }
@@ -104,14 +127,75 @@ pub enum MetadataStoreRequest {
     },
 }
 
-impl RequestError {
-    fn kv_pair_exists() -> Self {
-        RequestError::FailedPrecondition("key-value pair already exists".to_owned())
-    }
+pub trait MetadataStoreBackend {
+    /// Create a request sender for this backend.
+    fn request_sender(&self) -> RequestSender;
 
-    fn version_mismatch(expected: Version, actual: Option<Version>) -> Self {
-        RequestError::FailedPrecondition(format!(
-            "Expected version '{expected}' but found version '{actual:?}'"
-        ))
+    /// Run the metadata store backend
+    fn run(self) -> impl Future<Output = anyhow::Result<()>> + Send + 'static;
+}
+
+pub struct MetadataStoreRunner<S> {
+    store: S,
+    health_status: HealthStatus<MetadataServerStatus>,
+}
+
+impl<S> MetadataStoreRunner<S>
+where
+    S: MetadataStoreBackend,
+{
+    pub fn new(
+        store: S,
+        health_status: HealthStatus<MetadataServerStatus>,
+        server_builder: &mut NetworkServerBuilder,
+    ) -> Self {
+        server_builder.register_grpc_service(
+            MetadataStoreSvcServer::new(MetadataStoreHandler::new(store.request_sender())),
+            grpc_svc::FILE_DESCRIPTOR_SET,
+        );
+
+        health_status.update(MetadataServerStatus::StartingUp);
+
+        Self {
+            store,
+            health_status,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<S> MetadataStoreService for MetadataStoreRunner<S>
+where
+    S: MetadataStoreBackend + Send,
+{
+    async fn run(self) -> anyhow::Result<()> {
+        let MetadataStoreRunner {
+            health_status,
+            store,
+        } = self;
+
+        health_status.update(MetadataServerStatus::Ready);
+        store.run().await?;
+        health_status.update(MetadataServerStatus::Unknown);
+
+        Ok(())
+    }
+}
+
+pub async fn create_metadata_store(
+    metadata_store_options: &MetadataStoreOptions,
+    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+    health_status: HealthStatus<MetadataServerStatus>,
+    server_builder: &mut NetworkServerBuilder,
+) -> anyhow::Result<BoxedMetadataStoreService> {
+    match metadata_store_options.kind {
+        Kind::Local => {
+            let store = LocalMetadataStore::create(metadata_store_options, rocksdb_options).await?;
+            Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
+        }
+        Kind::Raft => {
+            let store = RaftMetadataStore::new()?;
+            Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
+        }
     }
 }
