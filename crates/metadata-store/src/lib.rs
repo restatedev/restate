@@ -32,7 +32,9 @@ pub type RequestReceiver = mpsc::Receiver<MetadataStoreRequest>;
 #[derive(Debug, thiserror::Error)]
 pub enum RequestError {
     #[error("internal error: {0}")]
-    Internal(#[from] GenericError),
+    Internal(GenericError),
+    #[error("service currently unavailable: {0}")]
+    Unavailable(GenericError),
     #[error("failed precondition: {0}")]
     FailedPrecondition(#[from] PreconditionViolation),
     #[error("invalid argument: {0}")]
