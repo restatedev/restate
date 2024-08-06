@@ -99,7 +99,7 @@ impl StorageCodec {
 ///
 /// # Important
 /// The [`Self::encode`] implementation should use the codec specified by [`Self::DEFAULT_CODEC`].
-pub trait StorageEncode {
+pub trait StorageEncode: Sized {
     /// Codec which is used when encode new values.
     const DEFAULT_CODEC: StorageCodecKind;
 

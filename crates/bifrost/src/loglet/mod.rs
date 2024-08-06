@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{Keys, Lsn, SequenceNumber};
 
 use crate::LogRecord;
 use crate::{Result, TailState};
@@ -122,7 +122,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     ) -> Result<SendableLogletReadStream<Self::Offset>>;
 
     /// Append a record to the loglet.
-    async fn append(&self, data: Bytes) -> Result<Self::Offset, AppendError>;
+    async fn append(&self, data: &Bytes, keys: &Keys) -> Result<Self::Offset, AppendError>;
 
     /// An optional optimization that loglets can implement. Offsets returned by this call **MUST**
     /// be offsets that were observed before a sealing point. For instance, the maximum acknowleged
@@ -149,7 +149,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
     /// Append a batch of records to the loglet. The returned offset (on success) if the offset of
     /// the first record in the batch)
-    async fn append_batch(&self, payloads: &[Bytes]) -> Result<Self::Offset, AppendError>;
+    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<Self::Offset, AppendError>;
 
     /// The tail is *the first unwritten position* in the loglet.
     ///

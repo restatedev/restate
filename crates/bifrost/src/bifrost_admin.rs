@@ -63,6 +63,7 @@ impl<'a> BifrostAdmin<'a> {
     /// trim all records of the log.
     #[instrument(level = "debug", skip(self), err)]
     pub async fn trim(&self, log_id: LogId, trim_point: Lsn) -> Result<()> {
+        self.bifrost.inner.fail_if_shutting_down()?;
         self.bifrost.inner.trim(log_id, trim_point).await
     }
 
@@ -83,6 +84,7 @@ impl<'a> BifrostAdmin<'a> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<()> {
+        self.bifrost.inner.fail_if_shutting_down()?;
         let _ = self
             .bifrost
             .inner
@@ -115,6 +117,7 @@ impl<'a> BifrostAdmin<'a> {
         log_id: LogId,
         segment_index: SegmentIndex,
     ) -> Result<TailState> {
+        self.bifrost.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
         let loglet = self.bifrost.inner.writeable_loglet(log_id).await?;
 
@@ -165,6 +168,7 @@ impl<'a> BifrostAdmin<'a> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<()> {
+        self.bifrost.inner.fail_if_shutting_down()?;
         let logs = self
             .metadata_store_client
             .read_modify_write(BIFROST_CONFIG_KEY.clone(), move |logs: Option<Logs>| {
