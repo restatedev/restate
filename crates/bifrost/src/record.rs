@@ -9,9 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use restate_types::logs::{Lsn, Payload, SequenceNumber};
+
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::storage::{StorageCodec, StorageDecodeError};
 
+use crate::payload::Payload;
 use crate::LsnExt;
 
 /// A single entry in the log.

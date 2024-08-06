@@ -10,12 +10,9 @@
 
 use std::ops::RangeInclusive;
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-use crate::flexbuffers_storage_encode_decode;
 use crate::identifiers::PartitionId;
-use crate::time::NanosSinceEpoch;
 
 pub mod builder;
 pub mod metadata;
@@ -215,59 +212,6 @@ impl From<RangeInclusive<u64>> for KeyFilter {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Header {
-    pub created_at: NanosSinceEpoch,
-}
-
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            created_at: NanosSinceEpoch::now(),
-        }
-    }
-}
-
-/// Owned payload.
-#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Payload {
-    header: Header,
-    body: Bytes,
-}
-
-impl Payload {
-    pub fn new(body: impl Into<Bytes>) -> Self {
-        Self {
-            header: Header::default(),
-            body: body.into(),
-        }
-    }
-
-    pub fn body(&self) -> &Bytes {
-        &self.body
-    }
-
-    pub fn split(self) -> (Header, Bytes) {
-        (self.header, self.body)
-    }
-
-    pub fn into_body(self) -> Bytes {
-        self.body
-    }
-
-    pub fn header(&self) -> &Header {
-        &self.header
-    }
-
-    pub fn into_header(self) -> Header {
-        self.header
-    }
-
-    pub fn body_size(&self) -> usize {
-        self.body.len()
-    }
-}
-
 pub trait HasRecordKeys: Send + Sync {
     /// Keys of the record. Keys are used to filter the log when reading.
     fn record_keys(&self) -> Keys;
@@ -283,8 +227,6 @@ impl<T: HasRecordKeys> HasRecordKeys for &T {
         HasRecordKeys::record_keys(*self)
     }
 }
-
-flexbuffers_storage_encode_decode!(Payload);
 
 #[cfg(test)]
 mod tests {
