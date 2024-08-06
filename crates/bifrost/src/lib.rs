@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod appender;
 mod bifrost;
 mod bifrost_admin;
 mod error;
@@ -20,6 +21,7 @@ mod service;
 mod types;
 mod watchdog;
 
+pub use appender::Appender;
 pub use bifrost::Bifrost;
 pub use bifrost_admin::BifrostAdmin;
 pub use error::{Error, Result};

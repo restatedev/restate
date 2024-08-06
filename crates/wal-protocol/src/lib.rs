@@ -19,11 +19,11 @@ use restate_types::invocation::{
 };
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{flexbuffers_storage_encode_decode, Version};
+use restate_types::{flexbuffers_storage_encode_decode, logs, Version};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
-use restate_types::logs::{LogId, Lsn, Payload};
+use restate_types::logs::{HasRecordKeys, LogId, Lsn};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::GenerationalNodeId;
@@ -160,6 +160,13 @@ impl WithPartitionKey for Envelope {
     }
 }
 
+impl HasRecordKeys for Envelope {
+    fn record_keys(&self) -> logs::Keys {
+        // Placeholder implementation
+        logs::Keys::None
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("partition not found: {0}")]
@@ -188,8 +195,7 @@ pub async fn append_envelope_to_bifrost(
     };
 
     let log_id = LogId::from(*partition_id);
-    let payload = Payload::new(envelope.to_bytes()?);
-    let lsn = bifrost.append(log_id, payload).await?;
+    let lsn = bifrost.append(log_id, envelope).await?;
 
     Ok((log_id, lsn))
 }

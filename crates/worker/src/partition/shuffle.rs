@@ -227,7 +227,7 @@ where
         let state_machine = StateMachine::new(
             metadata,
             outbox_reader,
-            |msg| {
+            move |msg| {
                 let bifrost = bifrost.clone();
                 async move {
                     append_envelope_to_bifrost(&bifrost, msg).await?;
