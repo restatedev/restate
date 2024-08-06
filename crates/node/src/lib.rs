@@ -31,6 +31,7 @@ use restate_core::{
 #[cfg(feature = "replicated-loglet")]
 use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
+use restate_metadata_store::raft::service::RaftMetadataStoreService;
 use restate_metadata_store::{
     BoxedMetadataStoreService, MetadataStoreClient, MetadataStoreService,
 };
@@ -318,9 +319,11 @@ impl Node {
                     .boxed(),
             )
             .boxed(),
-            Kind::Raft => {
-                unimplemented!("not yet supported")
-            }
+            Kind::Raft => RaftMetadataStoreService::new(
+                health_status,
+                updateable_config.clone().map(|c| &c.metadata_store).boxed(),
+            )
+            .boxed(),
         }
     }
 
