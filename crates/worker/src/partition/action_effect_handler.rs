@@ -56,7 +56,6 @@ impl ActionEffectHandler {
         &mut self,
         effects: impl IntoIterator<Item = ActionEffect>,
     ) -> anyhow::Result<()> {
-        let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
         // groups envelopes write to Bifrost in batches
         let mut buffer: BTreeMap<LogId, SmallVec<[Payload; SMALL_BATCH_THRESHOLD_COUNT]>> =
             Default::default();
@@ -90,7 +89,13 @@ impl ActionEffectHandler {
                     )
                 }
             };
-            let log_id = LogId::from(partition_table.find_partition_id(envelope.partition_key())?);
+
+            let log_id = {
+                // make sure we drop pinned partition table before awaiting
+                let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
+                LogId::from(partition_table.find_partition_id(envelope.partition_key())?)
+            };
+
             buffer
                 .entry(log_id)
                 .or_default()

@@ -181,9 +181,11 @@ pub async fn append_envelope_to_bifrost(
     bifrost: &Bifrost,
     envelope: Envelope,
 ) -> Result<(LogId, Lsn), Error> {
-    let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
-
-    let partition_id = partition_table.find_partition_id(envelope.partition_key())?;
+    let partition_id = {
+        // make sure we drop pinned partition table before awaiting
+        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
+        partition_table.find_partition_id(envelope.partition_key())?
+    };
 
     let log_id = LogId::from(*partition_id);
     let payload = Payload::new(envelope.to_bytes()?);

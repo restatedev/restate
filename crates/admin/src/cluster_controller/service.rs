@@ -196,7 +196,10 @@ where
         all_partitions_started_tx: Option<oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
         // Make sure we have partition table before starting
-        let _ = self.metadata.wait_for_partition_table(Version::MIN).await?;
+        let _ = self
+            .metadata
+            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
+            .await?;
         let bifrost_admin =
             BifrostAdmin::new(&bifrost, &self.metadata_writer, &self.metadata_store_client);
 

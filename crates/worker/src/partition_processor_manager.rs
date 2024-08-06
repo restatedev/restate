@@ -464,7 +464,8 @@ impl PartitionProcessorManager {
         let partition_table = self
             .metadata
             .wait_for_partition_table(control_processors.min_partition_table_version)
-            .await?;
+            .await?
+            .into_arc();
 
         for control_processor in control_processors.commands {
             self.on_control_processor(control_processor, &partition_table)

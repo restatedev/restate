@@ -127,15 +127,18 @@ impl Metadata {
     pub async fn wait_for_partition_table(
         &self,
         min_version: Version,
-    ) -> Result<Arc<PartitionTable>, ShutdownError> {
-        let partition_table = self.partition_table_ref();
-        if partition_table.version() >= min_version {
-            return Ok(partition_table.into_arc());
+    ) -> Result<Pinned<PartitionTable>, ShutdownError> {
+        // make sure that we drop the pinned partition table in case we need to wait
+        {
+            let partition_table = self.partition_table_ref();
+            if partition_table.version() >= min_version {
+                return Ok(partition_table);
+            }
         }
 
         self.wait_for_version(MetadataKind::PartitionTable, min_version)
             .await?;
-        Ok(self.partition_table_snapshot())
+        Ok(self.partition_table_ref())
     }
 
     pub fn logs(&self) -> Pinned<Logs> {

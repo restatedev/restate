@@ -114,8 +114,11 @@ where
         let refresh = async move {
             let last_state = Arc::clone(&cluster_state_tx.borrow());
             // make sure we have a partition table that equals or newer than last refresh
-            let partition_table = metadata
-                .wait_for_partition_table(last_state.partition_table_version)
+            let partition_table_version = metadata
+                .wait_for_version(
+                    restate_core::MetadataKind::PartitionTable,
+                    last_state.partition_table_version,
+                )
                 .await?;
             let _ = metadata
                 .wait_for_version(
@@ -194,7 +197,7 @@ where
             let state = ClusterState {
                 last_refreshed: Some(Instant::now()),
                 nodes_config_version: nodes_config.version(),
-                partition_table_version: partition_table.version(),
+                partition_table_version,
                 nodes,
             };
 
