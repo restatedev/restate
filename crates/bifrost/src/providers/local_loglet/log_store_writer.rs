@@ -25,7 +25,7 @@ use tracing::{debug, error, trace, warn};
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{Keys, SequenceNumber};
 
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
@@ -291,8 +291,10 @@ impl RocksDbLogWriterHandle {
         loglet_id: u64,
         offset: LogletOffset,
         data: Bytes,
+        keys: Keys,
     ) -> Result<AckRecv, ShutdownError> {
-        self.enqueue_put_records(loglet_id, offset, &[data]).await
+        self.enqueue_put_records(loglet_id, offset, &[(data, keys)])
+            .await
     }
 
     pub async fn enqueue_seal(&self, loglet_id: u64) -> Result<AckRecv, ShutdownError> {
@@ -312,14 +314,14 @@ impl RocksDbLogWriterHandle {
         &self,
         loglet_id: u64,
         mut start_offset: LogletOffset,
-        records: &[Bytes],
+        records: &[(Bytes, Keys)],
     ) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
         let mut data_updates = SmallVec::with_capacity(records.len());
         for record in records {
             data_updates.push(DataUpdate::PutRecord {
                 offset: start_offset,
-                data: record.clone(),
+                data: record.0.clone(),
             });
             start_offset = start_offset.next();
         }
