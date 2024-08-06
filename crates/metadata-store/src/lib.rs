@@ -12,6 +12,7 @@ mod grpc;
 mod grpc_svc;
 pub mod local;
 pub mod raft;
+mod util;
 
 use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
@@ -196,7 +197,7 @@ pub async fn create_metadata_store(
             Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
         }
         Kind::Raft => {
-            let store = RaftMetadataStore::new()?;
+            let store = RaftMetadataStore::create().await?;
             Ok(MetadataStoreRunner::new(store, health_status, server_builder).boxed())
         }
     }
