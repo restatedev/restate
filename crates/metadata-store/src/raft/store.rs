@@ -112,7 +112,7 @@ impl RaftMetadataStore {
                         .map_err(Into::into)
                         .and_then(|request| self.raw_node
                             .propose(vec![], request)
-                            .map_err(|err| RequestError::Internal(err.into()))) {
+                            .map_err(RequestError::from)) {
                         info!("Failed processing request: {err}");
                         callback.fail(err);
                         continue;
@@ -526,4 +526,13 @@ enum RequestKind {
         key: ByteString,
         precondition: Precondition,
     },
+}
+
+impl From<raft::Error> for RequestError {
+    fn from(value: raft::Error) -> Self {
+        match value {
+            err @ raft::Error::ProposalDropped => RequestError::Unavailable(err.into()),
+            err => RequestError::Internal(err.into()),
+        }
+    }
 }
