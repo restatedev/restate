@@ -17,14 +17,14 @@ use tokio_stream::StreamExt;
 
 use super::error::ProtocolError;
 
-//todo: make this configurable
-pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
-
-pub async fn wait_for_hello<S>(incoming: &mut S) -> Result<(Header, Hello), ProtocolError>
+pub async fn wait_for_hello<S>(
+    incoming: &mut S,
+    timeout: Duration,
+) -> Result<(Header, Hello), ProtocolError>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
 {
-    let maybe_hello = tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming.next())
+    let maybe_hello = tokio::time::timeout(timeout, incoming.next())
         .await
         .map_err(|_| {
             ProtocolError::HandshakeTimeout("Hello message wasn't received within deadline")
@@ -83,12 +83,13 @@ pub fn negotiate_protocol_version(hello: &Hello) -> Result<ProtocolVersion, Prot
 
 pub async fn wait_for_welcome<S>(
     response_stream: &mut S,
+    timeout: Duration,
 ) -> Result<(Header, Welcome), ProtocolError>
 where
     S: Stream<Item = Result<Message, ProtocolError>> + Unpin,
 {
     // first thing we expect is Welcome.
-    let maybe_welcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, response_stream.next())
+    let maybe_welcome = tokio::time::timeout(timeout, response_stream.next())
         .await
         .map_err(|_| ProtocolError::HandshakeTimeout("No Welcome received within deadline"))?;
 

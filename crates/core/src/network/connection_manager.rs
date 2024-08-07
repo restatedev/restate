@@ -16,7 +16,7 @@ use restate_types::net::codec::try_unwrap_binary_message;
 use std::collections::{hash_map, HashMap};
 use std::ops::{Index, IndexMut};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
@@ -93,14 +93,19 @@ impl Default for ConnectionManagerInner {
 pub struct ConnectionManager {
     inner: Arc<Mutex<ConnectionManagerInner>>,
     metadata: Metadata,
+    handshake_timeout: Duration,
 }
 
 impl ConnectionManager {
     /// Creates the connection manager.
-    pub(super) fn new(metadata: Metadata) -> Self {
+    pub(super) fn new(metadata: Metadata, handshake_timeout: Duration) -> Self {
         let inner = Arc::new(Mutex::new(ConnectionManagerInner::default()));
 
-        Self { metadata, inner }
+        Self {
+            metadata,
+            inner,
+            handshake_timeout,
+        }
     }
     /// Updates the message router. Note that this only impacts new connections.
     /// In general, this should be called once on application start after
@@ -139,7 +144,7 @@ impl ConnectionManager {
         // window) to avoid dangling resources by misbehaving peers or under sever load conditions.
         // The client can retry with an exponential backoff on handshake timeout.
         debug!("Accepting incoming connection");
-        let (header, hello) = wait_for_hello(&mut incoming).await?;
+        let (header, hello) = wait_for_hello(&mut incoming, self.handshake_timeout).await?;
         let nodes_config = self.metadata.nodes_config_ref();
         let my_node_id = self.metadata.my_node_id();
         // NodeId **must** be generational at this layer
@@ -339,7 +344,7 @@ impl ConnectionManager {
 
         let mut transformed = incoming.map(|x| x.map_err(ProtocolError::from));
         // finish the handshake
-        let (_header, welcome) = wait_for_welcome(&mut transformed).await?;
+        let (_header, welcome) = wait_for_welcome(&mut transformed, self.handshake_timeout).await?;
         let protocol_version = welcome.protocol_version();
 
         if !protocol_version.is_supported() {
@@ -702,7 +707,7 @@ impl IndexMut<MetadataKind> for MetadataVersions {
 
 #[cfg(test)]
 mod tests {
-    use crate::network::handshake::HANDSHAKE_TIMEOUT;
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
     use super::*;
 
@@ -730,7 +735,7 @@ mod tests {
             .tc
             .run_in_scope("test", None, async {
                 let metadata = crate::metadata();
-                let connections = ConnectionManager::new(metadata.clone());
+                let connections = ConnectionManager::new(metadata.clone(), HANDSHAKE_TIMEOUT);
 
                 let _ = establish_connection(metadata.my_node_id(), &metadata, &connections).await;
 
@@ -747,7 +752,7 @@ mod tests {
             .tc
             .run_in_scope("test", None, async {
                 let (_tx, rx) = mpsc::channel(1);
-                let connections = ConnectionManager::new(metadata);
+                let connections = ConnectionManager::new(metadata, HANDSHAKE_TIMEOUT);
 
                 let start = tokio::time::Instant::now();
                 let incoming = ReceiverStream::new(rx);
@@ -790,7 +795,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections = ConnectionManager::new(metadata.clone());
+                let connections = ConnectionManager::new(metadata.clone(), HANDSHAKE_TIMEOUT);
                 let incoming = ReceiverStream::new(rx);
                 let resp = connections.accept_incoming_connection(incoming).await;
                 assert!(resp.is_err());
@@ -816,7 +821,7 @@ mod tests {
                 );
                 tx.send(Ok(hello)).await?;
 
-                let connections = ConnectionManager::new(metadata);
+                let connections = ConnectionManager::new(metadata, HANDSHAKE_TIMEOUT);
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
                     .accept_incoming_connection(incoming)
@@ -859,7 +864,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections = ConnectionManager::new(metadata.clone());
+                let connections = ConnectionManager::new(metadata.clone(), HANDSHAKE_TIMEOUT);
 
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
@@ -891,7 +896,7 @@ mod tests {
                     .await
                     .expect("Channel accept hello message");
 
-                let connections = ConnectionManager::new(metadata);
+                let connections = ConnectionManager::new(metadata, HANDSHAKE_TIMEOUT);
 
                 let incoming = ReceiverStream::new(rx);
                 let err = connections
@@ -936,7 +941,7 @@ mod tests {
             .tc
             .run_in_scope("test", None, async {
                 let metadata = crate::metadata();
-                let connections = ConnectionManager::new(metadata.clone());
+                let connections = ConnectionManager::new(metadata.clone(), HANDSHAKE_TIMEOUT);
 
                 let (connection, _rx) =
                     establish_connection(node_id, &metadata, &connections).await;
