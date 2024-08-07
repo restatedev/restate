@@ -14,10 +14,8 @@ use std::sync::OnceLock;
 
 use bytes::BytesMut;
 use enum_map::EnumMap;
-use tracing::info;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
-use restate_types::config::Configuration;
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{HasRecordKeys, LogId, Lsn, SequenceNumber};
 use restate_types::storage::StorageEncode;
@@ -115,9 +113,12 @@ impl Bifrost {
     }
 
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
-    /// start reading from. This means that the record returned will have a LSN that is equal or greater than
-    /// `from`. If no records are committed yet at this LSN, this read operation will return
-    /// `None`.
+    /// start reading from. This means that the record returned will have a LSN that is equal
+    /// or greater than `from`. If no records are committed yet at this LSN, this read operation
+    /// will immediately return `None`.
+    ///
+    /// It's recommended to use the [`LogReadStream`] interface. Use [`Self::create_reader`]
+    /// and reuse this read stream if you want to read more than one record.
     pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
         self.inner.fail_if_shutting_down()?;
         self.inner.read(log_id, from).await
@@ -291,80 +292,20 @@ impl BifrostInner {
             .await
     }
 
-    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
-        // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
-        let from = std::cmp::max(Lsn::OLDEST, from);
-
-        let mut retry = Configuration::pinned()
-            .bifrost
-            .read_retry_policy
-            .clone()
-            .into_iter();
-
-        let mut attempts = 0;
-        let (known_tail, loglet) = loop {
-            attempts += 1;
-            let loglet = match self.find_loglet_for_lsn(log_id, from).await? {
-                MaybeLoglet::Some(loglet) => loglet,
-                MaybeLoglet::Trim { next_base_lsn } => {
-                    // trim_gap's `to` field is inclusive, so we move back one offset from the
-                    // next_base_lsn
-                    return Ok(Some(LogRecord::new_trim_gap(from, next_base_lsn.prev())));
-                }
-            };
-
-            // When reading from an open loglet segment, we need to make sure we need to be careful of
-            // reading when the loglet is sealed (metadata is not updated yet, or reconfiguration is in
-            // progress). If we observed that the loglet is sealed, we must wait until the tail is
-            // determined and a new loglet segment is appended.
-            match loglet.tail_lsn {
-                Some(known_tail) => break (known_tail, loglet),
-                None => {
-                    // optimization to avoid find_tail if we know it's safe to perform this read.
-                    if let Some(known_unsealed_tail) = loglet.last_known_unsealed_tail() {
-                        if known_unsealed_tail > from {
-                            // safe to proceed without find_tail.
-                            break (known_unsealed_tail, loglet);
-                        }
-                    }
-
-                    let tail = loglet.find_tail().await?;
-                    match tail {
-                        TailState::Open(tail) => {
-                            break (tail, loglet);
-                        }
-                        TailState::Sealed(_) => {
-                            // There we go. We need to wait for someone to finish the
-                            // reconfiguration.
-                            info!("Loglet is sealed, waiting for tail to be determined");
-                            let Some(sleep_dur) = retry.next() else {
-                                // exhausted retries
-                                info!(
-                                    loglet = ?loglet,
-                                    "read() failed after {} attempts. Loglet reconfiguration was not completed on time",
-                                    attempts
-                                );
-                                return Err(Error::ReadFailureDuringReconfiguration(log_id, from));
-                            };
-                            tokio::time::sleep(sleep_dur).await;
-                            self.sync_metadata().await?;
-                            continue;
-                        }
-                    }
-                }
-            }
-        };
-
-        // Are we reading at or beyond the established tail?
-        if known_tail > from {
-            Ok(loglet.read_opt(from).await?.map(|record| {
-                record
-                    .decode()
-                    .expect("decoding a bifrost envelope succeeds")
-            }))
-        } else {
-            Ok(None)
+    pub async fn read(self: &Arc<Self>, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
+        use futures::StreamExt;
+        let (_, tail_state) = self
+            .find_tail(log_id, FindTailAttributes::default())
+            .await?;
+        if from >= tail_state.offset() {
+            // Can't use this function to read future records.
+            return Ok(None);
         }
+        // Create a terminating (non-tailing) read-stream that stops before reaching the tail.
+        let mut stream =
+            LogReadStream::create(Arc::clone(self), log_id, from, tail_state.offset().prev())?;
+        // stream dropped after delivering the next record
+        stream.next().await.transpose()
     }
 
     pub async fn find_tail(
@@ -830,13 +771,12 @@ mod tests {
             // attempting to read from bifrost will result in a timeout since metadata sees this as an open
             // segment but the segment itself is sealed. This means reconfiguration is in-progress
             // and we can't confidently read records.
-            assert_that!(
-                bifrost.read(LOG_ID, Lsn::new(2)).await,
-                err(pat!(Error::ReadFailureDuringReconfiguration(
-                    eq(LOG_ID),
-                    eq(Lsn::new(2)),
-                )))
-            );
+            assert!(tokio::time::timeout(
+                Duration::from_secs(5),
+                bifrost.read(LOG_ID, Lsn::new(2))
+            )
+            .await
+            .is_err());
 
             let old_version = bifrost.inner.metadata.logs_version();
 
