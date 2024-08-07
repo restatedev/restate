@@ -449,7 +449,7 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
     use restate_types::invocation::ServiceInvocation;
-    use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
     use restate_types::storage::StorageCodec;
@@ -684,6 +684,7 @@ mod tests {
             )?;
             let reader = shuffle_env.bifrost.create_reader(
                 LogId::from(partition_id),
+                KeyFilter::Any,
                 Lsn::OLDEST,
                 Lsn::MAX,
             )?;
@@ -729,6 +730,7 @@ mod tests {
             )?;
             let reader = shuffle_env.bifrost.create_reader(
                 LogId::from(partition_id),
+                KeyFilter::Any,
                 Lsn::OLDEST,
                 Lsn::MAX,
             )?;
@@ -766,6 +768,7 @@ mod tests {
                 let partition_id = shuffle_env.shuffle.metadata.partition_id;
                 let reader = shuffle_env.bifrost.create_reader(
                     LogId::from(partition_id),
+                    KeyFilter::Any,
                     Lsn::INVALID,
                     Lsn::MAX,
                 )?;

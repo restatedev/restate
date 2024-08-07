@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_types::logs::{Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
 
 use crate::LogRecord;
 use crate::{Result, TailState};
@@ -117,6 +117,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// stream is an open-ended tailing read stream.
     async fn create_read_stream(
         self: Arc<Self>,
+        filter: KeyFilter,
         from: Self::Offset,
         to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError>;
