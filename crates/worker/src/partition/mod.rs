@@ -31,7 +31,7 @@ use restate_storage_api::StorageError;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::journal::raw::RawEntryCodec;
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
 use restate_wal_protocol::control::AnnounceLeader;
@@ -246,6 +246,7 @@ where
             .bifrost
             .create_reader(
                 LogId::from(self.partition_id),
+                KeyFilter::Within(self.partition_key_range.clone()),
                 last_applied_lsn.next(),
                 Lsn::MAX,
             )?

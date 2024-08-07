@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{Keys, LogId, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, LogId, SequenceNumber};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
@@ -182,6 +182,8 @@ impl MemoryLoglet {
 
 struct MemoryReadStream {
     loglet: Arc<MemoryLoglet>,
+    /// Chooses which records to read/return
+    _filter: KeyFilter,
     /// The next offset to read from
     read_pointer: LogletOffset,
     tail_watch: BoxStream<'static, TailState<LogletOffset>>,
@@ -195,6 +197,7 @@ struct MemoryReadStream {
 impl MemoryReadStream {
     async fn create(
         loglet: Arc<MemoryLoglet>,
+        filter: KeyFilter,
         from_offset: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Self {
@@ -207,6 +210,7 @@ impl MemoryReadStream {
 
         Self {
             loglet,
+            _filter: filter,
             read_pointer: from_offset,
             tail_watch,
             last_known_tail,
@@ -303,10 +307,13 @@ impl LogletBase for MemoryLoglet {
 
     async fn create_read_stream(
         self: Arc<Self>,
+        filter: KeyFilter,
         from: Self::Offset,
         to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
-        Ok(Box::pin(MemoryReadStream::create(self, from, to).await))
+        Ok(Box::pin(
+            MemoryReadStream::create(self, filter, from, to).await,
+        ))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>> {

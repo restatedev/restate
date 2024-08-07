@@ -20,7 +20,7 @@ use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{KeyFilter, SequenceNumber};
 
 use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
@@ -60,6 +60,7 @@ unsafe fn ignore_iterator_lifetime<'a>(
 impl LocalLogletReadStream {
     pub(crate) async fn create(
         loglet: Arc<LocalLoglet>,
+        _filter: KeyFilter,
         from_offset: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Result<Self, OperationError> {

@@ -20,7 +20,7 @@ use tokio::sync::Barrier;
 use tokio::task::{JoinHandle, JoinSet};
 
 use restate_test_util::let_assert;
-use restate_types::logs::{Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
 use tokio_stream::StreamExt;
 use tracing::info;
 
@@ -208,7 +208,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
     let read_from_offset = Lsn::new(6);
     let mut reader = loglet
         .clone()
-        .create_wrapped_read_stream(read_from_offset)
+        .create_wrapped_read_stream(KeyFilter::Any, read_from_offset)
         .await?;
 
     {
@@ -307,7 +307,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     let mut read_stream = loglet
         .clone()
-        .create_wrapped_read_stream(Lsn::OLDEST)
+        .create_wrapped_read_stream(KeyFilter::Any, Lsn::OLDEST)
         .await?;
 
     let record = read_stream.next().await.unwrap()?;
@@ -558,7 +558,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     let reader = loglet
         .clone()
-        .create_read_stream_with_tail(Lsn::OLDEST, Some(tail.offset()))
+        .create_read_stream_with_tail(KeyFilter::Any, Lsn::OLDEST, Some(tail.offset()))
         .await?;
 
     let records: BTreeSet<Lsn> = reader

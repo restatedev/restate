@@ -17,7 +17,7 @@ use enum_map::EnumMap;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
-use restate_types::logs::{HasRecordKeys, LogId, Lsn, SequenceNumber};
+use restate_types::logs::{HasRecordKeys, KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::storage::StorageEncode;
 use restate_types::Version;
 
@@ -141,6 +141,7 @@ impl Bifrost {
     /// async fn reader(bifrost: &Bifrost, log_id: LogId) -> LogReadStream {
     ///     bifrost.create_reader(
     ///        log_id,
+    ///        KeyFilter::Any,
     ///        bifrost.get_trim_point(log_id).await.unwrap(),
     ///        bifrost.find_tail(log_id, FindTailAttributes::default()).await.unwrap().offset().prev(),
     ///     ).unwrap()
@@ -149,11 +150,12 @@ impl Bifrost {
     pub fn create_reader(
         &self,
         log_id: LogId,
+        filter: KeyFilter,
         start_lsn: Lsn,
         end_lsn: Lsn,
     ) -> Result<LogReadStream> {
         self.inner.fail_if_shutting_down()?;
-        LogReadStream::create(self.inner.clone(), log_id, start_lsn, end_lsn)
+        LogReadStream::create(self.inner.clone(), log_id, filter, start_lsn, end_lsn)
     }
 
     /// The best way to write to Bifrost is to hold on to an [`Appender`] and reuse it across
@@ -239,7 +241,12 @@ impl Bifrost {
             return Ok(Vec::default());
         }
 
-        let reader = self.create_reader(log_id, Lsn::OLDEST, current_tail.offset().prev())?;
+        let reader = self.create_reader(
+            log_id,
+            KeyFilter::Any,
+            Lsn::OLDEST,
+            current_tail.offset().prev(),
+        )?;
         reader.try_collect().await
     }
 }
@@ -308,8 +315,13 @@ impl BifrostInner {
             return Ok(None);
         }
         // Create a terminating (non-tailing) read-stream that stops before reaching the tail.
-        let mut stream =
-            LogReadStream::create(Arc::clone(self), log_id, from, tail_state.offset().prev())?;
+        let mut stream = LogReadStream::create(
+            Arc::clone(self),
+            log_id,
+            KeyFilter::Any,
+            from,
+            tail_state.offset().prev(),
+        )?;
         // stream dropped after delivering the next record
         stream.next().await.transpose()
     }
