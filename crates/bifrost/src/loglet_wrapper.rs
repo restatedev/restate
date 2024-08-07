@@ -22,7 +22,8 @@ use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{Keys, Lsn, SequenceNumber};
 
 use crate::loglet::{
-    AppendError, Loglet, LogletBase, LogletOffset, OperationError, SendableLogletReadStream,
+    AppendError, Loglet, LogletBase, LogletOffset, LogletReadStream, OperationError,
+    SendableLogletReadStream,
 };
 use crate::{LogRecord, LsnExt};
 use crate::{Result, TailState};
@@ -75,7 +76,16 @@ impl LogletWrapper {
     pub async fn create_wrapped_read_stream(
         self,
         start_lsn: Lsn,
-    ) -> Result<LogletReadStreamWrapper> {
+    ) -> Result<LogletReadStreamWrapper, OperationError> {
+        let tail_lsn = self.tail_lsn;
+        self.create_read_stream_with_tail(start_lsn, tail_lsn).await
+    }
+
+    pub async fn create_read_stream_with_tail(
+        self,
+        start_lsn: Lsn,
+        tail_lsn: Option<Lsn>,
+    ) -> Result<LogletReadStreamWrapper, OperationError> {
         // Translates LSN to loglet offset
         Ok(LogletReadStreamWrapper::new(
             self.clone(),
@@ -84,12 +94,46 @@ impl LogletWrapper {
                     start_lsn.into_offset(self.base_lsn),
                     // We go back one LSN because `to` is inclusive and `tail_lsn` is exclusive.
                     // transposed to loglet offset (if set)
-                    self.tail_lsn
-                        .map(|tail| tail.prev().into_offset(self.base_lsn)),
+                    tail_lsn.map(|tail| tail.prev().into_offset(self.base_lsn)),
                 )
                 .await?,
             self.base_lsn,
         ))
+    }
+
+    /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
+    /// defined for the loglet.
+    #[allow(unused)]
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
+        let mut stream = self.clone().create_wrapped_read_stream(from).await?;
+        stream.next().await.unwrap_or_else(|| {
+            // We are trying to read past the the last record.
+            Err(OperationError::terminal(
+                LogletWrapperError::OutOfBoundsRead {
+                    attempt_lsn: from,
+                    tail_lsn: self.tail_lsn.unwrap_or(Lsn::INVALID),
+                },
+            ))
+        })
+    }
+
+    #[allow(unused)]
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn read_opt(
+        &self,
+        from: Lsn,
+    ) -> Result<Option<LogRecord<Lsn, Bytes>>, OperationError> {
+        // check if we know tail, if not we need to check it.
+        let tail_lsn = match self.tail_lsn {
+            Some(tail) => tail,
+            None => self.find_tail().await?.offset(),
+        };
+        let mut stream = self
+            .clone()
+            .create_read_stream_with_tail(from, Some(tail_lsn))
+            .await?;
+        stream.next().await.transpose()
     }
 }
 
@@ -108,7 +152,7 @@ impl LogletBase for LogletWrapper {
         self: Arc<Self>,
         _after: Self::Offset,
         _to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>> {
+    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
         unreachable!("create_read_stream on LogletWrapper should never be used directly")
     }
 
@@ -175,46 +219,6 @@ impl LogletBase for LogletWrapper {
 
         self.loglet.seal().await
     }
-
-    async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
-        if self.tail_lsn.is_some_and(|tail| from >= tail) {
-            // We are trying to read past the the last record. Upper layers should fence against
-            // this case, therefore, we throw an OperationError.
-            return Err(OperationError::terminal(
-                LogletWrapperError::OutOfBoundsRead {
-                    attempt_lsn: from,
-                    tail_lsn: self.tail_lsn.unwrap(),
-                },
-            ));
-        }
-        // convert LSN to loglet offset
-        let offset = from.into_offset(self.base_lsn);
-        self.loglet
-            .read(offset)
-            .await
-            .map(|record| record.with_base_lsn(self.base_lsn))
-    }
-
-    async fn read_opt(
-        &self,
-        from: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
-        if self.tail_lsn.is_some_and(|tail| from >= tail) {
-            // We are trying to read past the the last record. Upper layers should fence against
-            // this case, therefore, we throw an OperationError.
-            return Err(OperationError::terminal(
-                LogletWrapperError::OutOfBoundsRead {
-                    attempt_lsn: from,
-                    tail_lsn: self.tail_lsn.unwrap(),
-                },
-            ));
-        }
-        let offset = from.into_offset(self.base_lsn);
-        self.loglet
-            .read_opt(offset)
-            .await
-            .map(|maybe_record| maybe_record.map(|record| record.with_base_lsn(self.base_lsn)))
-    }
 }
 
 /// Wraps loglet read streams with the base LSN of the segment
@@ -251,6 +255,17 @@ impl LogletReadStreamWrapper {
     #[inline(always)]
     pub fn loglet(&self) -> &LogletWrapper {
         &self.loglet
+    }
+}
+
+impl LogletReadStream<Lsn> for LogletReadStreamWrapper {
+    fn read_pointer(&self) -> Lsn {
+        self.base_lsn
+            .offset_by(self.inner_read_stream.read_pointer())
+    }
+
+    fn is_terminated(&self) -> bool {
+        self.inner_read_stream.is_terminated()
     }
 }
 
