@@ -24,7 +24,6 @@ use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
-use crate::commands::display_util::LsnRange;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -48,7 +47,7 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
     let response = client.list_logs(req).await?.into_inner();
 
     let mut logs_table = Table::new_styled();
-    logs_table.set_styled_header(vec!["P-ID", "HEAD", "TAIL SEGMENT", "KIND"]);
+    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL BASE LSN", "KIND"]);
 
     let mut buf = response.data;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
@@ -58,13 +57,8 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
     for (log_id, chain) in logs {
         logs_table.add_row(vec![
             Cell::new(log_id),
-            Cell::new(match chain.num_segments() {
-                0..=1 => "∅".to_string(),
-                2 => "1 segment".to_string(),
-                3.. => format!("{} segments", chain.num_segments() - 1),
-            })
-            .fg(Color::DarkGrey),
-            Cell::new(format!("{}", LsnRange::from(&chain.tail())))
+            Cell::new(chain.num_segments()).fg(Color::DarkGrey),
+            Cell::new(format!("{}", &chain.tail().base_lsn))
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),
             Cell::new(format!("{:?}", chain.tail().config.kind)),

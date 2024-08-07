@@ -17,11 +17,10 @@ use restate_admin::cluster_controller::protobuf::DescribeLogRequest;
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
-use restate_types::logs::metadata::{Chain, Segment};
+use restate_types::logs::metadata::{Chain};
 use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
-use crate::commands::display_util::LsnRange;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -51,28 +50,21 @@ async fn describe_log(connection: &ConnectionInfo, opts: &DescribeLogIdOpts) -> 
     let response = client.describe_log(req).await?.into_inner();
 
     let mut chain_table = Table::new_styled();
-    chain_table.set_styled_header(vec!["SEGMENT", "LSN RANGE", "KIND"]);
+    chain_table.set_styled_header(vec!["SEGMENT", "BASE LSN", "KIND"]);
 
     let mut buf = response.data;
     let chain = StorageCodec::decode::<Chain, _>(&mut buf)?;
 
-    let mut segments: Vec<Segment> = chain.iter().collect();
-    if segments.len() > 1 {
-        for (segment, next_segment) in segments.iter_mut().zip(chain.iter().skip(1)) {
-            segment.tail_lsn = Some(next_segment.base_lsn);
-        }
-    }
-
     for (idx, segment) in chain.iter().enumerate() {
-        let mut segment_range = Cell::new(format!("{}", LsnRange::from(&segment)));
+        let mut base_lsn_cell = Cell::new(format!("{}", segment.base_lsn));
         if segment.base_lsn == chain.tail().base_lsn {
-            segment_range = segment_range
+            base_lsn_cell = base_lsn_cell
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold);
         }
         chain_table.add_row(vec![
             Cell::new(idx),
-            segment_range,
+            base_lsn_cell,
             Cell::new(format!("{:?}", segment.config.kind)),
         ]);
     }

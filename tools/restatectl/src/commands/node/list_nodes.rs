@@ -21,6 +21,7 @@ use restate_cli_util::ui::Tense;
 use crate::app::ConnectionInfo;
 use crate::commands::display_util;
 use crate::util::grpc_connect;
+use display_util::render_as_duration;
 use restate_cli_util::{c_println, c_title};
 use restate_types::protobuf::cluster::{node_state, AliveNode, DeadNode, RunMode};
 use restate_types::PlainNodeId;
@@ -96,7 +97,7 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyho
                     .fg(Color::Red)
                     .add_attribute(Attribute::Bold),
             },
-            display_util::render_as_duration(details.last_heartbeat_at, Tense::Past),
+            render_as_duration(details.last_heartbeat_at, Tense::Past),
         ];
         nodes_table.add_row(header);
     }
@@ -109,7 +110,7 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyho
         for (node_id, dead_node) in dead_nodes {
             dead_nodes_table.add_row(vec![
                 Cell::new(node_id),
-                display_util::render_as_duration(dead_node.last_seen_alive, Tense::Past),
+                render_as_duration(dead_node.last_seen_alive, Tense::Past),
             ]);
         }
         c_println!("{}", dead_nodes_table);

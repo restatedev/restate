@@ -233,6 +233,7 @@ impl Node {
                     restate_metadata_store::local::create_client(
                         config.common.metadata_store_client.clone(),
                     ),
+                    bifrost_svc.handle(),
                 )
             }),
         );

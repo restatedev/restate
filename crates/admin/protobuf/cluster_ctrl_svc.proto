@@ -25,16 +25,17 @@ service ClusterCtrlSvc {
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 }
 
-message ClusterStateRequest {}
+message ClusterStateRequest { }
 
 message ClusterStateResponse {
   restate.cluster.ClusterState cluster_state = 1;
 }
 
-message ListLogsRequest {}
+message ListLogsRequest { }
 
 message ListLogsResponse {
-  bytes data = 1; // Serialized restate_types::logs::metadata::Logs
+  // Serialized restate_types::logs::metadata::Logs
+  bytes data = 1;
 }
 
 message DescribeLogRequest {
@@ -42,7 +43,8 @@ message DescribeLogRequest {
 }
 
 message DescribeLogResponse {
-  bytes data = 1; // Serialized restate_types::logs::metadata::Chain
+  // Serialized restate_types::logs::metadata::Chain
+  bytes data = 1;
 }
 
 message TrimLogRequest {

@@ -50,6 +50,7 @@ where
             last_refreshed: None,
             nodes_config_version: Version::INVALID,
             partition_table_version: Version::INVALID,
+            logs_metadata_version: Version::INVALID,
             nodes: BTreeMap::new(),
         };
         let (cluster_state_update_tx, cluster_state_update_rx) =
@@ -199,8 +200,7 @@ where
                 nodes_config_version: nodes_config.version(),
                 partition_table_version,
                 nodes,
-                // TODO: do we want to keep adding more metadata here, e.g. to keep track of log status:
-                //  logs: metadata.logs()...,
+                logs_metadata_version: metadata.logs_version(),
             };
 
             // publish the new state

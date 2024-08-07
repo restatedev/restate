@@ -18,6 +18,7 @@ use restate_admin::cluster_controller::protobuf::{
     ListLogsRequest, ListLogsResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
+use restate_bifrost::Bifrost;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
@@ -29,6 +30,8 @@ use crate::network_server::AdminDependencies;
 pub struct ClusterCtrlSvcHandler {
     metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
+    #[allow(dead_code)]
+    bifrost_handle: Bifrost,
 }
 
 impl ClusterCtrlSvcHandler {
@@ -36,7 +39,16 @@ impl ClusterCtrlSvcHandler {
         Self {
             controller_handle: admin_deps.cluster_controller_handle,
             metadata_store_client: admin_deps.metadata_store_client,
+            bifrost_handle: admin_deps.bifrost_handle,
         }
+    }
+
+    async fn logs(&self) -> Result<Logs, Status> {
+        self.metadata_store_client
+            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+            .await
+            .map_err(|error| Status::unknown(format!("Failed to get log metadata: {:?}", error)))?
+            .ok_or(Status::not_found("Missing log metadata"))
     }
 }
 
@@ -62,18 +74,9 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         _request: Request<ListLogsRequest>,
     ) -> Result<Response<ListLogsResponse>, Status> {
-        let maybe_logs = self
-            .metadata_store_client
-            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
-            .await
-            .map_err(|_| Status::unknown("Failed to get log metadata"))?;
-
-        match maybe_logs {
-            Some(logs) => Ok(Response::new(ListLogsResponse {
-                data: serialize_value(logs),
-            })),
-            None => Err(Status::not_found("Log metadata not found")),
-        }
+        Ok(Response::new(ListLogsResponse {
+            data: serialize_value(self.logs().await?),
+        }))
     }
 
     async fn describe_log(
@@ -82,21 +85,21 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     ) -> Result<Response<DescribeLogResponse>, Status> {
         let request = request.into_inner();
 
-        let maybe_chain = self
-            .controller_handle
-            .get_log_chain(LogId::from(request.log_id))
-            .await
-            .map_err(|_| Status::aborted("Node is shutting down"))?;
+        let chain = self
+            .logs()
+            .await?
+            .chain(&LogId::new(request.log_id))
+            .ok_or(Status::not_found(format!(
+                "Log id {} not found",
+                request.log_id
+            )))?
+            .clone();
 
-        match maybe_chain {
-            Some(chain) => {
-                let resp = DescribeLogResponse {
-                    data: serialize_value((*chain).clone()),
-                };
-                Ok(Response::new(resp))
-            }
-            None => Err(Status::not_found("Log id not found")),
-        }
+        // todo: enrich with additional details from Bifrost
+
+        Ok(Response::new(DescribeLogResponse {
+            data: serialize_value(chain),
+        }))
     }
 
     /// Internal operations API to trigger the log truncation

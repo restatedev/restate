@@ -37,7 +37,6 @@ use restate_core::{
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::{Chain, LogletParams, ProviderKind};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::MessageEnvelope;
@@ -138,11 +137,6 @@ where
 
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<ClusterState>>),
-    GetLogChain {
-        #[allow(dead_code)]
-        log_id: LogId,
-        response_tx: oneshot::Sender<Option<Arc<Chain>>>,
-    },
     TrimLog {
         log_id: LogId,
         trim_point: Lsn,
@@ -161,18 +155,6 @@ impl ClusterControllerHandle {
         let _ = self
             .tx
             .send(ClusterControllerCommand::GetClusterState(tx))
-            .await;
-        rx.await.map_err(|_| ShutdownError)
-    }
-
-    pub async fn get_log_chain(&self, log_id: LogId) -> Result<Option<Arc<Chain>>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
-        let _ = self
-            .tx
-            .send(ClusterControllerCommand::GetLogChain {
-                log_id,
-                response_tx: tx,
-            })
             .await;
         rx.await.map_err(|_| ShutdownError)
     }
@@ -341,15 +323,6 @@ where
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
                 let _ = tx.send(self.cluster_state_refresher.get_cluster_state());
-            }
-            ClusterControllerCommand::GetLogChain { response_tx, .. } => {
-                // TODO: wire up detailed log status so it can be read by restatectl
-                //  let chain = self.cluster_state_refresher.get_cluster_state().logs...get(&log_id);
-                let chain = Some(Arc::new(Chain::new(
-                    ProviderKind::Local,
-                    LogletParams::from(""),
-                )));
-                let _ = response_tx.send(chain);
             }
             ClusterControllerCommand::TrimLog {
                 log_id,
