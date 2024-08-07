@@ -30,9 +30,7 @@ pub struct NetworkingOptions {
 
     /// # Handshake timeout
     ///
-    /// Time a node waits for handshake message to be received before
-    /// giving up
-
+    /// Timeout for handshake message for internal node-to-node networking.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub handshake_timeout: humantime::Duration,
