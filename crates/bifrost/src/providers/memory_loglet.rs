@@ -305,7 +305,7 @@ impl LogletBase for MemoryLoglet {
         self: Arc<Self>,
         from: Self::Offset,
         to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>> {
+    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
         Ok(Box::pin(MemoryReadStream::create(self, from, to).await))
     }
 
@@ -399,27 +399,6 @@ impl LogletBase for MemoryLoglet {
         self.sealed.store(true, Ordering::Relaxed);
         self.tail_watch.notify_seal();
         Ok(())
-    }
-
-    async fn read(
-        &self,
-        from: LogletOffset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError> {
-        loop {
-            let next_record = self.read_from(from)?;
-            if let Some(next_record) = next_record {
-                break Ok(next_record);
-            }
-            // Wait and respond when available.
-            self.tail_watch.wait_for(from).await?;
-        }
-    }
-
-    async fn read_opt(
-        &self,
-        after: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
-        self.read_from(after)
     }
 }
 

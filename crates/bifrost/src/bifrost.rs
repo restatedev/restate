@@ -26,7 +26,7 @@ use crate::background_appender::BackgroundAppender;
 use crate::loglet::{LogletBase, LogletProvider};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
-use crate::{Error, FindTailAttributes, LogReadStream, LogRecord, Result, TailState};
+use crate::{Error, FindTailAttributes, LogReadStream, Result, TailState};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -119,7 +119,8 @@ impl Bifrost {
     ///
     /// It's recommended to use the [`LogReadStream`] interface. Use [`Self::create_reader`]
     /// and reuse this read stream if you want to read more than one record.
-    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<crate::LogRecord>> {
         self.inner.fail_if_shutting_down()?;
         self.inner.read(log_id, from).await
     }
@@ -225,7 +226,7 @@ impl Bifrost {
 
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read_all(&self, log_id: LogId) -> Result<Vec<LogRecord>> {
+    pub async fn read_all(&self, log_id: LogId) -> Result<Vec<crate::LogRecord>> {
         use futures::TryStreamExt;
 
         self.inner.fail_if_shutting_down()?;
@@ -292,7 +293,12 @@ impl BifrostInner {
             .await
     }
 
-    pub async fn read(self: &Arc<Self>, log_id: LogId, from: Lsn) -> Result<Option<LogRecord>> {
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn read(
+        self: &Arc<Self>,
+        log_id: LogId,
+        from: Lsn,
+    ) -> Result<Option<crate::LogRecord>> {
         use futures::StreamExt;
         let (_, tail_state) = self
             .find_tail(log_id, FindTailAttributes::default())
@@ -501,7 +507,7 @@ mod tests {
     use restate_types::Versioned;
 
     use crate::providers::memory_loglet::{self};
-    use crate::{BifrostAdmin, Record, TrimGap};
+    use crate::{BifrostAdmin, LogRecord, Record, TrimGap};
 
     #[tokio::test]
     #[traced_test]

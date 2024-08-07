@@ -119,20 +119,10 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
         self: Arc<Self>,
         from: Self::Offset,
         to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>>;
+    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError>;
 
     /// Append a record to the loglet.
     async fn append(&self, data: &Bytes, keys: &Keys) -> Result<Self::Offset, AppendError>;
-
-    /// An optional optimization that loglets can implement. Offsets returned by this call **MUST**
-    /// be offsets that were observed before a sealing point. For instance, the maximum acknowleged
-    /// append offset + 1, or the result of the last `find_tail` call that returned a `TailState::Open(tail)`
-    /// result.
-    fn last_known_unsealed_tail(&self) -> Option<Self::Offset> {
-        // default implementation that will require upper layers to call find_tail or do their own
-        // caching.
-        None
-    }
 
     /// Create a stream watching the state of tail for this loglet
     ///
@@ -180,19 +170,6 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     /// Appends **SHOULD NOT** succeed after a `seal()` call is successful. And appends **MUST
     /// NOT** succeed after the offset returned by the *first* TailState::Sealed() response.
     async fn seal(&self) -> Result<(), OperationError>;
-
-    /// Read or wait for the record at `from` offset, or the next available record if `from` isn't
-    /// defined for the loglet.
-    async fn read(
-        &self,
-        from: Self::Offset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError>;
-
-    /// Read the next record if it's been committed, otherwise, return None without waiting.
-    async fn read_opt(
-        &self,
-        from: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError>;
 }
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
