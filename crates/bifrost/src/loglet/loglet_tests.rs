@@ -15,22 +15,21 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use googletest::prelude::*;
+use restate_types::logs::metadata::SegmentIndex;
 use tokio::sync::Barrier;
 use tokio::task::{JoinHandle, JoinSet};
 
 use restate_test_util::let_assert;
-use restate_types::logs::{Keys, SequenceNumber};
+use restate_types::logs::{Keys, Lsn, SequenceNumber};
 use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{Loglet, LogletOffset};
-use crate::loglet::AppendError;
+use crate::loglet::{AppendError, LogletBase, LogletReadStream};
+use crate::loglet_wrapper::LogletWrapper;
 use crate::{setup_panic_handler, LogRecord, Record, TailState, TrimGap};
 
-async fn wait_for_trim(
-    loglet: &Arc<dyn Loglet>,
-    required_trim_point: LogletOffset,
-) -> anyhow::Result<()> {
+async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {
         let trim_point = loglet.get_trim_point().await?;
         if trim_point.is_none() || trim_point.is_some_and(|t| t < required_trim_point) {
@@ -53,69 +52,70 @@ async fn wait_for_trim(
 ///
 /// The test requires that the loglet is empty and unsealed. It assumes that the loglet
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
-/// provide contiguous offsets that start from LogletOffset::OLDEST.
+/// provide contiguous offsets that start from Lsn::OLDEST.
 pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
 
-    let start: u64 = LogletOffset::OLDEST.into();
+    let start: u64 = Lsn::OLDEST.into();
     let end: u64 = start + 3;
     for i in start..end {
         // Append i
         let offset = loglet
             .append(&Bytes::from(format!("record{}", i)), &Keys::None)
             .await?;
-        assert_eq!(LogletOffset::from(i), offset);
+        assert_eq!(Lsn::new(i), offset);
         assert_eq!(None, loglet.get_trim_point().await?);
         {
             let tail = loglet.find_tail().await?;
-            assert_eq!(LogletOffset::from(i + 1), tail.offset());
+            assert_eq!(Lsn::new(i + 1), tail.offset());
             assert!(!tail.is_sealed());
         }
     }
 
     // read record 1 (reading from OLDEST)
-    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::OLDEST).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
     let LogRecord { offset, record } = log_record;
-    assert_eq!(LogletOffset::OLDEST, offset,);
+    assert_eq!(Lsn::OLDEST, offset);
     assert!(record.is_data());
     assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
 
     // read record 2
     let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
     let LogRecord { offset, record } = log_record;
-    assert_eq!(LogletOffset::from(2), offset);
+    assert_eq!(Lsn::new(2), offset);
     assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
 
     // read record 3
     let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
     let LogRecord { offset, record } = log_record;
-    assert_eq!(LogletOffset::from(3), offset);
+    assert_eq!(Lsn::new(3), offset);
     assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
 
     // trim point and tail didn't change
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::from(end), tail.offset());
+        assert_eq!(Lsn::new(end), tail.offset());
         assert!(!tail.is_sealed());
     }
 
     // read from the future returns None
-    assert!(loglet.read_opt(LogletOffset::from(end)).await?.is_none());
+    assert!(loglet.read_opt(Lsn::new(end)).await?.is_none());
 
     let handle1: JoinHandle<googletest::Result<()>> = tokio::spawn({
         let loglet = loglet.clone();
         async move {
             // read future record 4
-            let LogRecord { offset, record } = loglet.read(LogletOffset::from(4)).await?;
-            assert_eq!(LogletOffset(4), offset);
+            let LogRecord { offset, record } = loglet.read(Lsn::new(4)).await?;
+            assert_eq!(Lsn::new(4), offset);
             assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
             Ok(())
         }
@@ -126,8 +126,8 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 10
-            let LogRecord { offset, record } = loglet.read(LogletOffset::from(10)).await?;
-            assert_eq!(LogletOffset(10), offset);
+            let LogRecord { offset, record } = loglet.read(Lsn::new(10)).await?;
+            assert_eq!(Lsn::new(10), offset);
             assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
             Ok(())
         }
@@ -144,11 +144,11 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     let offset = loglet
         .append(&Bytes::from_static(b"record4"), &Keys::None)
         .await?;
-    assert_eq!(LogletOffset(4), offset);
+    assert_eq!(Lsn::new(4), offset);
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::from(5), tail.offset());
+        assert_eq!(Lsn::new(5), tail.offset());
         assert!(!tail.is_sealed());
     }
 
@@ -168,31 +168,28 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     assert!(res.is_err());
     assert!(start.elapsed() >= Duration::from_secs(10));
     // Tail didn't change.
-    assert_eq!(LogletOffset(5), loglet.find_tail().await?.offset());
+    assert_eq!(Lsn::new(5), loglet.find_tail().await?.offset());
 
     // trim the loglet to and including 3
-    loglet.trim(LogletOffset::from(3)).await?;
-    assert_eq!(Some(LogletOffset::from(3)), loglet.get_trim_point().await?);
+    loglet.trim(Lsn::new(3)).await?;
+    assert_eq!(Some(Lsn::new(3)), loglet.get_trim_point().await?);
 
     // tail didn't change
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::from(5), tail.offset());
+        assert_eq!(Lsn::new(5), tail.offset());
         assert!(!tail.is_sealed());
     }
 
-    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::OLDEST).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
     let LogRecord { offset, record } = log_record;
-    assert_eq!(LogletOffset::OLDEST, offset);
+    assert_eq!(Lsn::OLDEST, offset);
     assert!(record.is_trim_gap());
-    assert_eq!(
-        LogletOffset::from(3),
-        record.try_as_trim_gap_ref().unwrap().to
-    );
+    assert_eq!(Lsn::new(3), record.try_as_trim_gap_ref().unwrap().to);
 
-    let_assert!(Some(log_record) = loglet.read_opt(LogletOffset::from(4)).await?);
+    let_assert!(Some(log_record) = loglet.read_opt(Lsn::from(4)).await?);
     let LogRecord { offset, record } = log_record;
-    assert_eq!(LogletOffset::from(4), offset);
+    assert_eq!(Lsn::from(4), offset);
     assert!(record.is_data());
     assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
 
@@ -203,20 +200,21 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 ///
 /// The test requires that the loglet is empty and unsealed. It assumes that the loglet
 /// is started, initialized, and ready for reads and writes. It also assumes that this loglet
-/// starts from LogletOffset::OLDEST.
+/// starts from Lsn::OLDEST.
 pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
-    let read_from_offset = LogletOffset::from(6);
+    let read_from_offset = Lsn::new(6);
     let mut reader = loglet
         .clone()
-        .create_read_stream(read_from_offset, None)
+        .create_wrapped_read_stream(read_from_offset)
         .await?;
 
     {
         // no records have been written yet.
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
     // We didn't perform any reads yet, read_pointer shouldn't have moved.
@@ -228,7 +226,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
     let reader_bg_handle: JoinHandle<googletest::Result<()>> = tokio::spawn(async move {
         for i in 6..=10 {
             let record = reader.next().await.expect("to never terminate")?;
-            let expected_offset = LogletOffset::from(i);
+            let expected_offset = Lsn::new(i);
             counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(expected_offset, record.offset);
             assert!(reader.read_pointer() > expected_offset);
@@ -250,7 +248,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
             .append(&Bytes::from(format!("record{}", i)), &Keys::None)
             .await?;
         info!(?offset, "appended record");
-        assert_eq!(LogletOffset::from(i), offset);
+        assert_eq!(Lsn::new(i), offset);
     }
 
     // Written records are not enough for the reader to finish.
@@ -282,11 +280,12 @@ pub async fn single_loglet_readstream_with_trims(
     loglet: Arc<dyn Loglet>,
 ) -> googletest::Result<()> {
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
 
@@ -298,31 +297,31 @@ pub async fn single_loglet_readstream_with_trims(
     }
 
     // Lsn(5) is trimmed, 5 records left [6..10]
-    loglet.trim(LogletOffset::from(5)).await?;
+    loglet.trim(Lsn::new(5)).await?;
 
-    assert_eq!(LogletOffset::from(11), loglet.find_tail().await?.offset());
+    assert_eq!(Lsn::new(11), loglet.find_tail().await?.offset());
     // retry if loglet needs time to perform the trim.
-    wait_for_trim(&loglet, LogletOffset::from(5))
+    wait_for_trim(&loglet, Lsn::new(5))
         .await
         .into_test_result()?;
 
     let mut read_stream = loglet
         .clone()
-        .create_read_stream(LogletOffset::OLDEST, None)
+        .create_wrapped_read_stream(Lsn::OLDEST)
         .await?;
 
     let record = read_stream.next().await.unwrap()?;
     assert_that!(
         record,
         pat!(LogRecord {
-            offset: eq(LogletOffset::from(1)),
+            offset: eq(Lsn::new(1)),
             record: pat!(Record::TrimGap(pat!(TrimGap {
-                to: eq(LogletOffset::from(5)),
+                to: eq(Lsn::new(5)),
             })))
         })
     );
 
-    assert!(read_stream.read_pointer() > LogletOffset::from(5));
+    assert!(read_stream.read_pointer() > Lsn::new(5));
 
     // Read two records (6, 7)
     for offset in 6..8 {
@@ -330,32 +329,32 @@ pub async fn single_loglet_readstream_with_trims(
         assert_that!(
             record,
             pat!(LogRecord {
-                offset: eq(LogletOffset::from(offset)),
+                offset: eq(Lsn::new(offset)),
                 record: pat!(Record::Data(_))
             })
         );
     }
     assert!(!read_stream.is_terminated());
-    assert_eq!(LogletOffset::from(8), read_stream.read_pointer());
+    assert_eq!(Lsn::new(8), read_stream.read_pointer());
 
     // tail didn't move.
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::from(11), tail.offset());
+        assert_eq!(Lsn::new(11), tail.offset());
         assert!(!tail.is_sealed());
     }
 
     // trimming beyond the release point will trim everything.
-    loglet.trim(LogletOffset::from(u64::MAX)).await?;
+    loglet.trim(Lsn::new(u64::MAX)).await?;
 
     // retry if loglet needs time to perform the trim.
-    wait_for_trim(&loglet, LogletOffset::from(10))
+    wait_for_trim(&loglet, Lsn::new(10))
         .await
         .into_test_result()?;
     // tail is not impacted by the trim operation
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::from(11), tail.offset());
+        assert_eq!(Lsn::new(11), tail.offset());
         assert!(!tail.is_sealed());
     }
 
@@ -371,9 +370,9 @@ pub async fn single_loglet_readstream_with_trims(
     assert_that!(
         record,
         pat!(LogRecord {
-            offset: eq(LogletOffset::from(8)),
+            offset: eq(Lsn::new(8)),
             record: pat!(Record::TrimGap(pat!(TrimGap {
-                to: eq(LogletOffset::from(10)),
+                to: eq(Lsn::new(10)),
             })))
         })
     );
@@ -384,7 +383,7 @@ pub async fn single_loglet_readstream_with_trims(
         assert_that!(
             record,
             eq(LogRecord {
-                offset: LogletOffset::from(i),
+                offset: Lsn::new(i),
                 record: Record::Data(expected_payload),
             })
         );
@@ -400,11 +399,12 @@ pub async fn single_loglet_readstream_with_trims(
 /// Validates that appends fail after find_tail() returned Sealed()
 pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()> {
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
 
@@ -427,7 +427,7 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
 
     let tail = loglet.find_tail().await?;
     // Seal must be applied after commit index 5 since it has been acknowledged (tail is 6 or higher)
-    assert_that!(tail, pat!(TailState::Sealed(gt(LogletOffset::from(5)))));
+    assert_that!(tail, pat!(TailState::Sealed(gt(Lsn::new(5)))));
 
     Ok(())
 }
@@ -440,11 +440,12 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     const CONCURRENT_APPENDERS: usize = 20;
 
     setup_panic_handler();
+    let loglet = LogletWrapper::new(SegmentIndex::from(1), Lsn::OLDEST, None, loglet);
 
     assert_eq!(None, loglet.get_trim_point().await?);
     {
         let tail = loglet.find_tail().await?;
-        assert_eq!(LogletOffset::OLDEST, tail.offset());
+        assert_eq!(Lsn::OLDEST, tail.offset());
         assert!(!tail.is_sealed());
     }
     // +1 for the main task waiting on all concurrent appenders
@@ -557,17 +558,17 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     let reader = loglet
         .clone()
-        .create_read_stream(LogletOffset::OLDEST, Some(tail.offset().prev()))
+        .create_read_stream_with_tail(Lsn::OLDEST, Some(tail.offset()))
         .await?;
 
-    let records: BTreeSet<LogletOffset> = reader
+    let records: BTreeSet<Lsn> = reader
         .try_filter_map(|x| std::future::ready(Ok(Some(x.offset))))
         .try_collect()
         .await?;
 
     // every record committed must be observed in readstream, and it's acceptable for the
     // readstream to include more records.
-    assert!(all_committed.len() <= records.len());
+    assert_that!(all_committed.len(), le(records.len()));
     assert!(all_committed.is_subset(&records));
 
     Ok(())

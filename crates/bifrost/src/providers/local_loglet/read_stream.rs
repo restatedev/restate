@@ -62,7 +62,7 @@ impl LocalLogletReadStream {
         loglet: Arc<LocalLoglet>,
         from_offset: LogletOffset,
         to: Option<LogletOffset>,
-    ) -> Result<Self> {
+    ) -> Result<Self, OperationError> {
         // Reading from INVALID resets to OLDEST.
         let from_offset = from_offset.max(LogletOffset::OLDEST);
         // We seek to next key on every iteration, we need to setup the iterator to be
