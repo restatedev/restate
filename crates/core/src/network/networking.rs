@@ -31,7 +31,7 @@ pub struct Networking {
 impl Networking {
     pub fn new(metadata: Metadata, options: NetworkingOptions) -> Self {
         Self {
-            connections: ConnectionManager::new(metadata.clone(), options.handshake_timeout),
+            connections: ConnectionManager::new(metadata.clone(), options.handshake_timeout.into()),
             metadata,
             options,
         }
