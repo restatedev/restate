@@ -67,8 +67,7 @@ impl NetworkSender for Networking {
     {
         let target_is_generational = to.is_generational();
         let mut attempts = 0;
-        let retry_policy = self.options.connect_retry_policy.clone();
-        let mut retry_policy = retry_policy.iter();
+        let mut retry_policy = self.options.connect_retry_policy.iter();
         loop {
             // find latest generation if this is not generational node id. We do this in the loop
             // to ensure we get the latest if it has been updated since last attempt.
