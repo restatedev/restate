@@ -27,7 +27,6 @@ use restate_types::net::cluster_controller::{Action, AttachRequest, AttachRespon
 use restate_types::net::RequestId;
 use restate_types::partition_table::{KeyRange, PartitionTable};
 
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
 use restate_bifrost::{Bifrost, BifrostAdmin};
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_core::{
@@ -41,6 +40,8 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::MessageEnvelope;
 use restate_types::{GenerationalNodeId, Version};
+
+use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -427,17 +428,10 @@ async fn signal_all_partitions_started(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-
+    use super::Service;
     use bytes::Bytes;
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
-    use test_log::test;
-
-    use crate::cluster_controller::Service;
     use restate_bifrost::{Bifrost, Record, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
@@ -452,6 +446,7 @@ mod tests {
     use restate_types::net::{AdvertisedAddress, MessageEnvelope};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::{GenerationalNodeId, Version};
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
