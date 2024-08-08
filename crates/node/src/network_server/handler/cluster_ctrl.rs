@@ -18,7 +18,7 @@ use restate_admin::cluster_controller::protobuf::{
     ListLogsRequest, ListLogsResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
-use restate_bifrost::Bifrost;
+use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
@@ -30,7 +30,6 @@ use crate::network_server::AdminDependencies;
 pub struct ClusterCtrlSvcHandler {
     metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
-    #[allow(dead_code)]
     bifrost_handle: Bifrost,
 }
 
@@ -85,20 +84,39 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     ) -> Result<Response<DescribeLogResponse>, Status> {
         let request = request.into_inner();
 
+        let log_id = LogId::new(request.log_id);
         let chain = self
             .logs()
             .await?
-            .chain(&LogId::new(request.log_id))
+            .chain(&log_id)
             .ok_or(Status::not_found(format!(
                 "Log id {} not found",
                 request.log_id
             )))?
             .clone();
 
-        // todo: enrich with additional details from Bifrost
+        let tail_state = self
+            .bifrost_handle
+            .find_tail(log_id, FindTailAttributes::default())
+            .await
+            .map_err(|err| Status::internal(format!("Failed to find tail: {:?}", err)))?;
+
+        info!("{:?} tail: {:?}", log_id, tail_state);
+
+        let mut tail_segment = chain.tail();
+        if tail_segment.tail_lsn.is_none() {
+            tail_segment.tail_lsn = Some(tail_state.offset());
+        }
+
+        chain.iter().last().as_mut().unwrap().tail_lsn = tail_segment.tail_lsn;
 
         Ok(Response::new(DescribeLogResponse {
-            data: serialize_value(chain),
+            chain: serialize_value(chain),
+            tail_state: match tail_state {
+                restate_bifrost::TailState::Open(_) => 1,
+                restate_bifrost::TailState::Sealed(_) => 2,
+            },
+            tail_offset: tail_state.offset().as_u64(),
         }))
     }
 
