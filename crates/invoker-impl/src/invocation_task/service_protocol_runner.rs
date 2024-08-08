@@ -422,7 +422,7 @@ where
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
-            return Err(InvocationTaskError::ServiceUnavialable(parts.status));
+            return Err(InvocationTaskError::ServiceUnavailable(parts.status));
         }
 
         // otherwise we return generic UnexpectedResponse
