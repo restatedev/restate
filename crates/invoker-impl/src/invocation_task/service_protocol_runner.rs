@@ -48,6 +48,12 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
 
+const GATEWAY_ERRORS_CODES: [http::StatusCode; 3] = [
+    http::StatusCode::BAD_GATEWAY,
+    http::StatusCode::SERVICE_UNAVAILABLE,
+    http::StatusCode::GATEWAY_TIMEOUT,
+];
+
 /// Runs the interaction between the server and the service endpoint.
 pub struct ServiceProtocolRunner<'a, SR, JR, EE, DMR> {
     invocation_task: &'a mut InvocationTask<SR, JR, EE, DMR>,
@@ -412,6 +418,14 @@ where
         &mut self,
         mut parts: http::response::Parts,
     ) -> Result<(), InvocationTaskError> {
+        // if service is running behind a gateway, the service can be down
+        // but we still get a response code from the gateway itself. In that
+        // case we still need to return the proper error
+        if GATEWAY_ERRORS_CODES.contains(&parts.status) {
+            return Err(InvocationTaskError::ServiceUnavialable(parts.status));
+        }
+
+        // otherwise we return generic UnexpectedResponse
         if !parts.status.is_success() {
             return Err(InvocationTaskError::UnexpectedResponse(parts.status));
         }

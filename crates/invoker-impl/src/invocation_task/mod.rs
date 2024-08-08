@@ -138,6 +138,10 @@ pub(crate) enum InvocationTaskError {
     #[error("cannot resume invocation because it was created with an incompatible service protocol version '{}' and the server does not support upgrading versions yet", .0.as_repr())]
     #[code(restate_errors::RT0014)]
     UnsupportedServiceProtocolVersion(ServiceProtocolVersion),
+
+    #[error("service is temporary unavailable '{0}'")]
+    #[code(restate_errors::RT0010)]
+    ServiceUnavialable(http::StatusCode),
 }
 
 #[derive(Debug, Default)]
