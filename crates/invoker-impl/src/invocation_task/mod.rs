@@ -141,7 +141,7 @@ pub(crate) enum InvocationTaskError {
 
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
-    ServiceUnavialable(http::StatusCode),
+    ServiceUnavailable(http::StatusCode),
 }
 
 #[derive(Debug, Default)]
