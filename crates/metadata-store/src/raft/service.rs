@@ -12,49 +12,29 @@ use crate::grpc::handler::MetadataStoreHandler;
 use crate::grpc::server::GrpcServer;
 use crate::grpc::service_builder::GrpcServiceBuilder;
 use crate::grpc_svc::metadata_store_svc_server::MetadataStoreSvcServer;
-use crate::local::store::LocalMetadataStore;
+use crate::raft::store::RaftMetadataStore;
 use crate::{grpc_svc, Error, MetadataStoreService};
 use futures::TryFutureExt;
 use restate_core::{task_center, TaskKind};
-use restate_types::config::{MetadataStoreOptions, RocksDbOptions};
+use restate_types::config::MetadataStoreOptions;
 use restate_types::live::BoxedLiveLoad;
-#[cfg(test)]
-use tonic::server::NamedService;
 
-pub struct LocalMetadataStoreService {
-    opts: BoxedLiveLoad<MetadataStoreOptions>,
-    rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
+pub struct RaftMetadataStoreService {
+    options: BoxedLiveLoad<MetadataStoreOptions>,
 }
 
-impl LocalMetadataStoreService {
-    pub fn from_options(
-        opts: BoxedLiveLoad<MetadataStoreOptions>,
-        rocksdb_options: BoxedLiveLoad<RocksDbOptions>,
-    ) -> Self {
-        Self {
-            opts,
-            rocksdb_options,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn grpc_service_name() -> &'static str {
-        MetadataStoreSvcServer::<MetadataStoreHandler>::NAME
+impl RaftMetadataStoreService {
+    pub fn new(options: BoxedLiveLoad<MetadataStoreOptions>) -> Self {
+        Self { options }
     }
 }
 
 #[async_trait::async_trait]
-impl MetadataStoreService for LocalMetadataStoreService {
-    async fn run(self) -> Result<(), Error> {
-        let LocalMetadataStoreService {
-            mut opts,
-            rocksdb_options,
-        } = self;
-        let options = opts.live_load();
-        let bind_address = options.bind_address.clone();
-        let store = LocalMetadataStore::create(options, rocksdb_options)
-            .await
-            .map_err(|err| Error::Generic(err.into()))?;
+impl MetadataStoreService for RaftMetadataStoreService {
+    async fn run(mut self) -> Result<(), Error> {
+        let store_options = self.options.live_load();
+        let store = RaftMetadataStore::new().map_err(Error::generic)?;
+
         let mut builder = GrpcServiceBuilder::default();
 
         builder.register_file_descriptor_set_for_reflection(grpc_svc::FILE_DESCRIPTOR_SET);
@@ -62,7 +42,8 @@ impl MetadataStoreService for LocalMetadataStoreService {
             store.request_sender(),
         )));
 
-        let grpc_server = GrpcServer::new(bind_address, builder.build().await?);
+        let grpc_server =
+            GrpcServer::new(store_options.bind_address.clone(), builder.build().await?);
 
         task_center().spawn_child(
             TaskKind::RpcServer,
@@ -71,7 +52,7 @@ impl MetadataStoreService for LocalMetadataStoreService {
             grpc_server.run().map_err(Into::into),
         )?;
 
-        store.run().await;
+        store.run().await.map_err(Error::generic)?;
 
         Ok(())
     }
