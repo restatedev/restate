@@ -19,11 +19,12 @@ use tracing::{info, trace, warn};
 
 use restate_core::{task_center, ShutdownError, TaskCenter, TaskId};
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::{HasRecordKeys, Keys, Payload};
+use restate_types::logs::{HasRecordKeys, Keys};
 use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::appender::RECORD_SIZE_HINT;
 use crate::error::EnqueueError;
+use crate::payload::Payload;
 use crate::{Appender, Result};
 
 /// Performs appends in the background concurrently while maintaining the order of records

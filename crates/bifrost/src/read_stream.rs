@@ -424,6 +424,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use crate::loglet::LogletBase;
+    use crate::payload::Payload;
     use crate::{
         setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, Record, TrimGap,
     };
@@ -445,7 +446,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_types::logs::{Payload, SequenceNumber};
+    use restate_types::logs::SequenceNumber;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]

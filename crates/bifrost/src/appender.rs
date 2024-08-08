@@ -17,13 +17,14 @@ use tracing::{debug, info, instrument, Span};
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn, Payload};
+use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn};
 use restate_types::retries::RetryIter;
 use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::{AppendError, LogletBase};
 use crate::loglet_wrapper::LogletWrapper;
+use crate::payload::Payload;
 use crate::{Error, Result};
 
 // Arbitrarily chosen size for the record size hint. Practically, we should estimate
