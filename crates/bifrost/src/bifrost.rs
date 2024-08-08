@@ -120,7 +120,7 @@ impl Bifrost {
     /// It's recommended to use the [`LogReadStream`] interface. Use [`Self::create_reader`]
     /// and reuse this read stream if you want to read more than one record.
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<crate::LogRecord>> {
+    pub async fn read(&self, log_id: LogId, from: Lsn) -> Result<Option<crate::LogEntry>> {
         self.inner.fail_if_shutting_down()?;
         self.inner.read(log_id, from).await
     }
@@ -228,7 +228,7 @@ impl Bifrost {
 
     /// Read a full log with the given id. To be used only in tests!!!
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read_all(&self, log_id: LogId) -> Result<Vec<crate::LogRecord>> {
+    pub async fn read_all(&self, log_id: LogId) -> Result<Vec<crate::LogEntry>> {
         use futures::TryStreamExt;
 
         self.inner.fail_if_shutting_down()?;
@@ -305,7 +305,7 @@ impl BifrostInner {
         self: &Arc<Self>,
         log_id: LogId,
         from: Lsn,
-    ) -> Result<Option<crate::LogRecord>> {
+    ) -> Result<Option<crate::LogEntry>> {
         use futures::StreamExt;
         let (_, tail_state) = self
             .find_tail(log_id, FindTailAttributes::default())
@@ -519,7 +519,7 @@ mod tests {
     use restate_types::Versioned;
 
     use crate::providers::memory_loglet::{self};
-    use crate::{BifrostAdmin, LogRecord, Record, TrimGap};
+    use crate::{BifrostAdmin, LogEntry, MaybeRecord, TrimGap};
 
     #[tokio::test]
     #[traced_test]
@@ -673,9 +673,9 @@ mod tests {
                     let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
-                        pat!(Some(pat!(LogRecord {
+                        pat!(Some(pat!(LogEntry {
                             offset: eq(Lsn::from(lsn)),
-                            record: pat!(Record::TrimGap(pat!(TrimGap {
+                            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                                 to: eq(Lsn::from(5)),
                             })))
                         })))
@@ -686,9 +686,9 @@ mod tests {
                     let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
-                        pat!(Some(pat!(LogRecord {
+                        pat!(Some(pat!(LogEntry {
                             offset: eq(Lsn::from(lsn)),
-                            record: pat!(Record::Data(_))
+                            record: pat!(MaybeRecord::Data(_))
                         })))
                     );
                 }
@@ -719,9 +719,9 @@ mod tests {
                     let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
                     assert_that!(
                         record,
-                        pat!(Some(pat!(LogRecord {
+                        pat!(Some(pat!(LogEntry {
                             offset: eq(Lsn::from(lsn)),
-                            record: pat!(Record::Data(_))
+                            record: pat!(MaybeRecord::Data(_))
                         })))
                     );
                 }
@@ -881,7 +881,7 @@ mod tests {
             );
 
             // Reading the log. (OLDEST)
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
+            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
             assert_eq!(Lsn::from(1), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -889,7 +889,7 @@ mod tests {
                 record.payload().unwrap().body(),
             );
 
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
+            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
             assert_eq!(Lsn::from(2), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -898,7 +898,7 @@ mod tests {
             );
 
             // border of segment 1
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?.unwrap();
+            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?.unwrap();
             assert_eq!(Lsn::from(4), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -907,7 +907,7 @@ mod tests {
             );
 
             // start of segment 2
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
+            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
             assert_eq!(Lsn::from(5), offset);
             assert!(record.is_data());
             assert_eq!(
@@ -916,7 +916,7 @@ mod tests {
             );
 
             // last record
-            let LogRecord { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?.unwrap();
+            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?.unwrap();
             assert_eq!(Lsn::from(7), offset);
             assert!(record.is_data());
             assert_eq!(

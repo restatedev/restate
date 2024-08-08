@@ -16,7 +16,7 @@ use hdrhistogram::Histogram;
 use tracing::info;
 
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_bifrost::{LogRecord, Record};
+use restate_bifrost::{LogEntry, MaybeRecord};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 
@@ -46,9 +46,9 @@ pub async fn run(
             let mut counter = 0;
             let mut cancel = std::pin::pin!(cancellation_watcher());
             let mut lag_latencies = Histogram::<u64>::new(3)?;
-            let mut on_record = |record: Result<LogRecord, BifrostError>| {
+            let mut on_record = |record: Result<LogEntry, BifrostError>| {
                 if let Ok(record) = record {
-                    if let Record::Data(data) = record.record {
+                    if let MaybeRecord::Data(data) = record.record {
                         let latency_raw = data.into_body().get_u64();
                         let latency = clock.scaled(latency_raw).elapsed();
                         lag_latencies.record(latency.as_nanos() as u64)?;

@@ -35,7 +35,7 @@ use crate::loglet::LogletBase;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
 use crate::Error;
-use crate::LogRecord;
+use crate::LogEntry;
 use crate::Result;
 use crate::TailState;
 
@@ -137,13 +137,13 @@ impl LogReadStream {
 
     /// The read pointer points to the next LSN will be attempted on the next
     /// `poll_next()`.
-    fn calculate_read_pointer(record: &LogRecord) -> Lsn {
+    fn calculate_read_pointer(record: &LogEntry) -> Lsn {
         match &record.record {
             // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
             // this after delivering a TrimGap record. This means that the next read operation
             // skips over the boundary of the gap.
-            crate::Record::TrimGap(trim_gap) => trim_gap.to,
-            crate::Record::Data(_) => record.offset,
+            crate::MaybeRecord::TrimGap(trim_gap) => trim_gap.to,
+            crate::MaybeRecord::Data(_) => record.offset,
         }
         .next()
     }
@@ -159,7 +159,7 @@ impl FusedStream for LogReadStream {
 /// after the record is available to read, this will async-block indefinitely if no records are
 /// ever written and released at the read pointer.
 impl Stream for LogReadStream {
-    type Item = Result<LogRecord>;
+    type Item = Result<LogEntry>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -412,9 +412,9 @@ fn deliver_trim_gap(
     this: &mut ReadStreamProj,
     next_base_lsn: Lsn,
     bifrost_inner: &'static BifrostInner,
-) -> LogRecord {
+) -> LogEntry {
     let read_pointer = *this.read_pointer;
-    let record = LogRecord::new_trim_gap(read_pointer, next_base_lsn.prev());
+    let record = LogEntry::new_trim_gap(read_pointer, next_base_lsn.prev());
     // fast-forward.
     *this.read_pointer = next_base_lsn;
     let find_loglet_fut =
@@ -433,7 +433,7 @@ mod tests {
     use crate::loglet::LogletBase;
     use crate::payload::Payload;
     use crate::{
-        setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, Record, TrimGap,
+        setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, MaybeRecord, TrimGap,
     };
 
     use super::*;
@@ -598,9 +598,9 @@ mod tests {
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
                     record,
-                    pat!(LogRecord {
+                    pat!(LogEntry {
                         offset: eq(Lsn::from(1)),
-                        record: pat!(Record::TrimGap(pat!(TrimGap {
+                        record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                             to: eq(Lsn::from(5)),
                         })))
                     })
@@ -610,9 +610,9 @@ mod tests {
                     let record = read_stream.next().await.unwrap()?;
                     assert_that!(
                         record,
-                        pat!(LogRecord {
+                        pat!(LogEntry {
                             offset: eq(Lsn::from(lsn)),
-                            record: pat!(Record::Data(_))
+                            record: pat!(MaybeRecord::Data(_))
                         })
                     );
                 }
@@ -641,9 +641,9 @@ mod tests {
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
                     record,
-                    pat!(LogRecord {
+                    pat!(LogEntry {
                         offset: eq(Lsn::from(8)),
-                        record: pat!(Record::TrimGap(pat!(TrimGap {
+                        record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                             to: eq(Lsn::from(10)),
                         })))
                     })
@@ -1042,9 +1042,9 @@ mod tests {
 
             assert_that!(
                 record,
-                pat!(LogRecord {
+                pat!(LogEntry {
                     offset: eq(Lsn::OLDEST),
-                    record: pat!(Record::TrimGap(pat!(TrimGap {
+                    record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                         to: eq(Lsn::from(9)),
                     })))
                 })
