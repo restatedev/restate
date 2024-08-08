@@ -148,10 +148,7 @@ impl Node {
         let mut router_builder = MessageRouterBuilder::default();
         let metadata_builder = MetadataBuilder::default();
         let metadata = metadata_builder.to_metadata();
-        let networking = Networking::new(
-            metadata_builder.to_metadata(),
-            config.networking.connect_retry_policy.clone(),
-        );
+        let networking = Networking::new(metadata_builder.to_metadata(), config.networking.clone());
         let metadata_manager = MetadataManager::new(
             metadata_builder,
             networking.clone(),

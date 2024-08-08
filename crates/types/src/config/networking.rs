@@ -27,6 +27,13 @@ pub struct NetworkingOptions {
     ///
     /// Retry policy to use for internal node-to-node networking.
     pub connect_retry_policy: RetryPolicy,
+
+    /// # Handshake timeout
+    ///
+    /// Timeout for handshake message for internal node-to-node networking.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub handshake_timeout: humantime::Duration,
 }
 
 impl NetworkingOptions {}
@@ -40,6 +47,7 @@ impl Default for NetworkingOptions {
                 Some(10),
                 Some(Duration::from_millis(500)),
             ),
+            handshake_timeout: Duration::from_secs(3).into(),
         }
     }
 }
