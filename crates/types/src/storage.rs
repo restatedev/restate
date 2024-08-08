@@ -38,6 +38,8 @@ pub enum StorageCodecKind {
     Protobuf = 1,
     // flexbuffers + serde
     FlexbuffersSerde = 2,
+    // length-prefixed raw-bytes. length is u32
+    LengthPrefixedRawBytes = 3,
 }
 
 impl From<StorageCodecKind> for u8 {
@@ -190,6 +192,59 @@ macro_rules! flexbuffers_storage_encode_decode {
             }
         }
     };
+}
+
+// Enable simple serialization of String types as length-prefixed byte slice
+impl StorageEncode for String {
+    const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::LengthPrefixedRawBytes;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+        let my_bytes = self.as_bytes();
+        buf.put_u32_le(u32::try_from(my_bytes.len()).map_err(|_| {
+            StorageEncodeError::EncodeValue(
+                anyhow::anyhow!("only support serializing types of size <= 4GB").into(),
+            )
+        })?);
+        if buf.remaining_mut() < my_bytes.len() {
+            return Err(StorageEncodeError::EncodeValue(
+                anyhow::anyhow!(format!(
+                    "not enough buffer space to serialize value;\
+                        required {} bytes but free capacity was {}",
+                    my_bytes.len(),
+                    buf.remaining_mut()
+                ))
+                .into(),
+            ));
+        }
+        buf.put_slice(my_bytes);
+        Ok(())
+    }
+}
+
+// Enable simple serialization of Bytes types as length-prefixed byte slice
+impl StorageEncode for bytes::Bytes {
+    const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::LengthPrefixedRawBytes;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+        buf.put_u32_le(u32::try_from(self.len()).map_err(|_| {
+            StorageEncodeError::EncodeValue(
+                anyhow::anyhow!("only support serializing types of size <= 4GB").into(),
+            )
+        })?);
+        if buf.remaining_mut() < self.len() {
+            return Err(StorageEncodeError::EncodeValue(
+                anyhow::anyhow!(format!(
+                    "not enough buffer space to serialize value;\
+                        required {} bytes but free capacity was {}",
+                    self.len(),
+                    buf.remaining_mut()
+                ))
+                .into(),
+            ));
+        }
+        buf.put_slice(&self[..]);
+        Ok(())
+    }
 }
 
 /// Utility method to encode a [`Serialize`] type as flexbuffers using serde.
