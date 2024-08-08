@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +137,85 @@ where
     fn prev(self) -> Self;
 }
 
+#[derive(Debug, Clone, Default)]
+/// The keys that are associated with a record. This is used to filter the log when reading.
+pub enum Keys {
+    /// No keys are associated with the record. This record will appear to *all* readers regardless
+    /// of the KeyFilter they use.
+    #[default]
+    None,
+    /// A single key is associated with the record
+    Single(u64),
+    /// A pair of keys are associated with the record
+    Pair(u64, u64),
+    /// The record is associated with all keys within this range (inclusive)
+    RangeInclusive(std::ops::RangeInclusive<u64>),
+}
+
+impl Keys {
+    /// Returns true if the key matches the supplied `query`
+    pub fn matches_filter(&self, query: &KeyFilter) -> bool {
+        match (self, query) {
+            // regardless of the matcher.
+            (Keys::None, _) => true,
+            (_, KeyFilter::Any) => true,
+            (Keys::Single(key1), KeyFilter::Include(key2)) => key1 == key2,
+            (Keys::Single(key), KeyFilter::Within(range)) => range.contains(key),
+            (Keys::Pair(first, second), KeyFilter::Include(key)) => key == first || key == second,
+            (Keys::Pair(first, second), KeyFilter::Within(range)) => {
+                range.contains(first) || range.contains(second)
+            }
+            (Keys::RangeInclusive(range), KeyFilter::Include(key)) => range.contains(key),
+            (Keys::RangeInclusive(range1), KeyFilter::Within(range2)) => {
+                // A record matches if ranges intersect
+                range1.start() <= range2.end() && range1.end() >= range2.start()
+            }
+        }
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = u64> + 'static> {
+        match self {
+            Keys::None => Box::new(std::iter::empty()),
+            Keys::Single(key) => Box::new(std::iter::once(*key)),
+            Keys::Pair(first, second) => Box::new([*first, *second].into_iter()),
+            Keys::RangeInclusive(range) => Box::new(range.clone()),
+        }
+    }
+}
+
+impl IntoIterator for Keys {
+    type Item = u64;
+    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'static>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// A type that describes which records a reader should pick
+#[derive(Debug, Clone, Default)]
+pub enum KeyFilter {
+    #[default]
+    // Matches any record
+    Any,
+    // Match records that have a specific key, or no keys at all.
+    Include(u64),
+    // Match records that have _any_ keys falling within this inclusive range,
+    // in addition to records with no keys.
+    Within(std::ops::RangeInclusive<u64>),
+}
+
+impl From<u64> for KeyFilter {
+    fn from(key: u64) -> Self {
+        KeyFilter::Include(key)
+    }
+}
+
+impl From<RangeInclusive<u64>> for KeyFilter {
+    fn from(range: RangeInclusive<u64>) -> Self {
+        KeyFilter::Within(range)
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Header {
     pub created_at: NanosSinceEpoch,
@@ -146,14 +227,6 @@ impl Default for Header {
             created_at: NanosSinceEpoch::now(),
         }
     }
-}
-
-/// Owned payload that loglets accept and return as is. This payload is converted
-/// into Payload by bifrost on read and write.
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Envelope {
-    header: Header,
-    body: Bytes,
 }
 
 /// Owned payload.
@@ -196,4 +269,103 @@ impl Payload {
     }
 }
 
+pub trait HasRecordKeys: Send + Sync {
+    /// Keys of the record. Keys are used to filter the log when reading.
+    fn record_keys(&self) -> Keys;
+
+    /// Returns true if this record matches the supplied `filter`
+    fn matches_filter(&self, filter: &KeyFilter) -> bool {
+        self.record_keys().matches_filter(filter)
+    }
+}
+
+impl<T: HasRecordKeys> HasRecordKeys for &T {
+    fn record_keys(&self) -> Keys {
+        HasRecordKeys::record_keys(*self)
+    }
+}
+
 flexbuffers_storage_encode_decode!(Payload);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Data {
+        src_key: u64,
+        dst_key: u64,
+    }
+
+    impl HasRecordKeys for Data {
+        fn record_keys(&self) -> Keys {
+            Keys::Pair(self.src_key, self.dst_key)
+        }
+    }
+
+    #[test]
+    fn has_record_keys() {
+        let data = Data {
+            src_key: 1,
+            dst_key: 10,
+        };
+
+        assert!(!data.matches_filter(&KeyFilter::Include(5)));
+        assert!(data.matches_filter(&KeyFilter::Include(1)));
+        assert!(data.matches_filter(&KeyFilter::Include(10)));
+
+        assert!(data.matches_filter(&KeyFilter::Any));
+        assert!(data.matches_filter(&KeyFilter::Within(1..=200)));
+        assert!(data.matches_filter(&KeyFilter::Within(10..=200)));
+        assert!(!data.matches_filter(&KeyFilter::Within(11..=200)));
+        assert!(!data.matches_filter(&KeyFilter::Within(100..=200)));
+
+        let keys: Vec<_> = data.record_keys().iter().collect();
+        assert_eq!(vec![1, 10], keys);
+    }
+
+    #[test]
+    fn key_matches() {
+        let keys = Keys::None;
+        // A record with no keys matches all filters.
+        assert!(keys.matches_filter(&KeyFilter::Any));
+        assert!(keys.matches_filter(&KeyFilter::Include(u64::MIN)));
+        assert!(keys.matches_filter(&KeyFilter::Include(100)));
+        assert!(keys.matches_filter(&KeyFilter::Within(100..=1000)));
+
+        let keys = Keys::Single(10);
+        assert!(keys.matches_filter(&KeyFilter::Any));
+        assert!(keys.matches_filter(&KeyFilter::Include(10)));
+        assert!(keys.matches_filter(&KeyFilter::Within(1..=100)));
+        assert!(keys.matches_filter(&KeyFilter::Within(5..=10)));
+        assert!(!keys.matches_filter(&KeyFilter::Include(100)));
+        assert!(!keys.matches_filter(&KeyFilter::Within(1..=9)));
+        assert!(!keys.matches_filter(&KeyFilter::Within(20..=900)));
+
+        let keys = Keys::Pair(1, 10);
+        assert!(keys.matches_filter(&KeyFilter::Any));
+        assert!(keys.matches_filter(&KeyFilter::Include(10)));
+        assert!(keys.matches_filter(&KeyFilter::Include(1)));
+        assert!(!keys.matches_filter(&KeyFilter::Include(0)));
+        assert!(!keys.matches_filter(&KeyFilter::Include(100)));
+        assert!(keys.matches_filter(&KeyFilter::Within(1..=3)));
+        assert!(keys.matches_filter(&KeyFilter::Within(3..=10)));
+
+        assert!(!keys.matches_filter(&KeyFilter::Within(2..=7)));
+        assert!(!keys.matches_filter(&KeyFilter::Within(11..=100)));
+
+        let keys = Keys::RangeInclusive(5..=100);
+        assert!(keys.matches_filter(&KeyFilter::Any));
+        assert!(keys.matches_filter(&KeyFilter::Include(5)));
+        assert!(keys.matches_filter(&KeyFilter::Include(10)));
+        assert!(keys.matches_filter(&KeyFilter::Include(100)));
+        assert!(!keys.matches_filter(&KeyFilter::Include(4)));
+        assert!(!keys.matches_filter(&KeyFilter::Include(101)));
+
+        assert!(keys.matches_filter(&KeyFilter::Within(5..=100)));
+        assert!(keys.matches_filter(&KeyFilter::Within(1..=100)));
+        assert!(keys.matches_filter(&KeyFilter::Within(2..=105)));
+        assert!(keys.matches_filter(&KeyFilter::Within(10..=88)));
+        assert!(!keys.matches_filter(&KeyFilter::Within(1..=4)));
+        assert!(!keys.matches_filter(&KeyFilter::Within(101..=1000)));
+    }
+}

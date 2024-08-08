@@ -439,7 +439,7 @@ mod tests {
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
-    use restate_types::logs::{LogId, Lsn, Payload, SequenceNumber};
+    use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::partition_processor_manager::{
         GetProcessorsState, ProcessorsStateResponse,
     };
@@ -454,6 +454,7 @@ mod tests {
 
     #[test(tokio::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
         let mut builder = TestCoreEnvBuilder::new_with_mock_network();
 
         let svc = Service::new(
@@ -474,6 +475,7 @@ mod tests {
             .tc
             .run_in_scope("init", None, Bifrost::init_in_memory(metadata))
             .await;
+        let mut appender = bifrost.create_appender(LOG_ID)?;
 
         node_env.tc.spawn(
             TaskKind::SystemService,
@@ -482,18 +484,16 @@ mod tests {
             svc.run(bifrost.clone(), None),
         )?;
 
-        let log_id = LogId::from(0);
-
         node_env
             .tc
             .run_in_scope("test", None, async move {
                 for _ in 1..=5 {
-                    bifrost.append(log_id, Payload::default()).await?;
+                    appender.append_raw("").await?;
                 }
 
-                svc_handle.trim_log(log_id, Lsn::from(3)).await??;
+                svc_handle.trim_log(LOG_ID, Lsn::from(3)).await??;
 
-                let record = bifrost.read(log_id, Lsn::OLDEST).await?.unwrap();
+                let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
                 assert_that!(
                     record.record,
                     pat!(Record::TrimGap(pat!(TrimGap {
@@ -547,6 +547,8 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn auto_log_trim() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
         let mut admin_options = AdminOptions::default();
         admin_options.log_trim_threshold = 5;
         let interval_duration = Duration::from_secs(10);
@@ -568,38 +570,37 @@ mod tests {
         })
         .await?;
 
-        let log_id = LogId::from(0);
-
         node_env
             .tc
             .run_in_scope("test", None, async move {
+                let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
-                    let lsn = bifrost.append(log_id, Payload::default()).await?;
+                    let lsn = appender.append_raw("").await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
                 tokio::time::sleep(interval_duration * 10).await;
 
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
                 // report persisted lsn back to cluster controller
                 persisted_lsn.store(6, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;
                 // we delete 1-6.
-                assert_eq!(Lsn::from(6), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
                 // increase by 4 more, this should not overcome the threshold
                 persisted_lsn.store(10, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(6), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(6), bifrost.get_trim_point(LOG_ID).await?);
 
                 // now we have reached the min threshold wrt to the last trim point
                 persisted_lsn.store(11, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(11), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(11), bifrost.get_trim_point(LOG_ID).await?);
 
                 Ok::<(), anyhow::Error>(())
             })
@@ -610,6 +611,7 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn auto_log_trim_zero_threshold() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
         let mut admin_options = AdminOptions::default();
         admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
@@ -631,28 +633,25 @@ mod tests {
         })
         .await?;
 
-        let log_id = LogId::from(0);
-
         node_env
             .tc
             .run_in_scope("test", None, async move {
+                let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
-                    let lsn = bifrost
-                        .append(log_id, Payload::new(format!("record{}", i)))
-                        .await?;
+                    let lsn = appender.append_raw(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
                 tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
                 // report persisted lsn back to cluster controller
                 persisted_lsn.store(3, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;
                 // everything before the persisted_lsn.
-                assert_eq!(bifrost.get_trim_point(log_id).await?, Lsn::from(3));
+                assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
                 // we should be able to after the last persisted lsn
-                let v = bifrost.read(log_id, Lsn::from(4)).await?.unwrap();
+                let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
                 assert_eq!(Lsn::from(4), v.offset);
                 assert!(v.record.is_data());
                 assert_eq!(
@@ -663,7 +662,7 @@ mod tests {
                 persisted_lsn.store(20, Ordering::Relaxed);
 
                 tokio::time::sleep(interval_duration * 10).await;
-                assert_eq!(Lsn::from(20), bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::from(20), bifrost.get_trim_point(LOG_ID).await?);
 
                 Ok::<(), anyhow::Error>(())
             })
@@ -674,6 +673,8 @@ mod tests {
 
     #[test(tokio::test(start_paused = true))]
     async fn do_not_trim_if_not_all_nodes_report_persisted_lsn() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
         let mut admin_options = AdminOptions::default();
         admin_options.log_trim_threshold = 0;
         let interval_duration = Duration::from_secs(10);
@@ -704,15 +705,12 @@ mod tests {
         })
         .await?;
 
-        let log_id = LogId::from(0);
-
         node_env
             .tc
             .run_in_scope("test", None, async move {
+                let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=5 {
-                    let lsn = bifrost
-                        .append(log_id, Payload::new(format!("record{}", i)))
-                        .await?;
+                    let lsn = appender.append_raw(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
@@ -721,7 +719,7 @@ mod tests {
 
                 tokio::time::sleep(interval_duration * 10).await;
                 // no trimming should have happened because one node did not report the persisted lsn
-                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(log_id).await?);
+                assert_eq!(Lsn::INVALID, bifrost.get_trim_point(LOG_ID).await?);
 
                 Ok::<(), anyhow::Error>(())
             })
