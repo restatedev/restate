@@ -11,11 +11,8 @@
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use restate_core::ShutdownError;
-
-use crate::TailState;
-
 use super::LogletOffset;
+use crate::TailState;
 
 #[derive(Debug)]
 pub struct TailOffsetWatch {
@@ -36,16 +33,6 @@ impl TailOffsetWatch {
 
     pub fn notify_seal(&self) {
         self.sender.send_if_modified(|v| v.seal());
-    }
-
-    /// Blocks until the tail is beyond the given offset.
-    pub async fn wait_for(&self, offset: LogletOffset) -> Result<(), ShutdownError> {
-        self.receiver
-            .clone()
-            .wait_for(|v| v.offset() > offset)
-            .await
-            .map_err(|_| ShutdownError)?;
-        Ok(())
     }
 
     pub fn to_stream(&self) -> WatchStream<TailState<LogletOffset>> {

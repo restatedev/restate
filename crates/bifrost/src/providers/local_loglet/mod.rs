@@ -36,9 +36,8 @@ use crate::loglet::{
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{LogRecord, Result, TailState};
+use crate::{Result, TailState};
 
-use self::keys::RecordKey;
 use self::log_store::RocksDbLogStore;
 use self::log_store_writer::RocksDbLogWriterHandle;
 use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
@@ -124,72 +123,6 @@ impl LocalLoglet {
         // tail is beyond the release pointer
         self.tail_watch.notify(sealed, release_pointer.next());
     }
-
-    fn read_from(
-        &self,
-        from_offset: LogletOffset,
-    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, OperationError> {
-        debug_assert_ne!(LogletOffset::INVALID, from_offset);
-        let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
-        let head_offset = trim_point.next();
-        // Are we reading behind the loglet head?
-        if from_offset < head_offset {
-            return Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)));
-        }
-
-        // Are we reading after commit offset?
-        let commit_offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
-        if from_offset > commit_offset {
-            Ok(None)
-        } else {
-            let key = RecordKey::new(self.loglet_id, from_offset);
-            let data_cf = self.log_store.data_cf();
-            let mut read_opts = rocksdb::ReadOptions::default();
-            read_opts.set_iterate_upper_bound(RecordKey::upper_bound(self.loglet_id).to_bytes());
-
-            let mut iter = self.log_store.db().iterator_cf_opt(
-                &data_cf,
-                read_opts,
-                rocksdb::IteratorMode::From(&key.to_bytes(), rocksdb::Direction::Forward),
-            );
-            let record = iter
-                .next()
-                .transpose()
-                .map_err(|e| OperationError::other(LogStoreError::Rocksdb(e)))?;
-            let Some(record) = record else {
-                let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
-                // we might not have been able to read the next record because of a concurrent trim operation
-                return if trim_point >= from_offset {
-                    Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)))
-                } else {
-                    Ok(None)
-                };
-            };
-
-            let (key, data) = record;
-            let key = RecordKey::from_slice(&key);
-            // Defensive, the upper_bound set on the iterator should prevent this.
-            if key.loglet_id != self.loglet_id {
-                warn!(
-                    loglet_id = self.loglet_id,
-                    "read_from moved to the adjacent loglet {}, that should not happen.\
-                    This is harmless but needs to be investigated!",
-                    key.loglet_id,
-                );
-                return Ok(None);
-            }
-            // Next record isn't what we expected to read. Issue a trim gap to fast-forward just
-            // before the next real record.
-            if key.offset != from_offset {
-                return Ok(Some(LogRecord::new_trim_gap(
-                    from_offset,
-                    key.offset.prev(),
-                )));
-            }
-            let data = Bytes::from(data);
-            Ok(Some(LogRecord::new_data(key.offset, data)))
-        }
-    }
 }
 
 #[async_trait]
@@ -200,7 +133,7 @@ impl LogletBase for LocalLoglet {
         self: Arc<Self>,
         from: Self::Offset,
         to: Option<Self::Offset>,
-    ) -> Result<SendableLogletReadStream<Self::Offset>> {
+    ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
         Ok(Box::pin(
             LocalLogletReadStream::create(self, from, to).await?,
         ))
@@ -387,27 +320,6 @@ impl LogletBase for LocalLoglet {
         self.tail_watch.notify_seal();
 
         Ok(())
-    }
-
-    async fn read(
-        &self,
-        from: Self::Offset,
-    ) -> Result<LogRecord<Self::Offset, Bytes>, OperationError> {
-        loop {
-            let next_record = self.read_from(from)?;
-            if let Some(next_record) = next_record {
-                break Ok(next_record);
-            }
-            // Wait and respond when available.
-            self.tail_watch.wait_for(from).await?;
-        }
-    }
-
-    async fn read_opt(
-        &self,
-        from: Self::Offset,
-    ) -> Result<Option<LogRecord<Self::Offset, Bytes>>, OperationError> {
-        self.read_from(from)
     }
 }
 

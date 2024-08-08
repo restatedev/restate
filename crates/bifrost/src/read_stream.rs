@@ -31,6 +31,7 @@ use restate_types::Versioned;
 use crate::bifrost::BifrostInner;
 use crate::bifrost::MaybeLoglet;
 use crate::loglet::LogletBase;
+use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
 use crate::Error;
 use crate::LogRecord;
@@ -80,7 +81,7 @@ enum State {
     CreatingSubstream {
         /// Future to continue creating the substream
         #[pin]
-        create_stream_fut: BoxFuture<'static, Result<LogletReadStreamWrapper>>,
+        create_stream_fut: BoxFuture<'static, Result<LogletReadStreamWrapper, OperationError>>,
     },
     /// Reading records from `substream`
     Reading {
@@ -211,7 +212,7 @@ impl Stream for LogReadStream {
                         Ok(substream) => substream,
                         Err(e) => {
                             this.state.set(State::Terminated);
-                            return Poll::Ready(Some(Err(e)));
+                            return Poll::Ready(Some(Err(e.into())));
                         }
                     };
                     let safe_known_tail = substream.tail_lsn();
