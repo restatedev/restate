@@ -18,7 +18,7 @@ use tracing::info;
 use restate_bifrost::{Bifrost, Error as BifrostError};
 use restate_bifrost::{LogRecord, Record};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
-use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 
 use crate::util::print_latencies;
 use crate::Arguments;
@@ -41,7 +41,8 @@ pub async fn run(
         let bifrost = bifrost.clone();
         let clock = clock.clone();
         async move {
-            let mut read_stream = bifrost.create_reader(log_id, Lsn::OLDEST, Lsn::MAX)?;
+            let mut read_stream =
+                bifrost.create_reader(log_id, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
             let mut counter = 0;
             let mut cancel = std::pin::pin!(cancellation_watcher());
             let mut lag_latencies = Histogram::<u64>::new(3)?;

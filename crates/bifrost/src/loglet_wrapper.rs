@@ -19,7 +19,7 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
 
 use crate::loglet::{
     AppendError, Loglet, LogletBase, LogletOffset, LogletReadStream, OperationError,
@@ -75,14 +75,17 @@ impl LogletWrapper {
 
     pub async fn create_wrapped_read_stream(
         self,
+        filter: KeyFilter,
         start_lsn: Lsn,
     ) -> Result<LogletReadStreamWrapper, OperationError> {
         let tail_lsn = self.tail_lsn;
-        self.create_read_stream_with_tail(start_lsn, tail_lsn).await
+        self.create_read_stream_with_tail(filter, start_lsn, tail_lsn)
+            .await
     }
 
     pub async fn create_read_stream_with_tail(
         self,
+        filter: KeyFilter,
         start_lsn: Lsn,
         tail_lsn: Option<Lsn>,
     ) -> Result<LogletReadStreamWrapper, OperationError> {
@@ -91,6 +94,7 @@ impl LogletWrapper {
             self.clone(),
             self.loglet
                 .create_read_stream(
+                    filter,
                     start_lsn.into_offset(self.base_lsn),
                     // We go back one LSN because `to` is inclusive and `tail_lsn` is exclusive.
                     // transposed to loglet offset (if set)
@@ -106,7 +110,10 @@ impl LogletWrapper {
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
     pub async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
-        let mut stream = self.clone().create_wrapped_read_stream(from).await?;
+        let mut stream = self
+            .clone()
+            .create_wrapped_read_stream(KeyFilter::Any, from)
+            .await?;
         stream.next().await.unwrap_or_else(|| {
             // We are trying to read past the the last record.
             Err(OperationError::terminal(
@@ -130,7 +137,7 @@ impl LogletWrapper {
         };
         let mut stream = self
             .clone()
-            .create_read_stream_with_tail(from, Some(tail_lsn))
+            .create_read_stream_with_tail(KeyFilter::Any, from, Some(tail_lsn))
             .await?;
         stream.next().await.transpose()
     }
@@ -149,6 +156,7 @@ impl LogletBase for LogletWrapper {
     /// This should never be used directly. Instead, use `create_wrapped_read_stream()` instead.
     async fn create_read_stream(
         self: Arc<Self>,
+        _filter: KeyFilter,
         _after: Self::Offset,
         _to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {

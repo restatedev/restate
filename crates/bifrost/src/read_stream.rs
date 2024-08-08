@@ -23,6 +23,7 @@ use pin_project::pin_project;
 use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::MaybeSegment;
+use restate_types::logs::KeyFilter;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::Version;
@@ -47,6 +48,8 @@ use crate::TailState;
 #[pin_project(project = ReadStreamProj)]
 pub struct LogReadStream {
     log_id: LogId,
+    /// Chooses which records to read/return.
+    filter: KeyFilter,
     /// inclusive max LSN to read to
     end_lsn: Lsn,
     /// Represents the next record to read.
@@ -103,6 +106,7 @@ impl LogReadStream {
     pub(crate) fn create(
         bifrost_inner: Arc<BifrostInner>,
         log_id: LogId,
+        filter: KeyFilter,
         start_lsn: Lsn,
         // Inclusive. Use [`Lsn::MAX`] for a tailing stream.
         // Once reached, the stream terminates.
@@ -113,6 +117,7 @@ impl LogReadStream {
         Ok(Self {
             bifrost_inner,
             log_id,
+            filter,
             read_pointer: start_lsn,
             end_lsn,
             substream: None,
@@ -199,8 +204,9 @@ impl Stream for LogReadStream {
                         }
                     };
                     // create sub-stream to read from this loglet.
-                    let create_stream_fut =
-                        Box::pin(loglet.create_wrapped_read_stream(*this.read_pointer));
+                    let create_stream_fut = Box::pin(
+                        loglet.create_wrapped_read_stream(this.filter.clone(), *this.read_pointer),
+                    );
                     // => Create Substream
                     this.state
                         .set(State::CreatingSubstream { create_stream_fut });
@@ -447,7 +453,7 @@ mod tests {
     use tracing::info;
     use tracing_test::traced_test;
 
-    use restate_types::logs::SequenceNumber;
+    use restate_types::logs::{KeyFilter, SequenceNumber};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
@@ -471,7 +477,7 @@ mod tests {
             let bifrost = svc.handle();
             svc.start().await.expect("loglet must start");
 
-            let mut reader = bifrost.create_reader(LOG_ID, read_from, Lsn::MAX)?;
+            let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, read_from, Lsn::MAX)?;
             let mut appender = bifrost.create_appender(LOG_ID)?;
 
             let tail = bifrost
@@ -586,7 +592,8 @@ mod tests {
                 );
                 assert_eq!(Lsn::from(5), bifrost.get_trim_point(LOG_ID).await?);
 
-                let mut read_stream = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+                let mut read_stream =
+                    bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
 
                 let record = read_stream.next().await.unwrap()?;
                 assert_that!(
@@ -690,7 +697,8 @@ mod tests {
             svc.start().await.expect("loglet must start");
 
             // create the reader and put it on the side.
-            let mut reader = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+            let mut reader =
+                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
             let mut appender = bifrost.create_appender(LOG_ID)?;
             // We should be at tail, any attempt to read will yield `pending`.
             assert_that!(
@@ -930,7 +938,8 @@ mod tests {
             }
 
             // start a reader (from 3) and read everything. [3..15]
-            let mut reader = bifrost.create_reader(LOG_ID, Lsn::new(3), Lsn::MAX)?;
+            let mut reader =
+                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::new(3), Lsn::MAX)?;
 
             // first segment records
             for i in 3..=10 {
@@ -1019,7 +1028,8 @@ mod tests {
                 .sync(MetadataKind::Logs, TargetVersion::Latest)
                 .await?;
 
-            let mut reader = bifrost.create_reader(LOG_ID, Lsn::OLDEST, Lsn::MAX)?;
+            let mut reader =
+                bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
 
             // append a few records
             for i in 10..=13 {

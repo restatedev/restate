@@ -23,7 +23,7 @@ pub use log_store::LogStoreError;
 use metrics::{counter, histogram, Histogram};
 pub use provider::Factory;
 use restate_core::ShutdownError;
-use restate_types::logs::{Keys, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, SequenceNumber};
 use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -131,11 +131,12 @@ impl LogletBase for LocalLoglet {
 
     async fn create_read_stream(
         self: Arc<Self>,
+        filter: KeyFilter,
         from: Self::Offset,
         to: Option<Self::Offset>,
     ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError> {
         Ok(Box::pin(
-            LocalLogletReadStream::create(self, from, to).await?,
+            LocalLogletReadStream::create(self, filter, from, to).await?,
         ))
     }
 
