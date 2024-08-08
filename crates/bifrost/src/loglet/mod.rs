@@ -29,7 +29,7 @@ use futures::Stream;
 
 use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
 
-use crate::LogRecord;
+use crate::LogEntry;
 use crate::{Result, TailState};
 
 // Inner loglet offset
@@ -175,7 +175,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
 pub trait LogletReadStream<S: SequenceNumber>:
-    Stream<Item = Result<LogRecord<S, Bytes>, OperationError>>
+    Stream<Item = Result<LogEntry<S, Bytes>, OperationError>>
 {
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> S;

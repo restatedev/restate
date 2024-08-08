@@ -25,9 +25,10 @@ use crate::loglet::{
     AppendError, Loglet, LogletBase, LogletOffset, LogletReadStream, OperationError,
     SendableLogletReadStream,
 };
-use crate::{LogRecord, LsnExt};
+use crate::{LogEntry, LsnExt};
 use crate::{Result, TailState};
 
+#[cfg(any(test, feature = "test-util"))]
 #[derive(Debug, Clone, thiserror::Error)]
 enum LogletWrapperError {
     #[error("attempted to read outside the tail boundary of the loglet, requested read LSN is {attempt_lsn}, tail is at {tail_lsn}")]
@@ -109,7 +110,7 @@ impl LogletWrapper {
     /// defined for the loglet.
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read(&self, from: Lsn) -> Result<LogRecord<Lsn, Bytes>, OperationError> {
+    pub async fn read(&self, from: Lsn) -> Result<LogEntry<Lsn, Bytes>, OperationError> {
         let mut stream = self
             .clone()
             .create_wrapped_read_stream(KeyFilter::Any, from)
@@ -130,7 +131,7 @@ impl LogletWrapper {
     pub async fn read_opt(
         &self,
         from: Lsn,
-    ) -> Result<Option<LogRecord<Lsn, Bytes>>, OperationError> {
+    ) -> Result<Option<LogEntry<Lsn, Bytes>>, OperationError> {
         let tail_lsn = match self.tail_lsn {
             Some(tail) => tail,
             None => self.find_tail().await?.offset(),
@@ -277,7 +278,7 @@ impl LogletReadStream<Lsn> for LogletReadStreamWrapper {
 }
 
 impl Stream for LogletReadStreamWrapper {
-    type Item = Result<LogRecord<Lsn, Bytes>, OperationError>;
+    type Item = Result<LogEntry<Lsn, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
