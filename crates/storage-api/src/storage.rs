@@ -19,12 +19,13 @@ macro_rules! protobuf_storage_encode_decode {
     };
     ($ty:ident, $protobuf_ty:path) => {
         impl restate_types::storage::StorageEncode for $ty {
-            const DEFAULT_CODEC: restate_types::storage::StorageCodecKind =
-                restate_types::storage::StorageCodecKind::Protobuf;
+            fn default_codec(&self) -> restate_types::storage::StorageCodecKind {
+                restate_types::storage::StorageCodecKind::Protobuf
+            }
 
-            fn encode<B: bytes::BufMut>(
+            fn encode(
                 &self,
-                buf: &mut B,
+                buf: &mut ::bytes::BytesMut,
             ) -> std::result::Result<(), restate_types::storage::StorageEncodeError> {
                 <$protobuf_ty as prost::Message>::encode(&self.clone().into(), buf).map_err(|err| {
                     restate_types::storage::StorageEncodeError::EncodeValue(err.into())

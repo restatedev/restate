@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::storage::StorageCodec;
 use rocksdb::MergeOperands;
@@ -110,7 +110,7 @@ impl LogStateUpdates {
         Ok(buf.freeze())
     }
 
-    pub fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), LogStoreError> {
+    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), LogStoreError> {
         Ok(StorageCodec::encode(self, buf)?)
     }
 
