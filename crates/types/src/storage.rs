@@ -8,12 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::GenericError;
+use std::mem;
+use std::sync::Arc;
+
 use bytes::{Buf, BufMut, BytesMut};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
 use serde::Serialize;
-use std::mem;
+
+use crate::errors::GenericError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageEncodeError {
@@ -68,14 +71,22 @@ impl TryFrom<u8> for StorageCodecKind {
 pub struct StorageCodec;
 
 impl StorageCodec {
-    pub fn encode<T: StorageEncode>(
-        value: T,
+    pub fn encode<T: StorageEncode + ?Sized>(
+        value: &T,
         buf: &mut BytesMut,
     ) -> Result<(), StorageEncodeError> {
         // write codec
         buf.put_u8(value.default_codec().into());
         // encode value
         value.encode(buf)
+    }
+
+    pub fn encode_and_split<T: StorageEncode + ?Sized>(
+        value: &T,
+        buf: &mut BytesMut,
+    ) -> Result<BytesMut, StorageEncodeError> {
+        Self::encode(value, buf)?;
+        Ok(buf.split())
     }
 
     pub fn decode<T: StorageDecode, B: Buf>(buf: &mut B) -> Result<T, StorageDecodeError> {
@@ -152,12 +163,31 @@ impl<T: StorageEncode> StorageEncode for Box<T> {
     }
 }
 
+impl<T: StorageEncode> StorageEncode for Arc<T> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+        T::encode(&**self, buf)
+    }
+
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageEncode::default_codec(self.as_ref())
+    }
+}
+
 impl<T: StorageDecode> StorageDecode for Box<T> {
     fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized,
     {
         T::decode(buf, kind).map(Box::new)
+    }
+}
+
+impl<T: StorageDecode> StorageDecode for Arc<T> {
+    fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        T::decode(buf, kind).map(Arc::new)
     }
 }
 
@@ -229,6 +259,50 @@ impl StorageEncode for String {
         }
         buf.put_slice(my_bytes);
         Ok(())
+    }
+}
+impl StorageDecode for String {
+    fn decode<B: ::bytes::Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        match kind {
+            StorageCodecKind::LengthPrefixedRawBytes => {
+                if buf.remaining() < mem::size_of::<u32>() {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!(
+                            "insufficient data: expecting {} bytes for length",
+                            mem::size_of::<u32>()
+                        )
+                        .into(),
+                    ));
+                }
+                let length = usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
+
+                if buf.remaining() < length {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!(
+                            "insufficient data: expecting {} bytes for flexbuffers",
+                            length
+                        )
+                        .into(),
+                    ));
+                }
+
+                let bytes = buf.take(length);
+                // buf.copy_to_slice(&mut bytes);
+                Ok(String::from_utf8_lossy(bytes.chunk()).to_string())
+                // .map_err(|e| {
+                //     StorageDecodeError::DecodeValue(
+                //         anyhow::anyhow!("failed to convert bytes to string: {}", e).into(),
+                //     )
+                // })
+            }
+            codec => Err(StorageDecodeError::UnsupportedCodecKind(codec)),
+        }
     }
 }
 
