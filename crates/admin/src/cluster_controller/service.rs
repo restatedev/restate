@@ -421,10 +421,9 @@ async fn signal_all_partitions_started(
 #[cfg(test)]
 mod tests {
     use super::Service;
-    use bytes::Bytes;
+    use googletest::assert_that;
     use googletest::matchers::eq;
-    use googletest::{assert_that, pat};
-    use restate_bifrost::{Bifrost, MaybeRecord, TrimGap};
+    use restate_bifrost::Bifrost;
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{
         MockNetworkSender, NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
@@ -482,18 +481,14 @@ mod tests {
             .tc
             .run_in_scope("test", None, async move {
                 for _ in 1..=5 {
-                    appender.append_raw("").await?;
+                    appender.append("").await?;
                 }
 
                 svc_handle.trim_log(LOG_ID, Lsn::from(3)).await??;
 
                 let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
-                assert_that!(
-                    record.record,
-                    pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                        to: eq(Lsn::from(3)),
-                    })))
-                );
+                assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
+                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(3))));
                 Ok::<(), anyhow::Error>(())
             })
             .await?;
@@ -571,7 +566,7 @@ mod tests {
             .run_in_scope("test", None, async move {
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
-                    let lsn = appender.append_raw("").await?;
+                    let lsn = appender.append("").await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
@@ -636,7 +631,7 @@ mod tests {
             .run_in_scope("test", None, async move {
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=20 {
-                    let lsn = appender.append_raw(format!("record{}", i)).await?;
+                    let lsn = appender.append(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
                 tokio::time::sleep(interval_duration * 10).await;
@@ -650,12 +645,9 @@ mod tests {
                 assert_eq!(bifrost.get_trim_point(LOG_ID).await?, Lsn::from(3));
                 // we should be able to after the last persisted lsn
                 let v = bifrost.read(LOG_ID, Lsn::from(4)).await?.unwrap();
-                assert_eq!(Lsn::from(4), v.offset);
-                assert!(v.record.is_data());
-                assert_eq!(
-                    &Bytes::from_static(b"record4"),
-                    v.record.try_as_data().unwrap().body()
-                );
+                assert_that!(v.sequence_number(), eq(Lsn::new(4)));
+                assert!(v.is_data_record());
+                assert_that!(v.decode_unchecked::<String>(), eq("record4".to_owned()));
 
                 persisted_lsn.store(20, Ordering::Relaxed);
 
@@ -708,7 +700,7 @@ mod tests {
             .run_in_scope("test", None, async move {
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 for i in 1..=5 {
-                    let lsn = appender.append_raw(format!("record{}", i)).await?;
+                    let lsn = appender.append(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 

@@ -18,12 +18,16 @@ use restate_types::config::Configuration;
 use restate_types::live::Constant;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use tracing::warn;
 
 pub async fn spawn_environment(
     config: Configuration,
     num_logs: u64,
     provider: ProviderKind,
 ) -> TaskCenter {
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        warn!("Failed to increase the number of open file descriptors limit.");
+    }
     let tc = TaskCenterBuilder::default()
         .options(config.common.clone())
         .build()

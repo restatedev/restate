@@ -16,33 +16,32 @@ mod metric_definitions;
 mod provider;
 mod read_stream;
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use futures::stream::BoxStream;
-pub use log_store::LogStoreError;
-use metrics::{counter, histogram, Histogram};
-pub use provider::Factory;
-use restate_core::ShutdownError;
-use restate_types::logs::{KeyFilter, Keys, SequenceNumber};
-use tokio::sync::Mutex;
-use tracing::{debug, trace, warn};
-
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use metrics::{counter, histogram, Histogram};
+use tokio::sync::Mutex;
+use tracing::{debug, warn};
+
+pub use self::provider::Factory;
+
+use self::log_store::LogStoreError;
+use self::log_store::RocksDbLogStore;
+use self::log_store_writer::RocksDbLogWriterHandle;
+use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
+use self::read_stream::LocalLogletReadStream;
+use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
     AppendError, LogletBase, LogletOffset, OperationError, SendableLogletReadStream,
 };
 use crate::providers::local_loglet::metric_definitions::{
     BIFROST_LOCAL_TRIM, BIFROST_LOCAL_TRIM_LENGTH,
 };
-use crate::{Result, TailState};
-
-use self::log_store::RocksDbLogStore;
-use self::log_store_writer::RocksDbLogWriterHandle;
-use self::metric_definitions::{BIFROST_LOCAL_APPEND, BIFROST_LOCAL_APPEND_DURATION};
-use self::read_stream::LocalLogletReadStream;
-use crate::loglet::util::TailOffsetWatch;
+use crate::{ErasedInputRecord, Result, TailState};
+use restate_core::ShutdownError;
+use restate_types::logs::{KeyFilter, SequenceNumber};
 
 struct LocalLoglet {
     loglet_id: u64,
@@ -144,58 +143,10 @@ impl LogletBase for LocalLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append(&self, payload: &Bytes, keys: &Keys) -> Result<LogletOffset, AppendError> {
-        // An initial check if we are sealed or not, we are not worried about accepting an
-        // append while sealing is taking place. We only care about *not* acknowledging
-        // it if we lost the race and the seal was completed while waiting on this append.
-        if self.sealed.load(Ordering::Relaxed) {
-            return Err(AppendError::Sealed);
-        }
-
-        counter!(BIFROST_LOCAL_APPEND).increment(1);
-        let start_time = std::time::Instant::now();
-        // We hold the lock to ensure that offsets are enqueued in the order of
-        // their offsets in the logstore writer. This means that acknowledgements
-        // that an offset N from the writer imply that all previous offsets have
-        // been durably committed, therefore, such offsets can be released to readers.
-        let (receiver, offset) = {
-            let mut next_offset_guard = self.next_write_offset.lock().await;
-            // lock acquired
-            let offset = *next_offset_guard;
-            let receiver = self
-                .log_writer
-                .enqueue_put_record(self.loglet_id, offset, payload.clone(), keys.clone())
-                .await?;
-            // next offset points to the next available slot.
-            *next_offset_guard = offset.next();
-            (receiver, offset)
-            // lock dropped
-        };
-
-        trace!("Written entry to {offset:?}");
-
-        let _ = receiver.await.unwrap_or_else(|_| {
-            warn!("Unsure if the local loglet record was written, the ack channel was dropped");
-            Err(ShutdownError.into())
-        })?;
-
-        let release_pointer = LogletOffset::from(
-            self.last_committed_offset
-                .fetch_max(offset.into(), Ordering::AcqRel)
-                .max(offset.into()),
-        );
-        let is_sealed = self.sealed.load(Ordering::Relaxed);
-        self.notify_readers(is_sealed, release_pointer);
-        // Ensure that we don't acknowledge the append (even that it has happened) if the loglet
-        // has been sealed already.
-        if is_sealed {
-            return Err(AppendError::Sealed);
-        }
-        self.append_latency.record(start_time.elapsed());
-        Ok(offset)
-    }
-
-    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<LogletOffset, AppendError> {
+    async fn append_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<LogletOffset, AppendError> {
         // An initial check if we are sealed or not, we are not worried about accepting an
         // append while sealing is taking place. We only care about *not* acknowledging
         // it if we lost the race and the seal was completed while waiting on this append.
@@ -212,19 +163,16 @@ impl LogletBase for LocalLoglet {
         // been durably committed, therefore, such offsets can be released to readers.
         let (receiver, offset) = {
             let mut next_offset_guard = self.next_write_offset.lock().await;
-            let offset = *next_offset_guard;
             // lock acquired
             let receiver = self
                 .log_writer
                 .enqueue_put_records(self.loglet_id, *next_offset_guard, payloads)
                 .await?;
             // next offset points to the next available slot.
-            *next_offset_guard = offset + num_payloads;
+            *next_offset_guard = *next_offset_guard + num_payloads;
             (receiver, next_offset_guard.prev())
             // lock dropped
         };
-
-        trace!("Written batch to {offset:?}");
 
         let _ = receiver.await.unwrap_or_else(|_| {
             warn!("Unsure if the local loglet record was written, the ack channel was dropped");

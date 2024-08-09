@@ -443,7 +443,7 @@ mod tests {
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
+    use restate_bifrost::{Bifrost, LogEntry};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
@@ -452,7 +452,6 @@ mod tests {
     use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
-    use restate_types::storage::StorageCodec;
     use restate_types::{GenerationalNodeId, Version};
     use restate_wal_protocol::{Command, Envelope};
 
@@ -570,10 +569,7 @@ mod tests {
         while let Some(record) = stream.next().await {
             let record = record?;
 
-            if let MaybeRecord::Data(data) = record.record {
-                let mut body = data.into_body();
-                let envelope = StorageCodec::decode::<Envelope, _>(&mut body)?;
-
+            if let Some(envelope) = record.try_decode::<Envelope>().transpose()? {
                 let_assert!(Command::Invoke(service_invocation) = envelope.command);
                 let invocation_id = service_invocation.invocation_id;
                 messages.push(service_invocation);

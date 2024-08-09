@@ -13,21 +13,20 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use googletest::prelude::*;
 use restate_types::logs::metadata::SegmentIndex;
 use tokio::sync::Barrier;
 use tokio::task::{JoinHandle, JoinSet};
 
 use restate_test_util::let_assert;
-use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{Loglet, LogletOffset};
 use crate::loglet::{AppendError, LogletBase, LogletReadStream};
 use crate::loglet_wrapper::LogletWrapper;
-use crate::{setup_panic_handler, LogEntry, MaybeRecord, TailState, TrimGap};
+use crate::{setup_panic_handler, TailState};
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {
@@ -68,9 +67,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     let end: u64 = start + 3;
     for i in start..end {
         // Append i
-        let offset = loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        let offset = loglet.append(format!("record{}", i).into()).await?;
         assert_eq!(Lsn::new(i), offset);
         assert_eq!(None, loglet.get_trim_point().await?);
         {
@@ -81,23 +78,33 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     }
 
     // read record 1 (reading from OLDEST)
-    let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
-    let LogEntry { offset, record } = log_record;
-    assert_eq!(Lsn::OLDEST, offset);
-    assert!(record.is_data());
-    assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
+    let_assert!(Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
+    let offset = record.sequence_number();
+    assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
+    assert!(record.is_data_record());
+    assert_that!(
+        record.decode_unchecked::<String>(),
+        eq("record1".to_owned())
+    );
 
     // read record 2
-    let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
-    let LogEntry { offset, record } = log_record;
-    assert_eq!(Lsn::new(2), offset);
-    assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
+    let_assert!(Some(record) = loglet.read_opt(offset.next()).await?);
+    let offset = record.sequence_number();
+    assert_that!(record.sequence_number(), eq(Lsn::new(2)));
+    assert!(record.is_data_record());
+    assert_that!(
+        record.decode_unchecked::<String>(),
+        eq("record2".to_owned())
+    );
 
     // read record 3
-    let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
-    let LogEntry { offset, record } = log_record;
-    assert_eq!(Lsn::new(3), offset);
-    assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
+    let_assert!(Some(record) = loglet.read_opt(offset.next()).await?);
+    assert_that!(record.sequence_number(), eq(Lsn::new(3)));
+    assert!(record.is_data_record());
+    assert_that!(
+        record.decode_unchecked::<String>(),
+        eq("record3".to_owned())
+    );
 
     // trim point and tail didn't change
     assert_eq!(None, loglet.get_trim_point().await?);
@@ -114,9 +121,13 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 4
-            let LogEntry { offset, record } = loglet.read(Lsn::new(4)).await?;
-            assert_eq!(Lsn::new(4), offset);
-            assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
+            let record = loglet.read(Lsn::new(4)).await?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(4)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("record4".to_owned())
+            );
             Ok(())
         }
     });
@@ -126,9 +137,14 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 10
-            let LogEntry { offset, record } = loglet.read(Lsn::new(10)).await?;
-            assert_eq!(Lsn::new(10), offset);
-            assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
+            let record = loglet.read(Lsn::new(10)).await?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(10)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("record10".to_owned())
+            );
+
             Ok(())
         }
     });
@@ -141,9 +157,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     );
 
     // Append 4
-    let offset = loglet
-        .append(&Bytes::from_static(b"record4"), &Keys::None)
-        .await?;
+    let offset = loglet.append("record4".into()).await?;
     assert_eq!(Lsn::new(4), offset);
     assert_eq!(None, loglet.get_trim_point().await?);
     {
@@ -181,17 +195,18 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         assert!(!tail.is_sealed());
     }
 
-    let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
-    let LogEntry { offset, record } = log_record;
-    assert_eq!(Lsn::OLDEST, offset);
+    let_assert!(Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
+    assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
     assert!(record.is_trim_gap());
-    assert_eq!(Lsn::new(3), record.try_as_trim_gap_ref().unwrap().to);
+    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(3))));
 
-    let_assert!(Some(log_record) = loglet.read_opt(Lsn::from(4)).await?);
-    let LogEntry { offset, record } = log_record;
-    assert_eq!(Lsn::from(4), offset);
-    assert!(record.is_data());
-    assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
+    let_assert!(Some(record) = loglet.read_opt(Lsn::from(4)).await?);
+    assert_that!(record.sequence_number(), eq(Lsn::new(4)));
+    assert!(record.is_data_record());
+    assert_that!(
+        record.decode_unchecked::<String>(),
+        eq("record4".to_owned())
+    );
 
     Ok(())
 }
@@ -228,11 +243,11 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
             let record = reader.next().await.expect("to never terminate")?;
             let expected_offset = Lsn::new(i);
             counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            assert_eq!(expected_offset, record.offset);
+            assert_eq!(expected_offset, record.sequence_number());
             assert!(reader.read_pointer() > expected_offset);
-            assert_eq!(
-                Some(&Bytes::from(format!("record{}", expected_offset))),
-                record.record.payload()
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("record{}", expected_offset))
             );
         }
         Ok(())
@@ -244,9 +259,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // append 5 records to the log (offsets [1-5])
     for i in 1..=5 {
-        let offset = loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        let offset = loglet.append(format!("record{}", i).into()).await?;
         info!(?offset, "appended record");
         assert_eq!(Lsn::new(i), offset);
     }
@@ -259,9 +272,7 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
 
     // write 5 more records.
     for i in 6..=10 {
-        loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        loglet.append(format!("record{}", i).into()).await?;
     }
 
     // reader has finished
@@ -291,9 +302,7 @@ pub async fn single_loglet_readstream_with_trims(
 
     // append 10 records. Offsets [1..10]
     for i in 1..=10 {
-        loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        loglet.append(format!("record{}", i).into()).await?;
     }
 
     // Lsn(5) is trimmed, 5 records left [6..10]
@@ -311,27 +320,21 @@ pub async fn single_loglet_readstream_with_trims(
         .await?;
 
     let record = read_stream.next().await.unwrap()?;
-    assert_that!(
-        record,
-        pat!(LogEntry {
-            offset: eq(Lsn::new(1)),
-            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                to: eq(Lsn::new(5)),
-            })))
-        })
-    );
+    assert_that!(record.sequence_number(), eq(Lsn::new(1)));
+    assert!(record.is_trim_gap());
+    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
 
     assert!(read_stream.read_pointer() > Lsn::new(5));
 
     // Read two records (6, 7)
     for offset in 6..8 {
         let record = read_stream.next().await.unwrap()?;
+
+        assert_that!(record.sequence_number(), eq(Lsn::new(offset)));
+        assert!(record.is_data_record());
         assert_that!(
-            record,
-            pat!(LogEntry {
-                offset: eq(Lsn::new(offset)),
-                record: pat!(MaybeRecord::Data(_))
-            })
+            record.decode_unchecked::<String>(),
+            eq(format!("record{}", offset))
         );
     }
     assert!(!read_stream.is_terminated());
@@ -360,32 +363,22 @@ pub async fn single_loglet_readstream_with_trims(
 
     // Add 10 more records [11..20]
     for i in 11..=20 {
-        loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        loglet.append(format!("record{}", i).into()).await?;
     }
 
     // read stream should send a gap from 8->10
     let record = read_stream.next().await.unwrap()?;
-    assert_that!(
-        record,
-        pat!(LogEntry {
-            offset: eq(Lsn::new(8)),
-            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                to: eq(Lsn::new(10)),
-            })))
-        })
-    );
+    assert_that!(record.sequence_number(), eq(Lsn::new(8)));
+    assert!(record.is_trim_gap());
+    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
 
     for i in 11..=20 {
         let record = read_stream.next().await.unwrap()?;
-        let expected_payload = Bytes::from(format!("record{}", i));
+        assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+        assert!(record.is_data_record());
         assert_that!(
-            record,
-            eq(LogEntry {
-                offset: Lsn::new(i),
-                record: MaybeRecord::Data(expected_payload),
-            })
+            record.decode_unchecked::<String>(),
+            eq(format!("record{}", i))
         );
     }
     // we are at tail. polling should return pending.
@@ -410,18 +403,14 @@ pub async fn append_after_seal(loglet: Arc<dyn Loglet>) -> googletest::Result<()
 
     // append 5 records. Offsets [1..5]
     for i in 1..=5 {
-        loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await?;
+        loglet.append(format!("record{}", i).into()).await?;
     }
 
     loglet.seal().await?;
 
     // attempt to append 5 records. Offsets [6..10]. Expected to fail since seal happened on the same client.
     for i in 6..=10 {
-        let res = loglet
-            .append(&Bytes::from(format!("record{}", i)), &Keys::None)
-            .await;
+        let res = loglet.append(format!("record{}", i).into()).await;
         assert_that!(res, err(pat!(AppendError::Sealed)));
     }
 
@@ -462,10 +451,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
                 let mut warmup = true;
                 loop {
                     let res = loglet
-                        .append(
-                            &Bytes::from(format!("appender-{}-record{}", appender_id, i)),
-                            &Keys::None,
-                        )
+                        .append(format!("appender-{}-record{}", appender_id, i).into())
                         .await;
                     i += 1;
                     if i > WARMUP_APPENDS && warmup {
@@ -518,9 +504,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
     loglet.seal().await?;
     // fails immediately
     assert_that!(
-        loglet
-            .append(&Bytes::from_static(b"failed-record"), &Keys::None)
-            .await,
+        loglet.append("failed-record".into()).await,
         err(pat!(AppendError::Sealed))
     );
 
@@ -562,7 +546,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
         .await?;
 
     let records: BTreeSet<Lsn> = reader
-        .try_filter_map(|x| std::future::ready(Ok(Some(x.offset))))
+        .try_filter_map(|x| std::future::ready(Ok(Some(x.sequence_number()))))
         .try_collect()
         .await?;
 

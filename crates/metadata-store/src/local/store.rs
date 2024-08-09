@@ -324,7 +324,7 @@ impl LocalMetadataStore {
     }
 
     fn encode<T: StorageEncode>(value: T, buf: &mut BytesMut) -> Result<()> {
-        StorageCodec::encode(value, buf)?;
+        StorageCodec::encode(&value, buf)?;
         Ok(())
     }
 

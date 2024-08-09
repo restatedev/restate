@@ -10,6 +10,7 @@
 
 use std::collections::{btree_map, BTreeMap};
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use restate_bifrost::Bifrost;
@@ -113,7 +114,7 @@ impl ActionEffectHandler {
                 btree_map::Entry::Occupied(sender) => sender.into_mut().sender(),
             };
             // Only blocks if background append is pushing back (queue full)
-            sender.enqueue(envelope).await?;
+            sender.enqueue(Arc::new(envelope)).await?;
         }
 
         Ok(())

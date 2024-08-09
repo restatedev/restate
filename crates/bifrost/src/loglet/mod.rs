@@ -24,12 +24,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::Stream;
 
-use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 
-use crate::LogEntry;
+use crate::{ErasedInputRecord, LogEntry};
 use crate::{Result, TailState};
 
 // Inner loglet offset
@@ -123,7 +122,9 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     ) -> Result<SendableLogletReadStream<Self::Offset>, OperationError>;
 
     /// Append a record to the loglet.
-    async fn append(&self, data: &Bytes, keys: &Keys) -> Result<Self::Offset, AppendError>;
+    async fn append(&self, record: ErasedInputRecord) -> Result<Self::Offset, AppendError> {
+        self.append_batch(Arc::new([record])).await
+    }
 
     /// Create a stream watching the state of tail for this loglet
     ///
@@ -139,8 +140,11 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
     fn watch_tail(&self) -> BoxStream<'static, TailState<Self::Offset>>;
 
     /// Append a batch of records to the loglet. The returned offset (on success) is the offset of
-    /// the first record in the batch)
-    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<Self::Offset, AppendError>;
+    /// the last committed record in the batch)
+    async fn append_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<Self::Offset, AppendError>;
 
     /// The tail is *the first unwritten position* in the loglet.
     ///
@@ -175,7 +179,7 @@ pub trait LogletBase: Send + Sync + std::fmt::Debug {
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
 pub trait LogletReadStream<S: SequenceNumber>:
-    Stream<Item = Result<LogEntry<S, Bytes>, OperationError>>
+    Stream<Item = Result<LogEntry<S>, OperationError>>
 {
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> S;

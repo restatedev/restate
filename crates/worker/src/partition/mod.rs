@@ -19,9 +19,9 @@ use metrics::{counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tokio_stream::StreamExt;
-use tracing::{debug, instrument, trace, warn, Span};
+use tracing::{debug, info, instrument, trace, warn, Span};
 
-use restate_bifrost::{Bifrost, FindTailAttributes, LogEntry, MaybeRecord};
+use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
 use restate_core::network::Networking;
@@ -228,7 +228,7 @@ where
                 FindTailAttributes::default(),
             )
             .await?;
-        debug!(
+        info!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = ?current_tail,
             "PartitionProcessor creating log reader",
@@ -250,18 +250,16 @@ where
                 last_applied_lsn.next(),
                 Lsn::MAX,
             )?
-            .map_ok(|record| {
-                let LogEntry { record, offset } = record;
-                match record {
-                    MaybeRecord::Data(payload) => {
-                        let envelope = Envelope::from_bytes(payload.into_body())?;
-                        anyhow::Ok((offset, envelope))
-                    }
-                    MaybeRecord::TrimGap(_) => {
-                        unimplemented!("Currently not supported")
-                    }
-                }
+            .map_ok(|entry| {
+                let lsn = entry.sequence_number();
+                let Some(envelope) = entry.try_decode::<Envelope>() else {
+                    // trim-gap
+                    unimplemented!("Currently not supported")
+                };
+                anyhow::Ok((lsn, envelope?))
             });
+
+        info!("PartitionProcessor starting up.");
 
         // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
         let mut status_update_timer =

@@ -61,7 +61,7 @@ mod tests {
         assert_eq!(new_announce_leader, expected_announce_leader);
 
         buf.clear();
-        StorageCodec::encode(new_announce_leader, &mut buf)?;
+        StorageCodec::encode(&new_announce_leader, &mut buf)?;
 
         let announce_leader = StorageCodec::decode::<OldAnnounceLeader, _>(&mut buf)?;
         assert_eq!(announce_leader, old_announce_leader);
