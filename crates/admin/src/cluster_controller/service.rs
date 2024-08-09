@@ -424,7 +424,7 @@ mod tests {
     use bytes::Bytes;
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
-    use restate_bifrost::{Bifrost, Record, TrimGap};
+    use restate_bifrost::{Bifrost, MaybeRecord, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
     use restate_core::{
         MockNetworkSender, NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
@@ -490,7 +490,7 @@ mod tests {
                 let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
                 assert_that!(
                     record.record,
-                    pat!(Record::TrimGap(pat!(TrimGap {
+                    pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                         to: eq(Lsn::from(3)),
                     })))
                 );
