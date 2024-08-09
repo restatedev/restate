@@ -138,14 +138,13 @@ impl LogReadStream {
     /// The read pointer points to the next LSN will be attempted on the next
     /// `poll_next()`.
     fn calculate_read_pointer(record: &LogEntry) -> Lsn {
-        match &record.record {
-            // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
-            // this after delivering a TrimGap record. This means that the next read operation
-            // skips over the boundary of the gap.
-            crate::MaybeRecord::TrimGap(trim_gap) => trim_gap.to,
-            crate::MaybeRecord::Data(_) => record.offset,
-        }
-        .next()
+        // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
+        // this after delivering a TrimGap record. This means that the next read operation
+        // skips over the boundary of the gap.
+        record
+            .trim_gap_to_sequence_number()
+            .unwrap_or(record.sequence_number())
+            .next()
     }
 }
 
@@ -307,9 +306,6 @@ impl Stream for LogReadStream {
                     let maybe_record = ready!(substream.poll_next(cx));
                     match maybe_record {
                         Some(Ok(record)) => {
-                            let record = record
-                                .decode()
-                                .expect("decoding a bifrost envelope succeeds");
                             let new_pointer = Self::calculate_read_pointer(&record);
                             debug_assert!(new_pointer > *this.read_pointer);
                             *this.read_pointer = new_pointer;
@@ -427,18 +423,14 @@ fn deliver_trim_gap(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     use std::sync::atomic::AtomicUsize;
 
-    use crate::loglet::LogletBase;
-    use crate::payload::Payload;
-    use crate::{
-        setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes, MaybeRecord, TrimGap,
-    };
-
-    use super::*;
-    use bytes::Bytes;
     use googletest::prelude::*;
+    use tokio_stream::StreamExt;
+    use tracing::info;
+    use tracing_test::traced_test;
 
     use restate_core::{
         metadata, task_center, MetadataKind, TargetVersion, TaskKind, TestCoreEnvBuilder,
@@ -447,13 +439,12 @@ mod tests {
     use restate_types::config::{CommonOptions, Configuration};
     use restate_types::live::{Constant, Live};
     use restate_types::logs::metadata::{new_single_node_loglet_params, ProviderKind};
+    use restate_types::logs::{KeyFilter, SequenceNumber};
     use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
     use restate_types::Versioned;
-    use tokio_stream::StreamExt;
-    use tracing::info;
-    use tracing_test::traced_test;
 
-    use restate_types::logs::{KeyFilter, SequenceNumber};
+    use crate::loglet::LogletBase;
+    use crate::{setup_panic_handler, BifrostAdmin, BifrostService, FindTailAttributes};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[traced_test]
@@ -499,11 +490,11 @@ mod tests {
                     let record = reader.next().await.expect("to never terminate")?;
                     let expected_lsn = Lsn::from(i);
                     counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    assert_eq!(expected_lsn, record.offset);
-                    assert!(reader.read_pointer() > record.offset);
-                    assert_eq!(
-                        Payload::new(format!("record{}", expected_lsn)).body(),
-                        record.record.into_payload_unchecked().body()
+                    assert_that!(record.sequence_number(), eq(expected_lsn));
+                    assert_that!(reader.read_pointer(), ge(record.sequence_number()));
+                    assert_that!(
+                        record.decode_unchecked::<String>(),
+                        eq(format!("record{}", expected_lsn))
                     );
                 }
                 Ok(())
@@ -517,7 +508,7 @@ mod tests {
 
             // append 5 records to the log
             for i in 1..=5 {
-                let lsn = appender.append_raw(format!("record{}", i)).await?;
+                let lsn = appender.append(format!("record{}", i)).await?;
                 info!(?lsn, "appended record");
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -530,7 +521,7 @@ mod tests {
 
             // write 5 more records.
             for i in 6..=10 {
-                appender.append_raw(format!("record{}", i)).await?;
+                appender.append(format!("record{}", i)).await?;
             }
 
             // reader has finished
@@ -576,7 +567,7 @@ mod tests {
 
                 // append 10 records [1..10]
                 for i in 1..=10 {
-                    let lsn = appender.append_raw("").await?;
+                    let lsn = appender.append("").await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
@@ -596,25 +587,12 @@ mod tests {
                     bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
 
                 let record = read_stream.next().await.unwrap()?;
-                assert_that!(
-                    record,
-                    pat!(LogEntry {
-                        offset: eq(Lsn::from(1)),
-                        record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                            to: eq(Lsn::from(5)),
-                        })))
-                    })
-                );
+                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
 
                 for lsn in 6..=7 {
                     let record = read_stream.next().await.unwrap()?;
-                    assert_that!(
-                        record,
-                        pat!(LogEntry {
-                            offset: eq(Lsn::from(lsn)),
-                            record: pat!(MaybeRecord::Data(_))
-                        })
-                    );
+                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                    assert!(record.is_data_record());
                 }
                 assert!(!read_stream.is_terminated());
                 assert_eq!(Lsn::from(8), read_stream.read_pointer());
@@ -633,34 +611,26 @@ mod tests {
 
                 // append lsns [11..20]
                 for i in 11..=20 {
-                    let lsn = appender.append_raw(format!("record{}", i)).await?;
+                    let lsn = appender.append(format!("record{}", i)).await?;
                     assert_eq!(Lsn::from(i), lsn);
                 }
 
                 // read stream should send a gap from 8->10
                 let record = read_stream.next().await.unwrap()?;
-                assert_that!(
-                    record,
-                    pat!(LogEntry {
-                        offset: eq(Lsn::from(8)),
-                        record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                            to: eq(Lsn::from(10)),
-                        })))
-                    })
-                );
+                assert_that!(record.sequence_number(), eq(Lsn::new(8)));
+                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
 
                 // read pointer is at 11
                 assert_eq!(Lsn::from(11), read_stream.read_pointer());
 
                 // read the rest of the records
                 for lsn in 11..=20 {
-                    let expected_body = Bytes::from(format!("record{}", lsn));
                     let record = read_stream.next().await.unwrap()?;
-                    assert_that!(record.offset, eq(Lsn::from(lsn)));
-                    assert!(record.record.is_data());
+                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                    assert!(record.is_data_record());
                     assert_that!(
-                        record.record.try_as_data_ref().unwrap().body(),
-                        eq(expected_body)
+                        record.decode_unchecked::<String>(),
+                        eq(format!("record{}", lsn))
                     );
                 }
                 // we are at tail. polling should return pending.
@@ -719,18 +689,18 @@ mod tests {
 
             // append 10 records [1..10]
             for i in 1..=10 {
-                let lsn = appender.append_raw(format!("segment-1-{}", i)).await?;
+                let lsn = appender.append(format!("segment-1-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
             // read 5 records.
             for i in 1..=5 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(reader.read_pointer(), record.offset.next());
-                assert_eq!(
-                    Payload::new(format!("segment-1-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("segment-1-{}", i))
                 );
             }
 
@@ -750,11 +720,11 @@ mod tests {
             println!("reading records at sealed loglet");
             for i in 6..=10 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(reader.read_pointer(), record.offset.next());
-                assert_eq!(
-                    Payload::new(format!("segment-1-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("segment-1-{}", i))
                 );
             }
 
@@ -810,7 +780,7 @@ mod tests {
 
             // append 5 more records into the new loglet.
             for i in 11..=15 {
-                let lsn = appender.append_raw(format!("segment-2-{}", i)).await?;
+                let lsn = appender.append(format!("segment-2-{}", i)).await?;
                 println!("appended record={}", lsn);
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -818,11 +788,11 @@ mod tests {
             // read stream should jump across segments.
             for i in 11..=15 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(reader.read_pointer(), record.offset.next());
-                assert_eq!(
-                    Payload::new(format!("segment-2-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("segment-2-{}", i))
                 );
             }
             // We are at tail. validate.
@@ -831,14 +801,14 @@ mod tests {
                 pat!(Poll::Pending)
             );
 
-            assert_eq!(Lsn::from(16), appender.append_raw("segment-2-1000").await?);
+            assert_eq!(
+                Lsn::from(16),
+                appender.append("segment-2-1000".to_owned()).await?
+            );
 
             let record = reader.next().await.expect("to stay alive")?;
-            assert_eq!(Lsn::from(16), record.offset);
-            assert_eq!(
-                Payload::new("segment-2-1000").body(),
-                record.record.into_payload_unchecked().body()
-            );
+            assert_that!(record.sequence_number(), eq(Lsn::new(16)));
+            assert_that!(record.decode_unchecked::<String>(), eq("segment-2-1000"));
 
             anyhow::Ok(())
         })
@@ -884,7 +854,7 @@ mod tests {
 
             // append 10 records [1..10]
             for i in 1..=10 {
-                let lsn = appender.append_raw(format!("segment-1-{}", i)).await?;
+                let lsn = appender.append(format!("segment-1-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
@@ -932,7 +902,7 @@ mod tests {
 
             // append 5 more records into the new loglet.
             for i in 11..=15 {
-                let lsn = appender.append_raw(format!("segment-2-{}", i)).await?;
+                let lsn = appender.append(format!("segment-2-{}", i)).await?;
                 info!(?lsn, "appended record");
                 assert_eq!(Lsn::from(i), lsn);
             }
@@ -944,22 +914,22 @@ mod tests {
             // first segment records
             for i in 3..=10 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(reader.read_pointer(), record.offset.next());
-                assert_eq!(
-                    Payload::new(format!("segment-1-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("segment-1-{}", i))
                 );
             }
 
             // first segment records
             for i in 11..=15 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(reader.read_pointer(), record.offset.next());
-                assert_eq!(
-                    Payload::new(format!("segment-2-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(reader.read_pointer(), eq(record.sequence_number().next()));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("segment-2-{}", i))
                 );
             }
 
@@ -1033,32 +1003,23 @@ mod tests {
 
             // append a few records
             for i in 10..=13 {
-                let lsn = appender.append_raw(format!("record-{}", i)).await?;
+                let lsn = appender.append(format!("record-{}", i)).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
             // first read should be the trim gap.
             let record = reader.next().await.expect("to stay alive")?;
-
-            assert_that!(
-                record,
-                pat!(LogEntry {
-                    offset: eq(Lsn::OLDEST),
-                    record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                        to: eq(Lsn::from(9)),
-                    })))
-                })
-            );
-
+            assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
+            assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(9))));
             assert_that!(reader.read_pointer(), eq(Lsn::from(10)));
 
             // read records
             for i in 10..=13 {
                 let record = reader.next().await.expect("to stay alive")?;
-                assert_eq!(Lsn::from(i), record.offset);
-                assert_eq!(
-                    Payload::new(format!("record-{}", i)).body(),
-                    record.record.into_payload_unchecked().body()
+                assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+                assert_that!(
+                    record.decode_unchecked::<String>(),
+                    eq(format!("record-{}", i))
                 );
             }
 

@@ -5525,6 +5525,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-test-util",
  "restate-types",
+ "rlimit",
  "rocksdb",
  "schemars",
  "serde",

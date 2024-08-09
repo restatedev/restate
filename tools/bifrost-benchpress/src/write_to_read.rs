@@ -10,15 +10,14 @@
 
 use std::time::{Duration, Instant};
 
-use bytes::{Buf, BufMut, BytesMut};
 use futures::StreamExt;
 use hdrhistogram::Histogram;
 use tracing::info;
 
+use restate_bifrost::LogEntry;
 use restate_bifrost::{Bifrost, Error as BifrostError};
-use restate_bifrost::{LogEntry, MaybeRecord};
 use restate_core::{cancellation_watcher, TaskCenter, TaskKind};
-use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, WithKeys};
 
 use crate::util::print_latencies;
 use crate::Arguments;
@@ -48,13 +47,10 @@ pub async fn run(
             let mut lag_latencies = Histogram::<u64>::new(3)?;
             let mut on_record = |record: Result<LogEntry, BifrostError>| {
                 if let Ok(record) = record {
-                    if let MaybeRecord::Data(data) = record.record {
-                        let latency_raw = data.into_body().get_u64();
-                        let latency = clock.scaled(latency_raw).elapsed();
-                        lag_latencies.record(latency.as_nanos() as u64)?;
-                    } else {
-                        panic!("Unexpected non-data record");
-                    }
+                    let data = record.try_decode::<String>().expect("data record")?;
+                    let latency_raw: u64 = data.parse()?;
+                    let latency = clock.scaled(latency_raw).elapsed();
+                    lag_latencies.record(latency.as_nanos() as u64)?;
                 } else {
                     panic!("Unexpected error");
                 }
@@ -94,9 +90,8 @@ pub async fn run(
             loop {
                 counter += 1;
                 let start = Instant::now();
-                let mut bytes = BytesMut::default();
-                bytes.put_u64(clock.raw());
-                if appender.append_raw(bytes.freeze()).await.is_err() {
+                let data = clock.raw().to_string().with_no_keys();
+                if appender.append(data).await.is_err() {
                     println!("Total records written: {}", counter);
                     print_latencies("append latency", append_latencies);
                     break;

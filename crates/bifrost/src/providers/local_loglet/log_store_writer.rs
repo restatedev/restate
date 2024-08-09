@@ -11,12 +11,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::StreamExt as FutureStreamExt;
 use metrics::histogram;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_types::storage::StorageCodec;
 use rocksdb::{BoundColumnFamily, WriteBatch};
-use smallvec::SmallVec;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt as TokioStreamExt;
@@ -25,31 +25,34 @@ use tracing::{debug, error, trace, warn};
 use restate_core::{cancellation_watcher, task_center, ShutdownError, TaskKind};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::logs::{Keys, SequenceNumber};
+use restate_types::logs::SequenceNumber;
 
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
-use super::log_store::{DATA_CF, METADATA_CF};
+use super::log_store::{LocalLogletHeader, LocalLogletPayload, DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
 use crate::loglet::{LogletOffset, OperationError};
-use crate::SMALL_BATCH_THRESHOLD_COUNT;
+use crate::ErasedInputRecord;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;
 type AckRecv = oneshot::Receiver<Result<(), OperationError>>;
 
+const RECORD_SIZE_GUESS: usize = 4_096; // Estimate 4KiB per record
+const INITIAL_SERDE_BUFFER_SIZE: usize = 16_384; // Initial capacity 16KiB
+
 pub struct LogStoreWriteCommand {
     loglet_id: u64,
-    data_updates: SmallVec<[DataUpdate; SMALL_BATCH_THRESHOLD_COUNT]>,
+    data_update: Option<DataUpdate>,
     log_state_updates: Option<LogStateUpdates>,
     ack: Option<Ack>,
 }
 
 enum DataUpdate {
-    PutRecord {
-        offset: LogletOffset,
-        data: Bytes,
+    PutRecords {
+        first_offset: LogletOffset,
+        payloads: Arc<[ErasedInputRecord]>,
     },
     TrimLog {
         old_trim_point: LogletOffset,
@@ -68,7 +71,7 @@ impl LogStoreWriter {
         Self {
             rocksdb,
             batch_acks_buf: Vec::default(),
-            buffer: BytesMut::default(),
+            buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
         }
     }
 
@@ -135,8 +138,6 @@ impl LogStoreWriter {
         self.batch_acks_buf.reserve(commands.len());
         let batch_acks = &mut self.batch_acks_buf;
         let buffer = &mut self.buffer;
-        buffer.clear();
-
         {
             let data_cf = self
                 .rocksdb
@@ -150,26 +151,30 @@ impl LogStoreWriter {
                 .expect("metadata cf exists");
 
             for command in commands {
-                for data_command in command.data_updates {
-                    match data_command {
-                        DataUpdate::PutRecord { offset, data } => Self::put_record(
-                            &data_cf,
-                            &mut write_batch,
-                            command.loglet_id,
-                            offset,
-                            data,
-                        ),
-                        DataUpdate::TrimLog {
-                            old_trim_point,
-                            new_trim_point,
-                        } => Self::trim_log(
-                            &data_cf,
-                            &mut write_batch,
-                            command.loglet_id,
-                            old_trim_point,
-                            new_trim_point,
-                        ),
-                    }
+                match command.data_update {
+                    Some(DataUpdate::PutRecords {
+                        first_offset,
+                        payloads,
+                    }) => Self::put_records(
+                        &data_cf,
+                        buffer,
+                        &mut write_batch,
+                        command.loglet_id,
+                        first_offset,
+                        payloads,
+                    ),
+                    Some(DataUpdate::TrimLog {
+                        old_trim_point,
+                        new_trim_point,
+                    }) => Self::trim_log(
+                        &data_cf,
+                        buffer,
+                        &mut write_batch,
+                        command.loglet_id,
+                        old_trim_point,
+                        new_trim_point,
+                    ),
+                    None => {}
                 }
 
                 // todo: future optimization. pre-merge all updates within a batch before writing
@@ -202,7 +207,7 @@ impl LogStoreWriter {
         updates: LogStateUpdates,
         buffer: &mut BytesMut,
     ) {
-        updates.encode(buffer).expect("encode");
+        let buffer = updates.encode_and_split(buffer).expect("encode");
         write_batch.merge_cf(
             metadata_cf,
             MetadataKey::new(loglet_id, MetadataKind::LogState).to_bytes(),
@@ -210,33 +215,60 @@ impl LogStoreWriter {
         );
     }
 
-    fn put_record(
+    fn put_records(
         data_cf: &Arc<BoundColumnFamily>,
+        serde_buffer: &mut BytesMut,
         write_batch: &mut WriteBatch,
         id: u64,
-        offset: LogletOffset,
-        data: Bytes,
+        mut offset: LogletOffset,
+        payloads: Arc<[ErasedInputRecord]>,
     ) {
-        let key = RecordKey::new(id, offset);
-        write_batch.put_cf(data_cf, &key.to_bytes(), data);
+        serde_buffer.reserve(payloads.len() * RECORD_SIZE_GUESS);
+        for payload in payloads.iter() {
+            let key_bytes = RecordKey::new(id, offset).encode_and_split(serde_buffer);
+            // todo(asoli) store keys
+            let _keys = payload.body.record_keys();
+            let body_bytes = StorageCodec::encode_and_split(&*payload.body, serde_buffer)
+                .expect("record serde is infallible");
+
+            // todo (asoli) consider making LocalLogletPayload zero-copy serialization.
+            let final_payload = LocalLogletPayload {
+                header: LocalLogletHeader {
+                    created_at: payload.header.created_at,
+                },
+                body: body_bytes.into(),
+            };
+
+            let value_bytes = StorageCodec::encode_and_split(&final_payload, serde_buffer)
+                .expect("record serde is infallible");
+            write_batch.put_cf(data_cf, key_bytes, value_bytes);
+            // advance the offset for the next record
+            offset = offset.next();
+        }
     }
 
     fn trim_log(
         data_cf: &Arc<BoundColumnFamily>,
+        serde_buffer: &mut BytesMut,
         write_batch: &mut WriteBatch,
         id: u64,
         old_trim_point: LogletOffset,
         new_trim_point: LogletOffset,
     ) {
         // the old trim point has already been removed on the previous trim operation
-        let from = RecordKey::new(id, old_trim_point.next());
+        let from_bytes = RecordKey::new(id, old_trim_point.next()).encode_and_split(serde_buffer);
         // the upper bound is exclusive for range deletions, therefore we need to increase it
-        let to = RecordKey::new(id, new_trim_point.next());
+        let to_bytes = RecordKey::new(id, new_trim_point.next()).encode_and_split(serde_buffer);
 
-        trace!("Trim log range: [{from:?}, {to:?})");
+        trace!(
+            loglet_id = id,
+            "Trim log range: [{}, {})",
+            old_trim_point.next(),
+            new_trim_point.next()
+        );
         // We probably need to measure whether range delete is better than single deletes for
         // multiple trim operations
-        write_batch.delete_range_cf(data_cf, &from.to_bytes(), &to.to_bytes());
+        write_batch.delete_range_cf(data_cf, from_bytes, to_bytes);
     }
 
     async fn commit(&mut self, opts: &LocalLogletOptions, write_batch: WriteBatch) {
@@ -286,23 +318,12 @@ pub struct RocksDbLogWriterHandle {
 }
 
 impl RocksDbLogWriterHandle {
-    pub async fn enqueue_put_record(
-        &self,
-        loglet_id: u64,
-        offset: LogletOffset,
-        data: Bytes,
-        keys: Keys,
-    ) -> Result<AckRecv, ShutdownError> {
-        self.enqueue_put_records(loglet_id, offset, &[(data, keys)])
-            .await
-    }
-
     pub async fn enqueue_seal(&self, loglet_id: u64) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
         let log_state_updates = Some(LogStateUpdates::default().seal());
         self.send_command(LogStoreWriteCommand {
             loglet_id,
-            data_updates: Default::default(),
+            data_update: None,
             log_state_updates,
             ack: Some(ack),
         })
@@ -313,25 +334,21 @@ impl RocksDbLogWriterHandle {
     pub async fn enqueue_put_records(
         &self,
         loglet_id: u64,
-        mut start_offset: LogletOffset,
-        records: &[(Bytes, Keys)],
+        start_offset: LogletOffset,
+        payloads: Arc<[ErasedInputRecord]>,
     ) -> Result<AckRecv, ShutdownError> {
         let (ack, receiver) = oneshot::channel();
-        let mut data_updates = SmallVec::with_capacity(records.len());
-        for record in records {
-            data_updates.push(DataUpdate::PutRecord {
-                offset: start_offset,
-                data: record.0.clone(),
-            });
-            start_offset = start_offset.next();
-        }
+        let last_offset_in_batch = (start_offset + payloads.len()).prev();
+        let data_update = DataUpdate::PutRecords {
+            first_offset: start_offset,
+            payloads,
+        };
 
-        let data_updates = data_updates;
         let log_state_updates =
-            Some(LogStateUpdates::default().update_release_pointer(start_offset.prev()));
+            Some(LogStateUpdates::default().update_release_pointer(last_offset_in_batch));
         self.send_command(LogStoreWriteCommand {
             loglet_id,
-            data_updates,
+            data_update: Some(data_update),
             log_state_updates,
             ack: Some(ack),
         })
@@ -345,16 +362,15 @@ impl RocksDbLogWriterHandle {
         old_trim_point: LogletOffset,
         new_trim_point: LogletOffset,
     ) -> Result<(), ShutdownError> {
-        let mut data_updates = SmallVec::with_capacity(1);
-        data_updates.push(DataUpdate::TrimLog {
+        let data_update = DataUpdate::TrimLog {
             old_trim_point,
             new_trim_point,
-        });
+        };
         let log_state_updates = Some(LogStateUpdates::default().update_trim_point(new_trim_point));
 
         self.send_command(LogStoreWriteCommand {
             loglet_id,
-            data_updates,
+            data_update: Some(data_update),
             log_state_updates,
             ack: None,
         })

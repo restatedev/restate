@@ -12,13 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use bytes::BytesMut;
 use enum_map::EnumMap;
 
 use restate_core::{Metadata, MetadataKind, TargetVersion};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
-use restate_types::logs::{HasRecordKeys, KeyFilter, LogId, Lsn, SequenceNumber};
-use restate_types::storage::StorageEncode;
+use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::Version;
 
 use crate::appender::Appender;
@@ -26,7 +24,9 @@ use crate::background_appender::BackgroundAppender;
 use crate::loglet::{LogletBase, LogletProvider};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::WatchdogSender;
-use crate::{Error, FindTailAttributes, LogReadStream, Result, TailState};
+use crate::{
+    AppendableRecord, Error, FindTailAttributes, InputRecord, LogReadStream, Result, TailState,
+};
 
 /// Bifrost is Restate's durable interconnect system
 ///
@@ -93,9 +93,9 @@ impl Bifrost {
     ///
     /// It's recommended to use the [`Appender`] interface. Use [`Self::create_appender`]
     /// and reuse this appender to create a sequential write stream to the virtual log.
-    pub async fn append<T>(&self, log_id: LogId, body: T) -> Result<Lsn>
+    pub async fn append<T>(&self, log_id: LogId, body: impl Into<InputRecord<T>>) -> Result<Lsn>
     where
-        T: HasRecordKeys + StorageEncode,
+        T: AppendableRecord,
     {
         self.inner.fail_if_shutting_down()?;
         self.inner.append(log_id, body).await
@@ -104,10 +104,11 @@ impl Bifrost {
     /// Appends a batch of records to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the first
     /// record in this batch. This will only return after all records have been stored.
-    pub async fn append_batch<T>(&self, log_id: LogId, batch: &[T]) -> Result<Lsn>
-    where
-        T: HasRecordKeys + StorageEncode,
-    {
+    pub async fn append_batch<T>(
+        &self,
+        log_id: LogId,
+        batch: Vec<impl Into<InputRecord<T>>>,
+    ) -> Result<Lsn> {
         self.inner.fail_if_shutting_down()?;
         self.inner.append_batch(log_id, batch).await
     }
@@ -174,25 +175,13 @@ impl Bifrost {
         max_batch_size: usize,
     ) -> Result<BackgroundAppender<T>>
     where
-        T: HasRecordKeys + StorageEncode + 'static,
+        T: AppendableRecord,
     {
         Ok(BackgroundAppender::new(
             self.create_appender(log_id)?,
             queue_capacity,
             max_batch_size,
         ))
-    }
-
-    /// Like [`Self::create_appender()`] except that it uses the supplied buffer space for
-    /// serialization.
-    pub fn create_appender_with_serde_buffer(
-        &self,
-        log_id: LogId,
-        buf: BytesMut,
-    ) -> Result<Appender> {
-        self.inner.fail_if_shutting_down()?;
-        self.inner.check_log_id(log_id)?;
-        Ok(Appender::with_serde_buffer(log_id, self.inner.clone(), buf))
     }
 
     /// The tail is *the first unwritten LSN* in the log
@@ -284,17 +273,22 @@ impl BifrostInner {
 
     /// Appends a single record to a log. The log id must exist, otherwise the
     /// operation fails with [`Error::UnknownLogId`]
-    pub async fn append<T>(self: &Arc<Self>, log_id: LogId, record: T) -> Result<Lsn>
+    pub async fn append<T>(
+        self: &Arc<Self>,
+        log_id: LogId,
+        record: impl Into<InputRecord<T>>,
+    ) -> Result<Lsn>
     where
-        T: HasRecordKeys + StorageEncode,
+        T: AppendableRecord,
     {
         Appender::new(log_id, Arc::clone(self)).append(record).await
     }
 
-    pub async fn append_batch<T>(self: &Arc<Self>, log_id: LogId, batch: &[T]) -> Result<Lsn>
-    where
-        T: HasRecordKeys + StorageEncode,
-    {
+    pub async fn append_batch<T>(
+        self: &Arc<Self>,
+        log_id: LogId,
+        batch: Vec<impl Into<InputRecord<T>>>,
+    ) -> Result<Lsn> {
         Appender::new(log_id, Arc::clone(self))
             .append_batch(batch)
             .await
@@ -500,7 +494,6 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
-    use bytes::Bytes;
     use googletest::prelude::*;
     use test_log::test;
     use tokio::time::Duration;
@@ -519,7 +512,7 @@ mod tests {
     use restate_types::Versioned;
 
     use crate::providers::memory_loglet::{self};
-    use crate::{BifrostAdmin, LogEntry, MaybeRecord, TrimGap};
+    use crate::BifrostAdmin;
 
     #[tokio::test]
     #[traced_test]
@@ -543,7 +536,7 @@ mod tests {
             let mut max_lsn = Lsn::INVALID;
             for i in 1..=5 {
                 // Append a record to memory
-                let lsn = appender_0.append_raw("").await?;
+                let lsn = appender_0.append("").await?;
                 info!(%lsn, "Appended record to log");
                 assert_eq!(Lsn::from(i), lsn);
                 max_lsn = lsn;
@@ -560,7 +553,7 @@ mod tests {
             let mut second_appender_0 = cloned_bifrost.create_appender(LogId::new(0))?;
             for _ in 1..=5 {
                 // Append a record to memory
-                let lsn = second_appender_0.append_raw("").await?;
+                let lsn = second_appender_0.append("").await?;
                 info!(%lsn, "Appended record to log");
                 assert_eq!(max_lsn + Lsn::from(1), lsn);
                 max_lsn = lsn;
@@ -569,16 +562,16 @@ mod tests {
             // Ensure original clone writes to the same underlying loglet.
             let lsn = clean_bifrost_clone
                 .create_appender(LogId::from(0))?
-                .append_raw("")
+                .append("")
                 .await?;
             assert_eq!(max_lsn + Lsn::from(1), lsn);
             max_lsn = lsn;
 
             // Writes to another log don't impact original log
-            let lsn = appender_3.append_raw("").await?;
+            let lsn = appender_3.append("").await?;
             assert_eq!(Lsn::from(1), lsn);
 
-            let lsn = appender_0.append_raw("").await?;
+            let lsn = appender_0.append("").await?;
             assert_eq!(max_lsn + Lsn::from(1), lsn);
             max_lsn = lsn;
 
@@ -590,7 +583,7 @@ mod tests {
             // Initiate shutdown
             task_center().shutdown_node("completed", 0).await;
             // appends cannot succeed after shutdown
-            let res = appender_0.append_raw("").await;
+            let res = appender_0.append("").await;
             assert!(matches!(res, Err(Error::Shutdown(_))));
             // Validate the watchdog has called the provider::start() function.
             assert!(logs_contain("Shutting down in-memory loglet provider"));
@@ -612,10 +605,7 @@ mod tests {
             let bifrost = Bifrost::init_with_factory(metadata(), factory).await;
 
             let start = tokio::time::Instant::now();
-            let lsn = bifrost
-                .create_appender(LogId::from(0))?
-                .append_raw("")
-                .await?;
+            let lsn = bifrost.create_appender(LogId::from(0))?.append("").await?;
             assert_eq!(Lsn::from(1), lsn);
             // The append was properly delayed
             assert_eq!(delay, start.elapsed());
@@ -656,7 +646,7 @@ mod tests {
                 let mut appender = bifrost.create_appender(LOG_ID)?;
                 // append 10 records
                 for _ in 1..=10 {
-                    appender.append_raw("").await?;
+                    appender.append("").await?;
                 }
 
                 bifrost_admin.trim(LOG_ID, Lsn::from(5)).await?;
@@ -670,27 +660,16 @@ mod tests {
 
                 // 5 itself is trimmed
                 for lsn in 1..=5 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
-                    assert_that!(
-                        record,
-                        pat!(Some(pat!(LogEntry {
-                            offset: eq(Lsn::from(lsn)),
-                            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
-                                to: eq(Lsn::from(5)),
-                            })))
-                        })))
-                    )
+                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+
+                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                    assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(5))));
                 }
 
                 for lsn in 6..=10 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
-                    assert_that!(
-                        record,
-                        pat!(Some(pat!(LogEntry {
-                            offset: eq(Lsn::from(lsn)),
-                            record: pat!(MaybeRecord::Data(_))
-                        })))
-                    );
+                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                    assert!(record.is_data_record());
                 }
 
                 // trimming beyond the release point will fall back to the release point
@@ -707,23 +686,18 @@ mod tests {
                 assert_eq!(Lsn::from(10), new_trim_point);
 
                 let record = bifrost.read(LOG_ID, Lsn::from(10)).await?.unwrap();
-                assert!(record.record.is_trim_gap());
-                assert_eq!(Lsn::from(10), record.record.try_as_trim_gap().unwrap().to);
+                assert!(record.is_trim_gap());
+                assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
 
                 // Add 10 more records
                 for _ in 0..10 {
-                    appender.append_raw("").await?;
+                    appender.append("").await?;
                 }
 
                 for lsn in 11..20 {
-                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?;
-                    assert_that!(
-                        record,
-                        pat!(Some(pat!(LogEntry {
-                            offset: eq(Lsn::from(lsn)),
-                            record: pat!(MaybeRecord::Data(_))
-                        })))
-                    );
+                    let record = bifrost.read(LOG_ID, Lsn::from(lsn)).await?.unwrap();
+                    assert_that!(record.sequence_number(), eq(Lsn::new(lsn)));
+                    assert!(record.is_data_record());
                 }
 
                 Ok(())
@@ -754,7 +728,7 @@ mod tests {
             // Lsns [1..5]
             for i in 1..=5 {
                 // Append a record to memory
-                let lsn = appender.append_raw(format!("segment-1-{i}")).await?;
+                let lsn = appender.append(format!("segment-1-{i}")).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
@@ -848,7 +822,7 @@ mod tests {
             // Lsns [5..7]
             for i in 5..=7 {
                 // Append a record to memory
-                let lsn = appender.append_raw(format!("segment-2-{i}")).await?;
+                let lsn = appender.append(format!("segment-2-{i}")).await?;
                 assert_eq!(Lsn::from(i), lsn);
             }
 
@@ -881,47 +855,47 @@ mod tests {
             );
 
             // Reading the log. (OLDEST)
-            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
-            assert_eq!(Lsn::from(1), offset);
-            assert!(record.is_data());
-            assert_eq!(
-                &Bytes::from_static(b"segment-1-1"),
-                record.payload().unwrap().body(),
+            let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::new(1)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("segment-1-1".to_owned())
             );
 
-            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
-            assert_eq!(Lsn::from(2), offset);
-            assert!(record.is_data());
-            assert_eq!(
-                &Bytes::from_static(b"segment-1-2"),
-                record.payload().unwrap().body(),
+            let record = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::new(2)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("segment-1-2".to_owned())
             );
 
             // border of segment 1
-            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(4)).await?.unwrap();
-            assert_eq!(Lsn::from(4), offset);
-            assert!(record.is_data());
-            assert_eq!(
-                &Bytes::from_static(b"segment-1-4"),
-                record.payload().unwrap().body(),
+            let record = bifrost.read(LOG_ID, Lsn::new(4)).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::new(4)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("segment-1-4".to_owned())
             );
 
             // start of segment 2
-            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
-            assert_eq!(Lsn::from(5), offset);
-            assert!(record.is_data());
-            assert_eq!(
-                &Bytes::from_static(b"segment-2-5"),
-                record.payload().unwrap().body(),
+            let record = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::new(5)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("segment-2-5".to_owned())
             );
 
             // last record
-            let LogEntry { offset, record } = bifrost.read(LOG_ID, Lsn::new(7)).await?.unwrap();
-            assert_eq!(Lsn::from(7), offset);
-            assert!(record.is_data());
-            assert_eq!(
-                &Bytes::from_static(b"segment-2-7"),
-                record.payload().unwrap().body(),
+            let record = bifrost.read(LOG_ID, Lsn::new(7)).await?.unwrap();
+            assert_that!(record.sequence_number(), eq(Lsn::new(7)));
+            assert!(record.is_data_record());
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq("segment-2-7".to_owned())
             );
 
             // 8 doesn't exist yet.
@@ -968,7 +942,7 @@ mod tests {
                         i += 1;
                         if i % 2 == 0 {
                             // append individual record
-                            let lsn = appender.append_raw(format!("record{}", i)).await?;
+                            let lsn = appender.append(format!("record{}", i)).await?;
                             println!("Appended {}", lsn);
                         } else {
                             // append batch
@@ -976,7 +950,7 @@ mod tests {
                             for j in 1..=10 {
                                 payloads.push(format!("record-in-batch{}-{}", i, j));
                             }
-                            let lsn = appender.append_raw_batch(payloads).await?;
+                            let lsn = appender.append_batch(payloads).await?;
                             println!("Appended batch {}", lsn);
                         }
                         append_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
