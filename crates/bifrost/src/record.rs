@@ -12,55 +12,59 @@ use bytes::Bytes;
 
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::storage::{StorageCodec, StorageDecodeError};
+use restate_types::time::NanosSinceEpoch;
+use serde::{Deserialize, Serialize};
 
 use crate::payload::Payload;
 use crate::LsnExt;
 
 /// A single entry in the log.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LogRecord<S: SequenceNumber = Lsn, D = Payload> {
+pub struct LogEntry<S: SequenceNumber = Lsn, D = Payload> {
     pub offset: S,
-    pub record: Record<S, D>,
+    pub record: MaybeRecord<S, D>,
 }
 
-impl<S: SequenceNumber, D> LogRecord<S, D> {
+impl<S: SequenceNumber, D> LogEntry<S, D> {
     pub(crate) fn new_data(offset: S, payload: D) -> Self {
         Self {
             offset,
-            record: Record::Data(payload),
+            record: MaybeRecord::Data(payload),
         }
     }
 
     /// `to` is inclusive
     pub(crate) fn new_trim_gap(offset: S, to: S) -> Self {
-        LogRecord {
+        LogEntry {
             offset,
-            record: Record::TrimGap(TrimGap { to }),
+            record: MaybeRecord::TrimGap(TrimGap { to }),
         }
     }
 
-    pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogRecord<Lsn, D> {
+    pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogEntry<Lsn, D> {
         let record = match self.record {
-            Record::TrimGap(TrimGap { to }) => Record::TrimGap(TrimGap {
+            MaybeRecord::TrimGap(TrimGap { to }) => MaybeRecord::TrimGap(TrimGap {
                 to: base_lsn.offset_by(to),
             }),
-            Record::Data(payload) => Record::Data(payload),
+            MaybeRecord::Data(payload) => MaybeRecord::Data(payload),
         };
 
-        LogRecord {
+        LogEntry {
             offset: base_lsn.offset_by(self.offset),
             record,
         }
     }
 }
 
-impl<S: SequenceNumber> LogRecord<S, Bytes> {
-    pub(crate) fn decode(self) -> Result<LogRecord<S, Payload>, StorageDecodeError> {
+impl<S: SequenceNumber> LogEntry<S, Bytes> {
+    pub(crate) fn decode(self) -> Result<LogEntry<S, Payload>, StorageDecodeError> {
         let record = match self.record {
-            Record::Data(mut payload) => Record::Data(StorageCodec::decode(&mut payload)?),
-            Record::TrimGap(t) => Record::TrimGap(t),
+            MaybeRecord::Data(mut payload) => {
+                MaybeRecord::Data(StorageCodec::decode(&mut payload)?)
+            }
+            MaybeRecord::TrimGap(t) => MaybeRecord::TrimGap(t),
         };
-        Ok(LogRecord {
+        Ok(LogEntry {
             offset: self.offset,
             record,
         })
@@ -68,25 +72,25 @@ impl<S: SequenceNumber> LogRecord<S, Bytes> {
 }
 
 #[derive(Debug, Clone, PartialEq, strum_macros::EnumIs, strum_macros::EnumTryAs)]
-pub enum Record<S: SequenceNumber = Lsn, D = Payload> {
+pub enum MaybeRecord<S: SequenceNumber = Lsn, D = Payload> {
     TrimGap(TrimGap<S>),
     Data(D),
 }
 
-impl<S: SequenceNumber, D> Record<S, D> {
+impl<S: SequenceNumber, D> MaybeRecord<S, D> {
     pub fn payload(&self) -> Option<&D> {
         match self {
-            Record::Data(payload) => Some(payload),
+            MaybeRecord::Data(payload) => Some(payload),
             _ => None,
         }
     }
 }
 
 #[cfg(any(test, feature = "test-util"))]
-impl<S: SequenceNumber> Record<S, Payload> {
+impl<S: SequenceNumber> MaybeRecord<S, Payload> {
     pub fn into_payload_unchecked(self) -> Payload {
         match self {
-            Record::Data(payload) => payload,
+            MaybeRecord::Data(payload) => payload,
             _ => panic!("not a data record"),
         }
     }
@@ -96,4 +100,17 @@ impl<S: SequenceNumber> Record<S, Payload> {
 pub struct TrimGap<S: SequenceNumber> {
     /// to is inclusive
     pub to: S,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Header {
+    pub created_at: NanosSinceEpoch,
+}
+
+impl Default for Header {
+    fn default() -> Self {
+        Self {
+            created_at: NanosSinceEpoch::now(),
+        }
+    }
 }
