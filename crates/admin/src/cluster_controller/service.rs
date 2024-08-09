@@ -60,8 +60,8 @@ pub struct Service<N> {
     configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
     metadata_store_client: MetadataStoreClient,
-    heartbeat_interval: time::Interval,
-    log_trim_interval: Option<time::Interval>,
+    heartbeat_interval: Interval,
+    log_trim_interval: Option<Interval>,
     log_trim_threshold: Lsn,
 }
 

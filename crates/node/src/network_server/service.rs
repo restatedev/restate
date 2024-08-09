@@ -19,6 +19,7 @@ use tower_http::trace::TraceLayer;
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvcServer;
 use restate_admin::cluster_controller::ClusterControllerHandle;
+use restate_bifrost::Bifrost;
 use restate_core::network::net_util::run_hyper_server;
 use restate_core::network::protobuf::node_svc::node_svc_server::NodeSvcServer;
 use restate_core::network::ConnectionManager;
@@ -144,16 +145,19 @@ impl WorkerDependencies {
 pub struct AdminDependencies {
     pub cluster_controller_handle: ClusterControllerHandle,
     pub metadata_store_client: MetadataStoreClient,
+    pub bifrost_handle: Bifrost,
 }
 
 impl AdminDependencies {
     pub fn new(
         cluster_controller_handle: ClusterControllerHandle,
         metadata_store_client: MetadataStoreClient,
+        bifrost_handle: Bifrost,
     ) -> Self {
         AdminDependencies {
             cluster_controller_handle,
             metadata_store_client,
+            bifrost_handle,
         }
     }
 }

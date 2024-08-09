@@ -18,13 +18,41 @@ package restate.cluster_ctrl;
 service ClusterCtrlSvc {
   rpc GetClusterState(ClusterStateRequest) returns (ClusterStateResponse);
 
+  rpc ListLogs(ListLogsRequest) returns (ListLogsResponse);
+
+  rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
+
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 }
 
-message ClusterStateRequest {}
+message ClusterStateRequest { }
 
 message ClusterStateResponse {
   restate.cluster.ClusterState cluster_state = 1;
+}
+
+message ListLogsRequest { }
+
+message ListLogsResponse {
+  // Serialized restate_types::logs::metadata::Logs
+  bytes data = 1;
+}
+
+enum TailState {
+  TailState_UNKNOWN = 0;
+  OPEN = 1;
+  SEALED = 2;
+}
+
+message DescribeLogRequest {
+  uint64 log_id = 1;
+}
+
+message DescribeLogResponse {
+  // Serialized restate_types::logs::metadata::Chain
+  bytes chain = 1;
+  TailState tail_state = 2;
+  uint64 tail_offset = 3;
 }
 
 message TrimLogRequest {

@@ -93,7 +93,7 @@ impl<Offset: SequenceNumber> TailState<Offset> {
     ///
     /// Only applies updates to the value according to the following rules:
     ///   - Offsets can only move forward.
-    ///   - Tail cannot be see unsealed after seal.
+    ///   - Tail cannot be unsealed once sealed.
     ///
     /// Returns true if the state was updated
     pub fn combine(&mut self, sealed: bool, offset: Offset) -> bool {

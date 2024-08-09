@@ -30,6 +30,8 @@ pub struct ClusterState {
     pub nodes_config_version: Version,
     #[proto(required)]
     pub partition_table_version: Version,
+    #[proto(required)]
+    pub logs_metadata_version: Version,
     pub nodes: BTreeMap<PlainNodeId, NodeState>,
 }
 
