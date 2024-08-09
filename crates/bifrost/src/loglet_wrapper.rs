@@ -14,18 +14,18 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{KeyFilter, Keys, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+use tracing::instrument;
 
 use crate::loglet::{
     AppendError, Loglet, LogletBase, LogletOffset, LogletReadStream, OperationError,
     SendableLogletReadStream,
 };
-use crate::{LogEntry, LsnExt};
+use crate::{ErasedInputRecord, LogEntry, LsnExt};
 use crate::{Result, TailState};
 
 #[cfg(any(test, feature = "test-util"))]
@@ -110,7 +110,7 @@ impl LogletWrapper {
     /// defined for the loglet.
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read(&self, from: Lsn) -> Result<LogEntry<Lsn, Bytes>, OperationError> {
+    pub async fn read(&self, from: Lsn) -> Result<LogEntry<Lsn>, OperationError> {
         let mut stream = self
             .clone()
             .create_wrapped_read_stream(KeyFilter::Any, from)
@@ -128,10 +128,7 @@ impl LogletWrapper {
 
     #[allow(unused)]
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn read_opt(
-        &self,
-        from: Lsn,
-    ) -> Result<Option<LogEntry<Lsn, Bytes>>, OperationError> {
+    pub async fn read_opt(&self, from: Lsn) -> Result<Option<LogEntry<Lsn>>, OperationError> {
         let tail_lsn = match self.tail_lsn {
             Some(tail) => tail,
             None => self.find_tail().await?.offset(),
@@ -164,12 +161,22 @@ impl LogletBase for LogletWrapper {
         unreachable!("create_read_stream on LogletWrapper should never be used directly")
     }
 
-    async fn append(&self, data: &Bytes, keys: &Keys) -> Result<Lsn, AppendError> {
+    #[instrument(
+        level = "trace",
+        skip(self),
+        ret,
+        fields(
+            segment_index = %self.segment_index,
+            loglet = ?self.loglet,
+        )
+    )]
+    async fn append(&self, record: ErasedInputRecord) -> Result<Lsn, AppendError> {
+        //tracing::warn!("APPEND");
         if self.tail_lsn.is_some() {
             return Err(AppendError::Sealed);
         }
 
-        let offset = self.loglet.append(data, keys).await?;
+        let offset = self.loglet.append(record).await?;
         // Return the LSN given the loglet offset.
         Ok(self.base_lsn.offset_by(offset))
     }
@@ -185,7 +192,17 @@ impl LogletBase for LogletWrapper {
             .boxed()
     }
 
-    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<Lsn, AppendError> {
+    #[instrument(
+        level = "trace",
+        skip(self, payloads),
+        ret,
+        fields(
+            segment_index = %self.segment_index,
+            loglet = ?self.loglet,
+            count = payloads.len(),
+        )
+    )]
+    async fn append_batch(&self, payloads: Arc<[ErasedInputRecord]>) -> Result<Lsn, AppendError> {
         if self.tail_lsn.is_some() {
             return Err(AppendError::Sealed);
         }
@@ -278,7 +295,7 @@ impl LogletReadStream<Lsn> for LogletReadStreamWrapper {
 }
 
 impl Stream for LogletReadStreamWrapper {
-    type Item = Result<LogEntry<Lsn, Bytes>, OperationError>;
+    type Item = Result<LogEntry<Lsn>, OperationError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,

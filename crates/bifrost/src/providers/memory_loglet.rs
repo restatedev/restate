@@ -16,15 +16,16 @@ use std::task::Poll;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::BytesMut;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
+use restate_types::storage::StorageCodec;
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{KeyFilter, Keys, LogId, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, SequenceNumber};
 
 use crate::loglet::util::TailOffsetWatch;
 use crate::loglet::{
@@ -32,6 +33,7 @@ use crate::loglet::{
     LogletReadStream, OperationError, SendableLogletReadStream,
 };
 use crate::Result;
+use crate::{ErasedInputRecord, Record};
 use crate::{LogEntry, TailState};
 
 #[derive(Default)]
@@ -109,7 +111,7 @@ impl LogletProvider for MemoryLogletProvider {
 pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
-    log: Mutex<Vec<Bytes>>,
+    log: Mutex<Vec<ErasedInputRecord>>,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU64,
     last_committed_offset: AtomicU64,
@@ -129,11 +131,6 @@ impl MemoryLoglet {
             sealed: AtomicBool::new(false),
             tail_watch: TailOffsetWatch::new(TailState::new(false, LogletOffset::OLDEST)),
         })
-    }
-
-    fn index_to_offset(&self, index: usize) -> LogletOffset {
-        let offset = self.trim_point_offset.load(Ordering::Relaxed);
-        LogletOffset::from(offset + 1 + index as u64)
     }
 
     fn saturating_offset_to_index(&self, offset: LogletOffset) -> usize {
@@ -157,7 +154,7 @@ impl MemoryLoglet {
     fn read_from(
         &self,
         from_offset: LogletOffset,
-    ) -> Result<Option<LogEntry<LogletOffset, Bytes>>, OperationError> {
+    ) -> Result<Option<LogEntry<LogletOffset>>, OperationError> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
         let head_offset = trim_point.next();
@@ -172,9 +169,16 @@ impl MemoryLoglet {
             Ok(None)
         } else {
             let index = self.saturating_offset_to_index(from_offset);
+            // todo(asoli): pass key as key extractor
+            let erased_record = guard.get(index).expect("reading untrimmed data").clone();
+            // todo(asoli). ABSOLUTELY TEMPORARY
+            //
+            let mut buf = BytesMut::new();
+            let value_buf =
+                StorageCodec::encode_and_split(&*erased_record.body, &mut buf).expect("infallible");
             Ok(Some(LogEntry::new_data(
                 from_offset,
-                guard.get(index).expect("reading untrimmed data").clone(),
+                Record::from_parts(erased_record.header, value_buf),
             )))
         }
     }
@@ -232,7 +236,7 @@ impl LogletReadStream<LogletOffset> for MemoryReadStream {
 }
 
 impl Stream for MemoryReadStream {
-    type Item = Result<LogEntry<LogletOffset, Bytes>, OperationError>;
+    type Item = Result<LogEntry<LogletOffset>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -291,11 +295,11 @@ impl Stream for MemoryReadStream {
                 .loglet
                 .read_from(self.read_pointer)?
                 .expect("read_from reads after commit offset");
-            if next_record.record.is_trim_gap() {
-                self.read_pointer = next_record.record.try_as_trim_gap_ref().unwrap().to.next();
-            } else {
-                self.read_pointer = next_record.offset.next();
-            }
+
+            self.read_pointer = next_record
+                .trim_gap_to_sequence_number()
+                .unwrap_or(next_record.sequence_number())
+                .next();
             return Poll::Ready(Some(Ok(next_record)));
         }
     }
@@ -320,41 +324,28 @@ impl LogletBase for MemoryLoglet {
         Box::pin(self.tail_watch.to_stream())
     }
 
-    async fn append(&self, payload: &Bytes, _keys: &Keys) -> Result<LogletOffset, AppendError> {
+    async fn append_batch(
+        &self,
+        payloads: Arc<[ErasedInputRecord]>,
+    ) -> Result<LogletOffset, AppendError> {
         let mut log = self.log.lock().unwrap();
         if self.sealed.load(Ordering::Relaxed) {
             return Err(AppendError::Sealed);
         }
-        let offset = self.index_to_offset(log.len());
-        debug!(
-            "Appending record to in-memory loglet {:?} at offset {}",
-            self.params, offset,
-        );
-        log.push(payload.clone());
-        // mark as committed immediately.
-        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
-        self.advance_commit_offset(offset);
-        Ok(offset)
-    }
-
-    async fn append_batch(&self, payloads: &[(Bytes, Keys)]) -> Result<LogletOffset, AppendError> {
-        let mut log = self.log.lock().unwrap();
-        if self.sealed.load(Ordering::Relaxed) {
-            return Err(AppendError::Sealed);
-        }
-        let offset = LogletOffset(self.last_committed_offset.load(Ordering::Relaxed)).next();
-        let first_offset = offset;
-        let num_payloads = payloads.len();
-        for payload in payloads {
+        let mut last_committed_offset =
+            LogletOffset(self.last_committed_offset.load(Ordering::Relaxed));
+        log.reserve(payloads.len());
+        for payload in payloads.iter() {
+            last_committed_offset = last_committed_offset.next();
             debug!(
                 "Appending record to in-memory loglet {:?} at offset {}",
-                self.params, offset,
+                self.params, last_committed_offset
             );
-            log.push(payload.0.clone());
+            log.push(payload.clone());
         }
         // mark as committed immediately.
-        self.advance_commit_offset(first_offset + num_payloads);
-        Ok(first_offset)
+        self.advance_commit_offset(last_committed_offset);
+        Ok(last_committed_offset)
     }
 
     async fn find_tail(&self) -> Result<TailState<LogletOffset>, OperationError> {

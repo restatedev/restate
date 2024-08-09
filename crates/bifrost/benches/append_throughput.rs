@@ -19,6 +19,7 @@ use restate_rocksdb::{DbName, RocksDbManager};
 use restate_types::config::{
     BifrostOptionsBuilder, CommonOptionsBuilder, ConfigurationBuilder, LocalLogletOptionsBuilder,
 };
+use restate_types::live::Live;
 use restate_types::logs::LogId;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -33,7 +34,7 @@ async fn append_records_multi_log(bifrost: Bifrost, log_id_range: Range<u64>, co
                 let _ = bifrost
                     .create_appender(LogId::new(log_id))
                     .expect("log exists")
-                    .append_raw("")
+                    .append("")
                     .await
                     .unwrap();
             })
@@ -50,7 +51,7 @@ async fn append_records_concurrent_single_log(bifrost: Bifrost, log_id: LogId, c
             bifrost
                 .create_appender(log_id)
                 .expect("log exists")
-                .append_raw("")
+                .append("")
                 .await
                 .unwrap()
         })
@@ -61,10 +62,7 @@ async fn append_records_concurrent_single_log(bifrost: Bifrost, log_id: LogId, c
 async fn append_seq(bifrost: Bifrost, log_id: LogId, count: u64) {
     let mut appender = bifrost.create_appender(log_id).expect("log exists");
     for _ in 1..=count {
-        let _ = appender
-            .append_raw("")
-            .await
-            .expect("bifrost accept record");
+        let _ = appender.append("").await.expect("bifrost accept record");
     }
 }
 
@@ -108,7 +106,8 @@ fn write_throughput_local_loglet(c: &mut Criterion) {
 
     let bifrost = tc.block_on("bifrost-init", None, async {
         let metadata = metadata();
-        let bifrost_svc = BifrostService::new(restate_core::task_center(), metadata);
+        let bifrost_svc = BifrostService::new(restate_core::task_center(), metadata)
+            .enable_local_loglet(&Live::from_value(config));
         let bifrost = bifrost_svc.handle();
 
         // start bifrost service in the background
