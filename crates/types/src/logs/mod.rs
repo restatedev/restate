@@ -13,6 +13,7 @@ use std::ops::RangeInclusive;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::PartitionId;
+use crate::storage::StorageEncode;
 
 pub mod builder;
 pub mod metadata;
@@ -226,6 +227,65 @@ pub trait HasRecordKeys: Send + Sync {
 impl<T: HasRecordKeys> HasRecordKeys for &T {
     fn record_keys(&self) -> Keys {
         HasRecordKeys::record_keys(*self)
+    }
+}
+
+pub trait WithKeys: Sized {
+    fn with_keys(self, keys: Keys) -> BodyWithKeys<Self>;
+}
+
+impl<T> WithKeys for T
+where
+    T: StorageEncode + Sync + Send + 'static,
+{
+    fn with_keys(self, keys: Keys) -> BodyWithKeys<Self> {
+        BodyWithKeys::new(self, keys)
+    }
+}
+
+/// A transparent wrapper that augments a type with some keys. The type has a blanket
+/// implementation of StorageEncode that's a passthrough to the inner type `T`. This means
+/// that you can use this to pass payloads to Bifrost without the need to store Keys inside the
+/// body `T`.
+///
+/// Then reading records that were appended with [`WithKeys`], you directly deserialize the inner
+/// type T without having to worry about the keys.
+pub struct BodyWithKeys<T> {
+    inner: T,
+    keys: Keys,
+}
+
+impl<T: StorageEncode> BodyWithKeys<T> {
+    pub fn new(inner: T, keys: Keys) -> Self {
+        Self { inner, keys }
+    }
+
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> HasRecordKeys for BodyWithKeys<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn record_keys(&self) -> Keys {
+        self.keys.clone()
+    }
+}
+
+// passthrough to storage-encode of the inner type
+impl<T> StorageEncode for BodyWithKeys<T>
+where
+    T: StorageEncode,
+{
+    const DEFAULT_CODEC: crate::storage::StorageCodecKind = T::DEFAULT_CODEC;
+
+    fn encode<B: bytes::BufMut>(
+        &self,
+        buf: &mut B,
+    ) -> Result<(), crate::storage::StorageEncodeError> {
+        T::encode(&self.inner, buf)
     }
 }
 
