@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use bytes::{Bytes, BytesMut};
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, ShutdownError};
@@ -195,7 +197,8 @@ pub async fn append_envelope_to_bifrost(
     };
 
     let log_id = LogId::from(*partition_id);
-    let lsn = bifrost.append(log_id, envelope).await?;
+    // todo: let the Arc be the input of `append_envelope_to_bifrost` instead
+    let lsn = bifrost.append(log_id, Arc::new(envelope)).await?;
 
     Ok((log_id, lsn))
 }

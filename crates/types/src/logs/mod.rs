@@ -136,7 +136,7 @@ where
     fn prev(self) -> Self;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 /// The keys that are associated with a record. This is used to filter the log when reading.
 pub enum Keys {
     /// No keys are associated with the record. This record will appear to *all* readers regardless
@@ -233,6 +233,13 @@ impl<T: HasRecordKeys> HasRecordKeys for &T {
 
 pub trait WithKeys: Sized {
     fn with_keys(self, keys: Keys) -> BodyWithKeys<Self>;
+
+    fn with_no_keys(self) -> BodyWithKeys<Self>
+    where
+        Self: StorageEncode,
+    {
+        BodyWithKeys::new(self, Keys::None)
+    }
 }
 
 impl<T> WithKeys for T
@@ -251,6 +258,7 @@ where
 ///
 /// Then reading records that were appended with [`WithKeys`], you directly deserialize the inner
 /// type T without having to worry about the keys.
+#[derive(Debug)]
 pub struct BodyWithKeys<T> {
     inner: T,
     keys: Keys,

@@ -15,7 +15,6 @@ mod bifrost_admin;
 mod error;
 pub mod loglet;
 mod loglet_wrapper;
-mod payload;
 pub mod providers;
 mod read_stream;
 mod record;
