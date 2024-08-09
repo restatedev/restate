@@ -10,10 +10,11 @@
 
 use std::ops::RangeInclusive;
 
+use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::PartitionId;
-use crate::storage::StorageEncode;
+use crate::storage::{StorageCodecKind, StorageEncode};
 
 pub mod builder;
 pub mod metadata;
@@ -279,12 +280,11 @@ impl<T> StorageEncode for BodyWithKeys<T>
 where
     T: StorageEncode,
 {
-    const DEFAULT_CODEC: crate::storage::StorageCodecKind = T::DEFAULT_CODEC;
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageEncode::default_codec(&self.inner)
+    }
 
-    fn encode<B: bytes::BufMut>(
-        &self,
-        buf: &mut B,
-    ) -> Result<(), crate::storage::StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), crate::storage::StorageEncodeError> {
         T::encode(&self.inner, buf)
     }
 }

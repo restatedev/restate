@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::GenericError;
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, BytesMut};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
 use serde::Serialize;
@@ -60,7 +60,7 @@ impl TryFrom<u8> for StorageCodecKind {
 }
 
 /// Codec which encodes [`StorageEncode`] implementations by first writing the
-/// [`StorageEncode::DEFAULT_CODEC`] byte and then encoding the value part via
+/// [`StorageEncode::default_codec`] byte and then encoding the value part via
 /// [`StorageEncode::encode`].
 ///
 /// To decode a value, the codec first reads the codec bytes and then calls
@@ -68,12 +68,12 @@ impl TryFrom<u8> for StorageCodecKind {
 pub struct StorageCodec;
 
 impl StorageCodec {
-    pub fn encode<T: StorageEncode, B: BufMut>(
+    pub fn encode<T: StorageEncode>(
         value: T,
-        buf: &mut B,
+        buf: &mut BytesMut,
     ) -> Result<(), StorageEncodeError> {
         // write codec
-        buf.put_u8(T::DEFAULT_CODEC.into());
+        buf.put_u8(value.default_codec().into());
         // encode value
         value.encode(buf)
     }
@@ -95,18 +95,20 @@ impl StorageCodec {
     }
 }
 
-/// Trait to encode a value using the specified [`Self::DEFAULT_CODEC`]. The trait is used by the
+/// Trait to encode a value using the specified [`Self::default_codec`]. The trait is used by the
 /// [`StorageCodec`] to first write the codec byte and then the serialized value via
 /// [`Self::encode`].
 ///
 /// # Important
-/// The [`Self::encode`] implementation should use the codec specified by [`Self::DEFAULT_CODEC`].
-pub trait StorageEncode: Sized {
-    /// Codec which is used when encode new values.
-    const DEFAULT_CODEC: StorageCodecKind;
+/// The [`Self::encode`] implementation should use the codec specified by [`Self::default_codec`].
+pub trait StorageEncode {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError>;
 
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError>;
+    /// Codec which is used when encode new values.
+    fn default_codec(&self) -> StorageCodecKind;
 }
+
+static_assertions::assert_obj_safe!(StorageEncode);
 
 /// Trait to decode a value given the [`StorageCodecKind`]. This trait is used by the
 /// [`StorageCodec`] to decode a value after reading the used storage codec.
@@ -121,26 +123,32 @@ pub trait StorageDecode {
 }
 
 impl<T: StorageEncode> StorageEncode for &T {
-    const DEFAULT_CODEC: StorageCodecKind = T::DEFAULT_CODEC;
-
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         (*self).encode(buf)
+    }
+
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageEncode::default_codec(*self)
     }
 }
 
 impl<T: StorageEncode> StorageEncode for &mut T {
-    const DEFAULT_CODEC: StorageCodecKind = T::DEFAULT_CODEC;
-
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         T::encode(*self, buf)
+    }
+
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageEncode::default_codec(*self)
     }
 }
 
 impl<T: StorageEncode> StorageEncode for Box<T> {
-    const DEFAULT_CODEC: StorageCodecKind = T::DEFAULT_CODEC;
-
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         T::encode(&**self, buf)
+    }
+
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageEncode::default_codec(self.as_ref())
     }
 }
 
@@ -159,12 +167,13 @@ impl<T: StorageDecode> StorageDecode for Box<T> {
 macro_rules! flexbuffers_storage_encode_decode {
     ($name:tt) => {
         impl $crate::storage::StorageEncode for $name {
-            const DEFAULT_CODEC: $crate::storage::StorageCodecKind =
-                $crate::storage::StorageCodecKind::FlexbuffersSerde;
+            fn default_codec(&self) -> $crate::storage::StorageCodecKind {
+                $crate::storage::StorageCodecKind::FlexbuffersSerde
+            }
 
-            fn encode<B: ::bytes::BufMut>(
+            fn encode(
                 &self,
-                buf: &mut B,
+                buf: &mut ::bytes::BytesMut,
             ) -> Result<(), $crate::storage::StorageEncodeError> {
                 $crate::storage::encode_as_flexbuffers(self, buf)
                     .map_err(|err| $crate::storage::StorageEncodeError::EncodeValue(err.into()))
@@ -196,9 +205,11 @@ macro_rules! flexbuffers_storage_encode_decode {
 
 // Enable simple serialization of String types as length-prefixed byte slice
 impl StorageEncode for String {
-    const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::LengthPrefixedRawBytes;
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::LengthPrefixedRawBytes
+    }
 
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         let my_bytes = self.as_bytes();
         buf.put_u32_le(u32::try_from(my_bytes.len()).map_err(|_| {
             StorageEncodeError::EncodeValue(
@@ -223,9 +234,11 @@ impl StorageEncode for String {
 
 // Enable simple serialization of Bytes types as length-prefixed byte slice
 impl StorageEncode for bytes::Bytes {
-    const DEFAULT_CODEC: StorageCodecKind = StorageCodecKind::LengthPrefixedRawBytes;
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::LengthPrefixedRawBytes
+    }
 
-    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), StorageEncodeError> {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         buf.put_u32_le(u32::try_from(self.len()).map_err(|_| {
             StorageEncodeError::EncodeValue(
                 anyhow::anyhow!("only support serializing types of size <= 4GB").into(),

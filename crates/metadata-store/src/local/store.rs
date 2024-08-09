@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use bytestring::ByteString;
 use restate_core::cancellation_watcher;
 use restate_core::metadata_store::{Precondition, VersionedValue};
@@ -323,7 +323,7 @@ impl LocalMetadataStore {
             .map_err(Into::into)
     }
 
-    fn encode<T: StorageEncode, B: BufMut>(value: T, buf: &mut B) -> Result<()> {
+    fn encode<T: StorageEncode>(value: T, buf: &mut BytesMut) -> Result<()> {
         StorageCodec::encode(value, buf)?;
         Ok(())
     }
