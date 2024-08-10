@@ -23,7 +23,7 @@ use tracing::{debug, info};
 
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::{LogletParams, ProviderKind, SegmentIndex};
-use restate_types::logs::{KeyFilter, LogId, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogId, MatchKeyQuery, SequenceNumber};
 use restate_types::storage::PolyBytes;
 
 use crate::loglet::util::TailOffsetWatch;
@@ -195,7 +195,7 @@ impl MemoryLoglet {
 struct MemoryReadStream {
     loglet: Arc<MemoryLoglet>,
     /// Chooses which records to read/return
-    _filter: KeyFilter,
+    filter: KeyFilter,
     /// The next offset to read from
     read_pointer: LogletOffset,
     tail_watch: BoxStream<'static, TailState<LogletOffset>>,
@@ -222,7 +222,7 @@ impl MemoryReadStream {
 
         Self {
             loglet,
-            _filter: filter,
+            filter,
             read_pointer: from_offset,
             tail_watch,
             last_known_tail,
@@ -308,6 +308,16 @@ impl Stream for MemoryReadStream {
                 .trim_gap_to_sequence_number()
                 .unwrap_or(next_record.sequence_number())
                 .next();
+
+            // If this is a filtered record, skip it.
+            if let Some(data_record) = next_record.as_record() {
+                if !data_record.matches_key_query(&self.filter) {
+                    // read_pointer is already advanced, just don't return the
+                    // record and fast-forward.
+                    continue;
+                }
+            }
+
             return Poll::Ready(Some(Ok(next_record)));
         }
     }
