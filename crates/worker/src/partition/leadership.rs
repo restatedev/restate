@@ -220,6 +220,11 @@ where
                 //  with the next release.
                 node_id: Some(self.partition_processor_metadata.node_id),
                 leader_epoch,
+                partition_key_range: Some(
+                    self.partition_processor_metadata
+                        .partition_key_range
+                        .clone(),
+                ),
             }),
         );
 
@@ -745,7 +750,8 @@ mod tests {
                 announce_leader,
                 AnnounceLeader {
                     node_id: Some(NODE_ID),
-                    leader_epoch
+                    leader_epoch,
+                    partition_key_range: Some(PARTITION_KEY_RANGE),
                 }
             );
 
