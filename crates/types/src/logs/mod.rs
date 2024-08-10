@@ -10,11 +10,10 @@
 
 use std::ops::RangeInclusive;
 
-use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::PartitionId;
-use crate::storage::{StorageCodecKind, StorageEncode};
+use crate::storage::StorageEncode;
 
 pub mod builder;
 pub mod metadata;
@@ -136,7 +135,7 @@ where
     fn prev(self) -> Self;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 /// The keys that are associated with a record. This is used to filter the log when reading.
 pub enum Keys {
     /// No keys are associated with the record. This record will appear to *all* readers regardless
@@ -151,9 +150,9 @@ pub enum Keys {
     RangeInclusive(std::ops::RangeInclusive<u64>),
 }
 
-impl Keys {
+impl MatchKeyQuery for Keys {
     /// Returns true if the key matches the supplied `query`
-    pub fn matches_filter(&self, query: &KeyFilter) -> bool {
+    fn matches_key_query(&self, query: &KeyFilter) -> bool {
         match (self, query) {
             // regardless of the matcher.
             (Keys::None, _) => true,
@@ -171,7 +170,9 @@ impl Keys {
             }
         }
     }
+}
 
+impl Keys {
     pub fn iter(&self) -> Box<dyn Iterator<Item = u64> + 'static> {
         match self {
             Keys::None => Box::new(std::iter::empty()),
@@ -215,14 +216,14 @@ impl From<RangeInclusive<u64>> for KeyFilter {
     }
 }
 
+pub trait MatchKeyQuery {
+    /// returns true if this record matches the supplied `query`
+    fn matches_key_query(&self, query: &KeyFilter) -> bool;
+}
+
 pub trait HasRecordKeys: Send + Sync {
     /// Keys of the record. Keys are used to filter the log when reading.
     fn record_keys(&self) -> Keys;
-
-    /// Returns true if this record matches the supplied `filter`
-    fn matches_filter(&self, filter: &KeyFilter) -> bool {
-        self.record_keys().matches_filter(filter)
-    }
 }
 
 impl<T: HasRecordKeys> HasRecordKeys for &T {
@@ -233,24 +234,28 @@ impl<T: HasRecordKeys> HasRecordKeys for &T {
 
 pub trait WithKeys: Sized {
     fn with_keys(self, keys: Keys) -> BodyWithKeys<Self>;
+
+    fn with_no_keys(self) -> BodyWithKeys<Self>
+    where
+        Self: StorageEncode,
+    {
+        BodyWithKeys::new(self, Keys::None)
+    }
 }
 
-impl<T> WithKeys for T
-where
-    T: StorageEncode + Sync + Send + 'static,
-{
+impl<T: StorageEncode> WithKeys for T {
     fn with_keys(self, keys: Keys) -> BodyWithKeys<Self> {
         BodyWithKeys::new(self, keys)
     }
 }
 
-/// A transparent wrapper that augments a type with some keys. The type has a blanket
-/// implementation of StorageEncode that's a passthrough to the inner type `T`. This means
-/// that you can use this to pass payloads to Bifrost without the need to store Keys inside the
-/// body `T`.
+/// A transparent wrapper that augments a type with some keys. This is a convenience
+/// type to pass payloads to Bifrost without constructing [`restate_bifrost::InputRecord`]
+/// or without implementing [`restate_bifrost::HasRecordKeys`] on your message type.
 ///
-/// Then reading records that were appended with [`WithKeys`], you directly deserialize the inner
-/// type T without having to worry about the keys.
+/// Then reading records that were appended with [`BodyWithKeys`], you directly deserialize the inner
+/// type T.
+#[derive(Debug)]
 pub struct BodyWithKeys<T> {
     inner: T,
     keys: Keys,
@@ -272,20 +277,6 @@ where
 {
     fn record_keys(&self) -> Keys {
         self.keys.clone()
-    }
-}
-
-// passthrough to storage-encode of the inner type
-impl<T> StorageEncode for BodyWithKeys<T>
-where
-    T: StorageEncode,
-{
-    fn default_codec(&self) -> StorageCodecKind {
-        StorageEncode::default_codec(&self.inner)
-    }
-
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), crate::storage::StorageEncodeError> {
-        T::encode(&self.inner, buf)
     }
 }
 
@@ -311,15 +302,16 @@ mod tests {
             dst_key: 10,
         };
 
-        assert!(!data.matches_filter(&KeyFilter::Include(5)));
-        assert!(data.matches_filter(&KeyFilter::Include(1)));
-        assert!(data.matches_filter(&KeyFilter::Include(10)));
+        let keys = data.record_keys();
+        assert!(!keys.matches_key_query(&KeyFilter::Include(5)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(1)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(10)));
 
-        assert!(data.matches_filter(&KeyFilter::Any));
-        assert!(data.matches_filter(&KeyFilter::Within(1..=200)));
-        assert!(data.matches_filter(&KeyFilter::Within(10..=200)));
-        assert!(!data.matches_filter(&KeyFilter::Within(11..=200)));
-        assert!(!data.matches_filter(&KeyFilter::Within(100..=200)));
+        assert!(keys.matches_key_query(&KeyFilter::Any));
+        assert!(keys.matches_key_query(&KeyFilter::Within(1..=200)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(10..=200)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(11..=200)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(100..=200)));
 
         let keys: Vec<_> = data.record_keys().iter().collect();
         assert_eq!(vec![1, 10], keys);
@@ -329,45 +321,45 @@ mod tests {
     fn key_matches() {
         let keys = Keys::None;
         // A record with no keys matches all filters.
-        assert!(keys.matches_filter(&KeyFilter::Any));
-        assert!(keys.matches_filter(&KeyFilter::Include(u64::MIN)));
-        assert!(keys.matches_filter(&KeyFilter::Include(100)));
-        assert!(keys.matches_filter(&KeyFilter::Within(100..=1000)));
+        assert!(keys.matches_key_query(&KeyFilter::Any));
+        assert!(keys.matches_key_query(&KeyFilter::Include(u64::MIN)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(100)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(100..=1000)));
 
         let keys = Keys::Single(10);
-        assert!(keys.matches_filter(&KeyFilter::Any));
-        assert!(keys.matches_filter(&KeyFilter::Include(10)));
-        assert!(keys.matches_filter(&KeyFilter::Within(1..=100)));
-        assert!(keys.matches_filter(&KeyFilter::Within(5..=10)));
-        assert!(!keys.matches_filter(&KeyFilter::Include(100)));
-        assert!(!keys.matches_filter(&KeyFilter::Within(1..=9)));
-        assert!(!keys.matches_filter(&KeyFilter::Within(20..=900)));
+        assert!(keys.matches_key_query(&KeyFilter::Any));
+        assert!(keys.matches_key_query(&KeyFilter::Include(10)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(1..=100)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(5..=10)));
+        assert!(!keys.matches_key_query(&KeyFilter::Include(100)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(1..=9)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(20..=900)));
 
         let keys = Keys::Pair(1, 10);
-        assert!(keys.matches_filter(&KeyFilter::Any));
-        assert!(keys.matches_filter(&KeyFilter::Include(10)));
-        assert!(keys.matches_filter(&KeyFilter::Include(1)));
-        assert!(!keys.matches_filter(&KeyFilter::Include(0)));
-        assert!(!keys.matches_filter(&KeyFilter::Include(100)));
-        assert!(keys.matches_filter(&KeyFilter::Within(1..=3)));
-        assert!(keys.matches_filter(&KeyFilter::Within(3..=10)));
+        assert!(keys.matches_key_query(&KeyFilter::Any));
+        assert!(keys.matches_key_query(&KeyFilter::Include(10)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(1)));
+        assert!(!keys.matches_key_query(&KeyFilter::Include(0)));
+        assert!(!keys.matches_key_query(&KeyFilter::Include(100)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(1..=3)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(3..=10)));
 
-        assert!(!keys.matches_filter(&KeyFilter::Within(2..=7)));
-        assert!(!keys.matches_filter(&KeyFilter::Within(11..=100)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(2..=7)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(11..=100)));
 
         let keys = Keys::RangeInclusive(5..=100);
-        assert!(keys.matches_filter(&KeyFilter::Any));
-        assert!(keys.matches_filter(&KeyFilter::Include(5)));
-        assert!(keys.matches_filter(&KeyFilter::Include(10)));
-        assert!(keys.matches_filter(&KeyFilter::Include(100)));
-        assert!(!keys.matches_filter(&KeyFilter::Include(4)));
-        assert!(!keys.matches_filter(&KeyFilter::Include(101)));
+        assert!(keys.matches_key_query(&KeyFilter::Any));
+        assert!(keys.matches_key_query(&KeyFilter::Include(5)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(10)));
+        assert!(keys.matches_key_query(&KeyFilter::Include(100)));
+        assert!(!keys.matches_key_query(&KeyFilter::Include(4)));
+        assert!(!keys.matches_key_query(&KeyFilter::Include(101)));
 
-        assert!(keys.matches_filter(&KeyFilter::Within(5..=100)));
-        assert!(keys.matches_filter(&KeyFilter::Within(1..=100)));
-        assert!(keys.matches_filter(&KeyFilter::Within(2..=105)));
-        assert!(keys.matches_filter(&KeyFilter::Within(10..=88)));
-        assert!(!keys.matches_filter(&KeyFilter::Within(1..=4)));
-        assert!(!keys.matches_filter(&KeyFilter::Within(101..=1000)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(5..=100)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(1..=100)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(2..=105)));
+        assert!(keys.matches_key_query(&KeyFilter::Within(10..=88)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(1..=4)));
+        assert!(!keys.matches_key_query(&KeyFilter::Within(101..=1000)));
     }
 }

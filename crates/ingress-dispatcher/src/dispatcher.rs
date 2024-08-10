@@ -328,8 +328,7 @@ mod tests {
                 let log_id = LogId::from(partition_id);
                 let log_record = bifrost.read(log_id, Lsn::OLDEST).await?.unwrap();
 
-                let output_message =
-                    Envelope::from_bytes(log_record.record.into_payload_unchecked().into_body())?;
+                let output_message = log_record.try_decode::<Envelope>().unwrap()?;
 
                 let_assert!(
                     Envelope {
@@ -421,10 +420,12 @@ mod tests {
                     .metadata
                     .partition_table_snapshot()
                     .find_partition_id(invocation_id.partition_key())?;
-                let bifrost_messages = bifrost.read_all(LogId::from(partition_id)).await?;
+                let mut bifrost_messages = bifrost.read_all(LogId::from(partition_id)).await?;
 
-                let output_message_1 =
-                    Envelope::from_bytes(bifrost_messages[0].record.payload().unwrap().body())?;
+                let output_message_1 = bifrost_messages
+                    .remove(0)
+                    .try_decode::<Envelope>()
+                    .unwrap()?;
 
                 let_assert!(
                     Command::AttachInvocation(attach_invocation_req) = output_message_1.command

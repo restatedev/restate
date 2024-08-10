@@ -10,22 +10,19 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use futures::FutureExt;
 use pin_project::pin_project;
 use tokio::sync::{mpsc, oneshot, Notify};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
 use restate_core::{task_center, ShutdownError, TaskCenter, TaskId};
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::{HasRecordKeys, Keys};
-use restate_types::storage::{StorageCodec, StorageEncode};
+use restate_types::storage::StorageEncode;
 
-use crate::appender::RECORD_SIZE_HINT;
 use crate::error::EnqueueError;
-use crate::payload::Payload;
-use crate::{Appender, Result};
+use crate::record::ErasedInputRecord;
+use crate::{Appender, InputRecord, Result};
 
 /// Performs appends in the background concurrently while maintaining the order of records
 /// produced from the same producer. It runs as a background task and batches records whenever
@@ -38,25 +35,24 @@ pub struct BackgroundAppender<T> {
     /// The number of records that can get batched together before appending to the log
     max_batch_size: usize,
     /// Reusable vector for buffering recv() operations
-    recv_buffer: Vec<AppendOperation<T>>,
+    recv_buffer: Vec<AppendOperation>,
     /// Reusable vector for callbacks of enqueue_with_notification calls
     notif_buffer: Vec<oneshot::Sender<()>>,
-    /// Reusable serialized payloads vector
-    batch_buffer: Vec<(Bytes, Keys)>,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> BackgroundAppender<T>
 where
-    T: HasRecordKeys + StorageEncode + 'static,
+    T: StorageEncode + Send + Sync + 'static,
 {
     pub fn new(appender: Appender, queue_capacity: usize, max_batch_size: usize) -> Self {
         Self {
             appender,
             queue_capacity,
             max_batch_size,
-            batch_buffer: Vec::with_capacity(max_batch_size),
             recv_buffer: Vec::with_capacity(max_batch_size),
             notif_buffer: Vec::with_capacity(max_batch_size),
+            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -84,7 +80,10 @@ where
         )?;
 
         Ok(AppenderHandle {
-            sender: Some(LogSender { tx }),
+            sender: Some(LogSender {
+                tx,
+                _phantom: std::marker::PhantomData,
+            }),
             drain_token,
             task_id,
         })
@@ -92,14 +91,13 @@ where
 
     async fn run(
         self,
-        mut rx: mpsc::Receiver<AppendOperation<T>>,
+        mut rx: mpsc::Receiver<AppendOperation>,
         drain_handle: CancellationToken,
     ) -> anyhow::Result<()> {
         let Self {
             mut appender,
             max_batch_size,
             mut notif_buffer,
-            mut batch_buffer,
             mut recv_buffer,
             ..
         } = self;
@@ -127,7 +125,6 @@ where
                         &mut appender,
                         &mut recv_buffer,
                         &mut notif_buffer,
-                        &mut batch_buffer,
                     ).await?;
                 }
             }
@@ -138,38 +135,17 @@ where
 
     async fn process_appends(
         appender: &mut Appender,
-        buffered_records: &mut Vec<AppendOperation<T>>,
+        buffered_records: &mut Vec<AppendOperation>,
         notif_buffer: &mut Vec<oneshot::Sender<()>>,
-        batch_buffer: &mut Vec<(Bytes, Keys)>,
     ) -> Result<()> {
-        batch_buffer.reserve(buffered_records.len());
-
-        // Attempt to reserve enough bytes for the payloads
-        appender
-            .serde_buffer
-            .reserve(buffered_records.len() * RECORD_SIZE_HINT);
+        let mut batch = Vec::with_capacity(buffered_records.len());
         for record in buffered_records.drain(..) {
             match record {
                 AppendOperation::Enqueue(record) => {
-                    let keys = record.record_keys();
-                    StorageCodec::encode(&record, &mut appender.serde_buffer)
-                        .expect("record serde is infallible");
-                    // todo, optimize to avoid copying the payload bytes again
-                    let payload = Payload::new(appender.serde_buffer.split().freeze());
-                    StorageCodec::encode(payload, &mut appender.serde_buffer)
-                        .expect("record serde is infallible");
-                    info!("payload size ={}", appender.serde_buffer.len());
-                    batch_buffer.push((appender.serde_buffer.split().freeze(), keys));
+                    batch.push(record);
                 }
                 AppendOperation::EnqueueWithNotification(record, tx) => {
-                    let keys = record.record_keys();
-                    StorageCodec::encode(&record, &mut appender.serde_buffer)
-                        .expect("record serde is infallible");
-                    // todo, optimize to avoid copying the payload bytes again
-                    let payload = Payload::new(appender.serde_buffer.split().freeze());
-                    StorageCodec::encode(payload, &mut appender.serde_buffer)
-                        .expect("record serde is infallible");
-                    batch_buffer.push((appender.serde_buffer.split().freeze(), keys));
+                    batch.push(record);
                     notif_buffer.push(tx);
                 }
                 AppendOperation::Canary(notify) => {
@@ -179,14 +155,13 @@ where
         }
 
         // Failure to append will stop the whole task
-        appender.append_raw_batch_with_keys(batch_buffer).await?;
+        appender.append_batch_erased(batch.into()).await?;
 
         // Notify those who asked for a commit notification
         notif_buffer.drain(..).for_each(|tx| {
             let _ = tx.send(());
         });
         // Clear buffers
-        batch_buffer.clear();
         notif_buffer.clear();
         Ok(())
     }
@@ -252,16 +227,17 @@ impl<T> AppenderHandle<T> {
 
 #[derive(Clone)]
 pub struct LogSender<T> {
-    tx: tokio::sync::mpsc::Sender<AppendOperation<T>>,
+    tx: tokio::sync::mpsc::Sender<AppendOperation>,
+    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> LogSender<T>
-where
-    T: HasRecordKeys + StorageEncode + 'static,
-{
+impl<T: StorageEncode> LogSender<T> {
     /// Attempt to enqueue a record to the appender. Returns immediately if the
     /// appender is pushing back or if the appender is draining or drained.
-    pub fn try_enqueue(&self, record: T) -> Result<(), EnqueueError<T>> {
+    pub fn try_enqueue<A>(&self, record: A) -> Result<(), EnqueueError<A>>
+    where
+        A: Into<InputRecord<T>>,
+    {
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -270,12 +246,19 @@ where
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
+        let record = record.into().into_erased();
         permit.send(AppendOperation::Enqueue(record));
         Ok(())
     }
 
     /// Enqueues an append and returns a commit token
-    pub fn try_enqueue_with_notification(&self, record: T) -> Result<CommitToken, EnqueueError<T>> {
+    pub fn try_enqueue_with_notification<A>(
+        &self,
+        record: A,
+    ) -> Result<CommitToken, EnqueueError<A>>
+    where
+        A: Into<InputRecord<T>>,
+    {
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -285,16 +268,21 @@ where
         };
 
         let (tx, rx) = oneshot::channel();
+        let record = record.into().into_erased();
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
         Ok(CommitToken { rx })
     }
 
     /// Waits for capacity on the channel and returns an error if the appender is
     /// draining or drained.
-    pub async fn enqueue(&self, record: T) -> Result<(), EnqueueError<T>> {
+    pub async fn enqueue<A>(&self, record: A) -> Result<(), EnqueueError<A>>
+    where
+        A: Into<InputRecord<T>>,
+    {
         let Ok(permit) = self.tx.reserve().await else {
             return Err(EnqueueError::Closed(record));
         };
+        let record = record.into().into_erased();
         permit.send(AppendOperation::Enqueue(record));
 
         Ok(())
@@ -305,9 +293,10 @@ where
     ///
     /// Attempts to enqueue all records in the iterator. This will immediately return if there is
     /// no capacity in the channel to enqueue _all_ records.
-    pub fn try_enqueue_many<I>(&self, records: I) -> Result<(), EnqueueError<I>>
+    pub fn try_enqueue_many<I, A>(&self, records: I) -> Result<(), EnqueueError<I>>
     where
-        I: Iterator<Item = T> + ExactSizeIterator,
+        I: Iterator<Item = A> + ExactSizeIterator,
+        A: Into<InputRecord<T>>,
     {
         let permits = match self.tx.try_reserve_many(records.len()) {
             Ok(permit) => permit,
@@ -318,7 +307,7 @@ where
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record));
+            permit.send(AppendOperation::Enqueue(record.into().into_erased()));
         }
         Ok(())
     }
@@ -328,16 +317,17 @@ where
     ///
     /// The method is cancel safe in the sense that if enqueue_many is used in a `tokio::select!`,
     /// no records are enqueued if another branch completed.
-    pub async fn enqueue_many<I>(&self, records: I) -> Result<(), EnqueueError<I>>
+    pub async fn enqueue_many<I, A>(&self, records: I) -> Result<(), EnqueueError<I>>
     where
-        I: Iterator<Item = T> + ExactSizeIterator,
+        I: Iterator<Item = A> + ExactSizeIterator,
+        A: Into<InputRecord<T>>,
     {
         let Ok(permits) = self.tx.reserve_many(records.len()).await else {
             return Err(EnqueueError::Closed(records));
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record));
+            permit.send(AppendOperation::Enqueue(record.into().into_erased()));
         }
 
         Ok(())
@@ -345,16 +335,22 @@ where
 
     /// Enqueues a record and returns a [`CommitToken`] future that's resolved when the record is
     /// committed.
-    pub async fn enqueue_with_notification(
+    pub async fn enqueue_with_notification<A>(
         &self,
-        record: T,
-    ) -> Result<CommitToken, EnqueueError<T>> {
+        record: A,
+    ) -> Result<CommitToken, EnqueueError<A>>
+    where
+        A: Into<InputRecord<T>>,
+    {
         let Ok(permit) = self.tx.reserve().await else {
             return Err(EnqueueError::Closed(record));
         };
 
         let (tx, rx) = oneshot::channel();
-        permit.send(AppendOperation::EnqueueWithNotification(record, tx));
+        permit.send(AppendOperation::EnqueueWithNotification(
+            record.into().into_erased(),
+            tx,
+        ));
 
         Ok(CommitToken { rx })
     }
@@ -395,9 +391,9 @@ impl std::future::Future for CommitToken {
     }
 }
 
-enum AppendOperation<T> {
-    Enqueue(T),
-    EnqueueWithNotification(T, oneshot::Sender<()>),
+enum AppendOperation {
+    Enqueue(ErasedInputRecord),
+    EnqueueWithNotification(ErasedInputRecord, oneshot::Sender<()>),
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
     Canary(Arc<Notify>),

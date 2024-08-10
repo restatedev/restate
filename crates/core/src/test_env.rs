@@ -290,7 +290,7 @@ where
         self.metadata_store_client
             .put(
                 NODES_CONFIG_KEY.clone(),
-                self.nodes_config.clone(),
+                &self.nodes_config,
                 Precondition::None,
             )
             .await
@@ -300,7 +300,7 @@ where
         let logs =
             bootstrap_logs_metadata(self.provider_kind, self.partition_table.num_partitions());
         self.metadata_store_client
-            .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
+            .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await
             .expect("to store bifrost config in metadata store");
         self.metadata_writer.submit(logs.clone());
@@ -308,7 +308,7 @@ where
         self.metadata_store_client
             .put(
                 PARTITION_TABLE_KEY.clone(),
-                self.partition_table.clone(),
+                &self.partition_table,
                 Precondition::None,
             )
             .await
@@ -318,7 +318,7 @@ where
         self.metadata_store_client
             .put(
                 SCHEDULING_PLAN_KEY.clone(),
-                self.scheduling_plan,
+                &self.scheduling_plan,
                 Precondition::None,
             )
             .await

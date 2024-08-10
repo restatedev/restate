@@ -26,6 +26,7 @@ bytestring = { workspace = true, features = ["serde"] }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
+downcast-rs = { workspace = true }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 humantime = { workspace = true }
@@ -48,7 +49,6 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
-
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-metadata-store = { workspace = true }
@@ -58,6 +58,7 @@ restate-types = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true, features = ["anyhow"] }
 paste = { workspace = true }
+rlimit = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
