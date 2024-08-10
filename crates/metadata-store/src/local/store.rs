@@ -323,7 +323,7 @@ impl LocalMetadataStore {
             .map_err(Into::into)
     }
 
-    fn encode<T: StorageEncode>(value: T, buf: &mut BytesMut) -> Result<()> {
+    fn encode<T: StorageEncode>(value: &T, buf: &mut BytesMut) -> Result<()> {
         StorageCodec::encode(value, buf)?;
         Ok(())
     }

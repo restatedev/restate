@@ -29,6 +29,7 @@ clap = { workspace = true, features = ["std", "derive", "env"], optional = true 
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 dyn-clone = { version = "1.0" }
+downcast-rs = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true, features = ["serde"] }
 flexbuffers = { workspace = true }

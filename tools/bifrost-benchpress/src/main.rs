@@ -157,7 +157,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u64) -> (TaskCenter,
         );
 
         metadata_store_client
-            .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
+            .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await
             .expect("to store bifrost config in metadata store");
         metadata_writer.submit(logs);
