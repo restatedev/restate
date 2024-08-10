@@ -14,11 +14,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use assert2::let_assert;
-use futures::TryStreamExt as _;
+use futures::{StreamExt, TryStreamExt as _};
 use metrics::{counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
-use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, trace, warn, Span};
 
 use restate_bifrost::{Bifrost, FindTailAttributes};
@@ -31,6 +30,7 @@ use restate_storage_api::StorageError;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::journal::raw::RawEntryCodec;
+use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::GenerationalNodeId;
@@ -259,11 +259,12 @@ where
         }
 
         // Start reading after the last applied lsn
+        let key_query = KeyFilter::Within(self.partition_key_range.clone());
         let mut log_reader = self
             .bifrost
             .create_reader(
                 LogId::from(self.partition_id),
-                KeyFilter::Within(self.partition_key_range.clone()),
+                key_query.clone(),
                 last_applied_lsn.next(),
                 Lsn::MAX,
             )?
@@ -276,6 +277,16 @@ where
                     unimplemented!("Handling trim gap is currently not supported")
                 };
                 anyhow::Ok((lsn, envelope?))
+            })
+            .try_take_while(|entry| {
+                // a catch-all safety net if all lower layers didn't filter this record out. This
+                // could happen for old records that didn't store `Keys` in the log store.
+                //
+                // At some point, we should remove this and trust that stored records have Keys
+                // stored correctly.
+                std::future::ready(Ok(entry
+                    .as_ref()
+                    .is_ok_and(|(_, envelope)| envelope.matches_key_query(&key_query))))
             });
 
         info!("PartitionProcessor starting up.");

@@ -8,7 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::identifiers::LeaderEpoch;
+use std::ops::RangeInclusive;
+
+use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 use restate_types::GenerationalNodeId;
 
 /// Announcing a new leader. This message can be written by any component to make the specified
@@ -19,6 +21,10 @@ pub struct AnnounceLeader {
     // todo: Remove once we no longer need to support rolling back to 1.0
     pub node_id: Option<GenerationalNodeId>,
     pub leader_epoch: LeaderEpoch,
+    // Option for backwards compatibility. All future announce leade messages will have this set.
+    // Fallback if this is not set is to use Envelope's header's destination partition-key as a
+    // single key filter.
+    pub partition_key_range: Option<RangeInclusive<PartitionKey>>,
 }
 
 #[cfg(test)]
@@ -46,6 +52,7 @@ mod tests {
         let expected_announce_leader = AnnounceLeader {
             node_id: Some(node_id),
             leader_epoch,
+            partition_key_range: Some(1..=100),
         };
 
         let old_announce_leader = OldAnnounceLeader {
@@ -58,13 +65,26 @@ mod tests {
 
         let new_announce_leader = StorageCodec::decode::<AnnounceLeader, _>(&mut buf)?;
 
-        assert_eq!(new_announce_leader, expected_announce_leader);
+        assert_eq!(
+            new_announce_leader.node_id,
+            expected_announce_leader.node_id
+        );
+        assert_eq!(new_announce_leader.partition_key_range, None);
+        assert_eq!(
+            new_announce_leader.leader_epoch,
+            expected_announce_leader.leader_epoch
+        );
 
         buf.clear();
         StorageCodec::encode(&new_announce_leader, &mut buf)?;
 
         let announce_leader = StorageCodec::decode::<OldAnnounceLeader, _>(&mut buf)?;
-        assert_eq!(announce_leader, old_announce_leader);
+
+        assert_eq!(announce_leader.node_id, old_announce_leader.node_id);
+        assert_eq!(
+            announce_leader.leader_epoch,
+            old_announce_leader.leader_epoch
+        );
 
         Ok(())
     }
