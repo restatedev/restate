@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use enum_map::EnumMap;
-use std::ops::Index;
 use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Instant;
@@ -185,16 +184,10 @@ impl Connection {
     }
 }
 
+#[derive(derive_more::Index)]
 struct HeaderMetadataVersions {
+    #[index]
     versions: EnumMap<MetadataKind, Option<Version>>,
-}
-
-impl Index<MetadataKind> for HeaderMetadataVersions {
-    type Output = Option<Version>;
-
-    fn index(&self, index: MetadataKind) -> &Self::Output {
-        &self.versions[index]
-    }
 }
 
 impl PartialEq for Connection {

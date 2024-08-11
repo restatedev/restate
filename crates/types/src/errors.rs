@@ -17,25 +17,24 @@ use std::fmt;
 /// if you don't know the actual error type or if it is not important.
 pub type GenericError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    derive_more::Debug,
+    derive_more::Display,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[debug("{}", _0)]
+#[display("{}", _0)]
 #[serde(transparent)]
 pub struct InvocationErrorCode(u16);
 
 impl InvocationErrorCode {
     pub const fn new(code: u16) -> Self {
         InvocationErrorCode(code)
-    }
-}
-
-impl fmt::Debug for InvocationErrorCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl fmt::Display for InvocationErrorCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
     }
 }
 
