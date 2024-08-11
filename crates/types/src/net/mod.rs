@@ -79,10 +79,10 @@ impl Default for RequestId {
 )]
 pub enum AdvertisedAddress {
     /// Unix domain socket
-    #[display(fmt = "unix:{}", "_0.display()")]
+    #[display("unix:{}", "_0.display()")]
     Uds(PathBuf),
     /// Hostname or host:port pair, or any unrecognizable string.
-    #[display(fmt = "{}", _0)]
+    #[display("{}", _0)]
     Http(Uri),
 }
 
@@ -113,10 +113,10 @@ impl FromStr for AdvertisedAddress {
 )]
 pub enum BindAddress {
     /// Unix domain socket
-    #[display(fmt = "unix:{}", "_0.display()")]
+    #[display("unix:{}", "_0.display()")]
     Uds(PathBuf),
     /// Socket addr.
-    #[display(fmt = "{}", _0)]
+    #[display("{}", _0)]
     Socket(SocketAddr),
 }
 

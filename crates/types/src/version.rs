@@ -24,7 +24,7 @@
     serde::Serialize,
     serde::Deserialize,
 )]
-#[display(fmt = "v{}", _0)]
+#[display("v{}", _0)]
 pub struct Version(u32);
 
 impl Version {

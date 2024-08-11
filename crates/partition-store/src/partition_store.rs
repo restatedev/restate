@@ -69,7 +69,7 @@ pub enum TableScanIterationDecision<R> {
     BreakWith(Result<R>),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Enum, strum_macros::VariantArray)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Enum, strum::VariantArray)]
 pub enum TableKind {
     // By Partition ID
     PartitionStateMachine,

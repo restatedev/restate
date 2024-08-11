@@ -26,7 +26,6 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -51,7 +50,7 @@ type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
 type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync>;
 
 /// Denotes whether an operation is considered latency sensitive or not
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum_macros::IntoStaticStr)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Priority {
     High,
@@ -80,8 +79,9 @@ pub enum IoMode {
     Default,
 }
 
-#[derive(derive_more::Display, Clone)]
-#[display(fmt = "{}", name)]
+#[derive(derive_more::Display, derive_more::Debug, Clone)]
+#[display("{}", name)]
+#[debug("RocksDb({} at {}", name, path.display())]
 pub struct RocksDb {
     manager: &'static RocksDbManager,
     pub name: DbName,
@@ -93,12 +93,6 @@ pub struct RocksDb {
 }
 
 static_assertions::assert_impl_all!(RocksDb: Send, Sync);
-
-impl fmt::Debug for RocksDb {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RocksDb({} at {})", self.name, self.path.display())
-    }
-}
 
 impl RocksDb {
     pub(crate) fn new<T>(manager: &'static RocksDbManager, spec: DbSpec<T>, db: Arc<T>) -> Self

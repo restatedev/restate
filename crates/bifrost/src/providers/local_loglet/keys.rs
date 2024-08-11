@@ -62,7 +62,8 @@ impl RecordKey {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, strum_macros::FromRepr)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, derive_more::TryFrom)]
+#[try_from(repr)]
 #[repr(u8)]
 pub enum MetadataKind {
     #[default]
@@ -111,8 +112,7 @@ impl MetadataKey {
         let c = data.get_u8();
         debug_assert_eq!(c, b'm');
         let loglet_id = data.get_u64();
-        let kind = MetadataKind::from_repr(data.get_u8());
-        let kind = kind.unwrap_or_default();
+        let kind = MetadataKind::try_from(data.get_u8()).unwrap_or_default();
 
         Self { loglet_id, kind }
     }

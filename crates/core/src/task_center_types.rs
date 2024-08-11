@@ -45,9 +45,9 @@ pub struct TaskId(u64);
     Debug,
     Eq,
     PartialEq,
-    strum_macros::EnumProperty,
-    strum_macros::IntoStaticStr,
-    strum_macros::Display,
+    strum::EnumProperty,
+    strum::IntoStaticStr,
+    derive_more::Display,
 )]
 pub enum TaskKind {
     #[cfg(any(test, feature = "test-util"))]
@@ -125,7 +125,7 @@ pub enum FailureBehaviour {
     Shutdown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::IntoStaticStr, strum_macros::Display)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::IntoStaticStr, strum::Display)]
 pub enum AsyncRuntime {
     Default,
     Ingress,

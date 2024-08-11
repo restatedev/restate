@@ -107,27 +107,19 @@ impl LogletProvider for MemoryLogletProvider {
     }
 }
 
+#[derive(derive_more::Debug)]
 pub struct MemoryLoglet {
     // We treat params as an opaque identifier for the underlying loglet.
     params: LogletParams,
+    #[debug(skip)]
     log: Mutex<Vec<ErasedInputRecord>>,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU64,
     last_committed_offset: AtomicU64,
     sealed: AtomicBool,
     // watches the tail state of ths loglet
+    #[debug(skip)]
     tail_watch: TailOffsetWatch,
-}
-
-impl std::fmt::Debug for MemoryLoglet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryLoglet")
-            .field("params", &self.params)
-            .field("trim_point_offset", &self.trim_point_offset)
-            .field("last_committed_offset", &self.last_committed_offset)
-            .field("sealed", &self.sealed)
-            .finish()
-    }
 }
 
 impl MemoryLoglet {

@@ -15,17 +15,7 @@ use std::ops::RangeInclusive;
 ///
 /// # Important
 /// The discriminants of variants must be consecutive without gaps!
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    strum_macros::FromRepr,
-    strum_macros::EnumIter,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::FromRepr, strum::EnumIter)]
 #[repr(u16)]
 pub enum AdminApiVersion {
     Unknown = 0,

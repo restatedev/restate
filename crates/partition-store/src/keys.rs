@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::mem;
+
 use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
-use std::mem;
-use strum_macros::EnumIter;
+use strum::EnumIter;
 
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
@@ -22,7 +23,7 @@ use strum_macros::EnumIter;
 /// There must exist a bijective mapping between the enum variant and its byte representation.
 /// See [`KeyKind::as_bytes`] and [`KeyKind::from_bytes`].
 #[derive(
-    Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display, strum_macros::VariantArray,
+    Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display, strum::VariantArray,
 )]
 pub enum KeyKind {
     Deduplication,
