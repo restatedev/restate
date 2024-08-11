@@ -37,10 +37,11 @@ impl ServiceProtocolVersion {
         versions: &RangeInclusive<i32>,
     ) -> Option<ServiceProtocolVersion> {
         if ServiceProtocolVersion::is_compatible(*versions.start(), *versions.end()) {
-            ServiceProtocolVersion::from_repr(std::cmp::min(
+            ServiceProtocolVersion::try_from(std::cmp::min(
                 *versions.end(),
                 i32::from(MAX_SERVICE_PROTOCOL_VERSION),
             ))
+            .ok()
         } else {
             None
         }

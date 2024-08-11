@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -42,14 +41,9 @@ pub(crate) fn register_self(
         .map(|_| ())
 }
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
+#[debug("DeploymentMetadataScanner")]
 struct DeploymentMetadataScanner<DMR>(Live<DMR>);
-
-impl<T> fmt::Debug for DeploymentMetadataScanner<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("DeploymentMetadataScanner")
-    }
-}
 
 impl<DMR: DeploymentResolver + Sync + Send + 'static> Scan for DeploymentMetadataScanner<DMR> {
     fn scan(

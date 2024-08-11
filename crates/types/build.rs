@@ -22,11 +22,11 @@ fn main() -> std::io::Result<()> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .enum_attribute(
             "protocol.ServiceProtocolVersion",
-            "#[derive(::serde::Serialize, ::serde::Deserialize, ::strum_macros::FromRepr)]",
+            "#[derive(::serde::Serialize, ::serde::Deserialize)]",
         )
         .enum_attribute(
             "discovery.ServiceDiscoveryProtocolVersion",
-            "#[derive(::strum_macros::EnumIter, ::strum_macros::FromRepr)]",
+            "#[derive(::strum::EnumIter)]",
         )
         .compile_protos(
             &[
@@ -88,9 +88,9 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
         .bytes(["."])
         .enum_attribute(
             "TargetName",
-            "#[derive(::enum_map::Enum, ::strum_macros::EnumIs, ::strum_macros::Display)]",
+            "#[derive(::enum_map::Enum, ::derive_more::IsVariant, ::derive_more::Display)]",
         )
-        .enum_attribute("Message.body", "#[derive(::strum_macros::EnumIs)]")
+        .enum_attribute("Message.body", "#[derive(::derive_more::IsVariant)]")
         .btree_map([
             ".restate.cluster.ClusterState",
             ".restate.cluster.AliveNode",

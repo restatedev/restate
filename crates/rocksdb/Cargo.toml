@@ -21,7 +21,6 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
@@ -33,7 +32,6 @@ rocksdb = { workspace = true }
 smartstring = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
-strum_macros = { workspace = true }
 thiserror = { workspace = true }
 threadpool = { version = "1.8" }
 tokio = { workspace = true }

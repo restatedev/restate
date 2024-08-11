@@ -38,7 +38,6 @@ axum = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
@@ -61,7 +60,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 strum = { workspace = true }
-strum_macros = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

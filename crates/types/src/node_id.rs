@@ -24,7 +24,7 @@
     Hash,
     derive_more::From,
     derive_more::Display,
-    strum_macros::EnumIs,
+    derive_more::IsVariant,
     serde::Serialize,
     serde::Deserialize,
 )]
@@ -47,7 +47,7 @@ pub enum NodeId {
     serde::Serialize,
     serde::Deserialize,
 )]
-#[display(fmt = "{}:{}", _0, _1)]
+#[display("{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
 #[derive(
@@ -69,7 +69,7 @@ pub struct GenerationalNodeId(PlainNodeId, u32);
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]
-#[display(fmt = "N{}", _0)]
+#[display("N{}", _0)]
 pub struct PlainNodeId(u32);
 
 impl NodeId {

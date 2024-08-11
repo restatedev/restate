@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 
 use derive_builder::Builder;
-use derive_getters::Getters;
 
 use crate::{BoxedCfMatcher, BoxedCfOptionUpdater};
 
@@ -115,7 +114,7 @@ impl CfNameMatch for CfExactPattern {
     }
 }
 
-#[derive(Builder, Getters)]
+#[derive(Builder)]
 #[builder(pattern = "owned", build_fn(name = "build"))]
 pub struct DbSpec<T> {
     pub(crate) name: DbName,
@@ -143,8 +142,13 @@ pub struct DbSpec<T> {
     /// `UnknownColumnFamily` error
     pub(crate) cf_patterns: Vec<(BoxedCfMatcher, BoxedCfOptionUpdater)>,
     #[builder(setter(skip))]
-    #[getter(skip)]
     _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> DbSpec<T> {
+    pub fn name(&self) -> &DbName {
+        &self.name
+    }
 }
 
 impl<T> DbSpecBuilder<T> {

@@ -379,13 +379,13 @@ pub mod v1 {
                     service_protocol_version.ok_or(ConversionError::invalid_data(anyhow!(
                         "service_protocol_version has not been set"
                     )))?;
-                let service_protocol_version = ServiceProtocolVersion::from_repr(
-                    service_protocol_version,
-                )
-                .ok_or(ConversionError::unexpected_enum_variant(
-                    "service_protocol_version",
-                    service_protocol_version,
-                ))?;
+                let service_protocol_version =
+                    ServiceProtocolVersion::try_from(service_protocol_version).map_err(|_| {
+                        ConversionError::unexpected_enum_variant(
+                            "service_protocol_version",
+                            service_protocol_version,
+                        )
+                    })?;
                 Ok(Some(PinnedDeployment::new(
                     deployment_id,
                     service_protocol_version,
