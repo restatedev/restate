@@ -97,7 +97,6 @@ datafusion = { version = "40.0.0", default-features = false, features = [
     "unicode_expressions",
 ] }
 datafusion-expr = { version = "40.0.0" }
-derive-getters = { version = "0.4.0" }
 derive_builder = "0.20.0"
 derive_more = { version = "0.99.17" }
 dialoguer = { version = "0.11.0" }

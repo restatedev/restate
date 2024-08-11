@@ -21,7 +21,6 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
