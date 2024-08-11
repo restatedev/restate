@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -39,6 +38,8 @@ enum WatchdogCommand {
 /// acting as a single entry point for all running databases on the node.
 ///
 /// It doesn't try to limit rocksdb use-cases from accessing the raw rocksdb.
+#[derive(derive_more::Debug)]
+#[debug("RocksDbManager")]
 pub struct RocksDbManager {
     env: rocksdb::Env,
     /// a shared rocksdb block cache
@@ -51,12 +52,6 @@ pub struct RocksDbManager {
     shutting_down: AtomicBool,
     high_pri_pool: threadpool::ThreadPool,
     low_pri_pool: threadpool::ThreadPool,
-}
-
-impl Debug for RocksDbManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RocksDbManager").finish()
-    }
 }
 
 impl RocksDbManager {

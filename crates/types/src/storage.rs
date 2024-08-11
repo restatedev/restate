@@ -35,7 +35,7 @@ pub enum StorageDecodeError {
     UnsupportedCodecKind(StorageCodecKind),
 }
 
-#[derive(Debug, strum_macros::FromRepr, derive_more::Display)]
+#[derive(Debug, strum::FromRepr, derive_more::Display)]
 #[repr(u8)]
 pub enum StorageCodecKind {
     // plain old protobuf
@@ -178,27 +178,17 @@ macro_rules! flexbuffers_storage_encode_decode {
 }
 
 /// A polymorphic container of a buffer or a cached storage-encodeable object
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub enum PolyBytes {
     /// Raw bytes backed by (Bytes), so it's cheap to clone
+    #[debug("Bytes({} bytes)", _0.len())]
     Bytes(bytes::Bytes),
     /// A cached deserialized value that can be downcasted to the original type
+    #[debug("Typed")]
     Typed(Arc<dyn StorageEncode>),
 }
 
 static_assertions::assert_impl_all!(PolyBytes: Send, Sync);
-
-impl std::fmt::Debug for PolyBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PolyBytes::Bytes(raw) => f
-                .debug_tuple("Bytes")
-                .field(&format_args!("{} bytes", raw.len()))
-                .finish(),
-            PolyBytes::Typed(_) => f.debug_tuple("Typed").finish(),
-        }
-    }
-}
 
 /// Enable simple serialization of String types as length-prefixed byte slice
 impl StorageEncode for String {

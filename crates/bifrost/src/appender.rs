@@ -26,21 +26,14 @@ use crate::loglet_wrapper::LogletWrapper;
 use crate::record::ErasedInputRecord;
 use crate::{Error, InputRecord, Result};
 
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Appender {
     log_id: LogId,
+    #[debug(skip)]
     pub(super) config: Live<Configuration>,
     loglet_cache: Option<LogletWrapper>,
+    #[debug(skip)]
     bifrost_inner: Arc<BifrostInner>,
-}
-
-impl std::fmt::Debug for Appender {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Appender")
-            .field("log_id", &self.log_id)
-            .field("loglet_cache", &self.loglet_cache)
-            .finish()
-    }
 }
 
 impl Appender {

@@ -368,7 +368,7 @@ where
 
 /// Newtype for service names
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-#[display(fmt = "{}", _0)]
+#[display("{}", _0)]
 pub struct ServiceName(String);
 
 impl TryFrom<String> for ServiceName {
