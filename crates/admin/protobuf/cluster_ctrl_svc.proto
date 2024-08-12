@@ -37,7 +37,7 @@ message ListLogsRequest { }
 
 message ListLogsResponse {
   // Serialized restate_types::logs::metadata::Logs
-  bytes data = 1;
+  bytes logs = 1;
 }
 
 enum TailState {

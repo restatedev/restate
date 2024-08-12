@@ -14,17 +14,17 @@ use anyhow::Context;
 use cling::prelude::*;
 use tonic::codec::CompressionEncoding;
 
+use crate::app::ConnectionInfo;
+use crate::util::grpc_connect;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ListLogsRequest;
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{c_println, c_title};
 use restate_types::logs::metadata::{Chain, Logs};
 use restate_types::logs::LogId;
 use restate_types::storage::StorageCodec;
-
-use crate::app::ConnectionInfo;
-use crate::util::grpc_connect;
+use restate_types::Versioned;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap()]
@@ -47,10 +47,12 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
     let response = client.list_logs(req).await?.into_inner();
 
     let mut logs_table = Table::new_styled();
-    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL BASE LSN", "KIND"]);
 
-    let mut buf = response.data;
+    let mut buf = response.logs;
     let logs = StorageCodec::decode::<Logs, _>(&mut buf)?;
+
+    c_title!("📋", format!("Log Configuration {}", logs.version()));
+
     // sort by log-id for display
     let logs: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
@@ -65,6 +67,7 @@ async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> anyhow:
         ]);
     }
 
+    logs_table.set_styled_header(vec!["LOG-ID", "SEGMENTS", "TAIL BASE LSN", "KIND"]);
     c_println!("{}", logs_table);
 
     Ok(())

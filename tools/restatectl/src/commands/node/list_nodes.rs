@@ -54,8 +54,8 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyho
     let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
 
     c_title!(
-        "📋️",
-        format!("Configuration {}", nodes_configuration.version())
+        "📋",
+        format!("Node Configuration {}", nodes_configuration.version())
     );
 
     let mut nodes_table = Table::new_styled();

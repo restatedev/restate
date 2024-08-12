@@ -10,7 +10,7 @@
 
 use bytes::{Bytes, BytesMut};
 use tonic::{async_trait, Request, Response, Status};
-use tracing::info;
+use tracing::{debug, info};
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
@@ -43,7 +43,7 @@ impl ClusterCtrlSvcHandler {
         }
     }
 
-    async fn logs(&self) -> Result<Logs, Status> {
+    async fn get_logs(&self) -> Result<Logs, Status> {
         self.metadata_store_client
             .get::<Logs>(BIFROST_CONFIG_KEY.clone())
             .await
@@ -75,7 +75,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         _request: Request<ListLogsRequest>,
     ) -> Result<Response<ListLogsResponse>, Status> {
         Ok(Response::new(ListLogsResponse {
-            data: serialize_value(self.logs().await?),
+            logs: serialize_value(self.get_logs().await?),
         }))
     }
 
@@ -87,7 +87,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         let log_id = LogId::new(request.log_id);
         let chain = self
-            .logs()
+            .get_logs()
             .await?
             .chain(&log_id)
             .ok_or(Status::not_found(format!(
@@ -102,7 +102,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .await
             .map_err(|err| Status::internal(format!("Failed to find tail: {:?}", err)))?;
 
-        info!("{:?} tail: {:?}", log_id, tail_state);
+        debug!(?log_id, ?tail_state, "Retrieved tail information");
 
         let mut tail_segment = chain.tail();
         if tail_segment.tail_lsn.is_none() {
