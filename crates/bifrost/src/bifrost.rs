@@ -136,7 +136,7 @@ impl Bifrost {
     ///
     /// ```no_run
     /// use restate_bifrost::{Bifrost, FindTailAttributes, LogReadStream};
-    /// use restate_types::logs::{LogId, SequenceNumber};
+    /// use restate_types::logs::{KeyFilter, LogId, SequenceNumber};
     ///
     /// async fn reader(bifrost: &Bifrost, log_id: LogId) -> LogReadStream {
     ///     bifrost.create_reader(

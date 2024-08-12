@@ -9,25 +9,6 @@ on:
       - main
 
 jobs:
-  rustfmt:
-    name: RustFmt Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt
-          rustflags: ""
-
-      - name: Check license headers
-        run: ./tools/scripts/check-license-headers
-
-      - name: Rustfmt Check
-        uses: actions-rust-lang/rustfmt@v1
-
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -79,11 +60,8 @@ jobs:
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
 
-      - name: Clippy Check
-        run: just clippy
-
-      - name: Run tests
-        run: just test
+      - name: Run verify
+        run: just verify
 
   docker:
     name: Create docker image
