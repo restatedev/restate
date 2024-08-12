@@ -24,7 +24,7 @@ use restate_types::logs::{KeyFilter, SequenceNumber};
 
 use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
-use crate::{LogRecord, Result, TailState};
+use crate::{LogEntry, Result, TailState};
 
 use super::keys::RecordKey;
 use super::LocalLoglet;
@@ -130,7 +130,7 @@ impl LogletReadStream<LogletOffset> for LocalLogletReadStream {
 }
 
 impl Stream for LocalLogletReadStream {
-    type Item = Result<LogRecord<LogletOffset, Bytes>, OperationError>;
+    type Item = Result<LogEntry<LogletOffset, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -186,7 +186,7 @@ impl Stream for LocalLogletReadStream {
             assert!(next_offset > LogletOffset::from(0));
 
             if next_offset < head_offset {
-                let trim_gap = LogRecord::new_trim_gap(next_offset, trim_point);
+                let trim_gap = LogEntry::new_trim_gap(next_offset, trim_point);
                 // next record should be beyond at the head
                 self.read_pointer = head_offset;
                 let key = RecordKey::new(self.log_id, trim_point);
@@ -249,7 +249,7 @@ impl Stream for LocalLogletReadStream {
             buf.put_slice(raw_value);
             self.read_pointer = loaded_key.offset.next();
 
-            return Poll::Ready(Some(Ok(LogRecord::new_data(key.offset, buf.freeze()))));
+            return Poll::Ready(Some(Ok(LogEntry::new_data(key.offset, buf.freeze()))));
         }
     }
 }

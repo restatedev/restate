@@ -21,6 +21,8 @@ pub mod keys {
 
     pub static SCHEMA_INFORMATION_KEY: ByteString = ByteString::from_static("schema_registry");
 
+    pub static SCHEDULING_PLAN_KEY: ByteString = ByteString::from_static("scheduling_plan");
+
     pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {
         ByteString::from(format!("{PARTITION_PROCESSOR_EPOCH_PREFIX}_{partition_id}"))
     }

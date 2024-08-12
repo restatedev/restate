@@ -10,6 +10,7 @@
 
 pub mod cluster_state;
 pub mod protobuf;
+pub mod scheduler;
 pub mod service;
 
 pub use service::{ClusterControllerHandle, Error, Service};

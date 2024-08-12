@@ -443,7 +443,7 @@ mod tests {
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_bifrost::{Bifrost, LogRecord, Record};
+    use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
     use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_storage_api::StorageError;
@@ -561,7 +561,7 @@ mod tests {
     }
 
     async fn collect_invoke_commands_until(
-        stream: impl Stream<Item = restate_bifrost::Result<LogRecord>>,
+        stream: impl Stream<Item = restate_bifrost::Result<LogEntry>>,
         last_invocation_id: InvocationId,
     ) -> anyhow::Result<Vec<ServiceInvocation>> {
         let mut messages = Vec::new();
@@ -570,7 +570,7 @@ mod tests {
         while let Some(record) = stream.next().await {
             let record = record?;
 
-            if let Record::Data(data) = record.record {
+            if let MaybeRecord::Data(data) = record.record {
                 let mut body = data.into_body();
                 let envelope = StorageCodec::decode::<Envelope, _>(&mut body)?;
 

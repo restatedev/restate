@@ -364,4 +364,15 @@ impl MetadataStoreClientError for ReadWriteError {
     }
 }
 
+impl MetadataStoreClientError for WriteError {
+    fn is_network_error(&self) -> bool {
+        match self {
+            WriteError::FailedPrecondition(_) => false,
+            WriteError::Network(_) => true,
+            WriteError::Internal(_) => false,
+            WriteError::Codec(_) => false,
+        }
+    }
+}
+
 static_assertions::assert_impl_all!(MetadataStoreClient: Send, Sync, Clone);

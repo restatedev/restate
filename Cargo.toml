@@ -138,6 +138,7 @@ paste = "1.0"
 pin-project = "1.0"
 prost = { version = "0.13.1" }
 prost-build = { version = "0.13.1" }
+priority-queue = "2.0.3"
 prost-dto = { version = "0.0.2" }
 prost-types = { version = "0.13.1" }
 rand = "0.8.5"

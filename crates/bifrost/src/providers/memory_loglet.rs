@@ -32,7 +32,7 @@ use crate::loglet::{
     LogletReadStream, OperationError, SendableLogletReadStream,
 };
 use crate::Result;
-use crate::{LogRecord, TailState};
+use crate::{LogEntry, TailState};
 
 #[derive(Default)]
 pub struct Factory {
@@ -157,13 +157,13 @@ impl MemoryLoglet {
     fn read_from(
         &self,
         from_offset: LogletOffset,
-    ) -> Result<Option<LogRecord<LogletOffset, Bytes>>, OperationError> {
+    ) -> Result<Option<LogEntry<LogletOffset, Bytes>>, OperationError> {
         let guard = self.log.lock().unwrap();
         let trim_point = LogletOffset(self.trim_point_offset.load(Ordering::Relaxed));
         let head_offset = trim_point.next();
         // Are we reading behind the loglet head?
         if from_offset < head_offset {
-            return Ok(Some(LogRecord::new_trim_gap(from_offset, trim_point)));
+            return Ok(Some(LogEntry::new_trim_gap(from_offset, trim_point)));
         }
 
         // are we reading after commit offset?
@@ -172,7 +172,7 @@ impl MemoryLoglet {
             Ok(None)
         } else {
             let index = self.saturating_offset_to_index(from_offset);
-            Ok(Some(LogRecord::new_data(
+            Ok(Some(LogEntry::new_data(
                 from_offset,
                 guard.get(index).expect("reading untrimmed data").clone(),
             )))
@@ -232,7 +232,7 @@ impl LogletReadStream<LogletOffset> for MemoryReadStream {
 }
 
 impl Stream for MemoryReadStream {
-    type Item = Result<LogRecord<LogletOffset, Bytes>, OperationError>;
+    type Item = Result<LogEntry<LogletOffset, Bytes>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -281,7 +281,7 @@ impl Stream for MemoryReadStream {
             // Are we reading behind the loglet head? -> TrimGap
             assert!(next_offset > LogletOffset::from(0));
             if next_offset < head_offset {
-                let trim_gap = LogRecord::new_trim_gap(next_offset, trim_point);
+                let trim_gap = LogEntry::new_trim_gap(next_offset, trim_point);
                 // next record should be beyond at the head
                 self.read_pointer = head_offset;
                 return Poll::Ready(Some(Ok(trim_gap)));

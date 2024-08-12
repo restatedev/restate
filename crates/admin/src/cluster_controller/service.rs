@@ -15,7 +15,6 @@ use std::sync::Arc;
 use codederror::CodedError;
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
-use restate_core::metadata_store::MetadataStoreClient;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
@@ -23,25 +22,23 @@ use tracing::{debug, warn};
 
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::live::Live;
-use restate_types::net::cluster_controller::{Action, AttachRequest, AttachResponse, RunPartition};
-use restate_types::net::RequestId;
-use restate_types::partition_table::{KeyRange, PartitionTable};
+use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 
+use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
+use crate::cluster_controller::scheduler::Scheduler;
 use restate_bifrost::{Bifrost, BifrostAdmin};
+use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
 use restate_core::{
     cancellation_watcher, Metadata, MetadataWriter, ShutdownError, TargetVersion, TaskCenter,
     TaskKind,
 };
-use restate_types::cluster::cluster_state::RunMode;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, NodeState};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::MessageEnvelope;
 use restate_types::{GenerationalNodeId, Version};
-
-use super::cluster_state::{ClusterStateRefresher, ClusterStateWatcher};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -73,13 +70,13 @@ where
     N: NetworkSender + 'static,
 {
     pub fn new(
-        configuration: Live<Configuration>,
-        metadata_writer: MetadataWriter,
-        metadata_store_client: MetadataStoreClient,
+        mut configuration: Live<Configuration>,
         task_center: TaskCenter,
         metadata: Metadata,
         networking: N,
         router_builder: &mut MessageRouterBuilder,
+        metadata_writer: MetadataWriter,
+        metadata_store_client: MetadataStoreClient,
     ) -> Self {
         let incoming_messages = router_builder.subscribe_to_stream(10);
         let (command_tx, command_rx) = mpsc::channel(2);
@@ -91,20 +88,21 @@ where
             router_builder,
         );
 
-        let options = &configuration.pinned().admin;
+        let options = configuration.live_load();
 
-        let heartbeat_interval = Self::create_heartbeat_interval(options);
-        let (log_trim_interval, log_trim_threshold) = Self::create_log_trim_interval(options);
+        let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
+        let (log_trim_interval, log_trim_threshold) =
+            Self::create_log_trim_interval(&options.admin);
 
         Service {
             configuration,
-            metadata_writer,
-            metadata_store_client,
             task_center,
             metadata,
             networking,
             incoming_messages,
             cluster_state_refresher,
+            metadata_writer,
+            metadata_store_client,
             command_tx,
             command_rx,
             heartbeat_interval,
@@ -205,7 +203,7 @@ where
 
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let mut config_watcher = Configuration::watcher();
-        let cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
+        let mut cluster_state_watcher = self.cluster_state_refresher.cluster_state_watcher();
 
         // todo: This is a temporary band-aid for https://github.com/restatedev/restate/issues/1651
         //  Remove once it is properly fixed.
@@ -215,12 +213,19 @@ where
                 "signal-all-partitions-started",
                 None,
                 signal_all_partitions_started(
-                    cluster_state_watcher,
+                    cluster_state_watcher.clone(),
                     self.metadata.clone(),
                     all_partition_started_tx,
                 ),
             )?;
         }
+
+        let mut scheduler = Scheduler::init(
+            self.task_center.clone(),
+            self.metadata_store_client.clone(),
+            self.networking.clone(),
+        )
+        .await?;
 
         loop {
             tokio::select! {
@@ -235,12 +240,15 @@ where
                         warn!("Could not trim the logs. This can lead to increased disk usage: {err}");
                     }
                 }
+                Ok(cluster_state) = cluster_state_watcher.next_cluster_state() => {
+                    scheduler.on_cluster_state_update(cluster_state).await?;
+                }
                 Some(cmd) = self.command_rx.recv() => {
                     self.on_cluster_cmd(cmd, bifrost_admin).await;
                 }
                 Some(message) = self.incoming_messages.next() => {
                     let (from, message) = message.split();
-                    self.on_attach_request(from, message)?;
+                    self.on_attach_request(&mut scheduler, from, message).await?;
                 }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
@@ -337,47 +345,31 @@ where
         }
     }
 
-    fn on_attach_request(
+    async fn on_attach_request(
         &self,
+        scheduler: &mut Scheduler<N>,
         from: GenerationalNodeId,
         request: AttachRequest,
     ) -> Result<(), ShutdownError> {
-        let partition_table = self.metadata.partition_table_ref();
+        let actions = scheduler.on_attach_node(from).await?;
         let networking = self.networking.clone();
-        let response = self.create_attachment_response(&partition_table, from, request.request_id);
         self.task_center.spawn(
             TaskKind::Disposable,
             "attachment-response",
             None,
-            async move { Ok(networking.send(from.into(), &response).await?) },
+            async move {
+                Ok(networking
+                    .send(
+                        from.into(),
+                        &AttachResponse {
+                            request_id: request.request_id,
+                            actions,
+                        },
+                    )
+                    .await?)
+            },
         )?;
         Ok(())
-    }
-
-    fn create_attachment_response(
-        &self,
-        partition_table: &PartitionTable,
-        _node: GenerationalNodeId,
-        request_id: RequestId,
-    ) -> AttachResponse {
-        // simulating a plan after initial attachment
-        let actions = partition_table
-            .partitions()
-            .map(|(partition_id, partition)| {
-                Action::RunPartition(RunPartition {
-                    partition_id: *partition_id,
-                    key_range_inclusive: KeyRange {
-                        from: *partition.key_range.start(),
-                        to: *partition.key_range.end(),
-                    },
-                    mode: RunMode::Leader,
-                })
-            })
-            .collect();
-        AttachResponse {
-            request_id,
-            actions,
-        }
     }
 }
 
@@ -432,16 +424,18 @@ mod tests {
     use bytes::Bytes;
     use googletest::matchers::eq;
     use googletest::{assert_that, pat};
-    use restate_bifrost::{Bifrost, Record, TrimGap};
+    use restate_bifrost::{Bifrost, MaybeRecord, TrimGap};
     use restate_core::network::{MessageHandler, NetworkSender};
-    use restate_core::{MockNetworkSender, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_core::{
+        MockNetworkSender, NoOpMessageHandler, TaskKind, TestCoreEnv, TestCoreEnvBuilder,
+    };
     use restate_types::cluster::cluster_state::PartitionProcessorStatus;
     use restate_types::config::{AdminOptions, Configuration};
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::partition_processor_manager::{
-        GetProcessorsState, ProcessorsStateResponse,
+        ControlProcessors, GetProcessorsState, ProcessorsStateResponse,
     };
     use restate_types::net::{AdvertisedAddress, MessageEnvelope};
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
@@ -459,12 +453,12 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(Configuration::default()),
-            builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.network_sender.clone(),
             &mut builder.router_builder,
+            builder.metadata_writer.clone(),
+            builder.metadata_store_client.clone(),
         );
         let metadata = builder.metadata.clone();
         let svc_handle = svc.handle();
@@ -496,7 +490,7 @@ mod tests {
                 let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
                 assert_that!(
                     record.record,
-                    pat!(Record::TrimGap(pat!(TrimGap {
+                    pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                         to: eq(Lsn::from(3)),
                     })))
                 );
@@ -566,7 +560,9 @@ mod tests {
                 block_list: BTreeSet::new(),
             };
 
-            builder.add_message_handler(get_processor_state_handler)
+            builder
+                .add_message_handler(get_processor_state_handler)
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
@@ -629,7 +625,9 @@ mod tests {
                 block_list: BTreeSet::new(),
             };
 
-            builder.add_message_handler(get_processor_state_handler)
+            builder
+                .add_message_handler(get_processor_state_handler)
+                .add_message_handler(NoOpMessageHandler::<ControlProcessors>::default())
         })
         .await?;
 
@@ -740,12 +738,12 @@ mod tests {
 
         let svc = Service::new(
             Live::from_value(config),
-            builder.metadata_writer.clone(),
-            builder.metadata_store_client.clone(),
             builder.tc.clone(),
             builder.metadata.clone(),
             builder.network_sender.clone(),
             &mut builder.router_builder,
+            builder.metadata_writer.clone(),
+            builder.metadata_store_client.clone(),
         );
 
         let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());

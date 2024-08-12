@@ -21,7 +21,7 @@ use tokio::time::MissedTickBehavior;
 use tokio_stream::StreamExt;
 use tracing::{debug, instrument, trace, warn, Span};
 
-use restate_bifrost::{Bifrost, FindTailAttributes, LogRecord, Record};
+use restate_bifrost::{Bifrost, FindTailAttributes, LogEntry, MaybeRecord};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
 use restate_core::network::Networking;
@@ -251,13 +251,13 @@ where
                 Lsn::MAX,
             )?
             .map_ok(|record| {
-                let LogRecord { record, offset } = record;
+                let LogEntry { record, offset } = record;
                 match record {
-                    Record::Data(payload) => {
+                    MaybeRecord::Data(payload) => {
                         let envelope = Envelope::from_bytes(payload.into_body())?;
                         anyhow::Ok((offset, envelope))
                     }
-                    Record::TrimGap(_) => {
+                    MaybeRecord::TrimGap(_) => {
                         unimplemented!("Currently not supported")
                     }
                 }

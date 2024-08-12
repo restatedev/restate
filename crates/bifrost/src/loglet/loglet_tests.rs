@@ -27,7 +27,7 @@ use tracing::info;
 use super::{Loglet, LogletOffset};
 use crate::loglet::{AppendError, LogletBase, LogletReadStream};
 use crate::loglet_wrapper::LogletWrapper;
-use crate::{setup_panic_handler, LogRecord, Record, TailState, TrimGap};
+use crate::{setup_panic_handler, LogEntry, MaybeRecord, TailState, TrimGap};
 
 async fn wait_for_trim(loglet: &LogletWrapper, required_trim_point: Lsn) -> anyhow::Result<()> {
     for _ in 0..3 {
@@ -82,20 +82,20 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 
     // read record 1 (reading from OLDEST)
     let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
-    let LogRecord { offset, record } = log_record;
+    let LogEntry { offset, record } = log_record;
     assert_eq!(Lsn::OLDEST, offset);
     assert!(record.is_data());
     assert_eq!(Some(&Bytes::from_static(b"record1")), record.payload());
 
     // read record 2
     let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
-    let LogRecord { offset, record } = log_record;
+    let LogEntry { offset, record } = log_record;
     assert_eq!(Lsn::new(2), offset);
     assert_eq!(Some(&Bytes::from_static(b"record2")), record.payload());
 
     // read record 3
     let_assert!(Some(log_record) = loglet.read_opt(offset.next()).await?);
-    let LogRecord { offset, record } = log_record;
+    let LogEntry { offset, record } = log_record;
     assert_eq!(Lsn::new(3), offset);
     assert_eq!(Some(&Bytes::from_static(b"record3")), record.payload());
 
@@ -114,7 +114,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 4
-            let LogRecord { offset, record } = loglet.read(Lsn::new(4)).await?;
+            let LogEntry { offset, record } = loglet.read(Lsn::new(4)).await?;
             assert_eq!(Lsn::new(4), offset);
             assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
             Ok(())
@@ -126,7 +126,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         let loglet = loglet.clone();
         async move {
             // read future record 10
-            let LogRecord { offset, record } = loglet.read(Lsn::new(10)).await?;
+            let LogEntry { offset, record } = loglet.read(Lsn::new(10)).await?;
             assert_eq!(Lsn::new(10), offset);
             assert_eq!(Some(&Bytes::from_static(b"record10")), record.payload());
             Ok(())
@@ -182,13 +182,13 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     }
 
     let_assert!(Some(log_record) = loglet.read_opt(Lsn::OLDEST).await?);
-    let LogRecord { offset, record } = log_record;
+    let LogEntry { offset, record } = log_record;
     assert_eq!(Lsn::OLDEST, offset);
     assert!(record.is_trim_gap());
     assert_eq!(Lsn::new(3), record.try_as_trim_gap_ref().unwrap().to);
 
     let_assert!(Some(log_record) = loglet.read_opt(Lsn::from(4)).await?);
-    let LogRecord { offset, record } = log_record;
+    let LogEntry { offset, record } = log_record;
     assert_eq!(Lsn::from(4), offset);
     assert!(record.is_data());
     assert_eq!(Some(&Bytes::from_static(b"record4")), record.payload());
@@ -313,9 +313,9 @@ pub async fn single_loglet_readstream_with_trims(
     let record = read_stream.next().await.unwrap()?;
     assert_that!(
         record,
-        pat!(LogRecord {
+        pat!(LogEntry {
             offset: eq(Lsn::new(1)),
-            record: pat!(Record::TrimGap(pat!(TrimGap {
+            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                 to: eq(Lsn::new(5)),
             })))
         })
@@ -328,9 +328,9 @@ pub async fn single_loglet_readstream_with_trims(
         let record = read_stream.next().await.unwrap()?;
         assert_that!(
             record,
-            pat!(LogRecord {
+            pat!(LogEntry {
                 offset: eq(Lsn::new(offset)),
-                record: pat!(Record::Data(_))
+                record: pat!(MaybeRecord::Data(_))
             })
         );
     }
@@ -369,9 +369,9 @@ pub async fn single_loglet_readstream_with_trims(
     let record = read_stream.next().await.unwrap()?;
     assert_that!(
         record,
-        pat!(LogRecord {
+        pat!(LogEntry {
             offset: eq(Lsn::new(8)),
-            record: pat!(Record::TrimGap(pat!(TrimGap {
+            record: pat!(MaybeRecord::TrimGap(pat!(TrimGap {
                 to: eq(Lsn::new(10)),
             })))
         })
@@ -382,9 +382,9 @@ pub async fn single_loglet_readstream_with_trims(
         let expected_payload = Bytes::from(format!("record{}", i));
         assert_that!(
             record,
-            eq(LogRecord {
+            eq(LogEntry {
                 offset: Lsn::new(i),
-                record: Record::Data(expected_payload),
+                record: MaybeRecord::Data(expected_payload),
             })
         );
     }
