@@ -15,7 +15,6 @@ use rand::seq::SliceRandom;
 use restate_types::config::NetworkingOptions;
 use restate_types::net::codec::try_unwrap_binary_message;
 use std::collections::{hash_map, HashMap};
-use std::ops::{Index, IndexMut};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -647,8 +646,9 @@ fn on_connection_terminated(inner_manager: &Mutex<ConnectionManagerInner>) {
     guard.drop_connection(task_id);
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, derive_more::Index, derive_more::IndexMut)]
 pub struct MetadataVersions {
+    #[index]
     versions: EnumMap<MetadataKind, Version>,
 }
 
@@ -691,20 +691,6 @@ impl MetadataVersions {
             }
         }
         None
-    }
-}
-
-impl Index<MetadataKind> for MetadataVersions {
-    type Output = Version;
-
-    fn index(&self, index: MetadataKind) -> &Self::Output {
-        &self.versions[index]
-    }
-}
-
-impl IndexMut<MetadataKind> for MetadataVersions {
-    fn index_mut(&mut self, index: MetadataKind) -> &mut Self::Output {
-        &mut self.versions[index]
     }
 }
 

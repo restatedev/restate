@@ -20,7 +20,7 @@ use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
-#[derive(Debug, strum_macros::IntoStaticStr)]
+#[derive(Debug, strum::IntoStaticStr)]
 pub enum Action {
     Invoke {
         invocation_id: InvocationId,

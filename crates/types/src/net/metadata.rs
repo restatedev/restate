@@ -10,7 +10,7 @@
 
 use enum_map::Enum;
 use serde::{Deserialize, Serialize};
-use strum_macros::EnumIter;
+use strum::EnumIter;
 
 use crate::logs::metadata::Logs;
 use crate::net::TargetName;
@@ -26,8 +26,8 @@ use crate::net::define_message;
     Serialize,
     Deserialize,
     derive_more::From,
-    strum_macros::EnumIs,
-    strum_macros::IntoStaticStr,
+    derive_more::IsVariant,
+    strum::IntoStaticStr,
 )]
 pub enum MetadataMessage {
     GetMetadataRequest(GetMetadataRequest),
@@ -51,8 +51,8 @@ define_message! {
     EnumIter,
     Serialize,
     Deserialize,
-    strum_macros::Display,
-    strum_macros::EnumCount,
+    derive_more::Display,
+    strum::EnumCount,
 )]
 pub enum MetadataKind {
     NodesConfiguration,

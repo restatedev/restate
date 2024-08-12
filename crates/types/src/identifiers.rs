@@ -44,7 +44,7 @@ use crate::time::MillisSinceEpoch;
     serde::Serialize,
     serde::Deserialize,
 )]
-#[display(fmt = "e{}", _0)]
+#[display("e{}", _0)]
 pub struct LeaderEpoch(u64);
 impl LeaderEpoch {
     pub const INITIAL: Self = Self(1);
