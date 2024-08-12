@@ -138,7 +138,8 @@ generate-config-schema:
     cargo xtask generate-config-schema > restate_config_schema.json
 
 check-deny:
-    # cargo-deny-action runs as a separate workflow in CI
+    #!/usr/bin/env bash
+    # cargo-deny-action runs as a standalone workflow in CI
     if [[ -z "$CI" ]]; then
         cargo deny --all-features check
     fi
