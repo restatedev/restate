@@ -25,9 +25,6 @@ jobs:
       - name: Check license headers
         run: ./tools/scripts/check-license-headers
 
-      - name: Rustfmt Check
-        uses: actions-rust-lang/rustfmt@v1
-
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -79,11 +76,8 @@ jobs:
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
 
-      - name: Clippy Check
-        run: just clippy
-
-      - name: Run tests
-        run: just test
+      - name: Run verify
+        run: just verify
 
   docker:
     name: Create docker image
