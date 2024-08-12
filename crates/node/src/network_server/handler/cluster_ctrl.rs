@@ -15,14 +15,15 @@ use tracing::info;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
     ClusterStateRequest, ClusterStateResponse, DescribeLogRequest, DescribeLogResponse,
-    ListLogsRequest, ListLogsResponse, TrimLogRequest,
+    ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
 use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
-use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::network_server::AdminDependencies;
@@ -117,6 +118,27 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 restate_bifrost::TailState::Sealed(_) => 2,
             },
             tail_offset: tail_state.offset().as_u64(),
+        }))
+    }
+
+    async fn list_nodes(
+        &self,
+        _request: Request<ListNodesRequest>,
+    ) -> Result<Response<ListNodesResponse>, Status> {
+        let nodes_config = self
+            .metadata_store_client
+            .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+            .await
+            .map_err(|error| {
+                Status::unknown(format!(
+                    "Failed to get nodes configuration metadata: {:?}",
+                    error
+                ))
+            })?
+            .ok_or(Status::not_found("Missing nodes configuration"))?;
+
+        Ok(Response::new(ListNodesResponse {
+            nodes_configuration: serialize_value(nodes_config),
         }))
     }
 

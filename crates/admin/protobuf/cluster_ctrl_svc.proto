@@ -22,6 +22,8 @@ service ClusterCtrlSvc {
 
   rpc DescribeLog(DescribeLogRequest) returns (DescribeLogResponse);
 
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+
   rpc TrimLog(TrimLogRequest) returns (google.protobuf.Empty);
 }
 
@@ -53,6 +55,13 @@ message DescribeLogResponse {
   bytes chain = 1;
   TailState tail_state = 2;
   uint64 tail_offset = 3;
+}
+
+message ListNodesRequest { }
+
+message ListNodesResponse {
+  // Serialized restate_types::nodes_config::NodesConfiguration
+  bytes nodes_configuration = 1;
 }
 
 message TrimLogRequest {

@@ -12,20 +12,19 @@ use std::collections::BTreeMap;
 
 use anyhow::Context;
 use cling::prelude::*;
+use itertools::Itertools;
+use tonic::codec::CompressionEncoding;
+
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
-use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
-use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
+use restate_admin::cluster_controller::protobuf::ListNodesRequest;
+use restate_cli_util::_comfy_table::{Cell, Table};
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::Tense;
+use restate_cli_util::{c_println, c_title};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::StorageCodec;
 
 use crate::app::ConnectionInfo;
-use crate::commands::display_util;
 use crate::util::grpc_connect;
-use display_util::render_as_duration;
-use restate_cli_util::{c_println, c_title};
-use restate_types::protobuf::cluster::{node_state, AliveNode, DeadNode, RunMode};
-use restate_types::PlainNodeId;
-use tonic::codec::CompressionEncoding;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "nodes")]
@@ -44,77 +43,42 @@ async fn list_nodes(connection: &ConnectionInfo, _opts: &ListNodesOpts) -> anyho
     let mut client =
         ClusterCtrlSvcClient::new(channel).accept_compressed(CompressionEncoding::Gzip);
 
-    let req = ClusterStateRequest::default();
-    let state = client
-        .get_cluster_state(req)
-        .await?
-        .into_inner()
-        .cluster_state
-        .ok_or_else(|| anyhow::anyhow!("no cluster state returned"))?;
+    let mut response = client
+        .list_nodes(ListNodesRequest::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list nodes: {:?}", e))?
+        .into_inner();
 
-    let mut nodes: BTreeMap<PlainNodeId, AliveNode> = BTreeMap::new();
-    let mut dead_nodes: BTreeMap<PlainNodeId, DeadNode> = BTreeMap::new();
-    for (node_id, node_state) in state.nodes {
-        match node_state.state.expect("node state is set") {
-            node_state::State::Alive(alive_node) => {
-                nodes.insert(PlainNodeId::from(node_id), alive_node);
-            }
-            node_state::State::Dead(dead_node) => {
-                dead_nodes.insert(PlainNodeId::from(node_id), dead_node);
-            }
-        }
-    }
+    let nodes_configuration =
+        StorageCodec::decode::<NodesConfiguration, _>(&mut response.nodes_configuration)?;
+    let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
+
+    c_title!(
+        "📋️",
+        format!("Configuration {}", nodes_configuration.version())
+    );
 
     let mut nodes_table = Table::new_styled();
-    nodes_table.set_styled_header(vec![
-        "NODE",
-        "LEADER",
-        "FOLLOWER",
-        "UNKNOWN",
-        "LAST REFRESH",
-    ]);
-    for (node_id, details) in nodes {
-        let (leader_partitions, follower_partitions, unknown) = details.partitions.iter().fold(
-            (0, 0, 0),
-            |(mut leader, mut follower, mut unknown), (_, status)| {
-                match status.effective_mode() {
-                    RunMode::Leader => leader += 1,
-                    RunMode::Follower => follower += 1,
-                    RunMode::Unknown => unknown += 1,
-                }
-                (leader, follower, unknown)
-            },
-        );
-        let header = vec![
-            Cell::new(node_id),
-            Cell::new(leader_partitions)
-                .fg(Color::Green)
-                .add_attribute(Attribute::Bold),
-            Cell::new(follower_partitions).fg(Color::DarkBlue),
-            match unknown {
-                0 => Cell::new(unknown).fg(Color::DarkGrey),
-                _ => Cell::new(unknown)
-                    .fg(Color::Red)
-                    .add_attribute(Attribute::Bold),
-            },
-            render_as_duration(details.last_heartbeat_at, Tense::Past),
+    nodes_table.set_styled_header(vec!["NODE", "GEN", "NAME", "ADDRESS", "ROLES"]);
+    for (node_id, node_config) in nodes {
+        let node_row = vec![
+            Cell::new(node_id.to_string()),
+            Cell::new(node_config.current_generation.generation().to_string()),
+            Cell::new(node_config.name.clone()),
+            Cell::new(node_config.address.to_string()),
+            Cell::new(
+                node_config
+                    .roles
+                    .iter()
+                    .map(|r| r.to_string())
+                    .sorted()
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
         ];
-        nodes_table.add_row(header);
+        nodes_table.add_row(node_row);
     }
     c_println!("{}", nodes_table);
-
-    if !dead_nodes.is_empty() {
-        c_title!("☠️", "DEAD NODES");
-        let mut dead_nodes_table = Table::new_styled();
-        dead_nodes_table.set_styled_header(vec!["NODE", "LAST SEEN ALIVE"]);
-        for (node_id, dead_node) in dead_nodes {
-            dead_nodes_table.add_row(vec![
-                Cell::new(node_id),
-                render_as_duration(dead_node.last_seen_alive, Tense::Past),
-            ]);
-        }
-        c_println!("{}", dead_nodes_table);
-    }
 
     Ok(())
 }
