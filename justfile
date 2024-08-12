@@ -138,7 +138,10 @@ generate-config-schema:
     cargo xtask generate-config-schema > restate_config_schema.json
 
 check-deny:
-    cargo deny --all-features check
+    # cargo-deny-action runs as a separate workflow in CI
+    if [[ -z "$CI" ]]; then
+        cargo deny --all-features check
+    fi
 
 flamegraph *flags:
     cargo flamegraph {{ _flamegraph_options }} {{ flags }}
