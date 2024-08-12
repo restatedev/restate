@@ -135,7 +135,7 @@ where
     fn prev(self) -> Self;
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 /// The keys that are associated with a record. This is used to filter the log when reading.
 pub enum Keys {
     /// No keys are associated with the record. This record will appear to *all* readers regardless

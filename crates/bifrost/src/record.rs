@@ -146,6 +146,10 @@ impl Record {
         self.header.created_at
     }
 
+    pub fn keys(&self) -> &Keys {
+        &self.keys
+    }
+
     /// Decode the record body into an owned value T.
     ///
     /// Internally, this will clone the inner value if it's already in record cache, or will move
