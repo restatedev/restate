@@ -8,12 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::errors::GenericError;
+use std::mem;
+use std::sync::Arc;
+
 use bytes::{Buf, BufMut, BytesMut};
+use downcast_rs::{impl_downcast, DowncastSync};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use serde::ser::Error as SerializationError;
 use serde::Serialize;
-use std::mem;
+
+use crate::errors::GenericError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageEncodeError {
@@ -68,14 +72,22 @@ impl TryFrom<u8> for StorageCodecKind {
 pub struct StorageCodec;
 
 impl StorageCodec {
-    pub fn encode<T: StorageEncode>(
-        value: T,
+    pub fn encode<T: StorageEncode + ?Sized>(
+        value: &T,
         buf: &mut BytesMut,
     ) -> Result<(), StorageEncodeError> {
         // write codec
         buf.put_u8(value.default_codec().into());
         // encode value
         value.encode(buf)
+    }
+
+    pub fn encode_and_split<T: StorageEncode + ?Sized>(
+        value: &T,
+        buf: &mut BytesMut,
+    ) -> Result<BytesMut, StorageEncodeError> {
+        Self::encode(value, buf)?;
+        Ok(buf.split())
     }
 
     pub fn decode<T: StorageDecode, B: Buf>(buf: &mut B) -> Result<T, StorageDecodeError> {
@@ -101,12 +113,13 @@ impl StorageCodec {
 ///
 /// # Important
 /// The [`Self::encode`] implementation should use the codec specified by [`Self::default_codec`].
-pub trait StorageEncode {
+pub trait StorageEncode: DowncastSync {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError>;
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
 }
+impl_downcast!(sync StorageEncode);
 
 static_assertions::assert_obj_safe!(StorageEncode);
 
@@ -120,45 +133,6 @@ pub trait StorageDecode {
     fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized;
-}
-
-impl<T: StorageEncode> StorageEncode for &T {
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
-        (*self).encode(buf)
-    }
-
-    fn default_codec(&self) -> StorageCodecKind {
-        StorageEncode::default_codec(*self)
-    }
-}
-
-impl<T: StorageEncode> StorageEncode for &mut T {
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
-        T::encode(*self, buf)
-    }
-
-    fn default_codec(&self) -> StorageCodecKind {
-        StorageEncode::default_codec(*self)
-    }
-}
-
-impl<T: StorageEncode> StorageEncode for Box<T> {
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
-        T::encode(&**self, buf)
-    }
-
-    fn default_codec(&self) -> StorageCodecKind {
-        StorageEncode::default_codec(self.as_ref())
-    }
-}
-
-impl<T: StorageDecode> StorageDecode for Box<T> {
-    fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
-    where
-        Self: Sized,
-    {
-        T::decode(buf, kind).map(Box::new)
-    }
 }
 
 /// Implements the [`StorageEncode`] and [`StorageDecode`] by encoding/decoding the implementing
@@ -203,7 +177,30 @@ macro_rules! flexbuffers_storage_encode_decode {
     };
 }
 
-// Enable simple serialization of String types as length-prefixed byte slice
+/// A polymorphic container of a buffer or a cached storage-encodeable object
+#[derive(Clone)]
+pub enum PolyBytes {
+    /// Raw bytes backed by (Bytes), so it's cheap to clone
+    Bytes(bytes::Bytes),
+    /// A cached deserialized value that can be downcasted to the original type
+    Typed(Arc<dyn StorageEncode>),
+}
+
+static_assertions::assert_impl_all!(PolyBytes: Send, Sync);
+
+impl std::fmt::Debug for PolyBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PolyBytes::Bytes(raw) => f
+                .debug_tuple("Bytes")
+                .field(&format_args!("{} bytes", raw.len()))
+                .finish(),
+            PolyBytes::Typed(_) => f.debug_tuple("Typed").finish(),
+        }
+    }
+}
+
+/// Enable simple serialization of String types as length-prefixed byte slice
 impl StorageEncode for String {
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::LengthPrefixedRawBytes
@@ -229,6 +226,44 @@ impl StorageEncode for String {
         }
         buf.put_slice(my_bytes);
         Ok(())
+    }
+}
+impl StorageDecode for String {
+    fn decode<B: ::bytes::Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        match kind {
+            StorageCodecKind::LengthPrefixedRawBytes => {
+                if buf.remaining() < mem::size_of::<u32>() {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!(
+                            "insufficient data: expecting {} bytes for length",
+                            mem::size_of::<u32>()
+                        )
+                        .into(),
+                    ));
+                }
+                let length = usize::try_from(buf.get_u32_le()).expect("u32 to fit into usize");
+
+                if buf.remaining() < length {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!(
+                            "insufficient data: expecting {} bytes for flexbuffers",
+                            length
+                        )
+                        .into(),
+                    ));
+                }
+
+                let bytes = buf.take(length);
+                Ok(String::from_utf8_lossy(bytes.chunk()).to_string())
+            }
+            codec => Err(StorageDecodeError::UnsupportedCodecKind(codec)),
+        }
     }
 }
 
@@ -308,5 +343,24 @@ pub fn decode_from_flexbuffers<T: DeserializeOwned, B: Buf>(
         // need to allocate contiguous buffer of length for flexbuffers
         let bytes = buf.copy_to_bytes(length);
         flexbuffers::from_slice(&bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_polybytes() {
+        let bytes = PolyBytes::Bytes(Bytes::from_static(b"hello"));
+        assert_eq!(format!("{:?}", bytes), "Bytes(5 bytes)");
+        let typed = PolyBytes::Typed(Arc::new("hello".to_string()));
+        assert_eq!(format!("{:?}", typed), "Typed");
+        // can be downcasted.
+        let a: Arc<dyn StorageEncode> = Arc::new("hello".to_string());
+        assert!(a.is::<String>());
     }
 }

@@ -479,7 +479,7 @@ impl Node {
             let result = metadata_store_client
                 .put(
                     SCHEDULING_PLAN_KEY.clone(),
-                    scheduling_plan.clone(),
+                    &scheduling_plan,
                     Precondition::DoesNotExist,
                 )
                 .await;

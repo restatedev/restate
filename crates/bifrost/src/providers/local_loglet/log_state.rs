@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Bytes, BytesMut};
-use restate_types::flexbuffers_storage_encode_decode;
-use restate_types::storage::StorageCodec;
+use bytes::BytesMut;
 use rocksdb::MergeOperands;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tracing::{error, trace, warn};
+
+use restate_types::flexbuffers_storage_encode_decode;
+use restate_types::storage::StorageCodec;
 
 use super::keys::{MetadataKey, MetadataKind};
 use crate::loglet::LogletOffset;
@@ -54,7 +55,6 @@ impl LogStateUpdates {
                 return self;
             }
         }
-
         self.updates
             .push(LogStateUpdate::ReleasePointer(release_pointer.into()));
         self
@@ -103,15 +103,23 @@ impl LogStateUpdates {
 }
 
 impl LogStateUpdates {
-    pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
+    pub fn to_bytes(&self) -> Result<BytesMut, LogStoreError> {
         // trying to avoid buffer resizing by having plenty of space for serialization
         let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
         self.encode(&mut buf)?;
-        Ok(buf.freeze())
+        Ok(buf)
+    }
+
+    pub fn encode_and_split(&self, buf: &mut BytesMut) -> Result<BytesMut, LogStoreError> {
+        self.encode(buf)?;
+        Ok(buf.split())
     }
 
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), LogStoreError> {
-        Ok(StorageCodec::encode(self, buf)?)
+        // trying to avoid buffer resizing by having plenty of space for serialization
+        buf.reserve(std::mem::size_of::<Self>() * 2);
+        StorageCodec::encode(self, buf)?;
+        Ok(())
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {
@@ -129,11 +137,24 @@ pub struct LogState {
 }
 
 impl LogState {
-    pub fn to_bytes(&self) -> Result<Bytes, LogStoreError> {
+    pub fn to_bytes(&self) -> Result<BytesMut, LogStoreError> {
         // trying to avoid buffer resizing by having plenty of space for serialization
         let mut buf = BytesMut::with_capacity(std::mem::size_of::<Self>() * 2);
-        StorageCodec::encode(self, &mut buf)?;
-        Ok(buf.freeze())
+        self.encode(&mut buf)?;
+        Ok(buf)
+    }
+
+    #[allow(unused)]
+    pub fn encode_and_split(&self, buf: &mut BytesMut) -> Result<BytesMut, LogStoreError> {
+        self.encode(buf)?;
+        Ok(buf.split())
+    }
+
+    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), LogStoreError> {
+        // trying to avoid buffer resizing by having plenty of space for serialization
+        buf.reserve(std::mem::size_of::<Self>() * 2);
+        StorageCodec::encode(self, buf)?;
+        Ok(())
     }
 
     pub fn from_slice(mut data: &[u8]) -> Result<Self, LogStoreError> {

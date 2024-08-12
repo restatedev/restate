@@ -15,7 +15,6 @@ mod bifrost_admin;
 mod error;
 pub mod loglet;
 mod loglet_wrapper;
-mod payload;
 pub mod providers;
 mod read_stream;
 mod record;
@@ -29,7 +28,7 @@ pub use bifrost::Bifrost;
 pub use bifrost_admin::BifrostAdmin;
 pub use error::{Error, Result};
 pub use read_stream::LogReadStream;
-pub use record::*;
+pub use record::{Header, InputRecord, LogEntry, Record};
 pub use service::BifrostService;
 pub use types::*;
 
