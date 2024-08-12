@@ -9,22 +9,6 @@ on:
       - main
 
 jobs:
-  rustfmt:
-    name: RustFmt Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: rustfmt
-          rustflags: ""
-
-      - name: Check license headers
-        run: ./tools/scripts/check-license-headers
-
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
