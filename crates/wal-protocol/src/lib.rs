@@ -25,7 +25,7 @@ use restate_types::{flexbuffers_storage_encode_decode, logs, Version};
 
 use crate::control::AnnounceLeader;
 use crate::timer::TimerKeyValue;
-use restate_types::logs::{HasRecordKeys, LogId, Lsn};
+use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn, MatchKeyQuery};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::GenerationalNodeId;
@@ -165,7 +165,38 @@ impl WithPartitionKey for Envelope {
 impl HasRecordKeys for Envelope {
     fn record_keys(&self) -> logs::Keys {
         // Placeholder implementation
-        logs::Keys::None
+        match &self.command {
+            Command::AnnounceLeader(announce) => {
+                if let Some(range) = &announce.partition_key_range {
+                    Keys::RangeInclusive(range.clone())
+                } else {
+                    // Fallback for old restate servers that didn't have partition_key_range.
+                    Keys::Single(self.partition_key())
+                }
+            }
+            Command::PatchState(mutation) => Keys::Single(mutation.service_id.partition_key()),
+            Command::TerminateInvocation(terminate) => {
+                Keys::Single(terminate.invocation_id.partition_key())
+            }
+            Command::PurgeInvocation(purge) => Keys::Single(purge.invocation_id.partition_key()),
+            Command::Invoke(invoke) => Keys::Single(invoke.partition_key()),
+            // todo: Remove this, or pass the partition key range but filter based on partition-id
+            // on read if needed.
+            Command::TruncateOutbox(_) => Keys::Single(self.partition_key()),
+            Command::ProxyThrough(_) => Keys::Single(self.partition_key()),
+            Command::AttachInvocation(_) => Keys::Single(self.partition_key()),
+            // todo: Handle journal entries that request cross-partition invocations
+            Command::InvokerEffect(effect) => Keys::Single(effect.invocation_id.partition_key()),
+            Command::Timer(timer) => Keys::Single(timer.invocation_id().partition_key()),
+            Command::ScheduleTimer(timer) => Keys::Single(timer.invocation_id().partition_key()),
+            Command::InvocationResponse(response) => Keys::Single(response.partition_key()),
+        }
+    }
+}
+
+impl MatchKeyQuery for Envelope {
+    fn matches_key_query(&self, query: &logs::KeyFilter) -> bool {
+        self.record_keys().matches_key_query(query)
     }
 }
 
