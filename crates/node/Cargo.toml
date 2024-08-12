@@ -38,7 +38,6 @@ axum = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
-derive-getters = { workspace = true }
 derive_builder = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
