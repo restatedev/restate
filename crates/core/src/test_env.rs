@@ -204,6 +204,13 @@ where
         let scheduling_plan =
             SchedulingPlan::from(&partition_table, ReplicationStrategy::OnAllNodes);
         tc.try_set_global_metadata(metadata.clone());
+
+        // Use memory-loglet as a default if in test-mode
+        #[cfg(any(test, feature = "test-util"))]
+        let provider_kind = ProviderKind::InMemory;
+        #[cfg(not(any(test, feature = "test-util")))]
+        let provider_kind = ProviderKind::Local;
+
         TestCoreEnvBuilder {
             tc,
             my_node_id,
@@ -217,7 +224,7 @@ where
             partition_table,
             scheduling_plan,
             metadata_store_client,
-            provider_kind: ProviderKind::InMemory,
+            provider_kind,
         }
     }
 
