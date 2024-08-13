@@ -2457,17 +2457,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive-getters"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a6433aac097572ea8ccc60b3f2e756c661c9aeed9225cdd4d0cb119cb7ff6ba"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.65",
-]
-
-[[package]]
 name = "derive-new"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5977,7 +5966,6 @@ dependencies = [
  "bytes",
  "codederror",
  "datafusion",
- "derive-getters",
  "derive_builder",
  "enum-map",
  "enumset",
@@ -6090,7 +6078,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
- "derive-getters",
  "derive_builder",
  "derive_more",
  "futures",
