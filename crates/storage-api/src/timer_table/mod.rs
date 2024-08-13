@@ -81,9 +81,9 @@ impl Ord for TimerKey {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    strum_macros::EnumDiscriminants,
+    strum::EnumDiscriminants,
 )]
-#[strum_discriminants(derive(strum_macros::VariantArray))]
+#[strum_discriminants(derive(strum::VariantArray))]
 pub enum TimerKeyKind {
     /// Delayed invocation
     Invoke { invocation_uuid: InvocationUuid },

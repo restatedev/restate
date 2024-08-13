@@ -19,7 +19,7 @@ use crate::metric_definitions::{
 };
 use crate::{Priority, OP_TYPE, PRIORITY, STORAGE_BG_TASK_IN_FLIGHT};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum_macros::IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
 pub enum StorageTaskKind {
     WriteBatch,

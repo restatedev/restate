@@ -35,7 +35,6 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
-strum_macros = { workspace = true }
 sync_wrapper = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

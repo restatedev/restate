@@ -44,33 +44,28 @@ use crate::{Result, TailState};
 use restate_core::ShutdownError;
 use restate_types::logs::{KeyFilter, SequenceNumber};
 
+#[derive(derive_more::Debug)]
 struct LocalLoglet {
     loglet_id: u64,
+    #[debug(skip)]
     log_store: RocksDbLogStore,
+    #[debug(skip)]
     log_writer: RocksDbLogWriterHandle,
     // internal offset _before_ the loglet head. Loglet head is trim_point_offset.next()
     trim_point_offset: AtomicU64,
     // used to order concurrent trim operations :-(
+    #[debug(skip)]
     trim_point_lock: Mutex<()>,
     // In local loglet, the release point == the last committed offset
     last_committed_offset: AtomicU64,
+    #[debug(skip)]
     next_write_offset: Mutex<LogletOffset>,
     sealed: AtomicBool,
     // watches the tail state of this loglet
+    #[debug(skip)]
     tail_watch: TailOffsetWatch,
+    #[debug(skip)]
     append_latency: Histogram,
-}
-
-impl std::fmt::Debug for LocalLoglet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalLoglet")
-            .field("loglet_id", &self.loglet_id)
-            .field("trim_point_offset", &self.trim_point_offset)
-            .field("last_committed_offset", &self.last_committed_offset)
-            .field("next_write_offset", &self.next_write_offset)
-            .field("sealed", &self.sealed)
-            .finish()
-    }
 }
 
 impl LocalLoglet {

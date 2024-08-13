@@ -1253,7 +1253,6 @@ dependencies = [
  "serde_with",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "tempfile",
  "thiserror",
  "tikv-jemallocator",
@@ -1829,12 +1828,6 @@ name = "constant_time_eq"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7144d30dcf0fafbce74250a3963025d8d52177934239851c917d29f1df280c2"
-
-[[package]]
-name = "convert_case"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "convert_case"
@@ -2500,15 +2493,24 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "0.99.17"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb810d30a7c1953f91334de7244731fc3f3c10d7fe163338a35b9f640960321"
+checksum = "4a9b99b9cbbe49445b21764dc0625032a89b145a2642e67603e1c936f5458d05"
 dependencies = [
- "convert_case 0.4.0",
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7330aeadfbe296029522e6c40f315320aba36fc43a5b3632f3795348f3bd22"
+dependencies = [
+ "convert_case",
  "proc-macro2",
  "quote",
- "rustc_version",
- "syn 1.0.109",
+ "syn 2.0.65",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -5450,6 +5452,7 @@ name = "restate-admin-rest-model"
 version = "1.1.0"
 dependencies = [
  "bytes",
+ "derive_more",
  "http 1.1.0",
  "http-serde",
  "humantime",
@@ -5460,7 +5463,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum 0.26.2",
- "strum_macros 0.26.2",
 ]
 
 [[package]]
@@ -5500,17 +5502,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "bytestring",
- "codederror",
  "criterion",
- "derive_builder",
  "derive_more",
  "enum-map",
  "futures",
  "googletest",
- "humantime",
  "metrics",
- "once_cell",
  "parking_lot",
  "paste",
  "pin-project",
@@ -5521,14 +5518,9 @@ dependencies = [
  "restate-types",
  "rlimit",
  "rocksdb",
- "schemars",
  "serde",
- "serde_json",
- "serde_with",
  "smallvec",
  "static_assertions",
- "strum 0.26.2",
- "strum_macros 0.26.2",
  "tempfile",
  "test-log",
  "thiserror",
@@ -5560,7 +5552,7 @@ dependencies = [
  "cling",
  "comfy-table",
  "const_format",
- "convert_case 0.6.0",
+ "convert_case",
  "crossterm 0.27.0",
  "ctrlc",
  "dialoguer",
@@ -5664,7 +5656,6 @@ dependencies = [
  "serde_with",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "test-log",
  "thiserror",
  "tokio",
@@ -5900,7 +5891,6 @@ dependencies = [
  "serde_with",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "tempfile",
  "test-log",
  "thiserror",
@@ -6002,7 +5992,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "tempfile",
  "thiserror",
  "tokio",
@@ -6048,7 +6037,6 @@ dependencies = [
  "serde",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "sync_wrapper 1.0.1",
  "tempfile",
  "thiserror",
@@ -6094,7 +6082,6 @@ dependencies = [
  "smartstring",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "thiserror",
  "threadpool",
  "tokio",
@@ -6227,7 +6214,6 @@ dependencies = [
  "serde_json",
  "size",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "thiserror",
  "tokio",
  "tracing",
@@ -6251,7 +6237,6 @@ dependencies = [
  "restate-types",
  "serde",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "thiserror",
 ]
 
@@ -6266,7 +6251,7 @@ dependencies = [
  "chrono",
  "codederror",
  "datafusion",
- "derive_builder",
+ "derive_more",
  "futures",
  "googletest",
  "paste",
@@ -6427,7 +6412,6 @@ dependencies = [
  "sha2",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "syn 2.0.65",
  "sync_wrapper 1.0.1",
  "tempfile",
@@ -6470,7 +6454,6 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "thiserror",
  "tokio",
  "tracing",
@@ -6522,7 +6505,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum 0.26.2",
- "strum_macros 0.26.2",
  "tempfile",
  "test-log",
  "thiserror",

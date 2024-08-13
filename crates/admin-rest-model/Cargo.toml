@@ -16,6 +16,7 @@ restate-types = { workspace = true }
 restate-serde-util = { workspace = true }
 
 bytes = { workspace = true }
+derive_more = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }
@@ -24,4 +25,3 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 strum = { workspace = true }
-strum_macros = { workspace = true }

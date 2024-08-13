@@ -19,8 +19,8 @@ use crate::net::{define_message, TargetName};
     Serialize,
     Deserialize,
     derive_more::From,
-    strum_macros::EnumIs,
-    strum_macros::IntoStaticStr,
+    derive_more::IsVariant,
+    strum::IntoStaticStr,
 )]
 pub enum IngressMessage {
     InvocationResponse(InvocationResponse),

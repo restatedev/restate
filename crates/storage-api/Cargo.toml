@@ -24,7 +24,6 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 serde = { workspace = true, optional = true }
 strum = { workspace = true }
-strum_macros = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
