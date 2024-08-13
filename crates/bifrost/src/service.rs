@@ -21,7 +21,9 @@ use restate_core::{cancellation_watcher, Metadata, TaskCenter, TaskKind};
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
-use crate::providers::{local_loglet, memory_loglet};
+use crate::providers::local_loglet;
+#[cfg(any(test, feature = "test-util"))]
+use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
 use crate::{loglet::LogletProviderFactory, Bifrost};
 
@@ -58,6 +60,7 @@ impl BifrostService {
         self
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub fn enable_in_memory_loglet(mut self) -> Self {
         let factory = memory_loglet::Factory::default();
         self.factories.insert(factory.kind(), Box::new(factory));
