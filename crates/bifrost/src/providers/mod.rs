@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 pub mod local_loglet;
+
+#[cfg(any(test, feature = "test-util"))]
 pub mod memory_loglet;
 #[cfg(feature = "replicated-loglet")]
 pub mod replicated_loglet;
