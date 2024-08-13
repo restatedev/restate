@@ -613,6 +613,7 @@ impl PartitionProcessorManager {
             key_range.clone(),
             status,
             options.num_timers_in_memory_limit(),
+            options.enable_new_invocation_status_table(),
             options.internal_queue_length(),
             control_rx,
             watch_tx,

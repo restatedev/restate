@@ -26,6 +26,7 @@ pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 pub use effects::Effects;
+use restate_storage_api::invocation_status_table;
 use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
@@ -47,12 +48,14 @@ impl<Codec> StateMachine<Codec> {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
+        default_invocation_status_source_table: invocation_status_table::SourceTable,
     ) -> Self {
         Self(CommandInterpreter::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
+            default_invocation_status_source_table,
         ))
     }
 }

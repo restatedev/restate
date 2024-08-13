@@ -180,6 +180,17 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn get_response_sinks(&self) -> Option<&HashSet<ServiceInvocationResponseSink>> {
+        match self {
+            InvocationStatus::Scheduled(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Inboxed(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Invoked(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.response_sinks),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn get_timestamps(&self) -> Option<&StatusTimestamps> {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.timestamps),
