@@ -640,7 +640,7 @@ pub mod v1 {
                             source_table: _,
                         },
                     ) => NeoInvocationStatus {
-                        status: neo_invocation_status::Status::Suspended.into(),
+                        status: neo_invocation_status::Status::Completed.into(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: None,
