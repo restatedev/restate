@@ -359,6 +359,9 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Free => {
                         invocation_status::Status::Free(Free {})
                     }
+                    crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
+                        panic!("Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation.")
+                    }
                 };
 
                 InvocationStatus {
@@ -449,6 +452,7 @@ pub mod v1 {
                     source,
                     completion_retention_time,
                     idempotency_key,
+                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -464,6 +468,7 @@ pub mod v1 {
                     source,
                     completion_retention_time,
                     idempotency_key,
+                    source_table: _,
                 } = value;
 
                 let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -555,6 +560,7 @@ pub mod v1 {
                         source: caller,
                         completion_retention_time,
                         idempotency_key,
+                        source_table: crate::invocation_status_table::SourceTable::Old,
                     },
                     waiting_for_completed_entries,
                 ))
@@ -674,6 +680,7 @@ pub mod v1 {
                     idempotency_key,
                     completion_retention_time,
                     invocation_target,
+                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -692,6 +699,7 @@ pub mod v1 {
                     execution_time,
                     completion_retention_time,
                     idempotency_key,
+                    source_table: _,
                 } = value;
 
                 let headers = headers.into_iter().map(Into::into).collect();
@@ -746,6 +754,7 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("result"))?
                         .try_into()?,
                     idempotency_key,
+                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -758,6 +767,7 @@ pub mod v1 {
                     idempotency_key,
                     timestamps,
                     response_result,
+                    source_table: _,
                 } = value;
 
                 Completed {
