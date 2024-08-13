@@ -1251,7 +1251,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "smallvec",
  "static_assertions",
  "strum 0.26.2",
  "strum_macros 0.26.2",
@@ -2585,6 +2584,12 @@ name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
+name = "downcast-rs"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dyn-clone"
@@ -5525,6 +5530,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-test-util",
  "restate-types",
+ "rlimit",
  "rocksdb",
  "schemars",
  "serde",
@@ -5903,7 +5909,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "smallvec",
  "static_assertions",
  "strum 0.26.2",
  "strum_macros 0.26.2",
@@ -6404,6 +6409,7 @@ dependencies = [
  "clap",
  "derive_builder",
  "derive_more",
+ "downcast-rs",
  "dyn-clone",
  "enum-map",
  "enumset",
@@ -6528,7 +6534,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "smallvec",
  "strum 0.26.2",
  "strum_macros 0.26.2",
  "tempfile",

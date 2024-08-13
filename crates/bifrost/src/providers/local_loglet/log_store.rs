@@ -10,20 +10,26 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
+use restate_types::logs::Keys;
+use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
+use serde::{Deserialize, Serialize};
+use static_assertions::const_assert;
+
 use restate_rocksdb::{
     CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::config::{LocalLogletOptions, RocksDbOptions};
+use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::live::BoxedLiveLoad;
-use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use rocksdb::{BoundColumnFamily, DBCompressionType, SliceTransform, DB};
-use static_assertions::const_assert;
-
-use crate::loglet::LogletError;
+use restate_types::storage::{PolyBytes, StorageDecodeError, StorageEncodeError};
+use restate_types::time::NanosSinceEpoch;
 
 use super::keys::{MetadataKey, MetadataKind, DATA_KEY_PREFIX_LENGTH};
 use super::log_state::{log_state_full_merge, log_state_partial_merge, LogState};
 use super::log_store_writer::LogStoreWriter;
+use crate::loglet::LogletError;
+use crate::Record;
 
 // matches the default directory name
 pub(crate) const DB_NAME: &str = "local-loglet";
@@ -235,3 +241,37 @@ fn cf_metadata_options(
         opts
     }
 }
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub(super) struct LocalLogletHeader {
+    pub created_at: NanosSinceEpoch,
+}
+
+impl Default for LocalLogletHeader {
+    fn default() -> Self {
+        Self {
+            created_at: NanosSinceEpoch::now(),
+        }
+    }
+}
+
+/// Owned payload.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(super) struct LocalLogletPayload {
+    pub header: LocalLogletHeader,
+    pub body: Bytes,
+    // future work
+    // pub keys: Keys,
+}
+
+impl LocalLogletPayload {
+    pub fn into_record(self) -> Record {
+        let header = crate::Header {
+            created_at: self.header.created_at,
+        };
+        // todo(asoli): add keys
+        Record::from_parts(header, Keys::None, PolyBytes::Bytes(self.body))
+    }
+}
+
+flexbuffers_storage_encode_decode!(LocalLogletPayload);

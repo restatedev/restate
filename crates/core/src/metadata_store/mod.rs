@@ -157,7 +157,7 @@ impl MetadataStoreClient {
     pub async fn put<T>(
         &self,
         key: ByteString,
-        value: T,
+        value: &T,
         precondition: Precondition,
     ) -> Result<(), WriteError>
     where
@@ -166,7 +166,7 @@ impl MetadataStoreClient {
         let version = value.version();
 
         let mut buf = BytesMut::default();
-        StorageCodec::encode(&value, &mut buf).map_err(|err| WriteError::Codec(err.into()))?;
+        StorageCodec::encode(value, &mut buf).map_err(|err| WriteError::Codec(err.into()))?;
 
         self.inner
             .put(
@@ -197,7 +197,7 @@ impl MetadataStoreClient {
         mut init: F,
     ) -> Result<T, ReadWriteError>
     where
-        T: Versioned + Clone + StorageEncode + StorageDecode,
+        T: Versioned + StorageEncode + StorageDecode,
         F: FnMut() -> T,
     {
         let mut backoff_policy = self.backoff_policy.as_ref().map(|p| p.iter());
@@ -211,10 +211,7 @@ impl MetadataStoreClient {
                 let init_value = init();
                 let precondition = Precondition::DoesNotExist;
 
-                match self
-                    .put(key.clone(), init_value.clone(), precondition)
-                    .await
-                {
+                match self.put(key.clone(), &init_value, precondition).await {
                     Ok(()) => return Ok(init_value),
                     Err(WriteError::FailedPrecondition(msg)) => {
                         if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
@@ -243,7 +240,7 @@ impl MetadataStoreClient {
         mut modify: F,
     ) -> Result<T, ReadModifyWriteError<E>>
     where
-        T: Versioned + Clone + StorageEncode + StorageDecode,
+        T: Versioned + StorageEncode + StorageDecode,
         F: FnMut(Option<T>) -> Result<T, E>,
     {
         let mut backoff_policy = self.backoff_policy.as_ref().map(|p| p.iter());
@@ -262,23 +259,21 @@ impl MetadataStoreClient {
             let result = modify(old_value);
 
             match result {
-                Ok(new_value) => {
-                    match self.put(key.clone(), new_value.clone(), precondition).await {
-                        Ok(()) => return Ok(new_value),
-                        Err(WriteError::FailedPrecondition(msg)) => {
-                            if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
-                                debug!(
-                                    "Concurrent value update: {msg}; retrying in '{}'",
-                                    humantime::format_duration(backoff)
-                                );
-                                tokio::time::sleep(backoff).await;
-                            } else {
-                                return Err(ReadWriteError::RetriesExhausted(key).into());
-                            }
+                Ok(new_value) => match self.put(key.clone(), &new_value, precondition).await {
+                    Ok(()) => return Ok(new_value),
+                    Err(WriteError::FailedPrecondition(msg)) => {
+                        if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
+                            debug!(
+                                "Concurrent value update: {msg}; retrying in '{}'",
+                                humantime::format_duration(backoff)
+                            );
+                            tokio::time::sleep(backoff).await;
+                        } else {
+                            return Err(ReadWriteError::RetriesExhausted(key).into());
                         }
-                        Err(err) => return Err(ReadModifyWriteError::ReadWrite(err.into())),
                     }
-                }
+                    Err(err) => return Err(ReadModifyWriteError::ReadWrite(err.into())),
+                },
                 Err(err) => return Err(ReadModifyWriteError::FailedOperation(err)),
             }
         }

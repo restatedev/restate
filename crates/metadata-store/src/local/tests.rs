@@ -181,13 +181,13 @@ async fn concurrent_operations() -> anyhow::Result<()> {
                                 client
                                     .put(
                                         key.clone(),
-                                        value.next_version(),
+                                        &value.next_version(),
                                         Precondition::MatchesVersion(previous_version),
                                     )
                                     .await
                             } else {
                                 client
-                                    .put(key.clone(), Value::default(), Precondition::DoesNotExist)
+                                    .put(key.clone(), &Value::default(), Precondition::DoesNotExist)
                                     .await
                             };
 
@@ -245,7 +245,7 @@ async fn durable_storage() -> anyhow::Result<()> {
                 client
                     .put(
                         metadata_key,
-                        Value {
+                        &Value {
                             version: Version::from(key),
                             value,
                         },

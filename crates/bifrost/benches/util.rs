@@ -18,12 +18,16 @@ use restate_types::config::Configuration;
 use restate_types::live::Constant;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
+use tracing::warn;
 
 pub async fn spawn_environment(
     config: Configuration,
     num_logs: u64,
     provider: ProviderKind,
 ) -> TaskCenter {
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        warn!("Failed to increase the number of open file descriptors limit.");
+    }
     let tc = TaskCenterBuilder::default()
         .options(config.common.clone())
         .build()
@@ -51,7 +55,7 @@ pub async fn spawn_environment(
     let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, num_logs);
 
     metadata_store_client
-        .put(BIFROST_CONFIG_KEY.clone(), logs.clone(), Precondition::None)
+        .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
         .await
         .expect("to store bifrost config in metadata store");
     metadata_writer.submit(logs);
