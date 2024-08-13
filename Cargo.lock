@@ -6554,6 +6554,7 @@ dependencies = [
  "crossterm 0.27.0",
  "ctrlc",
  "hyper-util",
+ "itertools 0.13.0",
  "prost-types 0.13.1",
  "restate-admin",
  "restate-cli-util",

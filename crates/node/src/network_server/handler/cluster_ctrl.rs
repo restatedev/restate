@@ -8,30 +8,47 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::{Bytes, BytesMut};
 use tonic::{async_trait, Request, Response, Status};
-use tracing::info;
+use tracing::{debug, info};
 
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_server::ClusterCtrlSvc;
 use restate_admin::cluster_controller::protobuf::{
-    ClusterStateRequest, ClusterStateResponse, TrimLogRequest,
+    ClusterStateRequest, ClusterStateResponse, DescribeLogRequest, DescribeLogResponse,
+    ListLogsRequest, ListLogsResponse, ListNodesRequest, ListNodesResponse, TrimLogRequest,
 };
 use restate_admin::cluster_controller::ClusterControllerHandle;
+use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::logs::metadata::Logs;
 use restate_types::logs::{LogId, Lsn};
+use restate_types::metadata_store::keys::{BIFROST_CONFIG_KEY, NODES_CONFIG_KEY};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::network_server::AdminDependencies;
 
 pub struct ClusterCtrlSvcHandler {
-    _metadata_store_client: MetadataStoreClient,
+    metadata_store_client: MetadataStoreClient,
     controller_handle: ClusterControllerHandle,
+    bifrost_handle: Bifrost,
 }
 
 impl ClusterCtrlSvcHandler {
     pub fn new(admin_deps: AdminDependencies) -> Self {
         Self {
             controller_handle: admin_deps.cluster_controller_handle,
-            _metadata_store_client: admin_deps.metadata_store_client,
+            metadata_store_client: admin_deps.metadata_store_client,
+            bifrost_handle: admin_deps.bifrost_handle,
         }
+    }
+
+    async fn get_logs(&self) -> Result<Logs, Status> {
+        self.metadata_store_client
+            .get::<Logs>(BIFROST_CONFIG_KEY.clone())
+            .await
+            .map_err(|error| Status::unknown(format!("Failed to get log metadata: {:?}", error)))?
+            .ok_or(Status::not_found("Missing log metadata"))
     }
 }
 
@@ -45,12 +62,84 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .controller_handle
             .get_cluster_state()
             .await
-            .map_err(|_| tonic::Status::aborted("Node is shutting down"))?;
+            .map_err(|_| Status::aborted("Node is shutting down"))?;
 
         let resp = ClusterStateResponse {
             cluster_state: Some((*cluster_state).clone().into()),
         };
         Ok(Response::new(resp))
+    }
+
+    async fn list_logs(
+        &self,
+        _request: Request<ListLogsRequest>,
+    ) -> Result<Response<ListLogsResponse>, Status> {
+        Ok(Response::new(ListLogsResponse {
+            logs: serialize_value(self.get_logs().await?),
+        }))
+    }
+
+    async fn describe_log(
+        &self,
+        request: Request<DescribeLogRequest>,
+    ) -> Result<Response<DescribeLogResponse>, Status> {
+        let request = request.into_inner();
+
+        let log_id = LogId::new(request.log_id);
+        let chain = self
+            .get_logs()
+            .await?
+            .chain(&log_id)
+            .ok_or(Status::not_found(format!(
+                "Log id {} not found",
+                request.log_id
+            )))?
+            .clone();
+
+        let tail_state = self
+            .bifrost_handle
+            .find_tail(log_id, FindTailAttributes::default())
+            .await
+            .map_err(|err| Status::internal(format!("Failed to find tail: {:?}", err)))?;
+
+        debug!(?log_id, ?tail_state, "Retrieved tail information");
+
+        let mut tail_segment = chain.tail();
+        if tail_segment.tail_lsn.is_none() {
+            tail_segment.tail_lsn = Some(tail_state.offset());
+        }
+
+        chain.iter().last().as_mut().unwrap().tail_lsn = tail_segment.tail_lsn;
+
+        Ok(Response::new(DescribeLogResponse {
+            chain: serialize_value(chain),
+            tail_state: match tail_state {
+                restate_bifrost::TailState::Open(_) => 1,
+                restate_bifrost::TailState::Sealed(_) => 2,
+            },
+            tail_offset: tail_state.offset().as_u64(),
+        }))
+    }
+
+    async fn list_nodes(
+        &self,
+        _request: Request<ListNodesRequest>,
+    ) -> Result<Response<ListNodesResponse>, Status> {
+        let nodes_config = self
+            .metadata_store_client
+            .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())
+            .await
+            .map_err(|error| {
+                Status::unknown(format!(
+                    "Failed to get nodes configuration metadata: {:?}",
+                    error
+                ))
+            })?
+            .ok_or(Status::not_found("Missing nodes configuration"))?;
+
+        Ok(Response::new(ListNodesResponse {
+            nodes_configuration: serialize_value(nodes_config),
+        }))
     }
 
     /// Internal operations API to trigger the log truncation
@@ -69,4 +158,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         }
         Ok(Response::new(()))
     }
+}
+
+fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
+    let mut buf = BytesMut::new();
+    StorageCodec::encode(value, &mut buf).expect("We can always serialize");
+    buf.freeze()
 }

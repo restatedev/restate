@@ -8,7 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod node;
+mod list_nodes;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Node {
+    /// Print a summary of active nodes in cluster
+    List(list_nodes::ListNodesOpts),
+}

@@ -9,16 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::BTreeMap;
-use std::time::SystemTime;
 
 use anyhow::Context;
-use chrono::{DateTime, Local};
 use cling::prelude::*;
 use restate_admin::cluster_controller::protobuf::cluster_ctrl_svc_client::ClusterCtrlSvcClient;
 use restate_admin::cluster_controller::protobuf::ClusterStateRequest;
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::ui::{timestamp_as_human_duration, Tense};
+use restate_cli_util::ui::Tense;
 use restate_types::logs::Lsn;
 
 use restate_cli_util::{c_println, c_title};
@@ -29,6 +27,7 @@ use restate_types::{GenerationalNodeId, PlainNodeId};
 use tonic::codec::CompressionEncoding;
 
 use crate::app::ConnectionInfo;
+use crate::commands::display_util::render_as_duration;
 use crate::util::grpc_connect;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -182,18 +181,5 @@ fn render_replay_status(status: ReplayStatus, target_lsn: Option<Lsn>) -> Cell {
             target_lsn.map(|x| x.to_string()).unwrap_or("??".to_owned())
         ))
         .fg(Color::Magenta),
-    }
-}
-
-fn render_as_duration(ts: Option<prost_types::Timestamp>, tense: Tense) -> Cell {
-    let ts: Option<SystemTime> = ts
-        .map(TryInto::try_into)
-        .transpose()
-        .expect("valid timestamp");
-    if let Some(ts) = ts {
-        let ts: DateTime<Local> = ts.into();
-        Cell::new(timestamp_as_human_duration(ts, tense))
-    } else {
-        Cell::new("??").fg(Color::Red)
     }
 }

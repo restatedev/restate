@@ -542,6 +542,7 @@ mod tests {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
+            logs_metadata_version: Version::MIN,
             nodes: [
                 (node_1.as_plain(), alive_node(node_1, partitions_1)),
                 (node_2.as_plain(), alive_node(node_2, partitions_2)),
@@ -604,6 +605,7 @@ mod tests {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
+            logs_metadata_version: Version::MIN,
             nodes: [
                 (node_1.as_plain(), alive_node(node_1, partitions_1_new)),
                 // report node_2 as dead
@@ -906,6 +908,7 @@ mod tests {
             last_refreshed: None,
             nodes_config_version: Version::MIN,
             partition_table_version: Version::MIN,
+            logs_metadata_version: Version::MIN,
             nodes,
         }
     }

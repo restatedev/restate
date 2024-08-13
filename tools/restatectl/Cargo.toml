@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 restate-admin = { workspace = true, features = ["clients"] }
-restate-cli-util = { workspace = true } 
+restate-cli-util = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -20,6 +20,7 @@ cling = { version = "0.1.0", default-features = false, features = ["derive"] }
 crossterm = { version = "0.27.0" }
 ctrlc = { version = "3.4" }
 hyper-util = { workspace = true }
+itertools = { workspace = true }
 prost-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

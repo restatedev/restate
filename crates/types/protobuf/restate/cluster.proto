@@ -22,6 +22,7 @@ message ClusterState {
   restate.common.Version nodes_config_version = 2;
   restate.common.Version partition_table_version = 3;
   map<uint32, NodeState> nodes = 4;
+  restate.common.Version logs_metadata_version = 5;
 }
 
 message NodeState {

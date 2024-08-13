@@ -8,7 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod display_util;
-pub mod dump;
-pub mod log;
-pub mod node;
+mod describe_log;
+mod list_logs;
+
+use cling::prelude::*;
+
+#[derive(Run, Subcommand, Clone)]
+pub enum Log {
+    /// List the logs by partition
+    List(list_logs::ListLogsOpts),
+    /// Get the details of a specific log
+    Describe(describe_log::DescribeLogIdOpts),
+}
