@@ -25,14 +25,14 @@ use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::config::LocalLogletOptions;
 use restate_types::live::BoxedLiveLoad;
 use restate_types::logs::SequenceNumber;
-use restate_types::storage::StorageCodec;
 
 use super::keys::{MetadataKey, MetadataKind, RecordKey};
 use super::log_state::LogStateUpdates;
-use super::log_store::{LocalLogletHeader, LocalLogletPayload, DATA_CF, METADATA_CF};
+use super::log_store::{DATA_CF, METADATA_CF};
 use super::metric_definitions::{
     BIFROST_LOCAL_WRITE_BATCH_COUNT, BIFROST_LOCAL_WRITE_BATCH_SIZE_BYTES,
 };
+use super::record_format::{encode_record_and_split, FORMAT_FOR_NEW_APPENDS};
 use crate::loglet::{LogletOffset, OperationError};
 use crate::record::ErasedInputRecord;
 
@@ -226,20 +226,8 @@ impl LogStoreWriter {
         serde_buffer.reserve(payloads.len() * RECORD_SIZE_GUESS);
         for payload in payloads.iter() {
             let key_bytes = RecordKey::new(id, offset).encode_and_split(serde_buffer);
-            // todo(asoli) store keys
-            // let _keys = payload.keys;
-            let body_bytes = StorageCodec::encode_and_split(&*payload.body, serde_buffer)
-                .expect("record serde is infallible");
-
-            let final_payload = LocalLogletPayload {
-                header: LocalLogletHeader {
-                    created_at: payload.header.created_at,
-                },
-                body: body_bytes.freeze(),
-            };
-
-            let value_bytes = StorageCodec::encode_and_split(&final_payload, serde_buffer)
-                .expect("record serde is infallible");
+            let value_bytes =
+                encode_record_and_split(FORMAT_FOR_NEW_APPENDS, payload, serde_buffer);
             write_batch.put_cf(data_cf, key_bytes, value_bytes);
             // advance the offset for the next record
             offset = offset.next();

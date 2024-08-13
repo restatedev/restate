@@ -15,6 +15,7 @@ mod log_store_writer;
 mod metric_definitions;
 mod provider;
 mod read_stream;
+mod record_format;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
