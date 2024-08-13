@@ -208,7 +208,7 @@ impl MatchKeyQuery for Record {
     }
 }
 
-#[derive(Debug, strum_macros::EnumIs, strum_macros::EnumTryAs)]
+#[derive(Debug, derive_more::IsVariant)]
 enum MaybeRecord<S: SequenceNumber = Lsn> {
     TrimGap(TrimGap<S>),
     Data(Record),
@@ -223,20 +223,12 @@ struct TrimGap<S: SequenceNumber> {
 /// Type-erased input record for bifrost.
 ///
 /// Used by loglet implementations.
-#[derive(Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct ErasedInputRecord {
     pub(crate) header: Header,
     pub(crate) keys: Keys,
+    #[debug(skip)]
     pub(crate) body: Arc<dyn StorageEncode>,
-}
-
-impl std::fmt::Debug for ErasedInputRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ErasedInputRecord")
-            .field("header", &self.header)
-            .field("keys", &self.keys)
-            .finish()
-    }
 }
 
 impl From<String> for ErasedInputRecord {

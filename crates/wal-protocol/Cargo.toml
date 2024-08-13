@@ -33,7 +33,6 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true }
 static_assertions = { workspace = true }
-strum_macros = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -134,8 +134,8 @@ impl From<&'static str> for LogletParams {
     serde::Serialize,
     serde::Deserialize,
     Enum,
-    strum_macros::EnumIter,
-    strum_macros::Display,
+    strum::EnumIter,
+    strum::Display,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]

@@ -16,16 +16,9 @@ use std::ops::RangeInclusive;
 /// # Important
 /// The discriminants of variants must be consecutive without gaps!
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    strum_macros::FromRepr,
-    strum_macros::EnumIter,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, derive_more::TryFrom, strum::EnumIter,
 )]
+#[try_from(repr)]
 #[repr(u16)]
 pub enum AdminApiVersion {
     Unknown = 0,
@@ -48,9 +41,8 @@ impl AdminApiVersion {
             None
         } else {
             // pick minimum of both ends to obtain maximum supported version
-            AdminApiVersion::from_repr(
-                (*server_versions.end()).min(client_versions.end().as_repr()),
-            )
+            AdminApiVersion::try_from((*server_versions.end()).min(client_versions.end().as_repr()))
+                .ok()
         }
     }
 }

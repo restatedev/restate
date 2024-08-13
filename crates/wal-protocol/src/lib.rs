@@ -112,10 +112,8 @@ pub enum Destination {
 }
 
 /// State machine input commands
-#[derive(
-    Debug, Clone, PartialEq, Eq, strum_macros::EnumDiscriminants, strum_macros::VariantNames,
-)]
-#[strum_discriminants(derive(strum_macros::IntoStaticStr))]
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, strum::VariantNames)]
+#[strum_discriminants(derive(strum::IntoStaticStr))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {
     // -- Control-plane related events
