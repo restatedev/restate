@@ -21,10 +21,9 @@ use tracing::{debug, error, warn};
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::{KeyFilter, SequenceNumber};
-use restate_types::storage::StorageCodec;
 
 use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
-use crate::providers::local_loglet::log_store::LocalLogletPayload;
+use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::providers::local_loglet::LogStoreError;
 use crate::{LogEntry, Result, TailState};
 
@@ -33,6 +32,7 @@ use super::LocalLoglet;
 
 pub(crate) struct LocalLogletReadStream {
     log_id: u64,
+    filter: KeyFilter,
     /// Buffer for serialization
     serde_buffer: BytesMut,
     // the next record this stream will attempt to read
@@ -64,7 +64,7 @@ unsafe fn ignore_iterator_lifetime<'a>(
 impl LocalLogletReadStream {
     pub(crate) async fn create(
         loglet: Arc<LocalLoglet>,
-        _filter: KeyFilter,
+        filter: KeyFilter,
         from_offset: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Result<Self, OperationError> {
@@ -114,6 +114,7 @@ impl LocalLogletReadStream {
 
         Ok(Self {
             log_id: loglet.loglet_id,
+            filter,
             serde_buffer,
             loglet,
             read_pointer: from_offset,
@@ -170,6 +171,7 @@ impl Stream for LocalLogletReadStream {
 
                 match maybe_tail_state {
                     Some(tail_state) => {
+                        // tail has been updated.
                         self.last_known_tail = tail_state.offset();
                         continue;
                     }
@@ -254,16 +256,17 @@ impl Stream for LocalLogletReadStream {
                 return Poll::Ready(None);
             }
 
-            let mut raw_value = self.iterator.value().expect("log record exists");
-            let internal_payload: LocalLogletPayload =
-                StorageCodec::decode(&mut raw_value).expect("record serde is infallible");
-
             self.read_pointer = loaded_key.offset.next();
+            let raw_value = self.iterator.value().expect("log record exists");
 
-            return Poll::Ready(Some(Ok(LogEntry::new_data(
-                key.offset,
-                internal_payload.into_record(),
-            ))));
+            let maybe_record = decode_and_filter_record(raw_value, &self.filter)
+                .map_err(OperationError::terminal)?;
+
+            // The record matches the filter, good to return.
+            if let Some(record) = maybe_record {
+                return Poll::Ready(Some(Ok(LogEntry::new_data(key.offset, record))));
+            }
+            // Didn't match, loop and read the next record if possible.
         }
     }
 }

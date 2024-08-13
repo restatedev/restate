@@ -102,7 +102,7 @@ impl Bifrost {
     }
 
     /// Appends a batch of records to a log. The log id must exist, otherwise the
-    /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the first
+    /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the last
     /// record in this batch. This will only return after all records have been stored.
     pub async fn append_batch<T: StorageEncode>(
         &self,

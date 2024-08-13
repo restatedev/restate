@@ -1,0 +1,331 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+
+use restate_types::flexbuffers_storage_encode_decode;
+use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery};
+use restate_types::storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError};
+use restate_types::time::NanosSinceEpoch;
+
+use crate::record::ErasedInputRecord;
+use crate::{Header, Record};
+
+// use legacy for new appends until enough minor/major versions are released after current (1.0.x)
+// to allow for backwards compatibility.
+pub(super) const FORMAT_FOR_NEW_APPENDS: RecordFormat = RecordFormat::Legacy;
+
+#[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
+#[try_from(repr)]
+#[repr(u8)]
+pub(super) enum RecordFormat {
+    Legacy = 0x02, // matches  StorageCodecKind::FlexBufferSerde
+    CustomEncoding = 0x03,
+}
+
+static_assertions::const_assert!(
+    RecordFormat::Legacy as u8 == StorageCodecKind::FlexbuffersSerde as u8
+);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Record decode error: {0}")]
+pub(super) enum RecordDecodeError {
+    UnsupportedFormatVersion(u8),
+    UnsupportedKeyStyle(u8),
+    DecodeError(#[from] StorageDecodeError),
+}
+
+/// Deprecated. This is the header for format-version 0x02.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct LegacyHeader {
+    pub created_at: NanosSinceEpoch,
+}
+
+impl Default for LegacyHeader {
+    fn default() -> Self {
+        Self {
+            created_at: NanosSinceEpoch::now(),
+        }
+    }
+}
+
+/// Deprecated. This is the payload for format-version 0x02.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct LegacyPayload {
+    pub header: LegacyHeader,
+    pub body: Bytes,
+    // default is Keys::None which means that records written prior to this field will not be
+    // filtered out. Partition processors will continue to filter correctly using the extracted
+    // keys from Envelope, but will not take advantage of push-down filtering.
+    pub keys: Keys,
+}
+
+flexbuffers_storage_encode_decode!(LegacyPayload);
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, derive_more::TryFrom)]
+#[try_from(repr)]
+#[repr(u8)]
+enum KeyStyle {
+    None = 0,
+    Single = 1,
+    Pair = 2,
+    RangeInclusive = 3,
+}
+
+pub(super) fn encode_record_and_split(
+    format_version: RecordFormat,
+    record: &ErasedInputRecord,
+    serde_buffer: &mut BytesMut,
+) -> BytesMut {
+    match format_version {
+        RecordFormat::Legacy => write_legacy_payload(record, serde_buffer),
+        RecordFormat::CustomEncoding => write_record(record, serde_buffer),
+    }
+}
+
+pub(super) fn decode_and_filter_record(
+    mut buffer: &[u8],
+    filter: &KeyFilter,
+) -> Result<Option<Record>, RecordDecodeError> {
+    debug_assert!(buffer.len() > 1);
+    // only peek the format version, don't advance the cursor.
+    let record_format = peek_format(buffer[0])?;
+
+    match record_format {
+        RecordFormat::Legacy => {
+            // legacy payload is decoded via flexbuffers
+            let internal_payload: LegacyPayload = StorageCodec::decode(&mut buffer)?;
+            let record = if internal_payload.keys.matches_key_query(filter) {
+                Some(Record::from_parts(
+                    Header {
+                        created_at: internal_payload.header.created_at,
+                    },
+                    internal_payload.keys,
+                    PolyBytes::Bytes(internal_payload.body),
+                ))
+            } else {
+                None
+            };
+
+            Ok(record)
+        }
+        RecordFormat::CustomEncoding => decode_custom_encoded_record(buffer, filter),
+    }
+}
+
+fn write_legacy_payload(record: &ErasedInputRecord, serde_buffer: &mut BytesMut) -> BytesMut {
+    // encoding the user payload.
+    let body = StorageCodec::encode_and_split(&*record.body, serde_buffer)
+        .expect("record serde is infallible")
+        .freeze();
+
+    let final_payload = LegacyPayload {
+        header: LegacyHeader {
+            created_at: record.header.created_at,
+        },
+        keys: record.keys.clone(),
+        body,
+    };
+    // encoding the wrapper
+    StorageCodec::encode_and_split(&final_payload, serde_buffer)
+        .expect("record serde is infallible")
+}
+
+/// On-disk record layout. This format only applies on format versions higher than 0x02.
+/// For the record header, byte order is little-endian.
+///
+/// The record layout follow this structure:
+///    [1 byte]        Format version (0x02 is old flexbuffers). current is in `CURRENT_FORMAT_VERSION`
+///    [1 byte]        KeyStyle (see `KeyStyle` enum)
+///      * [8 bytes]   First Key (if KeyStyle is != 0)
+///      * [8 bytes]   Second Key (if KeyStyle is > 1)
+///    [2 bytes]       Flags (reserved for future use)
+///    [8 bytes]       `created_at` timestamp
+///    [remaining]     Serialized Payload
+fn write_record(record: &ErasedInputRecord, buf: &mut BytesMut) -> BytesMut {
+    // Write the format version
+    buf.put_u8(RecordFormat::CustomEncoding as u8);
+    // key style and keys
+    match &record.keys {
+        Keys::None => buf.put_u8(KeyStyle::None as u8),
+        Keys::Single(key) => {
+            buf.put_u8(KeyStyle::Single as u8);
+            buf.put_u64_le(*key);
+        }
+        Keys::Pair(key1, key2) => {
+            buf.put_u8(KeyStyle::Pair as u8);
+            buf.put_u64_le(*key1);
+            buf.put_u64_le(*key2);
+        }
+        Keys::RangeInclusive(range) => {
+            buf.put_u8(KeyStyle::RangeInclusive as u8);
+            buf.put_u64_le(*range.start());
+            buf.put_u64_le(*range.end());
+        }
+    }
+    // flags (unused)
+    buf.put_u16_le(0);
+    // created_at
+    buf.put_u64_le(record.header.created_at.as_u64());
+
+    // serialize payload
+    StorageCodec::encode(&*record.body, buf).expect("record serde is infallible");
+    buf.split()
+}
+
+fn decode_custom_encoded_record(
+    mut buffer: &[u8],
+    filter: &KeyFilter,
+) -> Result<Option<Record>, RecordDecodeError> {
+    // read format byte
+    read_format(&mut buffer)?;
+    // read keys
+    let keys = read_keys(&mut buffer)?;
+    // unused flags
+    let _flags = read_flags(&mut buffer);
+
+    if !keys.matches_key_query(filter) {
+        return Ok(None);
+    }
+
+    let created_at = NanosSinceEpoch::from(read_created_at(&mut buffer));
+    let body = PolyBytes::Bytes(Bytes::copy_from_slice(buffer.chunk()));
+
+    Ok(Some(Record::from_parts(Header { created_at }, keys, body)))
+}
+
+// Reads KeyStyle and extract the keys from the buffer
+fn read_keys<B: Buf>(buf: &mut B) -> Result<Keys, RecordDecodeError> {
+    let key_style = buf.get_u8();
+    let key_style = KeyStyle::try_from(key_style)
+        .map_err(|_| RecordDecodeError::UnsupportedKeyStyle(key_style))?;
+    match key_style {
+        KeyStyle::None => Ok(Keys::None),
+        KeyStyle::Single => {
+            let key = buf.get_u64_le();
+            Ok(Keys::Single(key))
+        }
+        KeyStyle::Pair => {
+            let key1 = buf.get_u64_le();
+            let key2 = buf.get_u64_le();
+            Ok(Keys::Pair(key1, key2))
+        }
+        KeyStyle::RangeInclusive => {
+            let key1 = buf.get_u64_le();
+            let key2 = buf.get_u64_le();
+            Ok(Keys::RangeInclusive(key1..=key2))
+        }
+    }
+}
+
+// also validates that record's format version is supported
+fn read_format<B: Buf>(buf: &mut B) -> Result<RecordFormat, RecordDecodeError> {
+    let format = buf.get_u8();
+    peek_format(format)
+}
+
+fn peek_format(raw_value: u8) -> Result<RecordFormat, RecordDecodeError> {
+    RecordFormat::try_from(raw_value)
+        .map_err(|_| RecordDecodeError::UnsupportedFormatVersion(raw_value))
+}
+
+fn read_flags<B: Buf>(buf: &mut B) -> u16 {
+    buf.get_u16_le()
+}
+
+fn read_created_at<B: Buf>(buf: &mut B) -> u64 {
+    buf.get_u64_le()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use bytes::BytesMut;
+    use googletest::prelude::*;
+
+    use restate_types::logs::Keys;
+
+    use crate::record::ErasedInputRecord;
+
+    #[test]
+    fn test_record_format() {
+        use super::RecordFormat;
+        use std::convert::TryFrom;
+        assert_eq!(RecordFormat::try_from(0x02).unwrap(), RecordFormat::Legacy);
+        assert_eq!(
+            RecordFormat::try_from(0x03).unwrap(),
+            RecordFormat::CustomEncoding
+        );
+        assert!(RecordFormat::try_from(0x04).is_err());
+    }
+
+    #[test]
+    fn test_codec_compatibility() -> googletest::Result<()> {
+        // ensure that we can encode and decode both the old and new formats
+        let record = ErasedInputRecord {
+            header: crate::Header {
+                created_at: NanosSinceEpoch::from(100),
+            },
+            keys: Keys::Single(14),
+            body: Arc::new("hello".to_owned()),
+        };
+
+        let mut buffer = BytesMut::new();
+
+        // encode with the old format, make sure we can decode and check filter.
+        let encoded = encode_record_and_split(RecordFormat::Legacy, &record, &mut buffer);
+
+        // no match
+        let filter = KeyFilter::Include(15);
+        let decoded = decode_and_filter_record(&encoded, &filter)?;
+        assert!(decoded.is_none());
+
+        // should match
+        let filter = KeyFilter::Any;
+        let decoded = decode_and_filter_record(&encoded, &filter)?;
+
+        assert!(decoded.is_some());
+
+        let decoded_unwrapped = decoded.unwrap();
+        assert_that!(decoded_unwrapped.keys(), eq(&Keys::Single(14)));
+        assert_that!(
+            decoded_unwrapped.created_at(),
+            eq(NanosSinceEpoch::from(100))
+        );
+        assert_that!(decoded_unwrapped.decode::<String>().unwrap(), eq("hello"));
+
+        // do the same but encode with new format
+        // encode with the old format, make sure we can decode and check filter.
+        let encoded = encode_record_and_split(RecordFormat::CustomEncoding, &record, &mut buffer);
+
+        // no match
+        let filter = KeyFilter::Include(15);
+        let decoded = decode_and_filter_record(&encoded, &filter)?;
+        assert!(decoded.is_none());
+
+        // should match
+        let filter = KeyFilter::Any;
+        let decoded = decode_and_filter_record(&encoded, &filter)?;
+
+        assert!(decoded.is_some());
+
+        let decoded_unwrapped = decoded.unwrap();
+        assert_that!(decoded_unwrapped.keys(), eq(&Keys::Single(14)));
+        assert_that!(
+            decoded_unwrapped.created_at(),
+            eq(NanosSinceEpoch::from(100))
+        );
+        assert_that!(decoded_unwrapped.decode::<String>().unwrap(), eq("hello"));
+
+        Ok(())
+    }
+}
