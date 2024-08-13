@@ -135,32 +135,35 @@ impl Ord for TimerKeyKind {
                 | TimerKeyKind::CleanInvocationStatus { .. }
                 | TimerKeyKind::NeoInvoke { .. } => Ordering::Less,
             },
-            TimerKeyKind::NeoInvoke { invocation_uuid } => match other {
-                TimerKeyKind::Invoke { .. } => Ordering::Greater,
-                TimerKeyKind::NeoInvoke {
-                    invocation_uuid: other_invocation_uuid,
-                } => invocation_uuid.cmp(other_invocation_uuid),
-                TimerKeyKind::CompleteJournalEntry { .. }
-                | TimerKeyKind::CleanInvocationStatus { .. } => Ordering::Less,
-            },
             TimerKeyKind::CompleteJournalEntry {
                 invocation_uuid,
                 journal_index,
             } => match other {
-                TimerKeyKind::Invoke { .. } | TimerKeyKind::NeoInvoke { .. } => Ordering::Greater,
+                TimerKeyKind::Invoke { .. } => Ordering::Greater,
                 TimerKeyKind::CompleteJournalEntry {
                     invocation_uuid: other_invocation_uuid,
                     journal_index: other_journal_index,
                 } => invocation_uuid
                     .cmp(other_invocation_uuid)
                     .then_with(|| journal_index.cmp(other_journal_index)),
-                TimerKeyKind::CleanInvocationStatus { .. } => Ordering::Less,
+                TimerKeyKind::CleanInvocationStatus { .. } | TimerKeyKind::NeoInvoke { .. } => {
+                    Ordering::Less
+                }
             },
             TimerKeyKind::CleanInvocationStatus { invocation_uuid } => match other {
+                TimerKeyKind::Invoke { .. } | TimerKeyKind::CompleteJournalEntry { .. } => {
+                    Ordering::Greater
+                }
+                TimerKeyKind::CleanInvocationStatus {
+                    invocation_uuid: other_invocation_uuid,
+                } => invocation_uuid.cmp(other_invocation_uuid),
+                TimerKeyKind::NeoInvoke { .. } => Ordering::Less,
+            },
+            TimerKeyKind::NeoInvoke { invocation_uuid } => match other {
                 TimerKeyKind::Invoke { .. }
                 | TimerKeyKind::CompleteJournalEntry { .. }
-                | TimerKeyKind::NeoInvoke { .. } => Ordering::Greater,
-                TimerKeyKind::CleanInvocationStatus {
+                | TimerKeyKind::CleanInvocationStatus { .. } => Ordering::Greater,
+                TimerKeyKind::NeoInvoke {
                     invocation_uuid: other_invocation_uuid,
                 } => invocation_uuid.cmp(other_invocation_uuid),
             },
