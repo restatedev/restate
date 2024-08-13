@@ -522,6 +522,16 @@ impl Effect {
                         "Effect: Register background invoke timer"
                     )
                 }
+                Timer::NeoInvoke(invocation_id) => {
+                    // no span necessary; there will already be a background_invoke span
+                    debug_if_leader!(
+                        is_leader,
+                        restate.invocation.id = %invocation_id,
+                        restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        "Effect: Register background invoke timer"
+                    )
+                }
                 Timer::CleanInvocationStatus(_) => {
                     debug_if_leader!(
                         is_leader,

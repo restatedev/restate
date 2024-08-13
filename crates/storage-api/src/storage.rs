@@ -2490,6 +2490,9 @@ pub mod v1 {
                         timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(
                             restate_types::invocation::ServiceInvocation::try_from(si)?,
                         ),
+                        timer::Value::NeoInvoke(id) => crate::timer_table::Timer::NeoInvoke(
+                            restate_types::identifiers::InvocationId::try_from(id)?,
+                        ),
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
                             crate::timer_table::Timer::CleanInvocationStatus(
                                 restate_types::identifiers::InvocationId::try_from(
@@ -2515,7 +2518,9 @@ pub mod v1 {
                             invocation_id: Some(InvocationId::from(invocation_id)),
                             entry_index,
                         }),
-
+                        crate::timer_table::Timer::NeoInvoke(invocation_id) => {
+                            timer::Value::NeoInvoke(InvocationId::from(invocation_id))
+                        }
                         crate::timer_table::Timer::Invoke(si) => {
                             timer::Value::Invoke(ServiceInvocation::from(si))
                         }

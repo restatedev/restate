@@ -508,6 +508,7 @@ message Timer {
     }
 
     oneof value {
+        InvocationId neo_invoke = 1;
         CompleteSleepEntry complete_sleep_entry = 100;
         ServiceInvocation invoke = 101;
         CleanInvocationStatus clean_invocation_status = 102;

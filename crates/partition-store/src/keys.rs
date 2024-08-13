@@ -521,6 +521,10 @@ impl KeyCodec for TimerKeyKind {
                 target.put_u8(2);
                 invocation_uuid.encode(target);
             }
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
+                target.put_u8(3);
+                invocation_uuid.encode(target);
+            }
         }
     }
 
@@ -560,6 +564,9 @@ impl KeyCodec for TimerKeyKind {
     fn serialized_length(&self) -> usize {
         1 + match self {
             TimerKeyKind::Invoke { invocation_uuid } => {
+                KeyCodec::serialized_length(invocation_uuid)
+            }
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
                 KeyCodec::serialized_length(invocation_uuid)
             }
             TimerKeyKind::CompleteJournalEntry {

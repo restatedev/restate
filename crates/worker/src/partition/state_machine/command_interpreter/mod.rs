@@ -902,6 +902,9 @@ where
                 self.try_purge_invocation(invocation_id, state, effects)
                     .await
             }
+            _ => {
+                todo!("Unimplemented")
+            }
         }
     }
 
