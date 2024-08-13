@@ -24,6 +24,12 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceTable {
+    Old,
+    New,
+}
+
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusTimestamps {
@@ -237,10 +243,16 @@ pub struct ScheduledInvocation {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_time: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl ScheduledInvocation {
-    pub fn from_service_invocation(service_invocation: ServiceInvocation) -> Self {
+    pub fn from_service_invocation(
+        service_invocation: ServiceInvocation,
+        source_table: SourceTable,
+    ) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
             timestamps: StatusTimestamps::now(),
@@ -256,6 +268,7 @@ impl ScheduledInvocation {
                 .completion_retention_time
                 .unwrap_or_default(),
             idempotency_key: service_invocation.idempotency_key,
+            source_table,
         }
     }
 }
@@ -281,12 +294,16 @@ pub struct InboxedInvocation {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_time: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl InboxedInvocation {
     pub fn from_service_invocation(
         service_invocation: ServiceInvocation,
         inbox_sequence_number: u64,
+        source_table: SourceTable,
     ) -> Self {
         Self {
             inbox_sequence_number,
@@ -302,6 +319,7 @@ impl InboxedInvocation {
                 .completion_retention_time
                 .unwrap_or_default(),
             idempotency_key: service_invocation.idempotency_key,
+            source_table,
         }
     }
 
@@ -321,6 +339,7 @@ impl InboxedInvocation {
             execution_time: Some(scheduled_invocation.execution_time),
             completion_retention_time: scheduled_invocation.completion_retention_time,
             idempotency_key: scheduled_invocation.idempotency_key,
+            source_table: scheduled_invocation.source_table,
         }
     }
 }
@@ -336,11 +355,15 @@ pub struct InFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_time: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl InFlightInvocationMetadata {
     pub fn from_service_invocation(
         service_invocation: ServiceInvocation,
+        source_table: SourceTable,
     ) -> (Self, InvocationInput) {
         (
             Self {
@@ -354,6 +377,7 @@ impl InFlightInvocationMetadata {
                     .completion_retention_time
                     .unwrap_or_default(),
                 idempotency_key: service_invocation.idempotency_key,
+                source_table,
             },
             InvocationInput {
                 argument: service_invocation.argument,
@@ -377,6 +401,7 @@ impl InFlightInvocationMetadata {
                 source: inboxed_invocation.source,
                 completion_retention_time: inboxed_invocation.completion_retention_time,
                 idempotency_key: inboxed_invocation.idempotency_key,
+                source_table: inboxed_invocation.source_table,
             },
             InvocationInput {
                 argument: inboxed_invocation.argument,
@@ -402,6 +427,9 @@ pub struct CompletedInvocation {
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl CompletedInvocation {
@@ -418,6 +446,7 @@ impl CompletedInvocation {
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 timestamps: in_flight_invocation_metadata.timestamps,
                 response_result,
+                source_table: in_flight_invocation_metadata.source_table,
             },
             in_flight_invocation_metadata.completion_retention_time,
         )
@@ -476,6 +505,7 @@ mod test_util {
                 source: Source::Ingress,
                 completion_retention_time: Duration::ZERO,
                 idempotency_key: None,
+                source_table: SourceTable::New,
             }
         }
     }
