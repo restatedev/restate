@@ -89,7 +89,7 @@ clap-verbosity-flag = { version = "2.0.1" }
 cling = { version = "0.1", default-features = false, features = ["derive"] }
 criterion = "0.5"
 crossterm = { version = "0.27.0" }
-dashmap = { version = "5.5.3" }
+dashmap = { version = "6" }
 datafusion = { version = "40.0.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
