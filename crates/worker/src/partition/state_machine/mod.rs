@@ -28,7 +28,6 @@ pub use actions::Action;
 pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
-pub use effects::Effects;
 use restate_storage_api::invocation_status_table;
 use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
@@ -89,6 +88,12 @@ impl<Codec> StateMachine<Codec> {
     }
 }
 
+pub(crate) struct StateMachineApplyContext<'a, S> {
+    storage: &'a mut S,
+    action_collector: &'a mut ActionCollector,
+    is_leader: bool,
+}
+
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
@@ -102,7 +107,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             let start = Instant::now();
             // Apply the command
             let command_type = command.name();
-            let res = self.on_apply(command, transaction, action_collector).await;
+            let res = self
+                .on_apply(StateMachineApplyContext {
+                    storage: transaction,
+                    action_collector,
+                    is_leader,
+                })
+                .await;
             histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
             res
         }
@@ -165,7 +176,6 @@ mod tests {
         // TODO for the time being we use rocksdb storage because we have no mocks for storage interfaces.
         //  Perhaps we could make these tests faster by having those.
         rocksdb_storage: PartitionStore,
-        effects_buffer: Effects,
     }
 
     impl MockStateMachine {
@@ -208,7 +218,6 @@ mod tests {
                     SourceTable::New,
                 ),
                 rocksdb_storage,
-                effects_buffer: Default::default(),
             }
         }
 
