@@ -24,6 +24,7 @@ use restate_core::MetadataKind;
 use restate_core::ShutdownError;
 use restate_types::logs::metadata::MaybeSegment;
 use restate_types::logs::KeyFilter;
+use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::Version;
@@ -309,6 +310,17 @@ impl Stream for LogReadStream {
                             let new_pointer = Self::calculate_read_pointer(&record);
                             debug_assert!(new_pointer > *this.read_pointer);
                             *this.read_pointer = new_pointer;
+                            // If this record was supposed to be filtered but it was not filtered
+                            // by the loglet itself, we skip it ourselves and advance the
+                            // read_pointer.
+                            if let Some(data_record) = record.as_record() {
+                                if !data_record.matches_key_query(this.filter) {
+                                    // read_pointer is already advanced, just don't return the
+                                    // record and fast-forward.
+                                    continue;
+                                }
+                            }
+
                             return Poll::Ready(Some(Ok(record)));
                         }
                         // The assumption here is that underlying stream won't move its read
