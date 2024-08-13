@@ -121,7 +121,7 @@ where
                 .metadata_store_client
                 .put(
                     SCHEDULING_PLAN_KEY.clone(),
-                    scheduling_plan.clone(),
+                    &scheduling_plan,
                     Precondition::MatchesVersion(self.scheduling_plan.version()),
                 )
                 .await

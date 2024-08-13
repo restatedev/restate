@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
@@ -225,7 +226,7 @@ where
         self.bifrost
             .append(
                 LogId::from(self.partition_processor_metadata.partition_id),
-                envelope,
+                Arc::new(envelope),
             )
             .await?;
 
@@ -736,7 +737,9 @@ mod tests {
                 .read(PARTITION_ID.into(), Lsn::OLDEST)
                 .await?
                 .unwrap();
-            let envelope = Envelope::from_bytes(record.record.into_payload_unchecked().body())?;
+
+            let envelope = record.try_decode::<Envelope>().unwrap()?;
+
             let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
             assert_eq!(
                 announce_leader,

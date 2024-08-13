@@ -8,20 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
-use assert2::let_assert;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
+use assert2::let_assert;
 use futures::TryStreamExt as _;
 use metrics::{counter, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tokio_stream::StreamExt;
-use tracing::{debug, instrument, trace, warn, Span};
+use tracing::{debug, error, info, instrument, trace, warn, Span};
 
-use restate_bifrost::{Bifrost, FindTailAttributes, LogEntry, MaybeRecord};
+use restate_bifrost::{Bifrost, FindTailAttributes};
 use restate_core::cancellation_watcher;
 use restate_core::metadata;
 use restate_core::network::Networking;
@@ -211,7 +211,7 @@ where
     Codec: RawEntryCodec + Default + Debug,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
-    #[instrument(level = "info", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.partition_id, is_leader = tracing::field::Empty))]
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut partition_storage = self
             .partition_storage
@@ -228,7 +228,7 @@ where
                 FindTailAttributes::default(),
             )
             .await?;
-        debug!(
+        info!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = ?current_tail,
             "PartitionProcessor creating log reader",
@@ -241,6 +241,23 @@ where
             self.status.replay_status = ReplayStatus::CatchingUp;
         }
 
+        // If our `last_applied_lsn` is at or beyond the tail, this is a strong indicator
+        // that the log has reverted backwards.
+        if last_applied_lsn >= current_tail.offset() {
+            error!(
+                ?last_applied_lsn,
+                log_tail_lsn = ?current_tail.offset(),
+                "Processor has applied log entries beyond the log tail. This indicates data-loss in the log!"
+            );
+            // todo: declare unhealthy state to cluster controller, or raise a flare.
+        } else if last_applied_lsn.next() != current_tail.offset() {
+            debug!(
+                "Replaying the log from lsn={}, log tail lsn={}",
+                last_applied_lsn.next(),
+                current_tail.offset()
+            );
+        }
+
         // Start reading after the last applied lsn
         let mut log_reader = self
             .bifrost
@@ -250,18 +267,18 @@ where
                 last_applied_lsn.next(),
                 Lsn::MAX,
             )?
-            .map_ok(|record| {
-                let LogEntry { record, offset } = record;
-                match record {
-                    MaybeRecord::Data(payload) => {
-                        let envelope = Envelope::from_bytes(payload.into_body())?;
-                        anyhow::Ok((offset, envelope))
-                    }
-                    MaybeRecord::TrimGap(_) => {
-                        unimplemented!("Currently not supported")
-                    }
-                }
+            .map_ok(|entry| {
+                trace!(?entry, "Read entry");
+                let lsn = entry.sequence_number();
+                // todo: Use decode_arc and pass references of Envelope downwards
+                let Some(envelope) = entry.try_decode::<Envelope>() else {
+                    // trim-gap
+                    unimplemented!("Handling trim gap is currently not supported")
+                };
+                anyhow::Ok((lsn, envelope?))
             });
+
+        info!("PartitionProcessor starting up.");
 
         // avoid synchronized timers. We pick a randomised timer between 500 and 1023 millis.
         let mut status_update_timer =

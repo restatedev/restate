@@ -11,32 +11,25 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bytes::{Bytes, BytesMut};
-use tracing::{debug, info, instrument, Span};
+use restate_types::storage::StorageEncode;
+use tracing::{debug, info, instrument};
 
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::metadata::SegmentIndex;
-use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn};
+use restate_types::logs::{LogId, Lsn};
 use restate_types::retries::RetryIter;
-use restate_types::storage::{StorageCodec, StorageEncode};
 
 use crate::bifrost::BifrostInner;
 use crate::loglet::{AppendError, LogletBase};
 use crate::loglet_wrapper::LogletWrapper;
-use crate::payload::Payload;
-use crate::{Error, Result};
-
-// Arbitrarily chosen size for the record size hint. Practically, we should estimate
-// the size from the payload, or use anecdotal data as guidance.
-pub(crate) const RECORD_SIZE_HINT: usize = 4_000; // 4KB per record
-const INITIAL_SERDE_BUFFER_SIZE: usize = 16_000; // Initial capacity 16KB
+use crate::record::ErasedInputRecord;
+use crate::{Error, InputRecord, Result};
 
 #[derive(Clone)]
 pub struct Appender {
     log_id: LogId,
     pub(super) config: Live<Configuration>,
-    pub(super) serde_buffer: BytesMut,
     loglet_cache: Option<LogletWrapper>,
     bifrost_inner: Arc<BifrostInner>,
 }
@@ -52,60 +45,31 @@ impl std::fmt::Debug for Appender {
 
 impl Appender {
     pub(crate) fn new(log_id: LogId, bifrost_inner: Arc<BifrostInner>) -> Self {
-        Self::with_buffer_size(log_id, bifrost_inner, INITIAL_SERDE_BUFFER_SIZE)
-    }
-
-    pub(crate) fn with_buffer_size(
-        log_id: LogId,
-        bifrost_inner: Arc<BifrostInner>,
-        serde_buffer_size: usize,
-    ) -> Self {
-        Self::with_serde_buffer(
-            log_id,
-            bifrost_inner,
-            BytesMut::with_capacity(serde_buffer_size),
-        )
-    }
-
-    pub(crate) fn with_serde_buffer(
-        log_id: LogId,
-        bifrost_inner: Arc<BifrostInner>,
-        serde_buffer: BytesMut,
-    ) -> Self {
         let config = Configuration::updateable();
-
         Self {
             log_id,
             config,
-            serde_buffer,
             loglet_cache: Default::default(),
             bifrost_inner,
         }
     }
 
-    /// Use only in tests.
-    #[cfg(any(test, feature = "test-util"))]
-    pub async fn append_raw(&mut self, raw_bytes: impl Into<Bytes>) -> Result<Lsn> {
-        self.append_raw_with_keys(raw_bytes, Keys::None).await
-    }
-
-    pub(crate) async fn append_raw_with_keys(
+    /// Appends a single record to the log.
+    #[instrument(
+        level = "info",
+        skip(self, body),
+        err,
+        fields(
+            log_id = %self.log_id,
+        )
+    )]
+    pub async fn append<T: StorageEncode>(
         &mut self,
-        raw_bytes: impl Into<Bytes>,
-        keys: Keys,
+        body: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
         self.bifrost_inner.fail_if_shutting_down()?;
 
-        let raw_bytes = raw_bytes.into();
-        // 50 bytes is an over-estimation of the size needed for Header. This is a temporary
-        // solution.
-        // todo: Move header serialization down to loglets and send payloads as &dyn StorageEncode
-        // instead.
-        self.serde_buffer.reserve(50 + raw_bytes.len());
-        let payload = Payload::new(raw_bytes);
-        StorageCodec::encode(payload, &mut self.serde_buffer).expect("record serde is infallible");
-        let raw_bytes = self.serde_buffer.split().freeze();
-
+        let body = body.into().into_erased();
         let mut retry_iter = self
             .config
             .live_load()
@@ -123,15 +87,12 @@ impl Appender {
                 Some(wrapper) => wrapper,
             };
 
-            Span::current().record(
-                "segment_index",
-                tracing::field::display(loglet.segment_index()),
-            );
-            match loglet.append(&raw_bytes, &keys).await {
+            match loglet.append(body.clone()).await {
                 Ok(lsn) => return Ok(lsn),
                 Err(AppendError::Sealed) => {
                     info!(
                         attempt = attempt,
+                        segment_index = %loglet.segment_index(),
                         "Append will be retried (loglet being sealed), waiting for tail to be determined"
                     );
                     let new_loglet = Self::wait_next_unsealed_loglet(
@@ -149,39 +110,31 @@ impl Appender {
         }
     }
 
-    /// Appends a single record to the log.
+    /// Appends a batch of records to the log.
+    ///
+    /// The returned Lsn is the Lsn of the last record committed in this batch .
+    /// This will only return after all records have been stored.
     #[instrument(
         level = "debug",
-        skip(self, body),
+        skip(self, batch),
         err,
         fields(
             log_id = %self.log_id,
-            segment_index = tracing::field::Empty
         )
     )]
-    pub async fn append<T>(&mut self, body: T) -> Result<Lsn>
-    where
-        T: HasRecordKeys + StorageEncode,
-    {
-        let keys = body.record_keys();
-        StorageCodec::encode(&body, &mut self.serde_buffer).expect("record serde is infallible");
-        let raw_bytes = self.serde_buffer.split().freeze();
-        self.append_raw_with_keys(raw_bytes, keys).await
+    pub async fn append_batch<T: StorageEncode>(
+        &mut self,
+        batch: Vec<impl Into<InputRecord<T>>>,
+    ) -> Result<Lsn> {
+        let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_erased()).collect();
+        self.append_batch_erased(batch).await
     }
 
-    #[instrument(
-        level = "debug",
-        skip(self, bodies_with_keys)
-        err,
-        fields(
-            log_id = %self.log_id,
-            segment_index = tracing::field::Empty,
-        )
-    )]
-    pub(crate) async fn append_raw_batch_with_keys(
+    pub(crate) async fn append_batch_erased(
         &mut self,
-        bodies_with_keys: &[(Bytes, Keys)],
+        batch: Arc<[ErasedInputRecord]>,
     ) -> Result<Lsn> {
+        self.bifrost_inner.fail_if_shutting_down()?;
         let mut retry_iter = self
             .config
             .live_load()
@@ -198,11 +151,7 @@ impl Appender {
                     .insert(self.bifrost_inner.writeable_loglet(self.log_id).await?),
                 Some(wrapper) => wrapper,
             };
-            Span::current().record(
-                "segment_index",
-                tracing::field::display(loglet.segment_index()),
-            );
-            match loglet.append_batch(bodies_with_keys).await {
+            match loglet.append_batch(batch.clone()).await {
                 Ok(lsn) => return Ok(lsn),
                 Err(AppendError::Sealed) => {
                     info!(
@@ -225,69 +174,7 @@ impl Appender {
         }
     }
 
-    #[cfg(any(test, feature = "test-util"))]
-    pub async fn append_raw_batch(
-        &mut self,
-        batch: impl IntoIterator<Item = impl Into<Bytes>>,
-    ) -> Result<Lsn> {
-        let bodies_with_keys: Vec<_> = batch
-            .into_iter()
-            .map(|record| {
-                let raw_bytes: Bytes = record.into();
-                let keys = Keys::None;
-                // 50 bytes is an over-estimation of the size needed for Header. This is a temporary
-                // solution.
-                // todo: Move header serialization down to loglets and send payloads as &dyn StorageEncode
-                // instead.
-                self.serde_buffer.reserve(50 + raw_bytes.len());
-                let payload = Payload::new(raw_bytes);
-                StorageCodec::encode(payload, &mut self.serde_buffer)
-                    .expect("record serde is infallible");
-                (self.serde_buffer.split().freeze(), keys)
-            })
-            .collect();
-
-        self.append_raw_batch_with_keys(&bodies_with_keys).await
-    }
-
-    /// Appends a batch of records to the log.
-    ///
-    /// The returned Lsn is the Lsn of the first record committed in this batch .
-    /// This will only return after all records have been stored.
-    #[instrument(
-        level = "debug",
-        skip(self, batch),
-        err,
-        fields(
-            log_id = %self.log_id,
-            count = batch.len(),
-            segment_index = tracing::field::Empty
-        )
-    )]
-    pub async fn append_batch<T>(&mut self, batch: &[T]) -> Result<Lsn>
-    where
-        T: HasRecordKeys + StorageEncode,
-    {
-        // Attempt to reserve enough bytes for the payloads
-        self.serde_buffer.reserve(batch.len() * RECORD_SIZE_HINT);
-
-        let bodies_with_keys: Vec<_> = batch
-            .iter()
-            .map(|record| {
-                // todo (estimate size to reserve)
-                let keys = record.record_keys();
-                StorageCodec::encode(record, &mut self.serde_buffer)
-                    .expect("record serde is infallible");
-                let payload = Payload::new(self.serde_buffer.split().freeze());
-                StorageCodec::encode(payload, &mut self.serde_buffer)
-                    .expect("record serde is infallible");
-                (self.serde_buffer.split().freeze(), keys)
-            })
-            .collect();
-
-        self.append_raw_batch_with_keys(&bodies_with_keys).await
-    }
-
+    #[instrument(level = "debug" err, skip(retry_iter, bifrost_inner))]
     async fn wait_next_unsealed_loglet(
         log_id: LogId,
         bifrost_inner: &Arc<BifrostInner>,
@@ -308,6 +195,8 @@ impl Appender {
                     total_dur
                 );
                 return Ok(loglet);
+            } else {
+                debug!("Still waiting for sealing to complete");
             }
         }
 

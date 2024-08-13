@@ -10,7 +10,6 @@
 
 use std::time::Instant;
 
-use bytes::{BufMut, BytesMut};
 use hdrhistogram::Histogram;
 use tracing::info;
 
@@ -34,10 +33,7 @@ pub async fn run(
     bifrost: Bifrost,
 ) -> anyhow::Result<()> {
     let log_id = LogId::from(0);
-    let mut bytes = BytesMut::default();
-    let raw_data = [1u8; 1024];
-    bytes.put_slice(&raw_data);
-    let bytes = bytes.freeze();
+    let data = "1".repeat(1024);
     let mut append_latencies = Histogram::<u64>::new(3)?;
     let mut counter = 0;
     let mut appender = bifrost.create_appender(log_id)?;
@@ -47,7 +43,7 @@ pub async fn run(
         }
         counter += 1;
         let start = Instant::now();
-        let _ = appender.append_raw(bytes.clone()).await?;
+        let _ = appender.append(data.clone()).await?;
         append_latencies.record(start.elapsed().as_nanos() as u64)?;
         if counter % 1000 == 0 {
             info!("Appended {} records", counter);

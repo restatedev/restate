@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::Poll;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use rocksdb::{DBRawIteratorWithThreadMode, DB};
@@ -21,8 +21,10 @@ use tracing::{debug, error, warn};
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_types::logs::{KeyFilter, SequenceNumber};
+use restate_types::storage::StorageCodec;
 
 use crate::loglet::{LogletBase, LogletOffset, LogletReadStream, OperationError};
+use crate::providers::local_loglet::log_store::LocalLogletPayload;
 use crate::providers::local_loglet::LogStoreError;
 use crate::{LogEntry, Result, TailState};
 
@@ -31,6 +33,8 @@ use super::LocalLoglet;
 
 pub(crate) struct LocalLogletReadStream {
     log_id: u64,
+    /// Buffer for serialization
+    serde_buffer: BytesMut,
     // the next record this stream will attempt to read
     read_pointer: LogletOffset,
     /// stop when read_pointer is at or beyond this offset
@@ -81,8 +85,11 @@ impl LocalLogletReadStream {
         read_opts.set_ignore_range_deletions(true);
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
-        read_opts.set_iterate_lower_bound(key.to_bytes());
-        read_opts.set_iterate_upper_bound(RecordKey::upper_bound(loglet.loglet_id).to_bytes());
+        let mut serde_buffer = BytesMut::with_capacity(2 * RecordKey::serialized_size());
+        read_opts.set_iterate_lower_bound(key.encode_and_split(&mut serde_buffer));
+        read_opts.set_iterate_upper_bound(
+            RecordKey::upper_bound(loglet.loglet_id).encode_and_split(&mut serde_buffer),
+        );
 
         let log_store = &loglet.log_store;
         let mut tail_watch = loglet.watch_tail();
@@ -107,6 +114,7 @@ impl LocalLogletReadStream {
 
         Ok(Self {
             log_id: loglet.loglet_id,
+            serde_buffer,
             loglet,
             read_pointer: from_offset,
             iterator: iter,
@@ -130,7 +138,7 @@ impl LogletReadStream<LogletOffset> for LocalLogletReadStream {
 }
 
 impl Stream for LocalLogletReadStream {
-    type Item = Result<LogEntry<LogletOffset, Bytes>, OperationError>;
+    type Item = Result<LogEntry<LogletOffset>, OperationError>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -191,7 +199,8 @@ impl Stream for LocalLogletReadStream {
                 self.read_pointer = head_offset;
                 let key = RecordKey::new(self.log_id, trim_point);
                 // park the iterator at the trim point, next iteration will seek it forward.
-                self.iterator.seek(key.to_bytes());
+                let key_bytes = key.encode_and_split(&mut self.serde_buffer);
+                self.iterator.seek(key_bytes);
                 return Poll::Ready(Some(Ok(trim_gap)));
             }
 
@@ -200,7 +209,8 @@ impl Stream for LocalLogletReadStream {
                 // can move to next.
                 self.iterator.next();
             } else {
-                self.iterator.seek(key.to_bytes());
+                let key_bytes = key.encode_and_split(&mut self.serde_buffer);
+                self.iterator.seek(key_bytes);
             }
             //  todo: If status is not ok(), we should retry
             if let Err(e) = self.iterator.status() {
@@ -244,12 +254,16 @@ impl Stream for LocalLogletReadStream {
                 return Poll::Ready(None);
             }
 
-            let raw_value = self.iterator.value().expect("log record exists");
-            let mut buf = BytesMut::with_capacity(raw_value.len());
-            buf.put_slice(raw_value);
+            let mut raw_value = self.iterator.value().expect("log record exists");
+            let internal_payload: LocalLogletPayload =
+                StorageCodec::decode(&mut raw_value).expect("record serde is infallible");
+
             self.read_pointer = loaded_key.offset.next();
 
-            return Poll::Ready(Some(Ok(LogEntry::new_data(key.offset, buf.freeze()))));
+            return Poll::Ready(Some(Ok(LogEntry::new_data(
+                key.offset,
+                internal_payload.into_record(),
+            ))));
         }
     }
 }

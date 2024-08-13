@@ -36,12 +36,20 @@ impl RecordKey {
         }
     }
 
-    pub fn to_bytes(self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
+    pub const fn serialized_size() -> usize {
+        size_of::<Self>() + 1
+    }
+
+    pub fn encode_and_split(self, buf: &mut BytesMut) -> BytesMut {
+        self.encode(buf);
+        buf.split()
+    }
+
+    pub fn encode(self, buf: &mut BytesMut) {
+        buf.reserve(Self::serialized_size());
         buf.put_u8(b'd');
         buf.put_u64(self.loglet_id);
         buf.put_u64(self.offset.into());
-        buf.freeze()
     }
 
     pub fn from_slice(data: &[u8]) -> Self {
@@ -73,13 +81,28 @@ impl MetadataKey {
         Self { loglet_id, kind }
     }
 
-    pub fn to_bytes(self) -> Bytes {
-        let mut buf = BytesMut::with_capacity(size_of::<Self>() + 1);
+    pub fn to_bytes(self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(Self::serialized_size());
+        self.encode(&mut buf);
+        buf
+    }
+
+    pub const fn serialized_size() -> usize {
+        size_of::<Self>() + 1
+    }
+
+    #[allow(unused)]
+    pub fn encode_and_split(self, buf: &mut BytesMut) -> BytesMut {
+        self.encode(buf);
+        buf.split()
+    }
+
+    pub fn encode(self, buf: &mut BytesMut) {
+        buf.reserve(Self::serialized_size());
         // m for metadata
         buf.put_u8(b'm');
         buf.put_u64(self.loglet_id);
         buf.put_u8(self.kind as u8);
-        buf.freeze()
     }
 
     pub fn from_slice(data: &[u8]) -> Self {
@@ -103,7 +126,8 @@ mod tests {
     #[test]
     fn test_record_key() {
         let key = RecordKey::new(1, LogletOffset(2));
-        let bytes = key.to_bytes();
+        let mut buf = BytesMut::new();
+        let bytes = key.encode_and_split(&mut buf);
         let key2 = RecordKey::from_slice(&bytes);
         assert_eq!(key, key2);
     }
@@ -113,7 +137,8 @@ mod tests {
         let key = MetadataKey::new(1, MetadataKind::LogState);
         assert_eq!(key.loglet_id, 1);
         assert_eq!(key.kind, MetadataKind::LogState);
-        let bytes = key.to_bytes();
+        let mut buf = BytesMut::new();
+        let bytes = key.encode_and_split(&mut buf);
         let key2 = MetadataKey::from_slice(&bytes);
         assert_eq!(key, key2);
         assert_eq!(key2.loglet_id, 1);

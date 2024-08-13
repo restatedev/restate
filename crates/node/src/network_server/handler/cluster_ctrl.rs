@@ -162,6 +162,6 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
 fn serialize_value<T: StorageEncode>(value: T) -> Bytes {
     let mut buf = BytesMut::new();
-    StorageCodec::encode(value, &mut buf).expect("We can always serialize");
+    StorageCodec::encode(&value, &mut buf).expect("We can always serialize");
     buf.freeze()
 }
