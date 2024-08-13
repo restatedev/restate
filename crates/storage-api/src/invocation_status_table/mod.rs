@@ -24,7 +24,7 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SourceTable {
     Old,
     New,
@@ -203,6 +203,12 @@ impl InvocationStatus {
 }
 
 protobuf_storage_encode_decode!(InvocationStatus);
+
+/// Wrapper used by the table implementation, don't use it!
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct NeoInvocationStatus(pub InvocationStatus);
+
+protobuf_storage_encode_decode!(NeoInvocationStatus);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
