@@ -20,6 +20,7 @@ mod actions;
 mod command_interpreter;
 mod effect_interpreter;
 mod effects;
+mod tracing;
 
 pub use actions::Action;
 pub use command_interpreter::StateReader;
@@ -94,6 +95,7 @@ mod tests {
     use super::*;
 
     use crate::partition::types::{InvokerEffect, InvokerEffectKind};
+    use ::tracing::info;
     use assert2::assert;
     use bytes::Bytes;
     use bytestring::ByteString;
@@ -135,7 +137,6 @@ mod tests {
     use restate_types::{ingress, GenerationalNodeId};
     use std::collections::{HashMap, HashSet};
     use test_log::test;
-    use tracing::info;
 
     // Test utility to test the StateMachine
     pub struct MockStateMachine {
