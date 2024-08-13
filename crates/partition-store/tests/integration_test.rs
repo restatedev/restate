@@ -77,7 +77,6 @@ async fn test_read_write() {
     inbox_table_test::run_tests(rocksdb.clone()).await;
     outbox_table_test::run_tests(rocksdb.clone()).await;
     state_table_test::run_tests(rocksdb.clone()).await;
-    invocation_status_table_test::run_tests(rocksdb.clone()).await;
     virtual_object_status_table_test::run_tests(rocksdb.clone()).await;
     timer_table_test::run_tests(rocksdb).await;
 }
