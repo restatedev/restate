@@ -10,9 +10,10 @@
 
 use crate::metric_definitions::PARTITION_APPLY_COMMAND;
 use crate::partition::storage::Transaction;
-use command_interpreter::CommandInterpreter;
-use metrics::histogram;
+use metrics::{histogram, Histogram};
 use restate_types::message::MessageIndex;
+use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::time::Instant;
 
@@ -22,6 +23,7 @@ mod effect_interpreter;
 mod effects;
 mod tracing;
 
+use ::tracing::Instrument;
 pub use actions::Action;
 pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
@@ -32,8 +34,30 @@ use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
 
-#[derive(Debug)]
-pub struct StateMachine<Codec>(CommandInterpreter<Codec>);
+pub struct StateMachine<Codec> {
+    // initialized from persistent storage
+    inbox_seq_number: MessageIndex,
+    /// First outbox message index.
+    outbox_head_seq_number: Option<MessageIndex>,
+    /// Sequence number of the next outbox message to be appended.
+    outbox_seq_number: MessageIndex,
+    partition_key_range: RangeInclusive<PartitionKey>,
+    latency: Histogram,
+
+    default_invocation_status_source_table: invocation_status_table::SourceTable,
+
+    _codec: PhantomData<Codec>,
+}
+
+impl<Codec> Debug for StateMachine<Codec> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateMachine")
+            .field("inbox_seq_number", &self.inbox_seq_number)
+            .field("outbox_head_seq_number", &self.outbox_head_seq_number)
+            .field("outbox_seq_number", &self.outbox_seq_number)
+            .finish()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,13 +75,17 @@ impl<Codec> StateMachine<Codec> {
         partition_key_range: RangeInclusive<PartitionKey>,
         default_invocation_status_source_table: invocation_status_table::SourceTable,
     ) -> Self {
-        Self(CommandInterpreter::new(
+        let latency =
+            histogram!(crate::metric_definitions::PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
+        Self {
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
+            latency,
             default_invocation_status_source_table,
-        ))
+            _codec: PhantomData,
+        }
     }
 }
 
@@ -65,28 +93,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
-        effects: &mut Effects,
         transaction: &mut Transaction<TransactionType>,
         action_collector: &mut ActionCollector,
         is_leader: bool,
     ) -> Result<(), Error> {
-        let start = Instant::now();
-        // Handle the command, returns the span_relation to use to log effects
-        let command_type = command.name();
-        self.0.on_apply(command, effects, transaction).await?;
-
-        // Log the effects
-        effects.log(is_leader);
-
-        // Interpret effects
-        let res = effect_interpreter::EffectInterpreter::<Codec>::interpret_effects(
-            effects,
-            transaction,
-            action_collector,
-        )
-        .await;
-        histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
-        res
+        let span = tracing::state_machine_apply_command_span(is_leader, &command);
+        async {
+            let start = Instant::now();
+            // Apply the command
+            let command_type = command.name();
+            let res = self.on_apply(command, transaction, action_collector).await;
+            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
+            res
+        }
+        .instrument(span)
+        .await
     }
 }
 
@@ -200,13 +221,7 @@ mod tests {
             );
             let mut action_collector = ActionCollector::default();
             self.state_machine
-                .apply(
-                    command,
-                    &mut self.effects_buffer,
-                    &mut transaction,
-                    &mut action_collector,
-                    true,
-                )
+                .apply(command, &mut transaction, &mut action_collector, true)
                 .await
                 .unwrap();
 

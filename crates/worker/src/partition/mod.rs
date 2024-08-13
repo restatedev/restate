@@ -43,7 +43,7 @@ use crate::metric_definitions::{
     PP_APPLY_RECORD_DURATION,
 };
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
+use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
 mod action_effect_handler;
@@ -316,7 +316,6 @@ where
         let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
 
         let mut action_collector = ActionCollector::default();
-        let mut effects = Effects::default();
 
         loop {
             tokio::select! {
@@ -345,12 +344,10 @@ where
 
                     // clear buffers used when applying the next record
                     action_collector.clear();
-                    effects.clear();
 
                     let leadership_change = self.apply_record(
                         record,
                         &mut transaction,
-                        &mut effects,
                         &mut action_collector).await?;
 
                     if let Some((header, announce_leader)) = leadership_change {
@@ -433,7 +430,6 @@ where
         &mut self,
         record: (Lsn, Envelope),
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
-        effects: &mut Effects,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
         let (lsn, envelope) = record;
@@ -477,7 +473,6 @@ where
                 self.state_machine
                     .apply(
                         envelope.command,
-                        effects,
                         transaction,
                         action_collector,
                         self.leadership_state.is_leader(),
