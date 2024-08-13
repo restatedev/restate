@@ -144,6 +144,7 @@ pub enum ProviderKind {
     /// A local rocksdb-backed loglet.
     Local,
     /// An in-memory loglet, primarily for testing.
+    #[cfg(any(test, feature = "test-util"))]
     InMemory,
     #[cfg(feature = "replicated-loglet")]
     /// [IN DEVELOPMENT]
@@ -334,6 +335,7 @@ pub fn new_single_node_loglet_params(default_provider: ProviderKind) -> LogletPa
     let loglet_id = rand::thread_rng().next_u64().to_string();
     match default_provider {
         ProviderKind::Local => LogletParams::from(loglet_id),
+        #[cfg(any(test, feature = "test-util"))]
         ProviderKind::InMemory => LogletParams::from(loglet_id),
         #[cfg(feature = "replicated-loglet")]
         ProviderKind::Replicated => panic!(
