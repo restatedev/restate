@@ -458,10 +458,14 @@ pub struct MetadataStoreClientOptions {
     )
 )]
 pub enum MetadataStore {
+    /// Connects to another node that is running Metadata Store
+    /// over gRPC.
+    /// The remote node must run with MetadataStore Role
     Grpc {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         address: AdvertisedAddress,
     },
+    /// Uses external etcd as metadata store.
     EtcD {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<AdvertisedAddress>,
