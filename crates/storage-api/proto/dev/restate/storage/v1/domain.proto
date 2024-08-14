@@ -94,6 +94,7 @@ message Source {
     }
 }
 
+// This is the new InvocationStatus message, which replaces the InvocationStatus defined below.
 message NeoInvocationStatus {
 
     enum Status {
@@ -137,6 +138,7 @@ message NeoInvocationStatus {
     ResponseResult result = 18;
 }
 
+// TODO remove this after 1.1
 message InvocationStatus {
 
     message Invoked {
@@ -508,6 +510,7 @@ message Timer {
     }
 
     oneof value {
+        /// This variant is used for scheduled invocations recorded with NeoInvocationStatus
         InvocationId neo_invoke = 1;
         CompleteSleepEntry complete_sleep_entry = 100;
         ServiceInvocation invoke = 101;

@@ -37,7 +37,8 @@ pub struct WorkerOptions {
     /// The number of timers in memory limit is used to bound the amount of timers loaded in memory. If this limit is set, when exceeding it, the timers farther in the future will be spilled to disk.
     num_timers_in_memory_limit: Option<NonZeroUsize>,
 
-    enable_new_invocation_status_table: bool,
+    #[schemars(skip)]
+    experimental_feature_new_invocation_status_table: bool,
 
     pub storage: StorageOptions,
 
@@ -54,7 +55,7 @@ impl WorkerOptions {
     }
 
     pub fn enable_new_invocation_status_table(&self) -> bool {
-        self.enable_new_invocation_status_table
+        self.experimental_feature_new_invocation_status_table
     }
 }
 
@@ -63,7 +64,7 @@ impl Default for WorkerOptions {
         Self {
             internal_queue_length: NonZeroUsize::new(10000).unwrap(),
             num_timers_in_memory_limit: None,
-            enable_new_invocation_status_table: false,
+            experimental_feature_new_invocation_status_table: false,
             storage: StorageOptions::default(),
             invoker: Default::default(),
         }

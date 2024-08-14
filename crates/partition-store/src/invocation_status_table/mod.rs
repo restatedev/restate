@@ -27,6 +27,7 @@ use restate_types::invocation::InvocationTarget;
 use restate_types::storage::StorageCodec;
 use std::ops::RangeInclusive;
 
+// TODO remove this once we remove the old InvocationStatus
 define_table_key!(
     TableKind::InvocationStatus,
     KeyKind::InvocationStatus,
@@ -36,14 +37,15 @@ define_table_key!(
     )
 );
 
-fn write_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
+// TODO remove this once we remove the old InvocationStatus
+fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
     InvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
 }
 
 define_table_key!(
-    TableKind::NeoInvocationStatus,
+    TableKind::InvocationStatus,
     KeyKind::NeoInvocationStatus,
     NeoInvocationStatusKey(
         partition_key: PartitionKey,
@@ -51,13 +53,14 @@ define_table_key!(
     )
 );
 
-fn write_neo_invocation_status_key(invocation_id: &InvocationId) -> NeoInvocationStatusKey {
+fn create_neo_invocation_status_key(invocation_id: &InvocationId) -> NeoInvocationStatusKey {
     NeoInvocationStatusKey::default()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid())
 }
 
-fn invocation_id_from_bytes_old_key<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
+// TODO remove this once we remove the old InvocationStatus
+fn invocation_id_from_old_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
     let mut key = InvocationStatusKey::deserialize_from(bytes)?;
     let partition_key = key
         .partition_key
@@ -71,7 +74,7 @@ fn invocation_id_from_bytes_old_key<B: bytes::Buf>(bytes: &mut B) -> crate::Resu
     ))
 }
 
-fn invocation_id_from_bytes_neo_key<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
+fn invocation_id_from_neo_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
     let mut key = NeoInvocationStatusKey::deserialize_from(bytes)?;
     let partition_key = key
         .partition_key
@@ -100,20 +103,22 @@ fn put_invocation_status<S: StorageAccess>(
         }
         | InvocationStatus::Completed(CompletedInvocation { source_table, .. }) => {
             match source_table {
+                // TODO remove this once we remove the old InvocationStatus
                 SourceTable::Old => {
-                    storage.put_kv(write_invocation_status_key(invocation_id), status);
+                    storage.put_kv(create_invocation_status_key(invocation_id), status);
                 }
                 SourceTable::New => {
                     storage.put_kv(
-                        write_neo_invocation_status_key(invocation_id),
+                        create_neo_invocation_status_key(invocation_id),
                         NeoInvocationStatus(status),
                     );
                 }
             }
         }
         InvocationStatus::Free => {
-            storage.delete_key(&write_invocation_status_key(invocation_id));
-            storage.delete_key(&write_neo_invocation_status_key(invocation_id));
+            // TODO remove this once we remove the old InvocationStatus
+            storage.delete_key(&create_invocation_status_key(invocation_id));
+            storage.delete_key(&create_neo_invocation_status_key(invocation_id));
         }
     }
 }
@@ -125,19 +130,21 @@ fn get_invocation_status<S: StorageAccess>(
     let _x = RocksDbPerfGuard::new("get-invocation-status");
 
     // Try read the old one first
-    if let Some(s) =
-        storage.get_value::<_, InvocationStatus>(write_invocation_status_key(invocation_id))?
+    if let Some(s) = storage
+        .get_value::<_, NeoInvocationStatus>(create_neo_invocation_status_key(invocation_id))?
     {
-        return Ok(s);
+        return Ok(s.0);
     }
+    // TODO remove this once we remove the old InvocationStatus
     storage
-        .get_value::<_, NeoInvocationStatus>(write_neo_invocation_status_key(invocation_id))
-        .map(|value| value.map(|is| is.0).unwrap_or(InvocationStatus::Free))
+        .get_value::<_, InvocationStatus>(create_invocation_status_key(invocation_id))
+        .map(|value| value.unwrap_or(InvocationStatus::Free))
 }
 
 fn delete_invocation_status<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) {
-    storage.delete_key(&write_invocation_status_key(invocation_id));
-    storage.delete_key(&write_neo_invocation_status_key(invocation_id));
+    // TODO remove this once we remove the old InvocationStatus
+    storage.delete_key(&create_invocation_status_key(invocation_id));
+    storage.delete_key(&create_neo_invocation_status_key(invocation_id));
 }
 
 fn invoked_invocations<S: StorageAccess>(
@@ -145,7 +152,7 @@ fn invoked_invocations<S: StorageAccess>(
     partition_key_range: RangeInclusive<PartitionKey>,
 ) -> Vec<Result<(InvocationId, InvocationTarget)>> {
     let _x = RocksDbPerfGuard::new("invoked-invocations");
-    let mut old_invocations = storage.for_each_key_value_in_place(
+    let mut invocations = storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<InvocationStatusKey>(partition_key_range.clone()),
         |mut k, mut v| {
             let result = read_invoked_full_invocation_id(&mut k, &mut v).transpose();
@@ -156,7 +163,7 @@ fn invoked_invocations<S: StorageAccess>(
             }
         },
     );
-    old_invocations.extend(storage.for_each_key_value_in_place(
+    invocations.extend(storage.for_each_key_value_in_place(
         FullScanPartitionKeyRange::<NeoInvocationStatusKey>(partition_key_range),
         |mut k, mut v| {
             let result = read_invoked_neo_full_invocation_id(&mut k, &mut v).transpose();
@@ -168,7 +175,7 @@ fn invoked_invocations<S: StorageAccess>(
         },
     ));
 
-    old_invocations
+    invocations
 }
 
 fn all_invocation_status<S: StorageAccess>(
@@ -210,11 +217,12 @@ fn all_invocation_status<S: StorageAccess>(
     )
 }
 
+// TODO remove this once we remove the old InvocationStatus
 fn read_invoked_full_invocation_id(
     mut k: &mut &[u8],
     v: &mut &[u8],
 ) -> Result<Option<(InvocationId, InvocationTarget)>> {
-    let invocation_id = invocation_id_from_bytes_old_key(&mut k)?;
+    let invocation_id = invocation_id_from_old_key_bytes(&mut k)?;
     let invocation_status = StorageCodec::decode::<InvocationStatus, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?;
     if let InvocationStatus::Invoked(invocation_meta) = invocation_status {
@@ -229,7 +237,7 @@ fn read_invoked_neo_full_invocation_id(
     v: &mut &[u8],
 ) -> Result<Option<(InvocationId, InvocationTarget)>> {
     // TODO this can be improved by simply parsing InvocationTarget and the Status enum
-    let invocation_id = invocation_id_from_bytes_neo_key(&mut k)?;
+    let invocation_id = invocation_id_from_neo_key_bytes(&mut k)?;
     let invocation_status = StorageCodec::decode::<NeoInvocationStatus, _>(v)
         .map_err(|err| StorageError::Generic(err.into()))?
         .0;
@@ -309,9 +317,9 @@ mod tests {
     fn round_trip() {
         let expected_invocation_id = InvocationId::mock_random();
 
-        let key = write_invocation_status_key(&expected_invocation_id).serialize();
+        let key = create_invocation_status_key(&expected_invocation_id).serialize();
 
-        let actual_invocation_id = invocation_id_from_bytes_old_key(&mut key.freeze()).unwrap();
+        let actual_invocation_id = invocation_id_from_old_key_bytes(&mut key.freeze()).unwrap();
 
         assert_eq!(actual_invocation_id, expected_invocation_id);
     }
