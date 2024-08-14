@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use core::net;
 use enumset::EnumSet;
 use once_cell::sync::Lazy;
 use restate_serde_util::NonZeroByteCount;
@@ -23,6 +24,8 @@ use crate::net::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 use crate::retries::RetryPolicy;
 use crate::PlainNodeId;
+
+use std::net::SocketAddr;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 
@@ -468,7 +471,7 @@ pub enum MetadataStore {
     /// Uses external etcd as metadata store.
     EtcD {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        addresses: Vec<AdvertisedAddress>,
+        addresses: Vec<net::SocketAddr>,
     },
 }
 
