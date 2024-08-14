@@ -450,7 +450,7 @@ pub struct MetadataStoreClientOptions {
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
-    rename_all_fields = "kebab-case",
+    rename_all_fields = "kebab-case"
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
@@ -469,9 +469,10 @@ pub enum MetadataStore {
         address: AdvertisedAddress,
     },
     /// Uses external etcd as metadata store.
+    /// The addresses are formatted as `host:port`
     Etcd {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        addresses: Vec<net::SocketAddr>,
+        addresses: Vec<String>,
     },
 }
 
