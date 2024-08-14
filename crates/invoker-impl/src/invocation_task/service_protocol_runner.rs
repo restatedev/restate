@@ -21,8 +21,8 @@ use futures::{FutureExt, Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName};
 use http_body::Frame;
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::propagation::Injector;
+use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
@@ -43,7 +43,6 @@ use std::future::poll_fn;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -150,6 +149,7 @@ where
             deployment.metadata,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
+            &service_invocation_span_context,
         );
 
         crate::shortcircuit!(
@@ -208,6 +208,7 @@ where
         deployment_metadata: DeploymentMetadata,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
+        parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
         // Just an arbitrary buffering size
         let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
@@ -228,10 +229,22 @@ where
         ]);
 
         // Inject OpenTelemetry context
-        TraceContextPropagator::new().inject_context(
-            &Span::current().context(),
-            &mut opentelemetry_http::HeaderInjector(&mut headers),
-        );
+        {
+            let span_context = parent_span_context.span_context();
+            if span_context.is_valid() {
+                let mut injector = opentelemetry_http::HeaderInjector(&mut headers);
+                const SUPPORTED_VERSION: u8 = 0;
+                let header_value = format!(
+                    "{:02x}-{}-{}-{:02x}",
+                    SUPPORTED_VERSION,
+                    span_context.trace_id(),
+                    span_context.span_id(),
+                    span_context.trace_flags() & TraceFlags::SAMPLED
+                );
+                injector.set("traceparent", header_value);
+                injector.set("tracestate", span_context.trace_state().header());
+            }
+        }
 
         let address = match deployment_metadata.ty {
             DeploymentType::Lambda {
