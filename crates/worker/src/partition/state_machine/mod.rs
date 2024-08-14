@@ -18,14 +18,13 @@ use std::ops::RangeInclusive;
 use std::time::Instant;
 
 mod actions;
-mod command_interpreter;
+mod command_handler;
 mod effect_interpreter;
-mod effects;
 mod tracing;
 
 use ::tracing::Instrument;
 pub use actions::Action;
-pub use command_interpreter::StateReader;
+pub use command_handler::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 use restate_storage_api::invocation_status_table;
@@ -108,11 +107,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             // Apply the command
             let command_type = command.name();
             let res = self
-                .on_apply(StateMachineApplyContext {
-                    storage: transaction,
-                    action_collector,
-                    is_leader,
-                })
+                .on_apply(
+                    StateMachineApplyContext {
+                        storage: transaction,
+                        action_collector,
+                        is_leader,
+                    },
+                    command,
+                )
                 .await;
             histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
             res
