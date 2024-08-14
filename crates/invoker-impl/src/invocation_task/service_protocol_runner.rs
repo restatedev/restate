@@ -227,7 +227,11 @@ where
             (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
 
-        // Inject OpenTelemetry context
+        // Inject OpenTelemetry context into the headers
+        // The parent span as seen by the SDK will be the service invocation span context
+        // which is emitted at INFO level representing the invocation, *not* the DEBUG level
+        // `invoker_invocation_task` which wraps this code. This is so that headers will be sent
+        // when in INFO level, not just in DEBUG level.
         {
             let span_context = parent_span_context.span_context();
             if span_context.is_valid() {
