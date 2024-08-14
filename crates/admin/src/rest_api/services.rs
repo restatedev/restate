@@ -24,7 +24,7 @@ use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{append_envelope_to_bifrost, Command, Envelope};
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// List services
 #[openapi(
@@ -156,14 +156,23 @@ pub async fn modify_service_state<V>(
         new_state,
     }): Json<ModifyServiceStateRequest>,
 ) -> Result<StatusCode, MetaApiError> {
-    let svc = state
+    if let Some(svc) = state
         .task_center
         .run_in_scope_sync("get-service", None, || {
             state.schema_registry.get_service(&service_name)
         })
-        .ok_or_else(|| MetaApiError::ServiceNotFound(service_name.clone()))?;
-    if !svc.ty.has_state() {
-        return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
+    {
+        if !svc.ty.has_state() {
+            return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
+        }
+    } else if new_state.is_empty() {
+        // could be a deleted service; we still want to allow state to be cleared, so lets continue given that the new state is empty
+        debug!(
+            rpc.service = service_name,
+            "Attempting to delete state for service that does not exist in the registry (perhaps deleted)"
+        );
+    } else {
+        return Err(MetaApiError::ServiceNotFound(service_name));
     }
 
     let service_id = ServiceId::new(service_name, object_key);
