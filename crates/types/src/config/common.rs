@@ -434,8 +434,7 @@ pub enum LogFormat {
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
     /// Address of the metadata store server to bootstrap the node from.
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_store_address: AdvertisedAddress,
+    pub metadata_store: MetadataStore,
 
     /// # Backoff policy used by the metadata store client
     ///
@@ -444,12 +443,39 @@ pub struct MetadataStoreClientOptions {
     pub metadata_store_client_backoff_policy: RetryPolicy,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(
+        title = "Metadata Store",
+        description = "Definition of a bootstrap metadata store"
+    )
+)]
+pub enum MetadataStore {
+    Grpc {
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        address: AdvertisedAddress,
+    },
+    EtcD {
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        addresses: Vec<AdvertisedAddress>,
+    },
+}
+
 impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
-            metadata_store_address: "http://127.0.0.1:5123"
-                .parse()
-                .expect("valid metadata store address"),
+            metadata_store: MetadataStore::Grpc {
+                address: "http://127.0.0.1:5123"
+                    .parse()
+                    .expect("valid metadata store address"),
+            },
             metadata_store_client_backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,

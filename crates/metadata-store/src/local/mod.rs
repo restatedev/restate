@@ -14,7 +14,7 @@ mod store;
 mod service;
 
 use restate_core::metadata_store::MetadataStoreClient;
-use restate_types::config::MetadataStoreClientOptions;
+use restate_types::config::{self, MetadataStoreClientOptions};
 pub use service::LocalMetadataStoreService;
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
@@ -23,8 +23,13 @@ use crate::local::grpc::client::LocalMetadataStoreClient;
 pub fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> MetadataStoreClient {
+    let metadata_store = match metadata_store_client_options.metadata_store {
+        config::MetadataStore::Grpc { address } => LocalMetadataStoreClient::new(address),
+        _ => unimplemented!(),
+    };
+
     MetadataStoreClient::new(
-        LocalMetadataStoreClient::new(metadata_store_client_options.metadata_store_address),
+        metadata_store,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
     )
 }
