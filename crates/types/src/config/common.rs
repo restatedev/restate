@@ -436,7 +436,7 @@ pub enum LogFormat {
 #[builder(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
-    /// Address of the metadata store server to bootstrap the node from.
+    /// Metadata store server to bootstrap the node from.
     pub metadata_store: MetadataStore,
 
     /// # Backoff policy used by the metadata store client
