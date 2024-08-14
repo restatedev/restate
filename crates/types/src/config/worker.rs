@@ -54,7 +54,7 @@ impl WorkerOptions {
         self.num_timers_in_memory_limit.map(Into::into)
     }
 
-    pub fn enable_new_invocation_status_table(&self) -> bool {
+    pub fn experimental_feature_new_invocation_status_table(&self) -> bool {
         self.experimental_feature_new_invocation_status_table
     }
 }
