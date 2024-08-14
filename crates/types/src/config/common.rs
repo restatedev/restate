@@ -437,7 +437,7 @@ pub enum LogFormat {
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
     /// Metadata store server to bootstrap the node from.
-    pub metadata_store: MetadataStore,
+    pub metadata_store_client: MetadataStore,
 
     /// # Backoff policy used by the metadata store client
     ///
@@ -450,7 +450,7 @@ pub struct MetadataStoreClientOptions {
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
-    rename_all_fields = "kebab-case"
+    rename_all_fields = "kebab-case",
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(
@@ -464,12 +464,12 @@ pub enum MetadataStore {
     /// Connects to another node that is running Metadata Store
     /// over gRPC.
     /// The remote node must run with MetadataStore Role
-    Grpc {
+    Embedded {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         address: AdvertisedAddress,
     },
     /// Uses external etcd as metadata store.
-    EtcD {
+    Etcd {
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         addresses: Vec<net::SocketAddr>,
     },
@@ -478,7 +478,7 @@ pub enum MetadataStore {
 impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
-            metadata_store: MetadataStore::Grpc {
+            metadata_store_client: MetadataStore::Embedded {
                 address: "http://127.0.0.1:5123"
                     .parse()
                     .expect("valid metadata store address"),

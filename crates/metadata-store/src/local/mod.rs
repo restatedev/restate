@@ -23,8 +23,8 @@ use crate::local::grpc::client::LocalMetadataStoreClient;
 pub fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
 ) -> MetadataStoreClient {
-    let metadata_store = match metadata_store_client_options.metadata_store {
-        config::MetadataStore::Grpc { address } => LocalMetadataStoreClient::new(address),
+    let metadata_store = match metadata_store_client_options.metadata_store_client {
+        config::MetadataStore::Embedded { address } => LocalMetadataStoreClient::new(address),
         _ => unimplemented!(),
     };
 

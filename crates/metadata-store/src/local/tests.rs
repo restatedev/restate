@@ -268,7 +268,7 @@ async fn durable_storage() -> anyhow::Result<()> {
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
     let metadata_store_client_opts = MetadataStoreClientOptionsBuilder::default()
-        .metadata_store(restate_types::config::MetadataStore::Grpc {
+        .metadata_store_client(restate_types::config::MetadataStore::Embedded {
             address: AdvertisedAddress::Uds(uds_path),
         })
         .build()
@@ -321,7 +321,7 @@ async fn create_test_environment(
     let advertised_address = AdvertisedAddress::Uds(uds_path);
     config.metadata_store = opts.clone();
     config.metadata_store.bind_address = bind_address;
-    config.common.metadata_store_client.metadata_store = config::MetadataStore::Grpc {
+    config.common.metadata_store_client.metadata_store_client = config::MetadataStore::Embedded {
         address: advertised_address.clone(),
     };
 
@@ -366,8 +366,8 @@ async fn start_metadata_store(
     )?;
 
     // await start-up of metadata store
-    let metadata_store_address = if let config::MetadataStore::Grpc { address } =
-        metadata_store_client_options.metadata_store
+    let metadata_store_address = if let config::MetadataStore::Embedded { address } =
+        metadata_store_client_options.metadata_store_client
     {
         address.clone()
     } else {
