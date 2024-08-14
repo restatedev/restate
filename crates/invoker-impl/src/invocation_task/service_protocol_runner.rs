@@ -19,9 +19,8 @@ use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Frame;
-use opentelemetry::propagation::Injector;
 use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
@@ -232,7 +231,6 @@ where
         {
             let span_context = parent_span_context.span_context();
             if span_context.is_valid() {
-                let mut injector = opentelemetry_http::HeaderInjector(&mut headers);
                 const SUPPORTED_VERSION: u8 = 0;
                 let header_value = format!(
                     "{:02x}-{}-{}-{:02x}",
@@ -241,8 +239,12 @@ where
                     span_context.span_id(),
                     span_context.trace_flags() & TraceFlags::SAMPLED
                 );
-                injector.set("traceparent", header_value);
-                injector.set("tracestate", span_context.trace_state().header());
+                if let Ok(header_value) = HeaderValue::try_from(header_value) {
+                    headers.insert("traceparent", header_value);
+                }
+                if let Ok(tracestate) = HeaderValue::try_from(span_context.trace_state().header()) {
+                    headers.insert("tracestate", tracestate);
+                }
             }
         }
 
