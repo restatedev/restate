@@ -21,7 +21,7 @@ use tower::ServiceBuilder;
 use restate_core::metadata_store::MetadataStoreClient;
 use restate_core::network::net_util;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::{task_center, MetadataWriter};
+use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
@@ -65,8 +65,7 @@ where
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state =
-            state::AdminServiceState::new(self.schema_registry, bifrost, task_center());
+        let rest_state = state::AdminServiceState::new(self.schema_registry, bifrost);
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));

@@ -36,11 +36,7 @@ use tracing::{debug, warn};
 pub async fn list_services<V>(
     State(state): State<AdminServiceState<V>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
-    let services = state
-        .task_center
-        .run_in_scope_sync("list-services", None, || {
-            state.schema_registry.list_services()
-        });
+    let services = state.schema_registry.list_services();
 
     Ok(ListServicesResponse { services }.into())
 }
@@ -62,10 +58,8 @@ pub async fn get_service<V>(
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     state
-        .task_center
-        .run_in_scope_sync("get-service", None, || {
-            state.schema_registry.get_service(&service_name)
-        })
+        .schema_registry
+        .get_service(&service_name)
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
@@ -111,17 +105,12 @@ pub async fn modify_service<V>(
         return get_service(State(state), Path(service_name)).await;
     }
 
-    let response = state
-        .task_center
-        .run_in_scope("modify-service", None, async {
-            log_error(
-                state
-                    .schema_registry
-                    .modify_service(service_name, modify_request)
-                    .await,
-            )
-        })
-        .await?;
+    let response = log_error(
+        state
+            .schema_registry
+            .modify_service(service_name, modify_request)
+            .await,
+    )?;
 
     Ok(response.into())
 }
@@ -156,12 +145,7 @@ pub async fn modify_service_state<V>(
         new_state,
     }): Json<ModifyServiceStateRequest>,
 ) -> Result<StatusCode, MetaApiError> {
-    if let Some(svc) = state
-        .task_center
-        .run_in_scope_sync("get-service", None, || {
-            state.schema_registry.get_service(&service_name)
-        })
-    {
+    if let Some(svc) = state.schema_registry.get_service(&service_name) {
         if !svc.ty.has_state() {
             return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
         }
@@ -189,20 +173,14 @@ pub async fn modify_service_state<V>(
         state: new_state,
     };
 
-    let result = state
-        .task_center
-        .run_in_scope(
-            "modify_service_state",
-            None,
-            append_envelope_to_bifrost(
-                &state.bifrost,
-                Envelope::new(
-                    create_envelope_header(partition_key),
-                    Command::PatchState(patch_state),
-                ),
-            ),
-        )
-        .await;
+    let result = append_envelope_to_bifrost(
+        &state.bifrost,
+        Envelope::new(
+            create_envelope_header(partition_key),
+            Command::PatchState(patch_state),
+        ),
+    )
+    .await;
 
     if let Err(err) = result {
         warn!("Could not append state patching command to Bifrost: {err}");

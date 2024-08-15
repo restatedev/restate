@@ -12,14 +12,12 @@
 use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::TaskCenter;
 use tonic::transport::Channel;
 
 #[derive(Clone, derive_builder::Builder)]
 pub struct AdminServiceState<V> {
     pub schema_registry: SchemaRegistry<V>,
     pub bifrost: Bifrost,
-    pub task_center: TaskCenter,
 }
 
 #[derive(Clone)]
@@ -28,15 +26,10 @@ pub struct QueryServiceState {
 }
 
 impl<V> AdminServiceState<V> {
-    pub fn new(
-        schema_registry: SchemaRegistry<V>,
-        bifrost: Bifrost,
-        task_center: TaskCenter,
-    ) -> Self {
+    pub fn new(schema_registry: SchemaRegistry<V>, bifrost: Bifrost) -> Self {
         Self {
             schema_registry,
             bifrost,
-            task_center,
         }
     }
 }

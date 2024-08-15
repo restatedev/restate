@@ -76,10 +76,8 @@ pub async fn get_subscription<V>(
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
-        .task_center
-        .run_in_scope_sync("get-subscription", None, || {
-            state.schema_registry.get_subscription(subscription_id)
-        })
+        .schema_registry
+        .get_subscription(subscription_id)
         .ok_or_else(|| MetaApiError::SubscriptionNotFound(subscription_id))?;
 
     Ok(SubscriptionResponse::from(subscription).into())
@@ -126,11 +124,7 @@ pub async fn list_subscriptions<V>(
         _ => vec![],
     };
 
-    let subscriptions = state
-        .task_center
-        .run_in_scope_sync("list-subscriptions", None, || {
-            state.schema_registry.list_subscriptions(&filters)
-        });
+    let subscriptions = state.schema_registry.list_subscriptions(&filters);
 
     ListSubscriptionsResponse {
         subscriptions: subscriptions

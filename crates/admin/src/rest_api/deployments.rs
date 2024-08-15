@@ -95,17 +95,12 @@ pub async fn create_deployment<V>(
         ApplyMode::Apply
     };
 
-    let (id, services) = state
-        .task_center
-        .run_in_scope("create-deployment", None, async {
-            log_error(
-                state
-                    .schema_registry
-                    .register_deployment(discover_endpoint, force, apply_mode)
-                    .await,
-            )
-        })
-        .await?;
+    let (id, services) = log_error(
+        state
+            .schema_registry
+            .register_deployment(discover_endpoint, force, apply_mode)
+            .await,
+    )?;
 
     let response_body = RegisterDeploymentResponse { id, services };
 
@@ -136,10 +131,8 @@ pub async fn get_deployment<V>(
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, services) = state
-        .task_center
-        .run_in_scope_sync("get-deployment", None, || {
-            state.schema_registry.get_deployment(deployment_id)
-        })
+        .schema_registry
+        .get_deployment(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(DetailedDeploymentResponse {
@@ -161,10 +154,8 @@ pub async fn list_deployments<V>(
     State(state): State<AdminServiceState<V>>,
 ) -> Json<ListDeploymentsResponse> {
     let deployments = state
-        .task_center
-        .run_in_scope_sync("list-deployments", None, || {
-            state.schema_registry.list_deployments()
-        })
+        .schema_registry
+        .list_deployments()
         .into_iter()
         .map(|(deployment, services)| DeploymentResponse {
             id: deployment.id,
