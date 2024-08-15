@@ -45,7 +45,7 @@ pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
 }
 
 async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
-    let current_state = get_current_state(env, &opts.service, &opts.key).await?;
+    let current_state = get_current_state(env, &opts.service, &opts.key, false).await?;
     let current_version = compute_version(&current_state);
 
     let tempdir = tempdir().context("unable to create a temporary directory")?;
