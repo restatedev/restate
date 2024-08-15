@@ -4,8 +4,6 @@ use crate::metadata_store::{
 use anyhow::Context;
 use bytestring::ByteString;
 use etcd_client::{Client, GetOptions};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 impl From<etcd_client::Error> for ReadError {
     fn from(value: etcd_client::Error) -> Self {
