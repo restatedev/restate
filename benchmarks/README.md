@@ -29,13 +29,13 @@ See the [node services' readme](https://github.com/restatedev/e2e/blob/a500164a3
 All benchmarks can be run via:
 
 ```shell
-cargo bench 
+cargo bench --package restate-benchmarks 
 ```
 
 To run a single benchmark run it via:
 
 ```shell
-cargo bench --bench throughput_parallel
+cargo bench --package restate-benchmarks --bench throughput_parallel
 ```
 
 ## Profiling the benchmarks
