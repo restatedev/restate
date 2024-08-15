@@ -14,7 +14,7 @@ impl From<etcd_client::Error> for ReadError {
 }
 
 pub struct EtcdMetadataStore {
-    client: Arc<Mutex<Client>>,
+    client: Client,
 }
 
 impl EtcdMetadataStore {
@@ -24,9 +24,7 @@ impl EtcdMetadataStore {
             .await
             .context("failed to connect to etcd cluster")?;
 
-        Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-        })
+        Ok(Self { client })
     }
 }
 
@@ -35,7 +33,7 @@ impl MetadataStore for EtcdMetadataStore {
     /// Gets the value and its current version for the given key. If key-value pair is not present,
     /// then return [`None`].
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.kv_client();
         let mut response = client.get(key.into_bytes(), None).await?;
 
         for kv in response.take_kvs() {
@@ -56,7 +54,7 @@ impl MetadataStore for EtcdMetadataStore {
     /// Gets the current version for the given key. If key-value pair is not present, then return
     /// [`None`].
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.kv_client();
         let response = client
             .get(
                 key.into_bytes(),
