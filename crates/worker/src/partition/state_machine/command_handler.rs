@@ -651,7 +651,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<(), Error> {
-        let invocation_ids_to_kill: Result<Vec<InvocationId>, _> = ctx
+        let invocation_ids_to_kill: Vec<InvocationId> = ctx
             .storage
             .get_journal(invocation_id, journal_length)
             .try_filter_map(|(_, journal_entry)| async {
@@ -673,9 +673,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Ok(None)
             })
             .try_collect()
-            .await;
+            .await?;
 
-        for id in invocation_ids_to_kill? {
+        for id in invocation_ids_to_kill {
             self.handle_outgoing_message(
                 ctx,
                 OutboxMessage::InvocationTermination(InvocationTermination::kill(id)),
@@ -693,7 +693,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_status: InvocationStatusProjection,
         journal_length: EntryIndex,
     ) -> Result<bool, Error> {
-        let journal_entries_to_cancel: Result<Vec<(EntryIndex, EnrichedRawEntry)>, _> = ctx
+        let journal_entries_to_cancel: Vec<(EntryIndex, EnrichedRawEntry)> = ctx
             .storage
             .get_journal(&invocation_id, journal_length)
             .try_filter_map(|(journal_index, journal_entry)| async move {
@@ -723,13 +723,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 Ok(None)
             })
             .try_collect()
-            .await;
+            .await?;
 
         let canceled_result = CompletionResult::from(&CANCELED_INVOCATION_ERROR);
 
         let mut resume_invocation = false;
 
-        for (journal_index, journal_entry) in journal_entries_to_cancel? {
+        for (journal_index, journal_entry) in journal_entries_to_cancel {
             let (header, entry) = journal_entry.into_inner();
             match header {
                 // cancel uncompleted invocations
