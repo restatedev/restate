@@ -310,6 +310,10 @@ pub mod v1 {
                     creation_time,
                     modification_time,
                     response_sinks,
+                    inboxed_transition_time,
+                    scheduled_transition_time,
+                    running_transition_time,
+                    completed_transition_time,
                     argument,
                     headers,
                     execution_time,
@@ -327,6 +331,10 @@ pub mod v1 {
                 let timestamps = crate::invocation_status_table::StatusTimestamps::new(
                     MillisSinceEpoch::new(creation_time),
                     MillisSinceEpoch::new(modification_time),
+                    inboxed_transition_time.map(MillisSinceEpoch::new),
+                    scheduled_transition_time.map(MillisSinceEpoch::new),
+                    running_transition_time.map(MillisSinceEpoch::new),
+                    completed_transition_time.map(MillisSinceEpoch::new),
                 );
                 let source = expect_or_fail!(source)?.try_into()?;
                 let response_sinks = response_sinks
@@ -450,6 +458,9 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 source_table: crate::invocation_status_table::SourceTable::New,
                                 response_result: expect_or_fail!(result)?.try_into()?,
+                                completion_retention: completion_retention_time
+                                    .unwrap_or_default()
+                                    .try_into()?,
                             },
                         ))
                     }
@@ -489,8 +500,20 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
-                        creation_time: timestamps.creation_time().as_u64(),
-                        modification_time: timestamps.modification_time().as_u64(),
+                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                            .map(|t| t.as_u64()),
+                        scheduled_transition_time: unsafe {
+                            timestamps.scheduled_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
+                        running_transition_time: unsafe { timestamps.running_transition_time() }
+                            .map(|t| t.as_u64()),
+                        completed_transition_time: unsafe {
+                            timestamps.completed_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
                         response_sinks: response_sinks
                             .into_iter()
                             .map(|s| ServiceInvocationResponseSink::from(Some(s)))
@@ -530,8 +553,20 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: Some(span_context.into()),
-                        creation_time: timestamps.creation_time().as_u64(),
-                        modification_time: timestamps.modification_time().as_u64(),
+                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                            .map(|t| t.as_u64()),
+                        scheduled_transition_time: unsafe {
+                            timestamps.scheduled_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
+                        running_transition_time: unsafe { timestamps.running_transition_time() }
+                            .map(|t| t.as_u64()),
+                        completed_transition_time: unsafe {
+                            timestamps.completed_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
                         response_sinks: response_sinks
                             .into_iter()
                             .map(|s| ServiceInvocationResponseSink::from(Some(s)))
@@ -574,8 +609,24 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
-                            creation_time: timestamps.creation_time().as_u64(),
-                            modification_time: timestamps.modification_time().as_u64(),
+                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            inboxed_transition_time: unsafe {
+                                timestamps.inboxed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            scheduled_transition_time: unsafe {
+                                timestamps.scheduled_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            running_transition_time: unsafe {
+                                timestamps.running_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            completed_transition_time: unsafe {
+                                timestamps.completed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
                             response_sinks: response_sinks
                                 .into_iter()
                                 .map(|s| ServiceInvocationResponseSink::from(Some(s)))
@@ -621,8 +672,24 @@ pub mod v1 {
                             invocation_target: Some(invocation_target.into()),
                             source: Some(source.into()),
                             span_context: Some(journal_metadata.span_context.into()),
-                            creation_time: timestamps.creation_time().as_u64(),
-                            modification_time: timestamps.modification_time().as_u64(),
+                            creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                            modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                            inboxed_transition_time: unsafe {
+                                timestamps.inboxed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            scheduled_transition_time: unsafe {
+                                timestamps.scheduled_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            running_transition_time: unsafe {
+                                timestamps.running_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
+                            completed_transition_time: unsafe {
+                                timestamps.completed_transition_time()
+                            }
+                            .map(|t| t.as_u64()),
                             response_sinks: response_sinks
                                 .into_iter()
                                 .map(|s| ServiceInvocationResponseSink::from(Some(s)))
@@ -649,6 +716,7 @@ pub mod v1 {
                             idempotency_key,
                             timestamps,
                             response_result,
+                            completion_retention,
                             source_table: _,
                         },
                     ) => NeoInvocationStatus {
@@ -656,13 +724,25 @@ pub mod v1 {
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
                         span_context: None,
-                        creation_time: timestamps.creation_time().as_u64(),
-                        modification_time: timestamps.modification_time().as_u64(),
+                        creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                        modification_time: unsafe { timestamps.modification_time() }.as_u64(),
+                        inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
+                            .map(|t| t.as_u64()),
+                        scheduled_transition_time: unsafe {
+                            timestamps.scheduled_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
+                        running_transition_time: unsafe { timestamps.running_transition_time() }
+                            .map(|t| t.as_u64()),
+                        completed_transition_time: unsafe {
+                            timestamps.completed_transition_time()
+                        }
+                        .map(|t| t.as_u64()),
                         response_sinks: vec![],
                         argument: None,
                         headers: vec![],
                         execution_time: None,
-                        completion_retention_time: None,
+                        completion_retention_time: Some(completion_retention.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
@@ -834,6 +914,10 @@ pub mod v1 {
                     timestamps: crate::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
                         MillisSinceEpoch::new(value.modification_time),
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     source,
                     completion_retention_time,
@@ -874,8 +958,8 @@ pub mod v1 {
                     deployment_id,
                     service_protocol_version,
                     journal_meta: Some(JournalMeta::from(journal_metadata)),
-                    creation_time: timestamps.creation_time().as_u64(),
-                    modification_time: timestamps.modification_time().as_u64(),
+                    creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                    modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                     source: Some(Source::from(source)),
                     completion_retention_time: Some(Duration::from(completion_retention_time)),
                     idempotency_key: idempotency_key.map(|key| key.to_string()),
@@ -942,6 +1026,10 @@ pub mod v1 {
                         timestamps: crate::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
                             MillisSinceEpoch::new(value.modification_time),
+                            None,
+                            None,
+                            None,
+                            None,
                         ),
                         source: caller,
                         completion_retention_time,
@@ -987,8 +1075,8 @@ pub mod v1 {
                     journal_meta: Some(journal_meta),
                     deployment_id,
                     service_protocol_version,
-                    creation_time: metadata.timestamps.creation_time().as_u64(),
-                    modification_time: metadata.timestamps.modification_time().as_u64(),
+                    creation_time: unsafe { metadata.timestamps.creation_time() }.as_u64(),
+                    modification_time: unsafe { metadata.timestamps.modification_time() }.as_u64(),
                     waiting_for_completed_entries,
                     source: Some(Source::from(metadata.source)),
                     completion_retention_time: Some(Duration::from(
@@ -1058,6 +1146,10 @@ pub mod v1 {
                         timestamps: crate::invocation_status_table::StatusTimestamps::new(
                             MillisSinceEpoch::new(value.creation_time),
                             MillisSinceEpoch::new(value.modification_time),
+                            None,
+                            None,
+                            None,
+                            None,
                         ),
                         source,
                         span_context,
@@ -1102,8 +1194,8 @@ pub mod v1 {
                         .into_iter()
                         .map(|s| ServiceInvocationResponseSink::from(Some(s)))
                         .collect(),
-                    creation_time: timestamps.creation_time().as_u64(),
-                    modification_time: timestamps.modification_time().as_u64(),
+                    creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                    modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                     source: Some(Source::from(source)),
                     span_context: Some(SpanContext::from(span_context)),
                     headers,
@@ -1139,6 +1231,10 @@ pub mod v1 {
                     timestamps: crate::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
                         MillisSinceEpoch::new(value.modification_time),
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     response_result: value
                         .result
@@ -1146,6 +1242,9 @@ pub mod v1 {
                         .try_into()?,
                     idempotency_key,
                     source_table: crate::invocation_status_table::SourceTable::Old,
+                    // The value Duration::MAX here disables the new cleaner task business logic.
+                    // Look at crates/worker/src/partition/cleaner.rs for more details.
+                    completion_retention: std::time::Duration::MAX,
                 })
             }
         }
@@ -1158,6 +1257,8 @@ pub mod v1 {
                     idempotency_key,
                     timestamps,
                     response_result,
+                    // We don't store this in the old invocation status table
+                    completion_retention: _,
                     source_table: _,
                 } = value;
 
@@ -1165,8 +1266,8 @@ pub mod v1 {
                     invocation_target: Some(InvocationTarget::from(invocation_target)),
                     source: Some(Source::from(source)),
                     result: Some(ResponseResult::from(response_result)),
-                    creation_time: timestamps.creation_time().as_u64(),
-                    modification_time: timestamps.modification_time().as_u64(),
+                    creation_time: unsafe { timestamps.creation_time() }.as_u64(),
+                    modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                     idempotency_key: idempotency_key.map(|s| s.to_string()),
                 }
             }

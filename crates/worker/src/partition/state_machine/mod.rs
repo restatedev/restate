@@ -1642,7 +1642,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_id,
             invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
-            invocation_metadata.timestamps.creation_time(),
+            unsafe { invocation_metadata.timestamps.creation_time() },
             Ok(()),
         );
 
@@ -1713,7 +1713,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             invocation_id,
             invocation_metadata.invocation_target.clone(),
             invocation_metadata.journal_metadata.span_context.clone(),
-            invocation_metadata.timestamps.creation_time(),
+            unsafe { invocation_metadata.timestamps.creation_time() },
             Err((error.code(), error.to_string())),
         );
 
@@ -2699,7 +2699,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             "Effect: Resume service"
         );
 
-        metadata.timestamps.update();
+        unsafe { metadata.timestamps.update() };
         let invocation_target = metadata.invocation_target.clone();
         ctx.storage
             .store_invocation_status(&invocation_id, InvocationStatus::Invoked(metadata))
@@ -2735,7 +2735,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             waiting_for_completed_entries
         );
 
-        metadata.timestamps.update();
+        unsafe { metadata.timestamps.update() };
         ctx.storage
             .store_invocation_status(
                 &invocation_id,
@@ -3205,7 +3205,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .get_response_sinks_mut()
             .expect("No response sinks available")
             .insert(additional_response_sink);
-        previous_invocation_status.update_timestamps();
+        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
+            unsafe { timestamps.update() };
+        }
 
         ctx.storage
             .store_invocation_status(&invocation_id, previous_invocation_status)
@@ -3518,7 +3520,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         journal_meta.length = entry_index + 1;
 
         // Update timestamps
-        previous_invocation_status.update_timestamps();
+        if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
+            unsafe { timestamps.update() };
+        }
 
         // Store invocation status
         state_storage

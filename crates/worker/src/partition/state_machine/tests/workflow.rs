@@ -383,8 +383,9 @@ async fn timer_cleanup() {
             invocation_target: invocation_target.clone(),
             source: Source::Ingress,
             idempotency_key: None,
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+            completion_retention: Default::default(),
             source_table: SourceTable::New,
         }),
     )

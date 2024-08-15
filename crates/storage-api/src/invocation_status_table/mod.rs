@@ -35,39 +35,153 @@ pub enum SourceTable {
 pub struct StatusTimestamps {
     creation_time: MillisSinceEpoch,
     modification_time: MillisSinceEpoch,
+
+    inboxed_transition_time: Option<MillisSinceEpoch>,
+    scheduled_transition_time: Option<MillisSinceEpoch>,
+    running_transition_time: Option<MillisSinceEpoch>,
+    completed_transition_time: Option<MillisSinceEpoch>,
 }
 
 impl StatusTimestamps {
-    pub fn new(creation_time: MillisSinceEpoch, modification_time: MillisSinceEpoch) -> Self {
+    pub fn init(creation_time: MillisSinceEpoch) -> Self {
         Self {
             creation_time,
-            modification_time,
+            modification_time: creation_time,
+            inboxed_transition_time: None,
+            scheduled_transition_time: None,
+            running_transition_time: None,
+            completed_transition_time: None,
         }
     }
 
-    pub fn now() -> Self {
-        StatusTimestamps::new(MillisSinceEpoch::now(), MillisSinceEpoch::now())
+    pub fn new(
+        creation_time: MillisSinceEpoch,
+        modification_time: MillisSinceEpoch,
+        inboxed_transition_time: Option<MillisSinceEpoch>,
+        scheduled_transition_time: Option<MillisSinceEpoch>,
+        running_transition_time: Option<MillisSinceEpoch>,
+        completed_transition_time: Option<MillisSinceEpoch>,
+    ) -> Self {
+        Self {
+            creation_time,
+            modification_time,
+            inboxed_transition_time,
+            scheduled_transition_time,
+            running_transition_time,
+            completed_transition_time,
+        }
     }
 
     /// Update the statistics with an updated [`Self::modification_time()`].
-    pub fn update(&mut self) {
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn update(&mut self) {
         self.modification_time = MillisSinceEpoch::now()
+    }
+
+    /// Create a new StatusTimestamps data structure using the system time.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    unsafe fn now() -> Self {
+        StatusTimestamps::init(MillisSinceEpoch::now())
+    }
+
+    /// Update the statistics with an updated [`Self::inboxed_transition_time()`].
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    unsafe fn record_inboxed_transition_time(&mut self) {
+        self.update();
+        self.inboxed_transition_time = Some(self.modification_time)
+    }
+
+    /// Update the statistics with an updated [`Self::scheduled_transition_time()`].
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    unsafe fn record_scheduled_transition_time(&mut self) {
+        self.update();
+        self.scheduled_transition_time = Some(self.modification_time)
+    }
+
+    /// Update the statistics with an updated [`Self::running_transition_time()`].
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    unsafe fn record_running_transition_time(&mut self) {
+        self.update();
+        self.running_transition_time = Some(self.modification_time)
+    }
+
+    /// Update the statistics with an updated [`Self::completed_transition_time()`].
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    unsafe fn record_completed_transition_time(&mut self) {
+        self.update();
+        self.completed_transition_time = Some(self.modification_time)
     }
 
     /// Creation time of the [`InvocationStatus`].
     ///
-    /// Note: The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it for business logic, but only for observability purposes.
-    pub fn creation_time(&self) -> MillisSinceEpoch {
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn creation_time(&self) -> MillisSinceEpoch {
         self.creation_time
     }
 
     /// Modification time of the [`InvocationStatus`].
     ///
-    /// Note: The value of this time is not consistent across replicas of a partition, because it's not agreed.
-    /// You **MUST NOT** use it for business logic, but only for observability purposes.
-    pub fn modification_time(&self) -> MillisSinceEpoch {
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn modification_time(&self) -> MillisSinceEpoch {
         self.modification_time
+    }
+
+    /// Inboxed transition time of the [`InvocationStatus`], if any.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        self.inboxed_transition_time
+    }
+
+    /// Scheduled transition time of the [`InvocationStatus`], if any.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
+        self.scheduled_transition_time
+    }
+
+    /// First transition to Running time of the [`InvocationStatus`], if any.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
+        self.running_transition_time
+    }
+
+    /// Completed transition time of the [`InvocationStatus`], if any.
+    ///
+    /// # Safety
+    /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
+    /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
+    pub unsafe fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        self.completed_transition_time
     }
 }
 
@@ -202,13 +316,15 @@ impl InvocationStatus {
         }
     }
 
-    pub fn update_timestamps(&mut self) {
+    #[inline]
+    pub fn get_timestamps_mut(&mut self) -> Option<&mut StatusTimestamps> {
         match self {
-            InvocationStatus::Scheduled(metadata) => metadata.metadata.timestamps.update(),
-            InvocationStatus::Inboxed(metadata) => metadata.metadata.timestamps.update(),
-            InvocationStatus::Invoked(metadata) => metadata.timestamps.update(),
-            InvocationStatus::Suspended { metadata, .. } => metadata.timestamps.update(),
-            _ => {}
+            InvocationStatus::Scheduled(metadata) => Some(&mut metadata.metadata.timestamps),
+            InvocationStatus::Inboxed(metadata) => Some(&mut metadata.metadata.timestamps),
+            InvocationStatus::Invoked(metadata) => Some(&mut metadata.timestamps),
+            InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.timestamps),
+            InvocationStatus::Completed(completed) => Some(&mut completed.timestamps),
+            _ => None,
         }
     }
 }
@@ -271,7 +387,11 @@ pub struct ScheduledInvocation {
 }
 
 impl ScheduledInvocation {
-    pub fn from_pre_flight_invocation_metadata(metadata: PreFlightInvocationMetadata) -> Self {
+    pub fn from_pre_flight_invocation_metadata(mut metadata: PreFlightInvocationMetadata) -> Self {
+        unsafe {
+            metadata.timestamps.record_scheduled_transition_time();
+        }
+
         Self { metadata }
     }
 }
@@ -283,7 +403,7 @@ impl PreFlightInvocationMetadata {
     ) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
-            timestamps: StatusTimestamps::now(),
+            timestamps: unsafe { StatusTimestamps::now() },
             invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
@@ -309,9 +429,13 @@ pub struct InboxedInvocation {
 
 impl InboxedInvocation {
     pub fn from_pre_flight_invocation_metadata(
-        metadata: PreFlightInvocationMetadata,
+        mut metadata: PreFlightInvocationMetadata,
         inbox_sequence_number: u64,
     ) -> Self {
+        unsafe {
+            metadata.timestamps.record_inboxed_transition_time();
+        }
+
         Self {
             inbox_sequence_number,
             metadata,
@@ -319,15 +443,13 @@ impl InboxedInvocation {
     }
 
     pub fn from_scheduled_invocation(
-        mut scheduled_invocation: ScheduledInvocation,
+        scheduled_invocation: ScheduledInvocation,
         inbox_sequence_number: u64,
     ) -> Self {
-        scheduled_invocation.metadata.timestamps.update();
-
-        Self {
+        Self::from_pre_flight_invocation_metadata(
+            scheduled_invocation.metadata,
             inbox_sequence_number,
-            metadata: scheduled_invocation.metadata,
-        }
+        )
     }
 }
 
@@ -349,8 +471,14 @@ pub struct InFlightInvocationMetadata {
 
 impl InFlightInvocationMetadata {
     pub fn from_pre_flight_invocation_metadata(
-        pre_flight_invocation_metadata: PreFlightInvocationMetadata,
+        mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
     ) -> (Self, InvocationInput) {
+        unsafe {
+            pre_flight_invocation_metadata
+                .timestamps
+                .record_running_transition_time();
+        }
+
         (
             Self {
                 invocation_target: pre_flight_invocation_metadata.invocation_target,
@@ -373,10 +501,8 @@ impl InFlightInvocationMetadata {
     }
 
     pub fn from_inboxed_invocation(
-        mut inboxed_invocation: InboxedInvocation,
+        inboxed_invocation: InboxedInvocation,
     ) -> (Self, InvocationInput) {
-        inboxed_invocation.metadata.timestamps.update();
-
         Self::from_pre_flight_invocation_metadata(inboxed_invocation.metadata)
     }
 
@@ -386,7 +512,9 @@ impl InFlightInvocationMetadata {
             "No deployment should be chosen for the current invocation"
         );
         self.pinned_deployment = Some(pinned_deployment);
-        self.timestamps.update();
+        unsafe {
+            self.timestamps.update();
+        }
     }
 }
 
@@ -397,6 +525,7 @@ pub struct CompletedInvocation {
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
+    pub completion_retention: Duration,
 
     /// Used by the Table implementation to pick where to write
     pub source_table: SourceTable,
@@ -407,7 +536,11 @@ impl CompletedInvocation {
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         response_result: ResponseResult,
     ) -> (Self, Duration) {
-        in_flight_invocation_metadata.timestamps.update();
+        unsafe {
+            in_flight_invocation_metadata
+                .timestamps
+                .record_completed_transition_time();
+        }
 
         (
             Self {
@@ -416,6 +549,7 @@ impl CompletedInvocation {
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 timestamps: in_flight_invocation_metadata.timestamps,
                 response_result,
+                completion_retention: in_flight_invocation_metadata.completion_retention_time,
                 source_table: in_flight_invocation_metadata.source_table,
             },
             in_flight_invocation_metadata.completion_retention_time,
@@ -471,7 +605,7 @@ mod test_util {
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
                 response_sinks: HashSet::new(),
-                timestamps: StatusTimestamps::now(),
+                timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
                 source: Source::Ingress,
                 completion_retention_time: Duration::ZERO,
                 idempotency_key: None,

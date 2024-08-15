@@ -174,8 +174,9 @@ async fn complete_already_completed_invocation() {
             invocation_target: invocation_target.clone(),
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
             response_result: ResponseResult::Success(response_bytes.clone()),
+            completion_retention: Default::default(),
             source_table: SourceTable::New,
         }),
     )
@@ -804,9 +805,10 @@ async fn timer_cleanup() {
             invocation_target,
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::now(),
+            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
-            source_table: SourceTable::New,
+            completion_retention: Duration::MAX,
+            source_table: SourceTable::Old,
         }),
     )
     .await;
