@@ -18,8 +18,8 @@ use futures_util::stream;
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
-    InvocationStatusTable, NeoInvocationStatus, ReadOnlyInvocationStatusTable, ScheduledInvocation,
-    SourceTable,
+    InvocationStatusTable, NeoInvocationStatus, PreFlightInvocationMetadata,
+    ReadOnlyInvocationStatusTable, SourceTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
@@ -94,8 +94,10 @@ fn put_invocation_status<S: StorageAccess>(
     status: InvocationStatus,
 ) {
     match &status {
-        InvocationStatus::Scheduled(ScheduledInvocation { source_table, .. })
-        | InvocationStatus::Inboxed(InboxedInvocation { source_table, .. })
+        InvocationStatus::Inboxed(InboxedInvocation {
+            metadata: PreFlightInvocationMetadata { source_table, .. },
+            ..
+        })
         | InvocationStatus::Invoked(InFlightInvocationMetadata { source_table, .. })
         | InvocationStatus::Suspended {
             metadata: InFlightInvocationMetadata { source_table, .. },
@@ -114,6 +116,13 @@ fn put_invocation_status<S: StorageAccess>(
                     );
                 }
             }
+        }
+        InvocationStatus::Scheduled { .. } => {
+            // The scheduled variant is only on the NeoInvocationStatus
+            storage.put_kv(
+                create_neo_invocation_status_key(invocation_id),
+                NeoInvocationStatus(status),
+            );
         }
         InvocationStatus::Free => {
             // TODO remove this once we remove the old InvocationStatus
