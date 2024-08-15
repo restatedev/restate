@@ -16,7 +16,7 @@ impl From<etcd_client::Error> for ReadError {
 // always have version 1!
 // The only way to detect this is to also track the "mod revision" of the store as part
 // of the VersionValue.
-// The problem is that the restate Version is only u32 while both etcd version + mod version
+// The problem is that the restate Version is only u32 while both etcd version and mod version
 // are both i64.
 //
 // What this implementation tries to do is to fit both mod_revision and version in a u32.
