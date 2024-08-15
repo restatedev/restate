@@ -3,11 +3,36 @@ use crate::metadata_store::{
 };
 use anyhow::Context;
 use bytestring::ByteString;
-use etcd_client::{Client, GetOptions};
+use etcd_client::{Client, GetOptions, KeyValue};
 
 impl From<etcd_client::Error> for ReadError {
     fn from(value: etcd_client::Error) -> Self {
         Self::Network(value.into())
+    }
+}
+
+//todo: version of the kv is reset to 1 if the key was deleted then recrated.
+// this means that a key can change (by means of deletion and recreation) and will
+// always have version 1!
+// The only way to detect this is to also track the "mod revision" of the store as part
+// of the VersionValue.
+// The problem is that the restate Version is only u32 while both etcd version + mod version
+// are both i64.
+//
+// What this implementation tries to do is to fit both mod_revision and version in a u32.
+// This will work until any of the 2 values is actually bigger than u16::MAX which is not that much
+//
+// Changing the Version to have a u64 value also delays the problem for later since it will be a while before
+// mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
+//
+// The correct solution is of course to make Version u128.
+trait ToVersion {
+    fn to_version(&self) -> Version;
+}
+
+impl ToVersion for &KeyValue {
+    fn to_version(&self) -> Version {
+        Version::from((self.mod_revision() as u32) << 16 | self.version() as u32)
     }
 }
 
@@ -37,13 +62,11 @@ impl MetadataStore for EtcdMetadataStore {
         for kv in response.take_kvs() {
             // return first value because this suppose to be an exact match
             // not a scan
-            let version = kv.version();
+
+            // please read todo! on implementation of .to_version()
+            let version = (&kv).to_version();
             let (_, value) = kv.into_key_value();
-            return Ok(Some(VersionedValue::new(
-                // todo: do we expand the version type to i64/u64?
-                Version::from(version as u32),
-                value.into(),
-            )));
+            return Ok(Some(VersionedValue::new(version, value.into())));
         }
 
         Ok(None)
@@ -61,7 +84,7 @@ impl MetadataStore for EtcdMetadataStore {
             .await?;
 
         for kv in response.kvs() {
-            return Ok(Some(Version::from(kv.version() as u32)));
+            return Ok(Some(kv.to_version()));
         }
 
         return Ok(None);
@@ -75,6 +98,7 @@ impl MetadataStore for EtcdMetadataStore {
         value: VersionedValue,
         precondition: Precondition,
     ) -> Result<(), WriteError> {
+        // let txt = Txn::new().when(compares)
         unimplemented!()
     }
 
