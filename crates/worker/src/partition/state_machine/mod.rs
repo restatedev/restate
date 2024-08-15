@@ -28,6 +28,7 @@ pub use command_handler::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 use restate_storage_api::invocation_status_table;
+use restate_types::config::WorkerOptions;
 use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
@@ -42,6 +43,8 @@ pub struct StateMachine<Codec> {
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
 
+    /// This is used to establish whether for new invocations we should use the NeoInvocationStatus or not.
+    /// The neo table is enabled via [WorkerOptions::experimental_feature_new_invocation_status_table].
     default_invocation_status_source_table: invocation_status_table::SourceTable,
 
     _codec: PhantomData<Codec>,
@@ -193,7 +196,7 @@ mod tests {
                 0,    /* outbox_seq_number */
                 None, /* outbox_head_seq_number */
                 PartitionKey::MIN..=PartitionKey::MAX,
-                SourceTable::New,
+                SourceTable::Old,
             ))
             .await
         }
