@@ -20,6 +20,8 @@ use restate_types::message::MessageIndex;
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 
+pub type ActionCollector = Vec<Action>;
+
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum Action {
     Invoke {
