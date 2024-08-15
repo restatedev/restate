@@ -13,6 +13,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::SpanId;
 use restate_storage_api::inbox_table::InboxEntry;
+use restate_storage_api::invocation_status_table;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
 };
@@ -47,7 +48,7 @@ use tracing::{debug_span, event_enabled, span_enabled, trace, trace_span, Level}
 #[derive(Debug)]
 pub(crate) enum Effect {
     // InvocationStatus changes
-    InvokeService(ServiceInvocation),
+    InvokeService(ServiceInvocation, invocation_status_table::SourceTable),
     ResumeService {
         invocation_id: InvocationId,
         metadata: InFlightInvocationMetadata,
@@ -219,7 +220,7 @@ macro_rules! info_span_if_leader {
 impl Effect {
     fn log(&self, is_leader: bool) {
         match self {
-            Effect::InvokeService(ServiceInvocation { .. }) => {
+            Effect::InvokeService(ServiceInvocation { .. }, _) => {
                 debug_if_leader!(is_leader, "Effect: Invoke service")
             }
             Effect::ResumeService {
@@ -521,6 +522,16 @@ impl Effect {
                         "Effect: Register background invoke timer"
                     )
                 }
+                Timer::NeoInvoke(invocation_id) => {
+                    // no span necessary; there will already be a background_invoke span
+                    debug_if_leader!(
+                        is_leader,
+                        restate.invocation.id = %invocation_id,
+                        restate.timer.wake_up_time = %timer_value.wake_up_time(),
+                        restate.timer.key = %TimerKeyDisplay(timer_value.key()),
+                        "Effect: Register background invoke timer"
+                    )
+                }
                 Timer::CleanInvocationStatus(_) => {
                     debug_if_leader!(
                         is_leader,
@@ -765,8 +776,13 @@ impl Effects {
         self.effects.drain(..)
     }
 
-    pub(crate) fn invoke_service(&mut self, service_invocation: ServiceInvocation) {
-        self.effects.push(Effect::InvokeService(service_invocation));
+    pub(crate) fn invoke_service(
+        &mut self,
+        service_invocation: ServiceInvocation,
+        source_table: invocation_status_table::SourceTable,
+    ) {
+        self.effects
+            .push(Effect::InvokeService(service_invocation, source_table));
     }
 
     pub(crate) fn resume_service(

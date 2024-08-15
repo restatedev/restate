@@ -199,10 +199,13 @@ impl<Codec: RawEntryCodec> EffectInterpreter<Codec> {
         collector: &mut ActionCollector,
     ) -> Result<(), Error> {
         match effect {
-            Effect::InvokeService(service_invocation) => {
+            Effect::InvokeService(service_invocation, source_table) => {
                 let invocation_id = service_invocation.invocation_id;
                 let (in_flight_invocation_meta, invocation_input) =
-                    InFlightInvocationMetadata::from_service_invocation(service_invocation);
+                    InFlightInvocationMetadata::from_service_invocation(
+                        service_invocation,
+                        source_table,
+                    );
                 Self::invoke_service(
                     state_storage,
                     collector,

@@ -22,6 +22,7 @@ use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::inbox_table::InboxEntry;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+    SourceTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -118,6 +119,8 @@ pub(crate) struct CommandInterpreter<Codec> {
     partition_key_range: RangeInclusive<PartitionKey>,
     latency: Histogram,
 
+    default_invocation_status_source_table: SourceTable,
+
     _codec: PhantomData<Codec>,
 }
 
@@ -139,6 +142,7 @@ impl<Codec> CommandInterpreter<Codec> {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
+        default_invocation_status_source_table: SourceTable,
     ) -> Self {
         let latency = histogram!(PARTITION_HANDLE_INVOKER_EFFECT_COMMAND);
         Self {
@@ -148,6 +152,7 @@ impl<Codec> CommandInterpreter<Codec> {
             partition_key_range,
             _codec: PhantomData,
             latency,
+            default_invocation_status_source_table,
         }
     }
 }
@@ -321,6 +326,7 @@ where
                     InboxedInvocation::from_service_invocation(
                         service_invocation,
                         inbox_seq_number,
+                        self.default_invocation_status_source_table,
                     ),
                 );
                 return Ok(());
@@ -392,7 +398,10 @@ where
         );
 
         // We're ready to invoke the service!
-        effects.invoke_service(service_invocation);
+        effects.invoke_service(
+            service_invocation,
+            self.default_invocation_status_source_table,
+        );
         Ok(())
     }
 
@@ -419,29 +428,19 @@ where
         if let Some(idempotency_meta) = state.get_idempotency_metadata(idempotency_id).await? {
             let original_invocation_id = idempotency_meta.invocation_id;
             match state.get_invocation_status(&original_invocation_id).await? {
-                executing_invocation_status @ InvocationStatus::Invoked(_)
-                | executing_invocation_status @ InvocationStatus::Suspended { .. } => {
+                is @ InvocationStatus::Invoked { .. }
+                | is @ InvocationStatus::Suspended { .. }
+                | is @ InvocationStatus::Inboxed { .. }
+                | is @ InvocationStatus::Scheduled { .. } => {
                     if let Some(response_sink) = response_sink {
-                        if !executing_invocation_status
-                            .get_invocation_metadata()
-                            .expect("InvocationMetadata must be present")
-                            .response_sinks
+                        if !is
+                            .get_response_sinks()
+                            .expect("response sink must be present")
                             .contains(response_sink)
                         {
                             effects.append_response_sink(
                                 original_invocation_id,
-                                executing_invocation_status,
-                                response_sink.clone(),
-                            )
-                        }
-                    }
-                }
-                InvocationStatus::Inboxed(inboxed) => {
-                    if let Some(response_sink) = response_sink {
-                        if !inboxed.response_sinks.contains(response_sink) {
-                            effects.append_response_sink(
-                                original_invocation_id,
-                                InvocationStatus::Inboxed(inboxed),
+                                is,
                                 response_sink.clone(),
                             )
                         }
@@ -902,6 +901,9 @@ where
             Timer::CleanInvocationStatus(invocation_id) => {
                 self.try_purge_invocation(invocation_id, state, effects)
                     .await
+            }
+            _ => {
+                todo!("Unimplemented")
             }
         }
     }
@@ -1863,7 +1865,8 @@ where
             }
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
-            | is @ InvocationStatus::Inboxed(_) => {
+            | is @ InvocationStatus::Inboxed(_)
+            | is @ InvocationStatus::Scheduled(_) => {
                 effects.append_response_sink(
                     invocation_id,
                     is,

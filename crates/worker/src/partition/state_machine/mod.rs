@@ -26,6 +26,7 @@ pub use command_interpreter::StateReader;
 pub use effect_interpreter::ActionCollector;
 pub use effect_interpreter::StateStorage;
 pub use effects::Effects;
+use restate_storage_api::invocation_status_table;
 use restate_types::identifiers::PartitionKey;
 use restate_types::journal::raw::{RawEntryCodec, RawEntryCodecError};
 use restate_wal_protocol::Command;
@@ -47,12 +48,14 @@ impl<Codec> StateMachine<Codec> {
         outbox_seq_number: MessageIndex,
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
+        default_invocation_status_source_table: invocation_status_table::SourceTable,
     ) -> Self {
         Self(CommandInterpreter::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
+            default_invocation_status_source_table,
         ))
     }
 }
@@ -104,7 +107,7 @@ mod tests {
     use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-        ReadOnlyInvocationStatusTable,
+        ReadOnlyInvocationStatusTable, SourceTable,
     };
     use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
     use restate_storage_api::outbox_table::OutboxTable;
@@ -180,6 +183,7 @@ mod tests {
                     0,    /* outbox_seq_number */
                     None, /* outbox_head_seq_number */
                     PartitionKey::MIN..=PartitionKey::MAX,
+                    SourceTable::New,
                 ),
                 rocksdb_storage,
                 effects_buffer: Default::default(),
@@ -836,7 +840,9 @@ mod tests {
         use restate_storage_api::inbox_table::{
             InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry,
         };
-        use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
+        use restate_storage_api::invocation_status_table::{
+            CompletedInvocation, SourceTable, StatusTimestamps,
+        };
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::GONE_INVOCATION_ERROR;
         use restate_types::identifiers::{IdempotencyId, IngressRequestId};
@@ -995,6 +1001,7 @@ mod tests {
                     idempotency_key: Some(idempotency_key.clone()),
                     timestamps: StatusTimestamps::now(),
                     response_result: ResponseResult::Success(response_bytes.clone()),
+                    source_table: SourceTable::New,
                 }),
             )
             .await;
@@ -1624,6 +1631,7 @@ mod tests {
                     idempotency_key: Some(idempotency_key.clone()),
                     timestamps: StatusTimestamps::now(),
                     response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                    source_table: SourceTable::New,
                 }),
             )
             .await;
@@ -1666,7 +1674,9 @@ mod tests {
         use super::*;
         use std::time::Duration;
 
-        use restate_storage_api::invocation_status_table::{CompletedInvocation, StatusTimestamps};
+        use restate_storage_api::invocation_status_table::{
+            CompletedInvocation, SourceTable, StatusTimestamps,
+        };
         use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
         use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
         use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
@@ -2040,6 +2050,7 @@ mod tests {
                     idempotency_key: None,
                     timestamps: StatusTimestamps::now(),
                     response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                    source_table: SourceTable::New,
                 }),
             )
             .await;

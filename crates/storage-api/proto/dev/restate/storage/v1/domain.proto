@@ -94,6 +94,51 @@ message Source {
     }
 }
 
+// This is the new InvocationStatus message, which replaces the InvocationStatus defined below.
+message NeoInvocationStatus {
+
+    enum Status {
+        UNKNOWN_STATUS = 0;
+        SCHEDULED = 1;
+        INBOXED = 2;
+        INVOKED = 3;
+        SUSPENDED = 4;
+        COMPLETED = 5;
+    }
+
+    Status status = 1;
+
+    // Common
+    InvocationTarget invocation_target = 2;
+    Source source = 3;
+    SpanContext span_context = 4;
+    uint64 creation_time = 5;
+    uint64 modification_time = 6;
+    repeated ServiceInvocationResponseSink response_sinks = 7;
+
+    // Scheduled/Inboxed
+    optional bytes argument = 8;
+    repeated Header headers = 9;
+    optional uint64 execution_time = 10;
+    Duration completion_retention_time = 11;
+    optional string idempotency_key = 12;
+
+    // Inboxed
+    optional uint64 inbox_sequence_number = 13;
+
+    // Invoked/Suspended
+    uint32 journal_length = 14;
+    optional string deployment_id = 15;
+    optional dev.restate.service.protocol.ServiceProtocolVersion service_protocol_version = 16;
+
+    // Suspended
+    repeated uint32 waiting_for_completed_entries = 17;
+
+    // Completed
+    ResponseResult result = 18;
+}
+
+// TODO remove this after 1.1
 message InvocationStatus {
 
     message Invoked {
@@ -465,6 +510,8 @@ message Timer {
     }
 
     oneof value {
+        /// This variant is used for scheduled invocations recorded with NeoInvocationStatus
+        InvocationId neo_invoke = 1;
         CompleteSleepEntry complete_sleep_entry = 100;
         ServiceInvocation invoke = 101;
         CleanInvocationStatus clean_invocation_status = 102;

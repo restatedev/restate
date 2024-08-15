@@ -24,6 +24,12 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SourceTable {
+    Old,
+    New,
+}
+
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusTimestamps {
@@ -68,6 +74,7 @@ impl StatusTimestamps {
 /// Status of an invocation.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub enum InvocationStatus {
+    Scheduled(ScheduledInvocation),
     Inboxed(InboxedInvocation),
     Invoked(InFlightInvocationMetadata),
     Suspended {
@@ -84,6 +91,7 @@ impl InvocationStatus {
     #[inline]
     pub fn invocation_target(&self) -> Option<&InvocationTarget> {
         match self {
+            InvocationStatus::Scheduled(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Invoked(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.invocation_target),
@@ -95,6 +103,7 @@ impl InvocationStatus {
     #[inline]
     pub fn idempotency_key(&self) -> Option<&ByteString> {
         match self {
+            InvocationStatus::Scheduled(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Inboxed(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Invoked(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Suspended { metadata, .. } => metadata.idempotency_key.as_ref(),
@@ -162,6 +171,7 @@ impl InvocationStatus {
         &mut self,
     ) -> Option<&mut HashSet<ServiceInvocationResponseSink>> {
         match self {
+            InvocationStatus::Scheduled(metadata) => Some(&mut metadata.response_sinks),
             InvocationStatus::Inboxed(metadata) => Some(&mut metadata.response_sinks),
             InvocationStatus::Invoked(metadata) => Some(&mut metadata.response_sinks),
             InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.response_sinks),
@@ -170,8 +180,20 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn get_response_sinks(&self) -> Option<&HashSet<ServiceInvocationResponseSink>> {
+        match self {
+            InvocationStatus::Scheduled(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Inboxed(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Invoked(metadata) => Some(&metadata.response_sinks),
+            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.response_sinks),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn get_timestamps(&self) -> Option<&StatusTimestamps> {
         match self {
+            InvocationStatus::Scheduled(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
@@ -182,6 +204,7 @@ impl InvocationStatus {
 
     pub fn update_timestamps(&mut self) {
         match self {
+            InvocationStatus::Scheduled(metadata) => metadata.timestamps.update(),
             InvocationStatus::Inboxed(metadata) => metadata.timestamps.update(),
             InvocationStatus::Invoked(metadata) => metadata.timestamps.update(),
             InvocationStatus::Suspended { metadata, .. } => metadata.timestamps.update(),
@@ -191,6 +214,12 @@ impl InvocationStatus {
 }
 
 protobuf_storage_encode_decode!(InvocationStatus);
+
+/// Wrapper used by the table implementation, don't use it!
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct NeoInvocationStatus(pub InvocationStatus);
+
+protobuf_storage_encode_decode!(NeoInvocationStatus);
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
@@ -209,6 +238,55 @@ impl JournalMetadata {
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
         Self::new(0, span_context)
+    }
+}
+
+/// This is similar to [ServiceInvocation].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduledInvocation {
+    pub response_sinks: HashSet<ServiceInvocationResponseSink>,
+    pub timestamps: StatusTimestamps,
+
+    // --- From ServiceInvocation
+    pub invocation_target: InvocationTarget,
+
+    // Could be split out of ServiceInvocation, e.g. InvocationContent or similar.
+    pub argument: Bytes,
+    pub source: Source,
+    pub span_context: ServiceInvocationSpanContext,
+    pub headers: Vec<Header>,
+    /// Time when the request should be executed
+    pub execution_time: MillisSinceEpoch,
+    /// If zero, the invocation completion will not be retained.
+    pub completion_retention_time: Duration,
+    pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
+}
+
+impl ScheduledInvocation {
+    pub fn from_service_invocation(
+        service_invocation: ServiceInvocation,
+        source_table: SourceTable,
+    ) -> Self {
+        Self {
+            response_sinks: service_invocation.response_sink.into_iter().collect(),
+            timestamps: StatusTimestamps::now(),
+            invocation_target: service_invocation.invocation_target,
+            argument: service_invocation.argument,
+            source: service_invocation.source,
+            span_context: service_invocation.span_context,
+            headers: service_invocation.headers,
+            execution_time: service_invocation
+                .execution_time
+                .expect("Scheduled invocations must have an execution time set"),
+            completion_retention_time: service_invocation
+                .completion_retention_time
+                .unwrap_or_default(),
+            idempotency_key: service_invocation.idempotency_key,
+            source_table,
+        }
     }
 }
 
@@ -233,12 +311,16 @@ pub struct InboxedInvocation {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_time: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl InboxedInvocation {
     pub fn from_service_invocation(
         service_invocation: ServiceInvocation,
         inbox_sequence_number: u64,
+        source_table: SourceTable,
     ) -> Self {
         Self {
             inbox_sequence_number,
@@ -254,6 +336,27 @@ impl InboxedInvocation {
                 .completion_retention_time
                 .unwrap_or_default(),
             idempotency_key: service_invocation.idempotency_key,
+            source_table,
+        }
+    }
+
+    pub fn from_scheduled_invocation(
+        scheduled_invocation: ScheduledInvocation,
+        inbox_sequence_number: u64,
+    ) -> Self {
+        Self {
+            inbox_sequence_number,
+            response_sinks: scheduled_invocation.response_sinks,
+            timestamps: scheduled_invocation.timestamps,
+            invocation_target: scheduled_invocation.invocation_target,
+            argument: scheduled_invocation.argument,
+            source: scheduled_invocation.source,
+            span_context: scheduled_invocation.span_context,
+            headers: scheduled_invocation.headers,
+            execution_time: Some(scheduled_invocation.execution_time),
+            completion_retention_time: scheduled_invocation.completion_retention_time,
+            idempotency_key: scheduled_invocation.idempotency_key,
+            source_table: scheduled_invocation.source_table,
         }
     }
 }
@@ -269,11 +372,15 @@ pub struct InFlightInvocationMetadata {
     /// If zero, the invocation completion will not be retained.
     pub completion_retention_time: Duration,
     pub idempotency_key: Option<ByteString>,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl InFlightInvocationMetadata {
     pub fn from_service_invocation(
         service_invocation: ServiceInvocation,
+        source_table: SourceTable,
     ) -> (Self, InvocationInput) {
         (
             Self {
@@ -287,6 +394,7 @@ impl InFlightInvocationMetadata {
                     .completion_retention_time
                     .unwrap_or_default(),
                 idempotency_key: service_invocation.idempotency_key,
+                source_table,
             },
             InvocationInput {
                 argument: service_invocation.argument,
@@ -310,6 +418,7 @@ impl InFlightInvocationMetadata {
                 source: inboxed_invocation.source,
                 completion_retention_time: inboxed_invocation.completion_retention_time,
                 idempotency_key: inboxed_invocation.idempotency_key,
+                source_table: inboxed_invocation.source_table,
             },
             InvocationInput {
                 argument: inboxed_invocation.argument,
@@ -335,6 +444,9 @@ pub struct CompletedInvocation {
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
+
+    /// Used by the Table implementation to pick where to write
+    pub source_table: SourceTable,
 }
 
 impl CompletedInvocation {
@@ -351,6 +463,7 @@ impl CompletedInvocation {
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 timestamps: in_flight_invocation_metadata.timestamps,
                 response_result,
+                source_table: in_flight_invocation_metadata.source_table,
             },
             in_flight_invocation_metadata.completion_retention_time,
         )
@@ -409,6 +522,7 @@ mod test_util {
                 source: Source::Ingress,
                 completion_retention_time: Duration::ZERO,
                 idempotency_key: None,
+                source_table: SourceTable::New,
             }
         }
     }
