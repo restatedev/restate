@@ -39,6 +39,7 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
+hyper-util = { workspace = true }
 okapi-operation = { version = "0.3.0-rc2", features = ["axum-integration"] }
 prost = { workspace = true }
 prost-dto = { workspace = true }
