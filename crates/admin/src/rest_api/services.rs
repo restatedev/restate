@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use super::create_envelope_header;
 use super::error::*;
-use super::{create_envelope_header, log_error};
 use crate::schema_registry::ModifyServiceChange;
 use crate::state::AdminServiceState;
 
@@ -20,6 +20,7 @@ use http::StatusCode;
 use okapi_operation::*;
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
+use restate_errors::fmt::CodedErrorResultExt;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
@@ -105,12 +106,11 @@ pub async fn modify_service<V>(
         return get_service(State(state), Path(service_name)).await;
     }
 
-    let response = log_error(
-        state
-            .schema_registry
-            .modify_service(service_name, modify_request)
-            .await,
-    )?;
+    let response = state
+        .schema_registry
+        .modify_service(service_name, modify_request)
+        .await
+        .warn_it()?;
 
     Ok(response.into())
 }

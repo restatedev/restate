@@ -116,6 +116,44 @@ impl fmt::Debug for RestateCode {
     }
 }
 
+/// Extension trait which extends [`Result<T, impl CodedError>`] with some formatting functions.
+pub trait CodedErrorResultExt {
+    /// Log on info level if error and return self.
+    fn info_it(self) -> Self;
+
+    /// Log on warn level if error and return self.
+    fn warn_it(self) -> Self;
+
+    /// Log on error level if error and return self.
+    fn error_it(self) -> Self;
+}
+
+impl<T, E: CodedError> CodedErrorResultExt for Result<T, E> {
+    #[inline]
+    fn info_it(self) -> Self {
+        if let Err(err) = &self {
+            info_it!(*err);
+        }
+        self
+    }
+
+    #[inline]
+    fn warn_it(self) -> Self {
+        if let Err(err) = &self {
+            warn_it!(*err);
+        }
+        self
+    }
+
+    #[inline]
+    fn error_it(self) -> Self {
+        if let Err(err) = &self {
+            error_it!(*err);
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,12 +14,12 @@ use crate::state::AdminServiceState;
 use restate_admin_rest_model::subscriptions::*;
 use restate_types::schema::subscriptions::{ListSubscriptionFilter, SubscriptionValidator};
 
-use crate::rest_api::log_error;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{http, Json};
 use okapi_operation::*;
+use restate_errors::fmt::CodedErrorResultExt;
 use restate_types::identifiers::SubscriptionId;
 
 /// Create subscription.
@@ -42,12 +42,11 @@ pub async fn create_subscription<V: SubscriptionValidator>(
     State(state): State<AdminServiceState<V>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
-    let subscription = log_error(
-        state
-            .schema_registry
-            .create_subscription(payload.source, payload.sink, payload.options)
-            .await,
-    )?;
+    let subscription = state
+        .schema_registry
+        .create_subscription(payload.source, payload.sink, payload.options)
+        .await
+        .warn_it()?;
 
     Ok((
         StatusCode::CREATED,
@@ -160,11 +159,10 @@ pub async fn delete_subscription<V>(
     State(state): State<AdminServiceState<V>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
-    log_error(
-        state
-            .schema_registry
-            .delete_subscription(subscription_id)
-            .await,
-    )?;
+    state
+        .schema_registry
+        .delete_subscription(subscription_id)
+        .await
+        .warn_it()?;
     Ok(StatusCode::ACCEPTED)
 }

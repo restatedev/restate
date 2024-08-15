@@ -11,7 +11,6 @@
 use super::error::*;
 use crate::state::AdminServiceState;
 
-use crate::rest_api::log_error;
 use crate::schema_registry::{ApplyMode, Force};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -19,6 +18,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
+use restate_errors::fmt::CodedErrorResultExt;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
@@ -95,12 +95,11 @@ pub async fn create_deployment<V>(
         ApplyMode::Apply
     };
 
-    let (id, services) = log_error(
-        state
-            .schema_registry
-            .register_deployment(discover_endpoint, force, apply_mode)
-            .await,
-    )?;
+    let (id, services) = state
+        .schema_registry
+        .register_deployment(discover_endpoint, force, apply_mode)
+        .await
+        .warn_it()?;
 
     let response_body = RegisterDeploymentResponse { id, services };
 
@@ -217,7 +216,11 @@ pub async fn delete_deployment<V>(
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
     if let Some(true) = force {
-        log_error(state.schema_registry.delete_deployment(deployment_id).await)?;
+        state
+            .schema_registry
+            .delete_deployment(deployment_id)
+            .await
+            .warn_it()?;
         Ok(StatusCode::ACCEPTED)
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
