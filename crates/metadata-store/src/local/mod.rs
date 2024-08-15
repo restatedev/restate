@@ -13,25 +13,33 @@ mod store;
 
 mod service;
 
-use restate_core::metadata_store::MetadataStoreClient;
-use restate_types::config::{self, MetadataStoreClientOptions};
+use restate_core::metadata_store::{providers::EtcdMetadataStore, MetadataStoreClient};
+use restate_types::{
+    config::{MetadataStore, MetadataStoreClientOptions},
+    errors::GenericError,
+};
 pub use service::LocalMetadataStoreService;
 
 use crate::local::grpc::client::LocalMetadataStoreClient;
 
 /// Creates a [`MetadataStoreClient`] for the [`LocalMetadataStoreService`].
-pub fn create_client(
+pub async fn create_client(
     metadata_store_client_options: MetadataStoreClientOptions,
-) -> MetadataStoreClient {
-    let metadata_store = match metadata_store_client_options.metadata_store_client {
-        config::MetadataStore::Embedded { address } => LocalMetadataStoreClient::new(address),
-        _ => unimplemented!(),
+) -> Result<MetadataStoreClient, GenericError> {
+    let backoff_policy = Some(metadata_store_client_options.metadata_store_client_backoff_policy);
+
+    let client = match metadata_store_client_options.metadata_store_client {
+        MetadataStore::Embedded { address } => {
+            let store = LocalMetadataStoreClient::new(address);
+            MetadataStoreClient::new(store, backoff_policy)
+        }
+        MetadataStore::Etcd { addresses } => {
+            let store = EtcdMetadataStore::new(addresses).await?;
+            MetadataStoreClient::new(store, backoff_policy)
+        }
     };
 
-    MetadataStoreClient::new(
-        metadata_store,
-        Some(metadata_store_client_options.metadata_store_client_backoff_policy),
-    )
+    Ok(client)
 }
 
 #[cfg(test)]
