@@ -28,7 +28,7 @@ use std::time::Duration;
 use test_log::test;
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
-async fn start_idempotent_invocation() {
+async fn start_and_complete_idempotent_invocation() {
     let tc = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
         .build()
@@ -140,6 +140,126 @@ async fn start_idempotent_invocation() {
             response_result: eq(ResponseResult::Success(response_bytes))
         })))
     );
+}
+
+#[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
+async fn start_and_complete_idempotent_invocation_neo_table() {
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    let mut state_machine = tc
+        .run_in_scope(
+            "mock-state-machine",
+            None,
+            MockStateMachine::create_with_neo_invocation_status_table(),
+        )
+        .await;
+
+    let idempotency_key = ByteString::from_static("my-idempotency-key");
+    let retention = Duration::from_secs(60) * 60 * 24;
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = InvocationId::generate_with_idempotency_key(
+        &invocation_target,
+        Some(idempotency_key.clone()),
+    );
+    let idempotency_id =
+        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
+    let node_id = GenerationalNodeId::new(1, 1);
+    let request_id = IngressRequestId::default();
+
+    // Send fresh invocation with idempotency key
+    let actions = state_machine
+        .apply(Command::Invoke(ServiceInvocation {
+            invocation_id,
+            invocation_target: invocation_target.clone(),
+            response_sink: Some(ServiceInvocationResponseSink::Ingress {
+                node_id,
+                request_id,
+            }),
+            idempotency_key: Some(idempotency_key),
+            completion_retention_time: Some(retention),
+            ..ServiceInvocation::mock()
+        }))
+        .await;
+    assert_that!(
+        actions,
+        contains(pat!(Action::Invoke {
+            invocation_id: eq(invocation_id),
+            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
+        }))
+    );
+
+    // Assert idempotency key mapping exists
+    let mut txn = state_machine.storage().transaction();
+    assert_that!(
+        txn.get_idempotency_metadata(&idempotency_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        pat!(IdempotencyMetadata {
+            invocation_id: eq(invocation_id),
+        })
+    );
+    txn.commit().await.unwrap();
+
+    // Send output, then end
+    let response_bytes = Bytes::from_static(b"123");
+    let actions = state_machine
+        .apply_multiple([
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::JournalEntry {
+                    entry_index: 1,
+                    entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
+                        EntryResult::Success(response_bytes.clone()),
+                    )),
+                },
+            }),
+            Command::InvokerEffect(InvokerEffect {
+                invocation_id,
+                kind: InvokerEffectKind::End,
+            }),
+        ])
+        .await;
+
+    // Assert response and timeout
+    assert_that!(
+        actions,
+        all!(
+            contains(pat!(Action::IngressResponse(pat!(
+                IngressResponseEnvelope {
+                    target_node: eq(node_id),
+                    inner: pat!(ingress::InvocationResponse {
+                        request_id: eq(request_id),
+                        invocation_id: some(eq(invocation_id)),
+                        response: eq(IngressResponseResult::Success(
+                            invocation_target.clone(),
+                            response_bytes.clone()
+                        ))
+                    })
+                }
+            )))),
+            not(contains(pat!(Action::ScheduleInvocationStatusCleanup {
+                invocation_id: eq(invocation_id)
+            })))
+        )
+    );
+
+    // InvocationStatus contains completed
+    let invocation_status = state_machine
+        .storage()
+        .transaction()
+        .get_invocation_status(&invocation_id)
+        .await
+        .unwrap();
+    let_assert!(InvocationStatus::Completed(completed_invocation) = invocation_status);
+    assert_eq!(
+        completed_invocation.response_result,
+        ResponseResult::Success(response_bytes)
+    );
+    assert!(unsafe { completed_invocation.timestamps.completed_transition_time() }.is_some());
+    assert_eq!(completed_invocation.completion_retention, retention);
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]

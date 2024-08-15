@@ -2761,17 +2761,21 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             "Effect: Store completed invocation"
         );
 
+        // New table invocations are cleaned using the Cleaner task.
+        if let SourceTable::Old = completed_invocation.source_table {
+            ctx.action_collector
+                .push(Action::ScheduleInvocationStatusCleanup {
+                    invocation_id,
+                    retention,
+                });
+        }
+
         ctx.storage
             .store_invocation_status(
                 &invocation_id,
                 InvocationStatus::Completed(completed_invocation),
             )
             .await?;
-        ctx.action_collector
-            .push(Action::ScheduleInvocationStatusCleanup {
-                invocation_id,
-                retention,
-            });
 
         Ok(())
     }

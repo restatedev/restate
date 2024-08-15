@@ -75,6 +75,7 @@ pub enum TaskKind {
     #[strum(props(OnError = "log"))]
     ConnectionReactor,
     Shuffle,
+    Cleaner,
     MetadataStore,
     // -- Bifrost Tasks
     /// A background task that the system needs for its operation. The task requires a system

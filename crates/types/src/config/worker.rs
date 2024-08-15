@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
-
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
@@ -37,6 +36,17 @@ pub struct WorkerOptions {
     /// The number of timers in memory limit is used to bound the amount of timers loaded in memory. If this limit is set, when exceeding it, the timers farther in the future will be spilled to disk.
     num_timers_in_memory_limit: Option<NonZeroUsize>,
 
+    /// # Cleanup interval
+    ///
+    /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or workflows,
+    /// Restate periodically scans among the completed invocations to check whether they need to be removed or not.
+    /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
+    ///
+    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    cleanup_interval: humantime::Duration,
+
     #[cfg_attr(feature = "schemars", schemars(skip))]
     experimental_feature_new_invocation_status_table: bool,
 
@@ -54,6 +64,10 @@ impl WorkerOptions {
         self.num_timers_in_memory_limit.map(Into::into)
     }
 
+    pub fn cleanup_interval(&self) -> Duration {
+        self.cleanup_interval.into()
+    }
+
     pub fn experimental_feature_new_invocation_status_table(&self) -> bool {
         self.experimental_feature_new_invocation_status_table
     }
@@ -64,6 +78,7 @@ impl Default for WorkerOptions {
         Self {
             internal_queue_length: NonZeroUsize::new(10000).unwrap(),
             num_timers_in_memory_limit: None,
+            cleanup_interval: Duration::from_secs(60 * 60).into(),
             experimental_feature_new_invocation_status_table: false,
             storage: StorageOptions::default(),
             invoker: Default::default(),
