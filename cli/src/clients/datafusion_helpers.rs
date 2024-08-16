@@ -122,6 +122,7 @@ pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
     Unknown,
+    Scheduled,
     Pending,
     Ready,
     Running,
@@ -135,6 +136,7 @@ impl FromStr for InvocationState {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "pending" => Self::Pending,
+            "scheduled" => Self::Scheduled,
             "ready" => Self::Ready,
             "running" => Self::Running,
             "suspended" => Self::Suspended,
@@ -150,6 +152,7 @@ impl Display for InvocationState {
         match self {
             InvocationState::Unknown => write!(f, "unknown"),
             InvocationState::Pending => write!(f, "pending"),
+            InvocationState::Scheduled => write!(f, "scheduled"),
             InvocationState::Ready => write!(f, "ready"),
             InvocationState::Running => write!(f, "running"),
             InvocationState::Suspended => write!(f, "suspended"),

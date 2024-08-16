@@ -104,6 +104,7 @@ fn render_handler_state_stats(
         let cell = Cell::new(state_stats.num_invocations);
         let color = match state {
             InvocationState::Unknown => Color::Magenta,
+            InvocationState::Scheduled => Color::Blue,
             InvocationState::Pending if state_stats.num_invocations > 10 => Color::Yellow,
             InvocationState::Running if state_stats.num_invocations > 0 => Color::Green,
             InvocationState::BackingOff if state_stats.num_invocations > 5 => Color::Red,
@@ -129,6 +130,13 @@ async fn render_handlers_status(
             svc_status,
             &handler.name,
             InvocationState::Pending,
+        ));
+
+        // Scheduled
+        row.push(render_handler_state_stats(
+            svc_status,
+            &handler.name,
+            InvocationState::Scheduled,
         ));
 
         // Ready
