@@ -12,6 +12,7 @@ mod cluster_marker;
 mod network_server;
 mod roles;
 
+use restate_types::errors::GenericError;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -97,11 +98,16 @@ pub enum BuildError {
     #[error("failed validating and updating cluster marker: {0}")]
     #[code(unknown)]
     ClusterValidation(#[from] ClusterValidationError),
+
+    #[error("failed to initialize metadata store client: {0}")]
+    #[code(unknown)]
+    MetadataStoreClient(GenericError),
 }
 
 pub struct Node {
     updateable_config: Live<Configuration>,
     metadata_manager: MetadataManager<Networking>,
+    metadata_store_client: MetadataStoreClient,
     bifrost: BifrostService,
     metadata_store_role: Option<LocalMetadataStoreService>,
     admin_role: Option<AdminRole>,
@@ -145,7 +151,9 @@ impl Node {
 
         let metadata_store_client = restate_metadata_store::local::create_client(
             config.common.metadata_store_client.clone(),
-        );
+        )
+        .await
+        .map_err(BuildError::MetadataStoreClient)?;
 
         let mut router_builder = MessageRouterBuilder::default();
         let metadata_builder = MetadataBuilder::default();
@@ -218,7 +226,7 @@ impl Node {
                     &mut router_builder,
                     networking.clone(),
                     bifrost_svc.handle(),
-                    metadata_store_client,
+                    metadata_store_client.clone(),
                     updating_schema_information,
                 )
                 .await?,
@@ -235,9 +243,7 @@ impl Node {
             admin_role.as_ref().map(|cluster_controller| {
                 AdminDependencies::new(
                     cluster_controller.cluster_controller_handle(),
-                    restate_metadata_store::local::create_client(
-                        config.common.metadata_store_client.clone(),
-                    ),
+                    metadata_store_client.clone(),
                     bifrost_svc.handle(),
                 )
             }),
@@ -255,6 +261,7 @@ impl Node {
             metadata_manager,
             bifrost: bifrost_svc,
             metadata_store_role,
+            metadata_store_client,
             admin_role,
             worker_role,
             #[cfg(feature = "replicated-loglet")]
@@ -280,10 +287,6 @@ impl Node {
             )?;
         }
 
-        let metadata_store_client = restate_metadata_store::local::create_client(
-            config.common.metadata_store_client.clone(),
-        );
-
         let metadata_writer = self.metadata_manager.writer();
         let metadata = self.metadata_manager.metadata().clone();
         let is_set = tc.try_set_global_metadata(metadata.clone());
@@ -292,13 +295,14 @@ impl Node {
         // Start metadata manager
         spawn_metadata_manager(&tc, self.metadata_manager)?;
 
-        let nodes_config = Self::upsert_node_config(&metadata_store_client, &config.common).await?;
+        let nodes_config =
+            Self::upsert_node_config(&self.metadata_store_client, &config.common).await?;
         metadata_writer.update(nodes_config).await?;
 
         if config.common.allow_bootstrap {
             // only try to insert static configuration if in bootstrap mode
             let (partition_table, logs) =
-                Self::fetch_or_insert_initial_configuration(&metadata_store_client, &config)
+                Self::fetch_or_insert_initial_configuration(&self.metadata_store_client, &config)
                     .await?;
 
             metadata_writer.update(partition_table).await?;

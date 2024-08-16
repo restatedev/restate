@@ -433,9 +433,8 @@ pub enum LogFormat {
 #[builder(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct MetadataStoreClientOptions {
-    /// Address of the metadata store server to bootstrap the node from.
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_store_address: AdvertisedAddress,
+    /// Metadata store server to bootstrap the node from.
+    pub metadata_store_client: MetadataStoreClient,
 
     /// # Backoff policy used by the metadata store client
     ///
@@ -444,12 +443,42 @@ pub struct MetadataStoreClientOptions {
     pub metadata_store_client_backoff_policy: RetryPolicy,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "kebab-case"
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(
+        title = "Metadata Store",
+        description = "Definition of a bootstrap metadata store"
+    )
+)]
+pub enum MetadataStoreClient {
+    /// Connects to an embedded metadata store that is run by nodes that run with the MetadataStore role.
+    Embedded {
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        address: AdvertisedAddress,
+    },
+    /// Uses external etcd as metadata store.
+    /// The addresses are formatted as `host:port`
+    Etcd {
+        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+        addresses: Vec<String>,
+    },
+}
+
 impl Default for MetadataStoreClientOptions {
     fn default() -> Self {
         Self {
-            metadata_store_address: "http://127.0.0.1:5123"
-                .parse()
-                .expect("valid metadata store address"),
+            metadata_store_client: MetadataStoreClient::Embedded {
+                address: "http://127.0.0.1:5123"
+                    .parse()
+                    .expect("valid metadata store address"),
+            },
             metadata_store_client_backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,

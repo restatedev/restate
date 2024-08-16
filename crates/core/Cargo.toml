@@ -25,6 +25,7 @@ derive_builder = { workspace = true }
 derive_more = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }
+etcd-client = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
 http = { workspace = true }
@@ -46,7 +47,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = [
+    "transport",
+    "codegen",
+    "prost",
+    "gzip",
+] }
 tower = { workspace = true }
 tracing = { workspace = true }
 

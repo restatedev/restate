@@ -41,7 +41,7 @@ tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
 tonic-reflection = { workspace = true }
 tonic-health = { workspace = true }
 tower = { workspace = true }
-tower-http = { workspace =  true, features = ["trace"] }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
@@ -49,6 +49,7 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 
 anyhow = { workspace = true }
+assert2 = { workspace = true }
 flexbuffers = { workspace = true }
 googletest = { workspace = true }
 tempfile = { workspace = true }

@@ -22,7 +22,7 @@ use restate_core::network::net_util::create_tonic_channel_from_advertised_addres
 use restate_core::{MockNetworkSender, TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
+    self, reset_base_temp_dir_and_retain, Configuration, MetadataStoreClientOptions,
     MetadataStoreClientOptionsBuilder, MetadataStoreOptions, RocksDbOptions,
 };
 use restate_types::live::{BoxedLiveLoad, Live};
@@ -268,7 +268,9 @@ async fn durable_storage() -> anyhow::Result<()> {
     let uds_path = tempfile::tempdir()?.into_path().join("grpc-server");
     let bind_address = BindAddress::Uds(uds_path.clone());
     let metadata_store_client_opts = MetadataStoreClientOptionsBuilder::default()
-        .metadata_store_address(AdvertisedAddress::Uds(uds_path))
+        .metadata_store_client(restate_types::config::MetadataStoreClient::Embedded {
+            address: AdvertisedAddress::Uds(uds_path),
+        })
         .build()
         .expect("valid metadata store client options");
     let mut metadata_store_opts = opts.clone();
@@ -319,7 +321,10 @@ async fn create_test_environment(
     let advertised_address = AdvertisedAddress::Uds(uds_path);
     config.metadata_store = opts.clone();
     config.metadata_store.bind_address = bind_address;
-    config.common.metadata_store_client.metadata_store_address = advertised_address.clone();
+    config.common.metadata_store_client.metadata_store_client =
+        config::MetadataStoreClient::Embedded {
+            address: advertised_address.clone(),
+        };
 
     restate_types::config::set_current_config(config.clone());
     let config = Live::from_value(config);
@@ -361,9 +366,13 @@ async fn start_metadata_store(
         },
     )?;
 
-    // await start-up of metadata store
+    assert2::let_assert!(
+        config::MetadataStoreClient::Embedded { address } =
+            metadata_store_client_options.metadata_store_client
+    );
+
     let health_client = HealthClient::new(create_tonic_channel_from_advertised_address(
-        metadata_store_client_options.metadata_store_address.clone(),
+        address.clone(),
     )?);
     let retry_policy = RetryPolicy::exponential(Duration::from_millis(10), 2.0, None, None);
 
@@ -378,8 +387,7 @@ async fn start_metadata_store(
         })
         .await?;
 
-    let rocksdb_client =
-        LocalMetadataStoreClient::new(metadata_store_client_options.metadata_store_address);
+    let rocksdb_client = LocalMetadataStoreClient::new(address);
     let client = MetadataStoreClient::new(
         rocksdb_client,
         Some(metadata_store_client_options.metadata_store_client_backoff_policy),
