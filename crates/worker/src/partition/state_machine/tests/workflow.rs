@@ -384,6 +384,7 @@ async fn timer_cleanup() {
         &invocation_id,
         InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
+            span_context: Default::default(),
             source: Source::Ingress,
             idempotency_key: None,
             timestamps: StatusTimestamps::now(),

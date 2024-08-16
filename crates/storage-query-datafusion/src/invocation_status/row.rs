@@ -11,10 +11,12 @@
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, SourceTable, StatusTimestamps,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{ResponseResult, ServiceType, Source, TraceId};
+use restate_types::invocation::{
+    ResponseResult, ServiceInvocationSpanContext, ServiceType, Source, TraceId,
+};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -81,6 +83,12 @@ pub(crate) fn append_invocation_status_row(
         InvocationStatus::Completed(completed) => {
             row.status("completed");
             fill_invoked_by(&mut row, output, completed.source);
+
+            // We fill the span context only for the new table, as the old table will contain always the empty value
+            if completed.source_table == SourceTable::New {
+                fill_span_context(&mut row, output, &completed.span_context);
+            }
+
             match completed.response_result {
                 ResponseResult::Success(_) => {
                     row.completion_result("success");
@@ -140,12 +148,20 @@ fn fill_journal_metadata(
     output: &mut String,
     journal_metadata: &JournalMetadata,
 ) {
+    fill_span_context(row, output, &journal_metadata.span_context);
+    row.journal_size(journal_metadata.length);
+}
+
+#[inline]
+fn fill_span_context(
+    row: &mut SysInvocationStatusRowBuilder,
+    output: &mut String,
+    span_context: &ServiceInvocationSpanContext,
+) {
     if row.is_trace_id_defined() {
-        let tid = journal_metadata.span_context.trace_id();
+        let tid = span_context.trace_id();
         if tid != TraceId::INVALID {
             row.trace_id(format_using(output, &tid));
         }
     }
-
-    row.journal_size(journal_metadata.length);
 }

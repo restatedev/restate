@@ -295,6 +295,7 @@ async fn complete_already_completed_invocation() {
         &invocation_id,
         InvocationStatus::Completed(CompletedInvocation {
             invocation_target: invocation_target.clone(),
+            span_context: ServiceInvocationSpanContext::default(),
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
@@ -343,7 +344,6 @@ async fn complete_already_completed_invocation() {
     assert_that!(
         state_machine
             .storage()
-            .transaction()
             .get_invocation_status(&second_invocation_id)
             .await
             .unwrap(),
@@ -928,6 +928,7 @@ async fn timer_cleanup() {
         InvocationStatus::Completed(CompletedInvocation {
             invocation_target,
             source: Source::Ingress,
+            span_context: Default::default(),
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
