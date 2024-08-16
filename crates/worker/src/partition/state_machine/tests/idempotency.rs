@@ -30,13 +30,7 @@ use test_log::test;
 
 #[test(tokio::test)]
 async fn start_and_complete_idempotent_invocation() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -51,7 +45,7 @@ async fn start_and_complete_idempotent_invocation() {
     let request_id = IngressRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -73,7 +67,7 @@ async fn start_and_complete_idempotent_invocation() {
     );
 
     // Assert idempotency key mapping exists
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     assert_that!(
         txn.get_idempotency_metadata(&idempotency_id)
             .await
@@ -87,7 +81,7 @@ async fn start_and_complete_idempotent_invocation() {
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
@@ -129,9 +123,8 @@ async fn start_and_complete_idempotent_invocation() {
     );
 
     // InvocationStatus contains completed
-    let invocation_status = state_machine
+    let invocation_status = test_env
         .storage()
-        .transaction()
         .get_invocation_status(&invocation_id)
         .await
         .unwrap();
@@ -145,17 +138,7 @@ async fn start_and_complete_idempotent_invocation() {
 
 #[test(tokio::test)]
 async fn start_and_complete_idempotent_invocation_neo_table() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_neo_invocation_status_table(),
-        )
-        .await;
+    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -170,7 +153,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     let request_id = IngressRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -193,7 +176,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
 
     // Assert idempotency key mapping exists
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_idempotency_metadata(&idempotency_id)
             .await
@@ -206,7 +189,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
@@ -248,7 +231,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     );
 
     // InvocationStatus contains completed
-    let invocation_status = state_machine
+    let invocation_status = test_env
         .storage()
         .get_invocation_status(&invocation_id)
         .await
@@ -267,13 +250,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
 
 #[test(tokio::test)]
 async fn complete_already_completed_invocation() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -288,7 +265,7 @@ async fn complete_already_completed_invocation() {
     let ingress_id = GenerationalNodeId::new(1, 1);
 
     // Prepare idempotency metadata and completed status
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
@@ -313,7 +290,7 @@ async fn complete_already_completed_invocation() {
         Some(idempotency_key.clone()),
     );
     let request_id = IngressRequestId::default();
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -342,7 +319,7 @@ async fn complete_already_completed_invocation() {
         ))))
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_invocation_status(&second_invocation_id)
             .await
@@ -353,13 +330,7 @@ async fn complete_already_completed_invocation() {
 
 #[test(tokio::test)]
 async fn known_invocation_id_but_missing_completion() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -374,7 +345,7 @@ async fn known_invocation_id_but_missing_completion() {
     let ingress_id = GenerationalNodeId::new(1, 1);
 
     // Prepare idempotency metadata
-    let mut txn = state_machine.rocksdb_storage.transaction();
+    let mut txn = test_env.storage.transaction();
     txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
         .await;
     txn.commit().await.unwrap();
@@ -385,7 +356,7 @@ async fn known_invocation_id_but_missing_completion() {
         Some(idempotency_key.clone()),
     );
     let request_id = IngressRequestId::default();
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target,
@@ -412,7 +383,7 @@ async fn known_invocation_id_but_missing_completion() {
         ))))
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .transaction()
             .get_invocation_status(&second_invocation_id)
@@ -424,13 +395,7 @@ async fn known_invocation_id_but_missing_completion() {
 
 #[test(tokio::test)]
 async fn attach_with_service_invocation_command_while_executing() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -445,7 +410,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let request_id_2 = IngressRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -471,7 +436,7 @@ async fn attach_with_service_invocation_command_while_executing() {
         &invocation_target,
         Some(idempotency_key.clone()),
     );
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -487,7 +452,7 @@ async fn attach_with_service_invocation_command_while_executing() {
 
     // Send output
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id: first_invocation_id,
@@ -541,13 +506,7 @@ async fn attach_with_service_invocation_command_while_executing() {
 
 #[test(tokio::test)]
 async fn attach_with_send_service_invocation() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -562,7 +521,7 @@ async fn attach_with_send_service_invocation() {
     let request_id_2 = IngressRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -588,7 +547,7 @@ async fn attach_with_send_service_invocation() {
         &invocation_target,
         Some(idempotency_key.clone()),
     );
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -621,7 +580,7 @@ async fn attach_with_send_service_invocation() {
 
     // Send output
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id: first_invocation_id,
@@ -670,13 +629,7 @@ async fn attach_with_send_service_invocation() {
 
 #[test(tokio::test)]
 async fn attach_inboxed_with_send_service_invocation() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let node_id = GenerationalNodeId::new(1, 1);
@@ -685,7 +638,7 @@ async fn attach_inboxed_with_send_service_invocation() {
 
     // Initialize locked virtual object state
     async {
-        let mut tx = state_machine.rocksdb_storage.transaction();
+        let mut tx = test_env.storage.transaction();
         tx.put_virtual_object_status(
             &invocation_target.as_keyed_service_id().unwrap(),
             VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
@@ -699,7 +652,7 @@ async fn attach_inboxed_with_send_service_invocation() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let attached_invocation_id =
         InvocationId::generate_with_idempotency_key(&invocation_target, &idempotency_key);
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: attached_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -732,8 +685,8 @@ async fn attach_inboxed_with_send_service_invocation() {
     );
     // Invocation is inboxed
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .transaction()
             .peek_inbox(&invocation_target.as_keyed_service_id().unwrap())
             .await
@@ -752,7 +705,7 @@ async fn attach_inboxed_with_send_service_invocation() {
         &invocation_target,
         Some(idempotency_key.clone()),
     );
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: original_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -788,13 +741,7 @@ async fn attach_inboxed_with_send_service_invocation() {
 
 #[test(tokio::test)]
 async fn attach_command() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -809,7 +756,7 @@ async fn attach_command() {
     let request_id_2 = IngressRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -831,7 +778,7 @@ async fn attach_command() {
     );
 
     // Latch to existing invocation, but with a send call
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::AttachInvocation(AttachInvocationRequest {
             invocation_query: InvocationQuery::Invocation(invocation_id),
             response_sink: ServiceInvocationResponseSink::Ingress {
@@ -847,7 +794,7 @@ async fn attach_command() {
 
     // Send output
     let response_bytes = Bytes::from_static(b"123");
-    let actions = state_machine
+    let actions = test_env
         .apply_multiple([
             Command::InvokerEffect(InvokerEffect {
                 invocation_id,
@@ -902,13 +849,7 @@ async fn attach_command() {
 // TODO remove this once we remove the old invocation status table
 #[test(tokio::test)]
 async fn timer_cleanup() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
-        .await;
+    let mut test_env = TestEnv::create().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -920,7 +861,7 @@ async fn timer_cleanup() {
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
     // Prepare idempotency metadata and completed status
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
@@ -940,7 +881,7 @@ async fn timer_cleanup() {
     txn.commit().await.unwrap();
 
     // Send timer fired command
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::Timer(TimerKeyValue::new(
             TimerKey {
                 kind: TimerKeyKind::Invoke {
@@ -952,7 +893,7 @@ async fn timer_cleanup() {
         )))
         .await;
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .transaction()
             .get_invocation_status(&invocation_id)
@@ -961,7 +902,7 @@ async fn timer_cleanup() {
         pat!(InvocationStatus::Free)
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .transaction()
             .get_idempotency_metadata(&idempotency_id)
@@ -973,17 +914,7 @@ async fn timer_cleanup() {
 
 #[test(tokio::test)]
 async fn purge_completed_idempotent_invocation() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_neo_invocation_status_table(),
-        )
-        .await;
+    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_target = InvocationTarget::mock_virtual_object();
@@ -995,7 +926,7 @@ async fn purge_completed_idempotent_invocation() {
         IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
 
     // Prepare idempotency metadata and completed status
-    let mut txn = state_machine.storage().transaction();
+    let mut txn = test_env.storage().transaction();
     txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
         .await;
     txn.put_invocation_status(
@@ -1010,13 +941,13 @@ async fn purge_completed_idempotent_invocation() {
     txn.commit().await.unwrap();
 
     // Send purge command
-    let _ = state_machine
+    let _ = test_env
         .apply(Command::PurgeInvocation(PurgeInvocationRequest {
             invocation_id,
         }))
         .await;
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_invocation_status(&invocation_id)
             .await
@@ -1024,7 +955,7 @@ async fn purge_completed_idempotent_invocation() {
         pat!(InvocationStatus::Free)
     );
     assert_that!(
-        state_machine
+        test_env
             .storage()
             .get_idempotency_metadata(&idempotency_id)
             .await

@@ -18,17 +18,7 @@ use test_log::test;
 
 #[test(tokio::test)]
 async fn send_with_delay() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_neo_invocation_status_table(),
-        )
-        .await;
+    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -37,7 +27,7 @@ async fn send_with_delay() {
     let request_id = IngressRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -70,7 +60,7 @@ async fn send_with_delay() {
     );
 
     // Now fire the timer
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Timer(TimerKeyValue::neo_invoke(
             wake_up_time,
             invocation_id,
@@ -94,27 +84,14 @@ async fn send_with_delay() {
         )
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_invocation_status(&invocation_id)
-            .await,
+        test_env.storage.get_invocation_status(&invocation_id).await,
         ok(pat!(InvocationStatus::Invoked { .. }))
     );
 }
 
 #[test(tokio::test)]
 async fn send_with_delay_to_locked_virtual_object() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_neo_invocation_status_table(),
-        )
-        .await;
+    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::generate(&invocation_target);
@@ -123,7 +100,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     let request_id = IngressRequestId::default();
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -156,7 +133,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     );
 
     // Now lock the service_id
-    let mut tx = state_machine.rocksdb_storage.transaction();
+    let mut tx = test_env.storage.transaction();
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
         VirtualObjectStatus::Locked(InvocationId::generate(&invocation_target)),
@@ -165,7 +142,7 @@ async fn send_with_delay_to_locked_virtual_object() {
     tx.commit().await.unwrap();
 
     // Now fire the timer
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Timer(TimerKeyValue::neo_invoke(
             wake_up_time,
             invocation_id,
@@ -189,15 +166,12 @@ async fn send_with_delay_to_locked_virtual_object() {
         )
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
-            .get_invocation_status(&invocation_id)
-            .await,
+        test_env.storage.get_invocation_status(&invocation_id).await,
         ok(pat!(InvocationStatus::Inboxed { .. }))
     );
     assert_that!(
-        state_machine
-            .rocksdb_storage
+        test_env
+            .storage
             .inbox(&invocation_target.as_keyed_service_id().unwrap())
             .try_collect::<Vec<_>>()
             .await,
@@ -210,17 +184,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
 #[test(tokio::test)]
 async fn send_with_delay_and_idempotency_key() {
-    let tc = TaskCenterBuilder::default()
-        .default_runtime_handle(tokio::runtime::Handle::current())
-        .build()
-        .expect("task_center builds");
-    let mut state_machine = tc
-        .run_in_scope(
-            "mock-state-machine",
-            None,
-            MockStateMachine::create_with_neo_invocation_status_table(),
-        )
-        .await;
+    let mut test_env = TestEnv::create_with_neo_invocation_status_table().await;
 
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let retention = Duration::from_secs(60) * 60 * 24;
@@ -233,7 +197,7 @@ async fn send_with_delay_and_idempotency_key() {
     let node_id = GenerationalNodeId::new(1, 1);
     let request_id_1 = IngressRequestId::default();
 
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -277,7 +241,7 @@ async fn send_with_delay_and_idempotency_key() {
         Some(idempotency_key.clone()),
     );
     let request_id_2 = IngressRequestId::default();
-    let actions = state_machine
+    let actions = test_env
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
