@@ -353,6 +353,29 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     is_leader: bool,
 }
 
+impl<'a, S> StateMachineApplyContext<'a, S> {
+    async fn get_invocation_status(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<InvocationStatus, Error>
+    where
+        S: ReadOnlyInvocationStatusTable,
+    {
+        Span::record_invocation_id(invocation_id);
+        let status = self.storage.get_invocation_status(invocation_id).await?;
+        if let Some(invocation_target) = status.invocation_target() {
+            Span::record_invocation_target(invocation_target);
+        }
+        if let Some(journal_metadata) = status.get_journal_metadata() {
+            journal_metadata
+                .span_context
+                .as_parent()
+                .attach_to_span(&Span::current());
+        }
+        Ok(status)
+    }
+}
+
 impl<Codec: RawEntryCodec> StateMachine<Codec> {
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
@@ -1048,7 +1071,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
     ) -> Result<(), Error> {
-        let status = Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+        let status = ctx.get_invocation_status(&invocation_id).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) | InvocationStatus::Suspended { metadata, .. } => {
@@ -1078,12 +1101,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn try_cancel_invocation<State: StateReader + StateStorage>(
+    async fn try_cancel_invocation<
+        State: StateReader + StateStorage + ReadOnlyInvocationStatusTable,
+    >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
     ) -> Result<(), Error> {
-        let status = Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+        let status = ctx.get_invocation_status(&invocation_id).await?;
 
         match status {
             InvocationStatus::Invoked(metadata) => {
@@ -1373,13 +1398,17 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     async fn try_purge_invocation<
-        State: StateReader + StateStorage + IdempotencyTable + PromiseTable,
+        State: StateReader
+            + StateStorage
+            + IdempotencyTable
+            + PromiseTable
+            + ReadOnlyInvocationStatusTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
     ) -> Result<(), Error> {
-        match Self::get_invocation_status_and_trace(ctx, &invocation_id).await? {
+        match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 invocation_target,
                 idempotency_key,
@@ -1429,7 +1458,13 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn on_timer<State: StateReader + StateStorage + IdempotencyTable + PromiseTable>(
+    async fn on_timer<
+        State: StateReader
+            + StateStorage
+            + IdempotencyTable
+            + PromiseTable
+            + ReadOnlyInvocationStatusTable,
+    >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         timer_value: TimerKeyValue,
@@ -1464,7 +1499,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         }
     }
 
-    async fn on_neo_invoke_timer<State: StateReader + StateStorage>(
+    async fn on_neo_invoke_timer<
+        State: StateReader + StateStorage + ReadOnlyInvocationStatusTable,
+    >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
@@ -1473,7 +1510,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             ctx.is_leader,
             "Handle scheduled invocation timer with invocation id {invocation_id}"
         );
-        let invocation_status = Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+        let invocation_status = ctx.get_invocation_status(&invocation_id).await?;
 
         if let InvocationStatus::Free = &invocation_status {
             warn!("Fired a timer for an unknown invocation. The invocation might have been deleted/purged previously.");
@@ -1528,8 +1565,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invoker_effect: InvokerEffect,
     ) -> Result<(), Error> {
         let start = Instant::now();
-        let status =
-            Self::get_invocation_status_and_trace(ctx, &invoker_effect.invocation_id).await?;
+        let status = ctx
+            .get_invocation_status(&invoker_effect.invocation_id)
+            .await?;
 
         match status {
             InvocationStatus::Invoked(invocation_metadata) => {
@@ -1819,8 +1857,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             while let Some(inbox_entry) = ctx.storage.pop_inbox(&keyed_service_id).await? {
                 match inbox_entry.inbox_entry {
                     InboxEntry::Invocation(_, invocation_id) => {
-                        let inboxed_status =
-                            Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+                        let inboxed_status = ctx.get_invocation_status(&invocation_id).await?;
 
                         let_assert!(
                             InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
@@ -2399,12 +2436,14 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(())
     }
 
-    async fn handle_completion<State: StateReader + StateStorage>(
+    async fn handle_completion<
+        State: StateReader + StateStorage + ReadOnlyInvocationStatusTable,
+    >(
         ctx: &mut StateMachineApplyContext<'_, State>,
         invocation_id: InvocationId,
         completion: Completion,
     ) -> Result<(), Error> {
-        let status = Self::get_invocation_status_and_trace(ctx, &invocation_id).await?;
+        let status = ctx.get_invocation_status(&invocation_id).await?;
 
         match status {
             InvocationStatus::Invoked(_) => {
@@ -2547,7 +2586,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
     }
 
     async fn handle_attach_invocation_request<
-        State: StateReader + StateStorage + ReadOnlyIdempotencyTable,
+        State: StateReader + StateStorage + ReadOnlyIdempotencyTable + ReadOnlyInvocationStatusTable,
     >(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -2594,7 +2633,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                 }
             }
         };
-        match Self::get_invocation_status_and_trace(ctx, &invocation_id).await? {
+        match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Free => {
                 self.send_response_to_sinks(
                     ctx,
@@ -2677,25 +2716,6 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         ctx.action_collector
             .push(Action::IngressResponse(ingress_response));
-    }
-
-    // Gets the invocation status from storage and also adds tracing info to effects
-    async fn get_invocation_status_and_trace<State: StateReader>(
-        ctx: &mut StateMachineApplyContext<'_, State>,
-        invocation_id: &InvocationId,
-    ) -> Result<InvocationStatus, Error> {
-        Span::record_invocation_id(invocation_id);
-        let status = ctx.storage.get_invocation_status(invocation_id).await?;
-        if let Some(invocation_target) = status.invocation_target() {
-            Span::record_invocation_target(invocation_target);
-        }
-        if let Some(journal_metadata) = status.get_journal_metadata() {
-            journal_metadata
-                .span_context
-                .as_parent()
-                .attach_to_span(&Span::current());
-        }
-        Ok(status)
     }
 
     fn send_submit_notification_if_needed<State>(
