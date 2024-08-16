@@ -111,6 +111,7 @@ pub struct PartitionProcessorMetadata {
     node_id: GenerationalNodeId,
     partition_id: PartitionId,
     partition_key_range: RangeInclusive<PartitionKey>,
+    log_id: LogId,
 }
 
 impl PartitionProcessorMetadata {
@@ -118,11 +119,13 @@ impl PartitionProcessorMetadata {
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
+        log_id: LogId,
     ) -> Self {
         Self {
             node_id,
             partition_id,
             partition_key_range,
+            log_id,
         }
     }
 }
@@ -235,10 +238,7 @@ where
         );
 
         self.bifrost
-            .append(
-                LogId::from(self.partition_processor_metadata.partition_id),
-                Arc::new(envelope),
-            )
+            .append(self.partition_processor_metadata.log_id, Arc::new(envelope))
             .await?;
 
         Ok(())
@@ -342,13 +342,14 @@ where
 
             let action_effect_handler = ActionEffectHandler::new(
                 self.partition_processor_metadata.partition_id,
+                self.partition_processor_metadata.log_id,
                 EpochSequenceNumber::new(leader_epoch),
                 self.partition_processor_metadata
                     .partition_key_range
                     .clone(),
                 self.bifrost.clone(),
                 metadata(),
-            );
+            )?;
 
             let cleaner = Cleaner::new(
                 self.partition_processor_metadata.partition_id,
@@ -712,7 +713,7 @@ mod tests {
     use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::live::Constant;
-    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::GenerationalNodeId;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
@@ -724,7 +725,7 @@ mod tests {
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
     const PARTITION_KEY_RANGE: RangeInclusive<PartitionKey> = PartitionKey::MIN..=PartitionKey::MAX;
     const PARTITION_PROCESSOR_METADATA: PartitionProcessorMetadata =
-        PartitionProcessorMetadata::new(NODE_ID, PARTITION_ID, PARTITION_KEY_RANGE);
+        PartitionProcessorMetadata::new(NODE_ID, PARTITION_ID, PARTITION_KEY_RANGE, LogId::MIN);
 
     #[test(tokio::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {

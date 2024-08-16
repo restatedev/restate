@@ -238,6 +238,15 @@ pub struct CommonOptions {
     ///
     /// The retry policy for node network error
     pub network_error_retry_policy: RetryPolicy,
+
+    /// # Execution mode of Restate
+    ///
+    /// Options are:
+    /// * Normal
+    /// * GlobalTotalOrder
+    ///
+    /// When using [`ExecutionMode::GlobalTotalOrder`], then the cluster will run with a single log.
+    pub execution_mode: ExecutionMode,
 }
 
 static HOSTNAME: Lazy<String> = Lazy::new(|| {
@@ -368,6 +377,7 @@ impl Default for CommonOptions {
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
+            execution_mode: ExecutionMode::Normal,
         }
     }
 }
@@ -487,4 +497,13 @@ impl Default for MetadataStoreClientOptions {
             ),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionMode {
+    #[default]
+    Normal,
+    GlobalTotalOrder,
 }

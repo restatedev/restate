@@ -15,6 +15,7 @@ use serde_with::serde_as;
 
 use crate::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use crate::identifiers::PartitionId;
+use crate::logs::LogId;
 use crate::net::{define_message, RequestId, TargetName};
 
 use crate::net::define_rpc;
@@ -60,15 +61,15 @@ pub struct ControlProcessor {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ProcessorCommand {
     Stop,
-    Follower,
-    Leader,
+    Follower(LogId),
+    Leader(LogId),
 }
 
-impl From<RunMode> for ProcessorCommand {
-    fn from(value: RunMode) -> Self {
-        match value {
-            RunMode::Leader => ProcessorCommand::Leader,
-            RunMode::Follower => ProcessorCommand::Follower,
+impl ProcessorCommand {
+    pub fn from_run_mode(run_mode: RunMode, log_id: LogId) -> Self {
+        match run_mode {
+            RunMode::Leader => ProcessorCommand::Leader(log_id),
+            RunMode::Follower => ProcessorCommand::Follower(log_id),
         }
     }
 }

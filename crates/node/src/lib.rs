@@ -17,6 +17,9 @@ use std::future::Future;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+use crate::cluster_marker::ClusterValidationError;
+use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
+use crate::roles::{AdminRole, WorkerRole};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::metadata_store::{
@@ -33,7 +36,7 @@ use restate_log_server::LogServerService;
 use restate_metadata_store::local::LocalMetadataStoreService;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::cluster_controller::SchedulingPlan;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::{CommonOptions, Configuration, ExecutionMode};
 use restate_types::live::Live;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, Logs};
 use restate_types::metadata_store::keys::{
@@ -45,10 +48,6 @@ use restate_types::retries::RetryPolicy;
 use restate_types::Version;
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace};
-
-use crate::cluster_marker::ClusterValidationError;
-use crate::network_server::{AdminDependencies, NetworkServer, WorkerDependencies};
-use crate::roles::{AdminRole, WorkerRole};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum Error {
@@ -445,8 +444,9 @@ impl Node {
         .await?;
 
         // sanity check
-        if partition_table.num_partitions()
-            != u64::try_from(logs.num_logs()).expect("usize fits into u64")
+        if options.common.execution_mode == ExecutionMode::Normal
+            && partition_table.num_partitions()
+                != u64::try_from(logs.num_logs()).expect("usize fits into u64")
         {
             return Err(Error::SafetyCheck(format!("The partition table (number partitions: {}) and logs configuration (number logs: {}) don't match. Please make sure that they are aligned.", partition_table.num_partitions(), logs.num_logs())))?;
         }
@@ -510,7 +510,11 @@ impl Node {
     ) -> Result<Logs, Error> {
         Self::retry_on_network_error(config.common.network_error_retry_policy.clone(), || {
             metadata_store_client.get_or_insert(BIFROST_CONFIG_KEY.clone(), || {
-                bootstrap_logs_metadata(config.bifrost.default_provider, num_partitions)
+                bootstrap_logs_metadata(
+                    config.bifrost.default_provider,
+                    config.common.execution_mode,
+                    num_partitions,
+                )
             })
         })
         .await

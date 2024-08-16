@@ -10,25 +10,25 @@
 
 use std::sync::Arc;
 
+use crate::control::AnnounceLeader;
+use crate::timer::TimerKeyValue;
 use bytes::{Bytes, BytesMut};
 use restate_bifrost::Bifrost;
 use restate_core::{metadata, ShutdownError};
 use restate_storage_api::deduplication_table::DedupInformation;
+use restate_types::config::{Configuration, ExecutionMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationResponse, InvocationTermination, PurgeInvocationRequest,
     ServiceInvocation,
 };
-use restate_types::message::MessageIndex;
-use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{flexbuffers_storage_encode_decode, logs, Version};
-
-use crate::control::AnnounceLeader;
-use crate::timer::TimerKeyValue;
 use restate_types::logs::{HasRecordKeys, Keys, LogId, Lsn, MatchKeyQuery};
+use restate_types::message::MessageIndex;
 use restate_types::partition_table::{FindPartition, PartitionTableError};
+use restate_types::state_mut::ExternalStateMutation;
 use restate_types::storage::{StorageCodec, StorageDecodeError, StorageEncodeError};
 use restate_types::GenerationalNodeId;
+use restate_types::{flexbuffers_storage_encode_decode, logs, Version};
 
 pub mod control;
 pub mod timer;
@@ -219,13 +219,18 @@ pub async fn append_envelope_to_bifrost(
     bifrost: &Bifrost,
     envelope: Envelope,
 ) -> Result<(LogId, Lsn), Error> {
-    let partition_id = {
-        // make sure we drop pinned partition table before awaiting
-        let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
-        partition_table.find_partition_id(envelope.partition_key())?
+    let log_id = {
+        match Configuration::pinned().common.execution_mode {
+            ExecutionMode::Normal => {
+                // make sure we drop pinned partition table before awaiting
+                let partition_table = metadata().wait_for_partition_table(Version::MIN).await?;
+                let partition_id = partition_table.find_partition_id(envelope.partition_key())?;
+                LogId::from(partition_id)
+            }
+            ExecutionMode::GlobalTotalOrder => LogId::from(0),
+        }
     };
 
-    let log_id = LogId::from(*partition_id);
     // todo: Pass the envelope as `Arc` to `append_envelope_to_bifrost` instead. Possibly use
     // triomphe's UniqueArc for a mutable Arc during construction.
     let lsn = bifrost.append(log_id, Arc::new(envelope)).await?;

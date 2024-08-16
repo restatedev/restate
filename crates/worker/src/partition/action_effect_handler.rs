@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{btree_map, BTreeMap};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -18,9 +17,7 @@ use restate_core::{task_center, Metadata};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
 use restate_types::identifiers::{PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::LogId;
-use restate_types::partition_table::FindPartition;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::Version;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -36,27 +33,30 @@ pub(super) struct ActionEffectHandler {
     partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     partition_key_range: RangeInclusive<PartitionKey>,
-    bifrost: Bifrost,
-    bifrost_appenders: BTreeMap<LogId, restate_bifrost::AppenderHandle<Envelope>>,
+    bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
     metadata: Metadata,
 }
 
 impl ActionEffectHandler {
     pub(super) fn new(
         partition_id: PartitionId,
+        log_id: LogId,
         epoch_sequence_number: EpochSequenceNumber,
         partition_key_range: RangeInclusive<PartitionKey>,
         bifrost: Bifrost,
         metadata: Metadata,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, restate_bifrost::Error> {
+        let bifrost_appender = bifrost
+            .create_background_appender(log_id, BIFROST_QUEUE_SIZE, MAX_BIFROST_APPEND_BATCH)?
+            .start(task_center(), "effect-appender", Some(partition_id))?;
+
+        Ok(Self {
             partition_id,
             epoch_sequence_number,
             partition_key_range,
-            bifrost,
-            bifrost_appenders: Default::default(),
+            bifrost_appender,
             metadata,
-        }
+        })
     }
 
     pub(super) async fn handle(
@@ -93,28 +93,15 @@ impl ActionEffectHandler {
                 }
             };
 
-            let log_id = {
-                // make sure we drop pinned partition table before awaiting
-                let partition_table = self.metadata.wait_for_partition_table(Version::MIN).await?;
-                LogId::from(partition_table.find_partition_id(envelope.partition_key())?)
-            };
+            assert!(
+                self.partition_key_range.contains(&envelope.partition_key()),
+                "Action effect handler should only self propose"
+            );
 
-            let sender = match self.bifrost_appenders.entry(log_id) {
-                btree_map::Entry::Vacant(entry) => {
-                    let appender = self
-                        .bifrost
-                        .create_background_appender(
-                            log_id,
-                            BIFROST_QUEUE_SIZE,
-                            MAX_BIFROST_APPEND_BATCH,
-                        )?
-                        .start(task_center(), "effect-appender", Some(self.partition_id))?;
-                    entry.insert(appender).sender()
-                }
-                btree_map::Entry::Occupied(sender) => sender.into_mut().sender(),
-            };
-            // Only blocks if background append is pushing back (queue full)
-            sender.enqueue(Arc::new(envelope)).await?;
+            self.bifrost_appender
+                .sender()
+                .enqueue(Arc::new(envelope))
+                .await?;
         }
 
         Ok(())

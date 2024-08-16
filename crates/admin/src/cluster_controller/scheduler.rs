@@ -21,7 +21,9 @@ use restate_types::cluster::cluster_state::{ClusterState, NodeState, RunMode};
 use restate_types::cluster_controller::{
     ReplicationStrategy, SchedulingPlan, SchedulingPlanBuilder,
 };
+use restate_types::config::{Configuration, ExecutionMode};
 use restate_types::identifiers::PartitionId;
+use restate_types::logs::LogId;
 use restate_types::metadata_store::keys::SCHEDULING_PLAN_KEY;
 use restate_types::net::cluster_controller::Action;
 use restate_types::net::partition_processor_manager::{
@@ -303,9 +305,11 @@ where
             for (node_id, run_mode) in target_state.iter() {
                 observed_state.remove(&node_id);
 
+                let log_id = Self::decide_log_id_for_partition(*partition_id);
+
                 commands.entry(node_id).or_default().push(ControlProcessor {
                     partition_id: *partition_id,
-                    command: ProcessorCommand::from(run_mode),
+                    command: ProcessorCommand::from_run_mode(run_mode, log_id),
                 });
             }
         }
@@ -319,6 +323,13 @@ where
                     partition_id: *partition_id,
                     command: ProcessorCommand::Stop,
                 });
+        }
+    }
+
+    fn decide_log_id_for_partition(partition_id: PartitionId) -> LogId {
+        match Configuration::pinned().common.execution_mode {
+            ExecutionMode::Normal => LogId::from(partition_id),
+            ExecutionMode::GlobalTotalOrder => LogId::from(0),
         }
     }
 }
@@ -877,14 +888,14 @@ mod tests {
                             &node_id.as_plain(),
                         );
                     }
-                    ProcessorCommand::Follower => {
+                    ProcessorCommand::Follower(_) => {
                         observed_cluster_state.add_node_to_partition(
                             control_processor.partition_id,
                             node_id.as_plain(),
                             RunMode::Follower,
                         );
                     }
-                    ProcessorCommand::Leader => {
+                    ProcessorCommand::Leader(_) => {
                         observed_cluster_state.add_node_to_partition(
                             control_processor.partition_id,
                             node_id.as_plain(),

@@ -49,10 +49,14 @@ pub async fn spawn_environment(
     tc.try_set_global_metadata(metadata.clone());
 
     tc.run_in_scope_sync("db-manager-init", None, || {
-        RocksDbManager::init(Constant::new(config.common))
+        RocksDbManager::init(Constant::new(config.common.clone()))
     });
 
-    let logs = restate_types::logs::metadata::bootstrap_logs_metadata(provider, num_logs);
+    let logs = restate_types::logs::metadata::bootstrap_logs_metadata(
+        provider,
+        config.common.execution_mode,
+        num_logs,
+    );
 
     metadata_store_client
         .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)

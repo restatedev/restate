@@ -66,6 +66,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     node_id: GenerationalNodeId,
     pub partition_id: PartitionId,
     pub partition_key_range: RangeInclusive<PartitionKey>,
+    pub log_id: LogId,
 
     num_timers_in_memory_limit: Option<usize>,
     enable_new_invocation_status_table: bool,
@@ -88,6 +89,7 @@ where
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
         partition_key_range: RangeInclusive<PartitionKey>,
+        log_id: LogId,
         status: PartitionProcessorStatus,
         num_timers_in_memory_limit: Option<usize>,
         cleanup_interval: Duration,
@@ -101,6 +103,7 @@ where
             node_id,
             partition_id,
             partition_key_range,
+            log_id,
             status,
             num_timers_in_memory_limit,
             enable_new_invocation_status_table,
@@ -120,6 +123,7 @@ where
     ) -> Result<PartitionProcessor<Codec, InvokerInputSender>, StorageError> {
         let PartitionProcessorBuilder {
             partition_id,
+            log_id,
             partition_key_range,
             num_timers_in_memory_limit,
             cleanup_interval,
@@ -158,6 +162,7 @@ where
                 self.node_id,
                 partition_id,
                 partition_key_range.clone(),
+                log_id,
             ),
             num_timers_in_memory_limit,
             cleanup_interval,
@@ -170,6 +175,7 @@ where
 
         Ok(PartitionProcessor {
             partition_id,
+            log_id,
             partition_key_range,
             leadership_state,
             state_machine,
@@ -211,6 +217,7 @@ where
 
 pub struct PartitionProcessor<Codec, InvokerSender> {
     partition_id: PartitionId,
+    log_id: LogId,
     partition_key_range: RangeInclusive<PartitionKey>,
     leadership_state: LeadershipState<InvokerSender, Networking>,
     state_machine: StateMachine<Codec>,
@@ -240,10 +247,7 @@ where
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
         let current_tail = self
             .bifrost
-            .find_tail(
-                LogId::from(self.partition_id),
-                FindTailAttributes::default(),
-            )
+            .find_tail(self.log_id, FindTailAttributes::default())
             .await?;
         info!(
             last_applied_lsn = %last_applied_lsn,
@@ -280,7 +284,7 @@ where
         let mut log_reader = self
             .bifrost
             .create_reader(
-                LogId::from(self.partition_id),
+                self.log_id,
                 key_query.clone(),
                 last_applied_lsn.next(),
                 Lsn::MAX,

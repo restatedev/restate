@@ -20,7 +20,7 @@ use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, warn};
 
-use restate_types::config::{AdminOptions, Configuration};
+use restate_types::config::{AdminOptions, Configuration, ExecutionMode};
 use restate_types::live::Live;
 use restate_types::net::cluster_controller::{AttachRequest, AttachResponse};
 
@@ -298,26 +298,36 @@ where
             }
         }
 
-        for (partition_id, persisted_lsns) in persisted_lsns_per_partition.into_iter() {
-            let log_id = LogId::from(partition_id);
+        let execution_mode = { Configuration::pinned().common.execution_mode };
 
-            // todo: Remove once Restate nodes can share partition processor snapshots
-            // only try to trim if we know about the persisted lsns of all known nodes; otherwise we
-            // risk that a node cannot fully replay the log; this assumes that no new nodes join the
-            // cluster after the first trimming has happened
-            if persisted_lsns.len() >= cluster_state.nodes.len() {
-                let min_persisted_lsn = persisted_lsns.into_values().min().unwrap_or(Lsn::INVALID);
-                // trim point is before the oldest record
-                let current_trim_point = bifrost_admin.get_trim_point(log_id).await?;
+        match execution_mode {
+            ExecutionMode::Normal => {
+                for (partition_id, persisted_lsns) in persisted_lsns_per_partition.into_iter() {
+                    let log_id = LogId::from(partition_id);
 
-                if min_persisted_lsn >= current_trim_point + self.log_trim_threshold {
-                    debug!(
-                    "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
-                );
-                    bifrost_admin.trim(log_id, min_persisted_lsn).await?
+                    // todo: Remove once Restate nodes can share partition processor snapshots
+                    // only try to trim if we know about the persisted lsns of all known nodes; otherwise we
+                    // risk that a node cannot fully replay the log; this assumes that no new nodes join the
+                    // cluster after the first trimming has happened
+                    if persisted_lsns.len() >= cluster_state.nodes.len() {
+                        let min_persisted_lsn =
+                            persisted_lsns.into_values().min().unwrap_or(Lsn::INVALID);
+                        // trim point is before the oldest record
+                        let current_trim_point = bifrost_admin.get_trim_point(log_id).await?;
+
+                        if min_persisted_lsn >= current_trim_point + self.log_trim_threshold {
+                            debug!(
+                            "Automatic trim log '{log_id}' for all records before='{min_persisted_lsn}'"
+                        );
+                            bifrost_admin.trim(log_id, min_persisted_lsn).await?
+                        }
+                    } else {
+                        warn!("Stop automatically trimming log '{log_id}' because not all nodes are running a partition processor applying this log.");
+                    }
                 }
-            } else {
-                warn!("Stop automatically trimming log '{log_id}' because not all nodes are running a partition processor applying this log.");
+            }
+            ExecutionMode::GlobalTotalOrder => {
+                warn!("Log trimming for global total order log is not yet supported");
             }
         }
 

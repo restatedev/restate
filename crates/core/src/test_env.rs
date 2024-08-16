@@ -25,6 +25,7 @@ use crate::{
 use crate::{Metadata, MetadataManager, MetadataWriter};
 use crate::{TaskCenter, TaskCenterBuilder};
 use restate_types::cluster_controller::{ReplicationStrategy, SchedulingPlan};
+use restate_types::config::Configuration;
 use restate_types::logs::metadata::{bootstrap_logs_metadata, ProviderKind};
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY, SCHEDULING_PLAN_KEY,
@@ -304,8 +305,11 @@ where
             .expect("to store nodes config in metadata store");
         self.metadata_writer.submit(self.nodes_config.clone());
 
-        let logs =
-            bootstrap_logs_metadata(self.provider_kind, self.partition_table.num_partitions());
+        let logs = bootstrap_logs_metadata(
+            self.provider_kind,
+            Configuration::pinned().common.execution_mode,
+            self.partition_table.num_partitions(),
+        );
         self.metadata_store_client
             .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
             .await

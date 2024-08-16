@@ -19,7 +19,7 @@ use futures::stream::StreamExt;
 use futures::Stream;
 use metrics::gauge;
 use restate_types::live::Live;
-use restate_types::logs::SequenceNumber;
+use restate_types::logs::{LogId, SequenceNumber};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio::time;
@@ -495,7 +495,7 @@ impl PartitionProcessorManager {
                     debug!("No running partition processor. Ignoring stop command.");
                 }
             }
-            ProcessorCommand::Follower => {
+            ProcessorCommand::Follower(log_id) => {
                 if let Some(state) = self.running_partition_processors.get_mut(&partition_id) {
                     // if we error here, then the system is shutting down
                     state.step_down()?;
@@ -506,6 +506,7 @@ impl PartitionProcessorManager {
                     self.start_partition_processor(
                         partition_id,
                         partition_key_range,
+                        log_id,
                         RunMode::Follower,
                     )
                     .await?;
@@ -513,7 +514,7 @@ impl PartitionProcessorManager {
                     debug!("Unknown partition id '{partition_id}'. Ignoring follower command.");
                 }
             }
-            ProcessorCommand::Leader => {
+            ProcessorCommand::Leader(log_id) => {
                 if let Some(state) = self.running_partition_processors.get_mut(&partition_id) {
                     state
                         .run_for_leader(
@@ -528,6 +529,7 @@ impl PartitionProcessorManager {
                     self.start_partition_processor(
                         partition_id,
                         partition_key_range,
+                        log_id,
                         RunMode::Leader,
                     )
                     .await?;
@@ -552,6 +554,7 @@ impl PartitionProcessorManager {
                         self.start_partition_processor(
                             action.partition_id,
                             &action.key_range_inclusive.clone().into(),
+                            action.log_id,
                             action.mode,
                         )
                         .await?;
@@ -573,9 +576,10 @@ impl PartitionProcessorManager {
         &mut self,
         partition_id: PartitionId,
         key_range: &RangeInclusive<PartitionKey>,
+        log_id: LogId,
         mode: RunMode,
     ) -> Result<(), Error> {
-        let mut state = self.spawn_partition_processor(partition_id, key_range.clone())?;
+        let mut state = self.spawn_partition_processor(partition_id, key_range.clone(), log_id)?;
 
         if RunMode::Leader == mode {
             state
@@ -595,6 +599,7 @@ impl PartitionProcessorManager {
         &mut self,
         partition_id: PartitionId,
         key_range: RangeInclusive<PartitionKey>,
+        log_id: LogId,
     ) -> Result<ProcessorState, ShutdownError> {
         let (control_tx, control_rx) = mpsc::channel(2);
         let status = PartitionProcessorStatus::new();
@@ -611,6 +616,7 @@ impl PartitionProcessorManager {
             node_id,
             partition_id,
             key_range.clone(),
+            log_id,
             status,
             options.num_timers_in_memory_limit(),
             options.cleanup_interval(),

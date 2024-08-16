@@ -323,7 +323,7 @@ mod tests {
                 // Let's check we correct have generated a bifrost write
                 let partition_id = node_env
                     .metadata
-                    .partition_table_snapshot()
+                    .partition_table_ref()
                     .find_partition_id(invocation_id.partition_key())?;
                 let log_id = LogId::from(partition_id);
                 let log_record = bifrost.read(log_id, Lsn::OLDEST).await?.unwrap();

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cluster::cluster_state::RunMode;
 use crate::identifiers::PartitionId;
+use crate::logs::LogId;
 use crate::net::{RequestId, TargetName};
 use crate::partition_table::KeyRange;
 
@@ -44,5 +45,6 @@ pub enum Action {
 pub struct RunPartition {
     pub partition_id: PartitionId,
     pub key_range_inclusive: KeyRange,
+    pub log_id: LogId,
     pub mode: RunMode,
 }
