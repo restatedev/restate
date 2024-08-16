@@ -8,7 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::Pin;
+use std::task::{ready, Poll};
+
+use futures::FutureExt;
 use strum::EnumProperty;
+use tokio_util::sync::CancellationToken;
+
+use crate::ShutdownError;
 
 #[derive(
     Clone,
@@ -114,7 +121,8 @@ impl TaskKind {
     }
 
     pub fn runtime(&self) -> AsyncRuntime {
-        match self.get_str("runtime").unwrap_or("default") {
+        match self.get_str("runtime").unwrap_or("inherit") {
+            "inherit" => AsyncRuntime::Inherit,
             "default" => AsyncRuntime::Default,
             "ingress" => AsyncRuntime::Ingress,
             _ => panic!("Invalid runtime for task kind: {}", self),
@@ -128,6 +136,54 @@ pub enum FailureBehaviour {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum::IntoStaticStr, strum::Display)]
 pub enum AsyncRuntime {
+    /// Run on the same runtime at which the spawn took place.
+    Inherit,
+    /// Run on the default runtime
     Default,
+    /// Run on ingress runtime
     Ingress,
+}
+
+/// A future that represents a task spawned on the TaskCenter.
+///
+/// Awaiting this future waits for the task to complete.
+pub struct TaskHandle<T> {
+    pub(crate) cancellation_token: CancellationToken,
+    pub(crate) inner_handle: tokio::task::JoinHandle<T>,
+}
+
+impl<T> TaskHandle<T> {
+    /// Abort the task immediately. This will abort the task at the next yielding point. If the
+    /// task is running a blocking call, it'll not be aborted until it can yield to the runtime.
+    pub fn abort(&self) {
+        self.inner_handle.abort();
+    }
+
+    /// Trigger graceful cancellation of the task
+    pub fn cancel(&self) {
+        self.cancellation_token.cancel()
+    }
+
+    /// Returns true if cancellation was requested. Note that this doesn't mean that
+    /// the task has finished. To check if the task has finished or not, use `is_finished()`
+    pub fn is_cancellation_requested(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
+    /// Returns true if the task has finished executing. Note that this might return
+    /// `false` after calling `abort()` since termination process takes time.
+    pub fn is_finished(&self) -> bool {
+        self.inner_handle.is_finished()
+    }
+}
+
+impl<T> std::future::Future for TaskHandle<T> {
+    type Output = Result<T, ShutdownError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        match ready!(self.inner_handle.poll_unpin(cx)) {
+            Ok(v) => Poll::Ready(Ok(v)),
+            Err(_) => Poll::Ready(Err(ShutdownError)),
+        }
+    }
 }

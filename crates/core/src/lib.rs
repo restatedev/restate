@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod error;
 mod metadata;
 pub mod metadata_store;
 mod metric_definitions;
@@ -15,6 +16,7 @@ pub mod network;
 mod task_center;
 mod task_center_types;
 pub mod worker_api;
+pub use error::*;
 
 pub use metadata::{
     spawn_metadata_manager, Metadata, MetadataBuilder, MetadataKind, MetadataManager,
