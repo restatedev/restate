@@ -48,6 +48,10 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.journal_size,
             ss.created_at,
             ss.modified_at,
+            ss.inboxed_at,
+            ss.scheduled_at,
+            ss.running_at,
+            ss.completed_at,
 
             sis.retry_count,
             sis.last_start_at,

@@ -105,6 +105,10 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status.remove("journal_size").expect("journal_size should exist"),
         sys_invocation_status.remove("created_at").expect("created_at should exist"),
         sys_invocation_status.remove("modified_at").expect("modified_at should exist"),
+        sys_invocation_status.remove("inboxed_at").expect("inboxed_at should exist"),
+        sys_invocation_status.remove("scheduled_at").expect("scheduled_at should exist"),
+        sys_invocation_status.remove("running_at").expect("running_at should exist"),
+        sys_invocation_status.remove("completed_at").expect("completed_at should exist"),
 
         sys_invocation_state.remove("retry_count").expect("retry_count should exist"),
         sys_invocation_state.remove("last_start_at").expect("last_start_at should exist"),
