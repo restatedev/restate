@@ -113,7 +113,7 @@ message NeoInvocationStatus {
     Source source = 3;
     SpanContext span_context = 4;
     repeated ServiceInvocationResponseSink response_sinks = 7;
-    Duration completion_retention_time = 11;
+    Duration completion_retention_duration = 11;
 
     // Timestamps
     uint64 creation_time = 5;

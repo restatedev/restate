@@ -317,7 +317,7 @@ pub mod v1 {
                     argument,
                     headers,
                     execution_time,
-                    completion_retention_time,
+                    completion_retention_duration,
                     idempotency_key,
                     inbox_sequence_number,
                     journal_length,
@@ -366,9 +366,10 @@ pub mod v1 {
                                         span_context: expect_or_fail!(span_context)?.try_into()?,
                                         headers,
                                         execution_time: execution_time.map(MillisSinceEpoch::new),
-                                        completion_retention_time: completion_retention_time
-                                            .unwrap_or_default()
-                                            .try_into()?,
+                                        completion_retention_duration:
+                                            completion_retention_duration
+                                                .unwrap_or_default()
+                                                .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         source_table:
                                             crate::invocation_status_table::SourceTable::New,
@@ -390,9 +391,10 @@ pub mod v1 {
                                         span_context: expect_or_fail!(span_context)?.try_into()?,
                                         headers,
                                         execution_time: execution_time.map(MillisSinceEpoch::new),
-                                        completion_retention_time: completion_retention_time
-                                            .unwrap_or_default()
-                                            .try_into()?,
+                                        completion_retention_duration:
+                                            completion_retention_duration
+                                                .unwrap_or_default()
+                                                .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         source_table:
                                             crate::invocation_status_table::SourceTable::New,
@@ -415,7 +417,7 @@ pub mod v1 {
                                     service_protocol_version,
                                 )?,
                                 source,
-                                completion_retention_time: completion_retention_time
+                                completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
@@ -438,7 +440,7 @@ pub mod v1 {
                                     service_protocol_version,
                                 )?,
                                 source,
-                                completion_retention_time: completion_retention_time
+                                completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
@@ -458,7 +460,7 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 source_table: crate::invocation_status_table::SourceTable::New,
                                 response_result: expect_or_fail!(result)?.try_into()?,
-                                completion_retention: completion_retention_time
+                                completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
                             },
@@ -490,7 +492,7 @@ pub mod v1 {
                                     span_context,
                                     headers,
                                     execution_time,
-                                    completion_retention_time,
+                                    completion_retention_duration,
                                     idempotency_key,
                                     source_table: _,
                                 },
@@ -521,7 +523,7 @@ pub mod v1 {
                         argument: Some(argument),
                         headers: headers.into_iter().map(Into::into).collect(),
                         execution_time: execution_time.map(|t| t.as_u64()),
-                        completion_retention_time: Some(completion_retention_time.into()),
+                        completion_retention_duration: Some(completion_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
@@ -542,7 +544,7 @@ pub mod v1 {
                                     span_context,
                                     headers,
                                     execution_time,
-                                    completion_retention_time,
+                                    completion_retention_duration,
                                     idempotency_key,
                                     source_table: _,
                                 },
@@ -574,7 +576,7 @@ pub mod v1 {
                         argument: Some(argument),
                         headers: headers.into_iter().map(Into::into).collect(),
                         execution_time: execution_time.map(|t| t.as_u64()),
-                        completion_retention_time: Some(completion_retention_time.into()),
+                        completion_retention_duration: Some(completion_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: Some(inbox_sequence_number),
                         journal_length: 0,
@@ -591,7 +593,7 @@ pub mod v1 {
                             response_sinks,
                             timestamps,
                             source,
-                            completion_retention_time,
+                            completion_retention_duration,
                             idempotency_key,
                             source_table: _,
                         },
@@ -634,7 +636,9 @@ pub mod v1 {
                             argument: None,
                             headers: vec![],
                             execution_time: None,
-                            completion_retention_time: Some(completion_retention_time.into()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -653,7 +657,7 @@ pub mod v1 {
                                 response_sinks,
                                 timestamps,
                                 source,
-                                completion_retention_time,
+                                completion_retention_duration,
                                 idempotency_key,
                                 source_table: _,
                             },
@@ -697,7 +701,9 @@ pub mod v1 {
                             argument: None,
                             headers: vec![],
                             execution_time: None,
-                            completion_retention_time: Some(completion_retention_time.into()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
                             idempotency_key: idempotency_key.map(|key| key.to_string()),
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
@@ -716,7 +722,7 @@ pub mod v1 {
                             idempotency_key,
                             timestamps,
                             response_result,
-                            completion_retention,
+                            completion_retention_duration,
                             source_table: _,
                         },
                     ) => NeoInvocationStatus {
@@ -742,7 +748,7 @@ pub mod v1 {
                         argument: None,
                         headers: vec![],
                         execution_time: None,
-                        completion_retention_time: Some(completion_retention.into()),
+                        completion_retention_duration: Some(completion_retention_duration.into()),
                         idempotency_key: idempotency_key.map(|key| key.to_string()),
                         inbox_sequence_number: None,
                         journal_length: 0,
@@ -920,7 +926,7 @@ pub mod v1 {
                         None,
                     ),
                     source,
-                    completion_retention_time,
+                    completion_retention_duration: completion_retention_time,
                     idempotency_key,
                     source_table: crate::invocation_status_table::SourceTable::Old,
                 })
@@ -936,7 +942,7 @@ pub mod v1 {
                     journal_metadata,
                     timestamps,
                     source,
-                    completion_retention_time,
+                    completion_retention_duration: completion_retention_time,
                     idempotency_key,
                     source_table: _,
                 } = value;
@@ -1032,7 +1038,7 @@ pub mod v1 {
                             None,
                         ),
                         source: caller,
-                        completion_retention_time,
+                        completion_retention_duration: completion_retention_time,
                         idempotency_key,
                         source_table: crate::invocation_status_table::SourceTable::Old,
                     },
@@ -1080,7 +1086,7 @@ pub mod v1 {
                     waiting_for_completed_entries,
                     source: Some(Source::from(metadata.source)),
                     completion_retention_time: Some(Duration::from(
-                        metadata.completion_retention_time,
+                        metadata.completion_retention_duration,
                     )),
                     idempotency_key: metadata.idempotency_key.map(|key| key.to_string()),
                 }
@@ -1157,7 +1163,7 @@ pub mod v1 {
                         argument: value.argument,
                         execution_time,
                         idempotency_key,
-                        completion_retention_time,
+                        completion_retention_duration: completion_retention_time,
                         invocation_target,
                         source_table: crate::invocation_status_table::SourceTable::Old,
                     },
@@ -1178,7 +1184,7 @@ pub mod v1 {
                             span_context,
                             headers,
                             execution_time,
-                            completion_retention_time,
+                            completion_retention_duration: completion_retention_time,
                             idempotency_key,
                             source_table: _,
                         },
@@ -1244,7 +1250,7 @@ pub mod v1 {
                     source_table: crate::invocation_status_table::SourceTable::Old,
                     // The value Duration::MAX here disables the new cleaner task business logic.
                     // Look at crates/worker/src/partition/cleaner.rs for more details.
-                    completion_retention: std::time::Duration::MAX,
+                    completion_retention_duration: std::time::Duration::MAX,
                 })
             }
         }
@@ -1258,7 +1264,7 @@ pub mod v1 {
                     timestamps,
                     response_result,
                     // We don't store this in the old invocation status table
-                    completion_retention: _,
+                    completion_retention_duration: _,
                     source_table: _,
                 } = value;
 
@@ -1475,7 +1481,7 @@ pub mod v1 {
                     span_context,
                     headers,
                     execution_time,
-                    completion_retention_time,
+                    completion_retention_duration: completion_retention_time,
                     idempotency_key,
                     submit_notification_sink: submit_notification_sink,
                 })
@@ -1499,7 +1505,9 @@ pub mod v1 {
                     source: Some(source),
                     headers,
                     execution_time: value.execution_time.map(|m| m.as_u64()).unwrap_or_default(),
-                    completion_retention_time: value.completion_retention_time.map(Duration::from),
+                    completion_retention_time: value
+                        .completion_retention_duration
+                        .map(Duration::from),
                     idempotency_key: value.idempotency_key.map(|s| s.to_string()),
                     submit_notification_sink: value.submit_notification_sink.map(Into::into),
                 }

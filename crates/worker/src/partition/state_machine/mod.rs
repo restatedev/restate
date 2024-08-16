@@ -737,7 +737,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                                 span_context: span_context.clone(),
                                 headers: metadata.headers,
                                 execution_time: metadata.execution_time,
-                                completion_retention_time: Some(metadata.completion_retention_time),
+                                completion_retention_duration: Some(
+                                    metadata.completion_retention_duration,
+                                ),
                                 idempotency_key: metadata.idempotency_key,
                                 response_sink: metadata.response_sinks.into_iter().next(),
                                 submit_notification_sink: None,
@@ -1635,7 +1637,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error> {
         let journal_length = invocation_metadata.journal_metadata.length;
-        let completion_retention_time = invocation_metadata.completion_retention_time;
+        let completion_retention_time = invocation_metadata.completion_retention_duration;
 
         self.notify_invocation_result(
             ctx,
@@ -1733,7 +1735,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Self::consume_inbox(ctx, &invocation_metadata.invocation_target).await?;
 
         // Store the completed status or free it
-        if !invocation_metadata.completion_retention_time.is_zero() {
+        if !invocation_metadata.completion_retention_duration.is_zero() {
             let (completed_invocation, completion_retention_time) =
                 CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
@@ -2262,7 +2264,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                         span_context: span_context.clone(),
                         headers: request.headers,
                         execution_time: None,
-                        completion_retention_time: *completion_retention_time,
+                        completion_retention_duration: *completion_retention_time,
                         idempotency_key: None,
                         submit_notification_sink: None,
                     };
@@ -2312,7 +2314,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     span_context: span_context.clone(),
                     headers: request.headers,
                     execution_time: delay,
-                    completion_retention_time: *completion_retention_time,
+                    completion_retention_duration: *completion_retention_time,
                     idempotency_key: None,
                     submit_notification_sink: None,
                 };
@@ -2699,7 +2701,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             "Effect: Resume service"
         );
 
-        unsafe { metadata.timestamps.update() };
+        metadata.timestamps.update();
         let invocation_target = metadata.invocation_target.clone();
         ctx.storage
             .store_invocation_status(&invocation_id, InvocationStatus::Invoked(metadata))
@@ -2735,7 +2737,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             waiting_for_completed_entries
         );
 
-        unsafe { metadata.timestamps.update() };
+        metadata.timestamps.update();
         ctx.storage
             .store_invocation_status(
                 &invocation_id,
@@ -3210,7 +3212,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             .expect("No response sinks available")
             .insert(additional_response_sink);
         if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
-            unsafe { timestamps.update() };
+            timestamps.update();
         }
 
         ctx.storage
@@ -3525,7 +3527,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
         // Update timestamps
         if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
-            unsafe { timestamps.update() };
+            timestamps.update();
         }
 
         // Store invocation status

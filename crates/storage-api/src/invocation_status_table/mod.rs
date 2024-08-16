@@ -77,7 +77,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    pub unsafe fn update(&mut self) {
+    pub fn update(&mut self) {
         self.modification_time = MillisSinceEpoch::now()
     }
 
@@ -86,7 +86,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    unsafe fn now() -> Self {
+    pub fn now() -> Self {
         StatusTimestamps::init(MillisSinceEpoch::now())
     }
 
@@ -95,7 +95,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    unsafe fn record_inboxed_transition_time(&mut self) {
+    fn record_inboxed_transition_time(&mut self) {
         self.update();
         self.inboxed_transition_time = Some(self.modification_time)
     }
@@ -105,7 +105,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    unsafe fn record_scheduled_transition_time(&mut self) {
+    fn record_scheduled_transition_time(&mut self) {
         self.update();
         self.scheduled_transition_time = Some(self.modification_time)
     }
@@ -115,7 +115,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    unsafe fn record_running_transition_time(&mut self) {
+    fn record_running_transition_time(&mut self) {
         self.update();
         self.running_transition_time = Some(self.modification_time)
     }
@@ -125,7 +125,7 @@ impl StatusTimestamps {
     /// # Safety
     /// The value of this time is not consistent across replicas of a partition, because it's not agreed.
     /// You **MUST NOT** use it within the Partition processor business logic, but only for observability purposes.
-    unsafe fn record_completed_transition_time(&mut self) {
+    fn record_completed_transition_time(&mut self) {
         self.update();
         self.completed_transition_time = Some(self.modification_time)
     }
@@ -374,7 +374,7 @@ pub struct PreFlightInvocationMetadata {
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
     /// If zero, the invocation completion will not be retained.
-    pub completion_retention_time: Duration,
+    pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
 
     /// Used by the Table implementation to pick where to write
@@ -388,9 +388,7 @@ pub struct ScheduledInvocation {
 
 impl ScheduledInvocation {
     pub fn from_pre_flight_invocation_metadata(mut metadata: PreFlightInvocationMetadata) -> Self {
-        unsafe {
-            metadata.timestamps.record_scheduled_transition_time();
-        }
+        metadata.timestamps.record_scheduled_transition_time();
 
         Self { metadata }
     }
@@ -403,15 +401,15 @@ impl PreFlightInvocationMetadata {
     ) -> Self {
         Self {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
-            timestamps: unsafe { StatusTimestamps::now() },
+            timestamps: StatusTimestamps::now(),
             invocation_target: service_invocation.invocation_target,
             argument: service_invocation.argument,
             source: service_invocation.source,
             span_context: service_invocation.span_context,
             headers: service_invocation.headers,
             execution_time: service_invocation.execution_time,
-            completion_retention_time: service_invocation
-                .completion_retention_time
+            completion_retention_duration: service_invocation
+                .completion_retention_duration
                 .unwrap_or_default(),
             idempotency_key: service_invocation.idempotency_key,
             source_table,
@@ -432,9 +430,7 @@ impl InboxedInvocation {
         mut metadata: PreFlightInvocationMetadata,
         inbox_sequence_number: u64,
     ) -> Self {
-        unsafe {
-            metadata.timestamps.record_inboxed_transition_time();
-        }
+        metadata.timestamps.record_inboxed_transition_time();
 
         Self {
             inbox_sequence_number,
@@ -462,7 +458,7 @@ pub struct InFlightInvocationMetadata {
     pub timestamps: StatusTimestamps,
     pub source: Source,
     /// If zero, the invocation completion will not be retained.
-    pub completion_retention_time: Duration,
+    pub completion_retention_duration: Duration,
     pub idempotency_key: Option<ByteString>,
 
     /// Used by the Table implementation to pick where to write
@@ -473,11 +469,9 @@ impl InFlightInvocationMetadata {
     pub fn from_pre_flight_invocation_metadata(
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
     ) -> (Self, InvocationInput) {
-        unsafe {
-            pre_flight_invocation_metadata
-                .timestamps
-                .record_running_transition_time();
-        }
+        pre_flight_invocation_metadata
+            .timestamps
+            .record_running_transition_time();
 
         (
             Self {
@@ -489,7 +483,8 @@ impl InFlightInvocationMetadata {
                 response_sinks: pre_flight_invocation_metadata.response_sinks,
                 timestamps: pre_flight_invocation_metadata.timestamps,
                 source: pre_flight_invocation_metadata.source,
-                completion_retention_time: pre_flight_invocation_metadata.completion_retention_time,
+                completion_retention_duration: pre_flight_invocation_metadata
+                    .completion_retention_duration,
                 idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                 source_table: pre_flight_invocation_metadata.source_table,
             },
@@ -512,9 +507,7 @@ impl InFlightInvocationMetadata {
             "No deployment should be chosen for the current invocation"
         );
         self.pinned_deployment = Some(pinned_deployment);
-        unsafe {
-            self.timestamps.update();
-        }
+        self.timestamps.update();
     }
 }
 
@@ -525,7 +518,7 @@ pub struct CompletedInvocation {
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
     pub response_result: ResponseResult,
-    pub completion_retention: Duration,
+    pub completion_retention_duration: Duration,
 
     /// Used by the Table implementation to pick where to write
     pub source_table: SourceTable,
@@ -536,11 +529,9 @@ impl CompletedInvocation {
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         response_result: ResponseResult,
     ) -> (Self, Duration) {
-        unsafe {
-            in_flight_invocation_metadata
-                .timestamps
-                .record_completed_transition_time();
-        }
+        in_flight_invocation_metadata
+            .timestamps
+            .record_completed_transition_time();
 
         (
             Self {
@@ -549,10 +540,11 @@ impl CompletedInvocation {
                 idempotency_key: in_flight_invocation_metadata.idempotency_key,
                 timestamps: in_flight_invocation_metadata.timestamps,
                 response_result,
-                completion_retention: in_flight_invocation_metadata.completion_retention_time,
+                completion_retention_duration: in_flight_invocation_metadata
+                    .completion_retention_duration,
                 source_table: in_flight_invocation_metadata.source_table,
             },
-            in_flight_invocation_metadata.completion_retention_time,
+            in_flight_invocation_metadata.completion_retention_duration,
         )
     }
 }
@@ -605,9 +597,9 @@ mod test_util {
                 journal_metadata: JournalMetadata::initialize(ServiceInvocationSpanContext::empty()),
                 pinned_deployment: None,
                 response_sinks: HashSet::new(),
-                timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
+                timestamps: StatusTimestamps::now(),
                 source: Source::Ingress,
-                completion_retention_time: Duration::ZERO,
+                completion_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 source_table: SourceTable::New,
             }

@@ -243,7 +243,7 @@ async fn send_with_delay_and_idempotency_key() {
                 node_id,
                 request_id: request_id_1,
             }),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(MillisSinceEpoch::from(
                 SystemTime::now() + Duration::from_secs(60),
@@ -287,7 +287,7 @@ async fn send_with_delay_and_idempotency_key() {
                 node_id,
                 request_id: request_id_2,
             }),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             // Doesn't matter the execution time here, just needs to be filled
             execution_time: Some(MillisSinceEpoch::from(
                 SystemTime::now() + Duration::from_secs(60),

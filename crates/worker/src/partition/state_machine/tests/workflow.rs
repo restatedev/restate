@@ -42,7 +42,7 @@ async fn start_workflow_method() {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            completion_retention_time: Some(Duration::from_secs(60)),
+            completion_retention_duration: Some(Duration::from_secs(60)),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
                 request_id: request_id_1,
@@ -226,7 +226,7 @@ async fn attach_by_workflow_key() {
         .apply(Command::Invoke(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
-            completion_retention_time: Some(Duration::from_secs(60)),
+            completion_retention_duration: Some(Duration::from_secs(60)),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 node_id,
                 request_id: request_id_1,
@@ -383,9 +383,9 @@ async fn timer_cleanup() {
             invocation_target: invocation_target.clone(),
             source: Source::Ingress,
             idempotency_key: None,
-            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
+            timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
-            completion_retention: Default::default(),
+            completion_retention_duration: Default::default(),
             source_table: SourceTable::New,
         }),
     )

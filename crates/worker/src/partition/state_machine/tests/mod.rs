@@ -665,7 +665,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             span_context: Default::default(),
             headers: vec![],
             execution_time: None,
-            completion_retention_time: None,
+            completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
         }))
@@ -1005,7 +1005,7 @@ async fn mock_start_invocation_with_invocation_target(
             span_context: Default::default(),
             headers: vec![],
             execution_time: None,
-            completion_retention_time: None,
+            completion_retention_duration: None,
             idempotency_key: None,
             submit_notification_sink: None,
         }))

@@ -92,7 +92,7 @@ pub(crate) fn mock_service_invocation(service_id: ServiceId) -> ServiceInvocatio
         span_context: Default::default(),
         headers: vec![],
         execution_time: None,
-        completion_retention_time: None,
+        completion_retention_duration: None,
         idempotency_key: None,
         submit_notification_sink: None,
     }

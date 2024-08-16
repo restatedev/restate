@@ -84,7 +84,7 @@ fn invoked_status(
         response_sinks: HashSet::new(),
         timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
         source: Source::Ingress,
-        completion_retention_time: Duration::ZERO,
+        completion_retention_duration: Duration::ZERO,
         idempotency_key: None,
         source_table,
     })
@@ -102,7 +102,7 @@ fn suspended_status(
             response_sinks: HashSet::new(),
             timestamps: StatusTimestamps::init(MillisSinceEpoch::new(0)),
             source: Source::Ingress,
-            completion_retention_time: Duration::ZERO,
+            completion_retention_duration: Duration::ZERO,
             idempotency_key: None,
             source_table,
         },

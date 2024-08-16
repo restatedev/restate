@@ -316,7 +316,7 @@ mod tests {
                 );
                 invocation.argument = argument.clone();
                 invocation.idempotency_key = Some(idempotency_key.clone());
-                invocation.completion_retention_time = Some(Duration::from_secs(60));
+                invocation.completion_retention_duration = Some(Duration::from_secs(60));
                 let (ingress_req, _, res) = IngressDispatcherRequest::invocation(invocation);
                 dispatcher.dispatch_ingress_request(ingress_req).await?;
 
@@ -343,7 +343,7 @@ mod tests {
                         invocation_target: eq(invocation_target.clone()),
                         argument: eq(argument.clone()),
                         idempotency_key: some(eq(idempotency_key.clone())),
-                        completion_retention_time: some(eq(Duration::from_secs(60)))
+                        completion_retention_duration: some(eq(Duration::from_secs(60)))
                     })
                 );
                 let_assert!(

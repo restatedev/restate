@@ -59,7 +59,7 @@ async fn start_and_complete_idempotent_invocation() {
                 request_id,
             }),
             idempotency_key: Some(idempotency_key),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -178,7 +178,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
                 request_id,
             }),
             idempotency_key: Some(idempotency_key),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -191,9 +191,10 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     );
 
     // Assert idempotency key mapping exists
-    let mut txn = state_machine.storage().transaction();
     assert_that!(
-        txn.get_idempotency_metadata(&idempotency_id)
+        state_machine
+            .storage()
+            .get_idempotency_metadata(&idempotency_id)
             .await
             .unwrap()
             .unwrap(),
@@ -201,7 +202,6 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
             invocation_id: eq(invocation_id),
         })
     );
-    txn.commit().await.unwrap();
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -249,7 +249,6 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     // InvocationStatus contains completed
     let invocation_status = state_machine
         .storage()
-        .transaction()
         .get_invocation_status(&invocation_id)
         .await
         .unwrap();
@@ -259,7 +258,10 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         ResponseResult::Success(response_bytes)
     );
     assert!(unsafe { completed_invocation.timestamps.completed_transition_time() }.is_some());
-    assert_eq!(completed_invocation.completion_retention, retention);
+    assert_eq!(
+        completed_invocation.completion_retention_duration,
+        retention
+    );
 }
 
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
@@ -294,9 +296,9 @@ async fn complete_already_completed_invocation() {
             invocation_target: invocation_target.clone(),
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
+            timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(response_bytes.clone()),
-            completion_retention: Default::default(),
+            completion_retention_duration: Default::default(),
             source_table: SourceTable::New,
         }),
     )
@@ -391,7 +393,7 @@ async fn known_invocation_id_but_missing_completion() {
                 request_id,
             }),
             idempotency_key: Some(idempotency_key),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -451,7 +453,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -568,7 +570,7 @@ async fn attach_with_send_service_invocation() {
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -591,7 +593,7 @@ async fn attach_with_send_service_invocation() {
             invocation_target: invocation_target.clone(),
             response_sink: None,
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(retention),
+            completion_retention_duration: Some(retention),
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 node_id,
                 request_id: request_id_2,
@@ -701,7 +703,7 @@ async fn attach_inboxed_with_send_service_invocation() {
             invocation_id: attached_invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
+            completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 node_id,
                 request_id: request_id_1,
@@ -754,7 +756,7 @@ async fn attach_inboxed_with_send_service_invocation() {
             invocation_id: original_invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(Duration::from_secs(60) * 60 * 24),
+            completion_retention_duration: Some(Duration::from_secs(60) * 60 * 24),
             submit_notification_sink: Some(SubmitNotificationSink::Ingress {
                 node_id,
                 request_id: request_id_2,
@@ -815,7 +817,7 @@ async fn attach_command() {
                 request_id: request_id_1,
             }),
             idempotency_key: Some(idempotency_key.clone()),
-            completion_retention_time: Some(completion_retention),
+            completion_retention_duration: Some(completion_retention),
             ..ServiceInvocation::mock()
         }))
         .await;
@@ -925,9 +927,9 @@ async fn timer_cleanup() {
             invocation_target,
             source: Source::Ingress,
             idempotency_key: Some(idempotency_key.clone()),
-            timestamps: StatusTimestamps::init(MillisSinceEpoch::now()),
+            timestamps: StatusTimestamps::now(),
             response_result: ResponseResult::Success(Bytes::from_static(b"123")),
-            completion_retention: Duration::MAX,
+            completion_retention_duration: Duration::MAX,
             source_table: SourceTable::Old,
         }),
     )

@@ -24,7 +24,8 @@ use restate_wal_protocol::{
 };
 use std::ops::RangeInclusive;
 use std::time::{Duration, SystemTime};
-use tracing::debug;
+use tokio::time::MissedTickBehavior;
+use tracing::{debug, instrument, warn};
 
 pub(super) struct Cleaner<Storage> {
     partition_id: PartitionId,
@@ -60,6 +61,7 @@ where
         }
     }
 
+    #[instrument(skip_all, fields(restate.node = %self.node_id, restate.partition.id = %self.partition_id))]
     pub(super) async fn run(self) -> anyhow::Result<()> {
         let Self {
             partition_id,
@@ -70,7 +72,7 @@ where
             bifrost,
             cleanup_interval,
         } = self;
-        debug!(restate.node = %node_id, restate.partition.id = %partition_id, "Running cleaner");
+        debug!("Running cleaner");
 
         let bifrost_envelope_source = Source::Processor {
             partition_id,
@@ -80,10 +82,14 @@ where
         };
 
         let mut interval = tokio::time::interval(cleanup_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    Self::do_cleanup(&storage, &bifrost, partition_key_range.clone(), &bifrost_envelope_source).await?
+                    if let Err(e) = Self::do_cleanup(&storage, &bifrost, partition_key_range.clone(), &bifrost_envelope_source).await {
+                        warn!("Error when trying to cleanup completed invocations: {e:?}");
+                    }
                 },
                 _ = cancellation_watcher() => {
                     break;
@@ -91,7 +97,7 @@ where
             }
         }
 
-        debug!(restate.node = %node_id, restate.partition.id = %partition_id, "Stopping cleaner");
+        debug!("Stopping cleaner");
 
         Ok(())
     }
@@ -102,6 +108,8 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         bifrost_envelope_source: &Source,
     ) -> anyhow::Result<()> {
+        debug!("Executing completed invocations cleanup");
+
         let invocations_stream = storage.all_invocation_statuses(partition_key_range);
         tokio::pin!(invocations_stream);
 
@@ -114,14 +122,20 @@ where
             let InvocationStatus::Completed(completed_invocation) = invocation_status else {
                 continue;
             };
+
+            // SAFETY: it's ok to use the completed_transition_time here,
+            //  because only the leader runs this cleaner code, so there's no need to use an agreed time.
             let Some(completed_time) =
                 (unsafe { completed_invocation.timestamps.completed_transition_time() })
             else {
+                // If completed time is unavailable, the invocation is on the old invocation table,
+                //  thus it will be cleaned up with the old timer.
                 continue;
             };
             let Some(expiration_time) = SystemTime::from(completed_time)
-                .checked_add(completed_invocation.completion_retention)
+                .checked_add(completed_invocation.completion_retention_duration)
             else {
+                // If sum overflow, then the duration is too large and the invocation won't be cleaned up
                 continue;
             };
 
