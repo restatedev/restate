@@ -28,17 +28,18 @@ pub struct Arguments {
         short,
         long = "config-file",
         env = "RESTATE_CONFIG",
-        value_name = "FILE"
+        value_name = "FILE",
+        global = true
     )]
     pub config_file: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_prometheus_stats: bool,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub no_rocksdb_stats: bool,
 
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub retain_test_dir: bool,
 
     #[clap(flatten)]
