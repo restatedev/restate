@@ -274,6 +274,21 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_clean_neo_invoke() {
+        let key = TimerKey {
+            kind: TimerKeyKind::NeoInvoke {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+            timestamp: 87654321,
+        };
+
+        let key_bytes = write_timer_key(PartitionId::from(1337), &key).serialize();
+        let got = timer_key_from_key_slice(&key_bytes).expect("should not fail");
+
+        assert_eq!(got, key);
+    }
+
+    #[test]
     fn test_lexicographical_sorting_by_timestamp() {
         let kinds = [
             TimerKeyKind::CompleteJournalEntry {
@@ -284,6 +299,9 @@ mod tests {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
             TimerKeyKind::CleanInvocationStatus {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+            TimerKeyKind::NeoInvoke {
                 invocation_uuid: FIXTURE_INVOCATION,
             },
         ];
@@ -361,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographical_sorting_by_invocation_uuid_clean_invoation_status_kind() {
+    fn test_lexicographical_sorting_by_invocation_uuid_clean_invocation_status_kind() {
         // Higher random part should be sorted correctly in bytes
         let a = TimerKey {
             kind: TimerKeyKind::CleanInvocationStatus {
@@ -380,6 +398,33 @@ mod tests {
         // Also ensure that higher timestamp is sorted correctly
         let b = TimerKey {
             kind: TimerKeyKind::CleanInvocationStatus {
+                invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
+            },
+            timestamp: 300,
+        };
+        assert_in_range(&a, &b);
+    }
+
+    #[test]
+    fn test_lexicographical_sorting_by_invocation_uuid_neo_invoke_kind() {
+        // Higher random part should be sorted correctly in bytes
+        let a = TimerKey {
+            kind: TimerKeyKind::NeoInvoke {
+                invocation_uuid: FIXTURE_INVOCATION,
+            },
+            timestamp: 300,
+        };
+        let b = TimerKey {
+            kind: TimerKeyKind::NeoInvoke {
+                invocation_uuid: FIXTURE_INVOCATION.increment_random(),
+            },
+            timestamp: 300,
+        };
+        assert_in_range(&a, &b);
+
+        // Also ensure that higher timestamp is sorted correctly
+        let b = TimerKey {
+            kind: TimerKeyKind::NeoInvoke {
                 invocation_uuid: FIXTURE_INVOCATION.increment_timestamp(),
             },
             timestamp: 300,
