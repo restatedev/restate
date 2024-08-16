@@ -127,7 +127,7 @@ impl MetadataStore for EtcdMetadataStore {
         let mut client = self.client.kv_client();
         let mut response = client.get(key.into_bytes(), None).await?;
 
-        // return first value because this suppose to be an exact match
+        // return first value because this is supposed to be an exact match
         // not a scan
         let kv = match response.take_kvs().into_iter().next() {
             None => return Ok(None),
