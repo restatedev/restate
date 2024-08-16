@@ -553,6 +553,10 @@ impl KeyCodec for TimerKeyKind {
                 let invocation_uuid = InvocationUuid::decode(source)?;
                 TimerKeyKind::CleanInvocationStatus { invocation_uuid }
             }
+            3 => {
+                let invocation_uuid = InvocationUuid::decode(source)?;
+                TimerKeyKind::NeoInvoke { invocation_uuid }
+            }
             i => {
                 return Err(StorageError::Generic(anyhow!(
                     "Unknown discriminator for TimerKind: '{}'",
