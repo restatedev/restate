@@ -27,7 +27,9 @@ use restate_metadata_store::{MetadataStoreClient, Precondition};
 use restate_rocksdb::RocksDbManager;
 use restate_server::config_loader::ConfigLoaderBuilder;
 use restate_tracing_instrumentation::init_tracing_and_logging;
-use restate_types::config::{reset_base_temp_dir, reset_base_temp_dir_and_retain, Configuration};
+use restate_types::config::{
+    reset_base_temp_dir, reset_base_temp_dir_and_retain, set_base_temp_dir, Configuration,
+};
 use restate_types::live::Live;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 
@@ -41,11 +43,19 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() -> anyhow::Result<()> {
     let cli_args = Arguments::parse();
-    let tmp_base = if cli_args.retain_test_dir {
+    // base-dir is set by CLI overrides, let's make sure we use it.
+    let base_dir = if let Some(base_dir) = &cli_args.opts_overrides.base_dir {
+        set_base_temp_dir(base_dir.clone());
+        base_dir.clone()
+    } else if cli_args.retain_test_dir {
         reset_base_temp_dir_and_retain()
     } else {
         reset_base_temp_dir()
     };
+
+    if rlimit::increase_nofile_limit(u64::MAX).is_err() {
+        eprintln!("WARN: Failed to increase the number of open file descriptors limit.");
+    }
 
     // We capture the absolute path of the config file on startup before we change the current
     // working directory (base-dir arg)
@@ -74,7 +84,7 @@ fn main() -> anyhow::Result<()> {
 
     // just in case anything reads directly the base dir and it's not set correctly for any random
     // reason.
-    config.common.set_base_dir(tmp_base.clone());
+    config.common.set_base_dir(base_dir.clone());
 
     restate_types::config::set_current_config(config.clone());
 
@@ -94,9 +104,14 @@ fn main() -> anyhow::Result<()> {
                 append_latency::run(&args, opts, task_center.clone(), bifrost).await?;
             }
         }
+        // record tokio's runtime metrics
+        task_center.submit_metrics();
+
         task_center.shutdown_node("completed", 0).await;
         // print prometheus if asked.
         if !args.no_prometheus_stats {
+            // submit tokio metris
+
             print_prometheus_stats(&recorder);
         }
 
@@ -119,10 +134,10 @@ fn main() -> anyhow::Result<()> {
         anyhow::Ok(())
     })?;
 
-    if cli_args.retain_test_dir {
-        println!("Keeping the base_dir in {}", tmp_base.display());
+    if cli_args.opts_overrides.base_dir.is_some() || cli_args.retain_test_dir {
+        println!("Keeping the base_dir in {}", base_dir.display());
     } else {
-        println!("Removing test dir at {}", tmp_base.display());
+        println!("Removing test dir at {}", base_dir.display());
     }
 
     Ok(())
