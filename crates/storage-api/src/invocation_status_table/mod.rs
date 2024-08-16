@@ -627,5 +627,22 @@ mod test_util {
                 source_table: SourceTable::New,
             }
         }
+
+        pub fn mock_old() -> Self {
+            CompletedInvocation {
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyService",
+                    "MyKey",
+                    "mock",
+                    VirtualObjectHandlerType::Exclusive,
+                ),
+                source: Source::Ingress,
+                idempotency_key: None,
+                timestamps: StatusTimestamps::now(),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                completion_retention_duration: Duration::from_secs(60 * 60),
+                source_table: SourceTable::Old,
+            }
+        }
     }
 }

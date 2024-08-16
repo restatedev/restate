@@ -170,7 +170,7 @@ mod tests {
     use googletest::prelude::*;
     use restate_core::{TaskKind, TestCoreEnvBuilder};
     use restate_storage_api::invocation_status_table::{
-        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, StatusTimestamps,
+        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
     };
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::invocation::InvocationTarget;
@@ -255,12 +255,8 @@ mod tests {
             ),
             (
                 not_expired_invocation_2,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::ZERO,
-                    // StatusTimestamps::now() don't set the completed_transition_time()
-                    timestamps: StatusTimestamps::now(),
-                    ..CompletedInvocation::mock_neo()
-                }),
+                // Old status invocations are still processed with the cleanup timer in the PP
+                InvocationStatus::Completed(CompletedInvocation::mock_old()),
             ),
             (
                 not_completed_invocation,
