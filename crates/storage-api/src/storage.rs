@@ -81,17 +81,6 @@ pub mod v1 {
         use prost::Message;
         use restate_types::deployment::PinnedDeployment;
 
-        use restate_types::errors::{IdDecodeError, InvocationError};
-        use restate_types::identifiers::{DeploymentId, WithInvocationId, WithPartitionKey};
-        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
-        use restate_types::journal::enriched::AwakeableEnrichmentResult;
-        use restate_types::service_protocol::ServiceProtocolVersion;
-        use restate_types::storage::{
-            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
-        };
-        use restate_types::time::MillisSinceEpoch;
-        use restate_types::GenerationalNodeId;
-
         use crate::storage::v1::dedup_sequence_number::Variant;
         use crate::storage::v1::enriched_entry_header::{
             Awakeable, BackgroundCall, ClearAllState, ClearState, CompleteAwakeable,
@@ -109,17 +98,27 @@ pub mod v1 {
         };
         use crate::storage::v1::{
             enriched_entry_header, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_target, outbox_message, promise, response_result, source,
-            span_relation, submit_notification_sink, timer, virtual_object_status,
-            BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
-            EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata, InboxEntry,
-            InvocationId, InvocationResolutionResult, InvocationStatus, InvocationTarget,
-            JournalEntry, JournalEntryId, JournalMeta, KvPair, OutboxMessage, Promise,
-            ResponseResult, SequenceNumber, ServiceId, ServiceInvocation,
-            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
-            SubmitNotificationSink, Timer, VirtualObjectStatus,
+            invocation_status, invocation_target, neo_invocation_status, outbox_message, promise,
+            response_result, source, span_relation, submit_notification_sink, timer,
+            virtual_object_status, BackgroundCallResolutionResult, DedupSequenceNumber, Duration,
+            EnrichedEntryHeader, EntryResult, EpochSequenceNumber, Header, IdempotencyMetadata,
+            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
+            InvocationTarget, JournalEntry, JournalEntryId, JournalMeta, KvPair,
+            NeoInvocationStatus, OutboxMessage, Promise, ResponseResult, SequenceNumber, ServiceId,
+            ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext, SpanRelation,
+            StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
         };
         use crate::StorageError;
+        use restate_types::errors::{IdDecodeError, InvocationError};
+        use restate_types::identifiers::{DeploymentId, WithInvocationId, WithPartitionKey};
+        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
+        use restate_types::journal::enriched::AwakeableEnrichmentResult;
+        use restate_types::service_protocol::ServiceProtocolVersion;
+        use restate_types::storage::{
+            StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+        };
+        use restate_types::time::MillisSinceEpoch;
+        use restate_types::GenerationalNodeId;
 
         /// Error type for conversion related problems (e.g. Rust <-> Protobuf)
         #[derive(Debug, thiserror::Error)]
@@ -292,6 +291,393 @@ pub mod v1 {
             }
         }
 
+        // Little macro to try conversion or fail
+        macro_rules! expect_or_fail {
+            ($field:ident) => {
+                $field.ok_or(ConversionError::missing_field(stringify!($field)))
+            };
+        }
+
+        impl TryFrom<NeoInvocationStatus> for crate::invocation_status_table::NeoInvocationStatus {
+            type Error = ConversionError;
+
+            fn try_from(value: NeoInvocationStatus) -> Result<Self, Self::Error> {
+                let NeoInvocationStatus {
+                    status,
+                    invocation_target,
+                    source,
+                    span_context,
+                    creation_time,
+                    modification_time,
+                    response_sinks,
+                    argument,
+                    headers,
+                    execution_time,
+                    completion_retention_time,
+                    idempotency_key,
+                    inbox_sequence_number,
+                    journal_length,
+                    deployment_id,
+                    service_protocol_version,
+                    waiting_for_completed_entries,
+                    result,
+                } = value;
+
+                let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
+                let timestamps = crate::invocation_status_table::StatusTimestamps::new(
+                    MillisSinceEpoch::new(creation_time),
+                    MillisSinceEpoch::new(modification_time),
+                );
+                let source = expect_or_fail!(source)?.try_into()?;
+                let response_sinks = response_sinks
+                    .into_iter()
+                    .map(|s| {
+                        Ok::<_, ConversionError>(Option::<
+                            restate_types::invocation::ServiceInvocationResponseSink,
+                        >::try_from(s)
+                            .transpose()
+                            .ok_or(ConversionError::missing_field("response_sink"))??)
+                    })
+                    .collect::<Result<HashSet<_>, _>>()?;
+                let headers = headers
+                    .into_iter()
+                    .map(|h| restate_types::invocation::Header::try_from(h))
+                    .collect::<Result<Vec<_>, ConversionError>>()?;
+
+                match status.try_into().unwrap_or_default() {
+                    neo_invocation_status::Status::Scheduled => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
+                            crate::invocation_status_table::ScheduledInvocation {
+                                metadata:
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        response_sinks,
+                                        timestamps,
+                                        invocation_target,
+                                        argument: expect_or_fail!(argument)?,
+                                        source,
+                                        span_context: expect_or_fail!(span_context)?.try_into()?,
+                                        headers,
+                                        execution_time: execution_time.map(MillisSinceEpoch::new),
+                                        completion_retention_time: completion_retention_time
+                                            .unwrap_or_default()
+                                            .try_into()?,
+                                        idempotency_key: idempotency_key.map(ByteString::from),
+                                        source_table:
+                                            crate::invocation_status_table::SourceTable::New,
+                                    },
+                            },
+                        ))
+                    }
+                    neo_invocation_status::Status::Inboxed => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
+                            crate::invocation_status_table::InboxedInvocation {
+                                inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
+                                metadata:
+                                    crate::invocation_status_table::PreFlightInvocationMetadata {
+                                        response_sinks,
+                                        timestamps,
+                                        invocation_target,
+                                        argument: expect_or_fail!(argument)?,
+                                        source,
+                                        span_context: expect_or_fail!(span_context)?.try_into()?,
+                                        headers,
+                                        execution_time: execution_time.map(MillisSinceEpoch::new),
+                                        completion_retention_time: completion_retention_time
+                                            .unwrap_or_default()
+                                            .try_into()?,
+                                        idempotency_key: idempotency_key.map(ByteString::from),
+                                        source_table:
+                                            crate::invocation_status_table::SourceTable::New,
+                                    },
+                            },
+                        ))
+                    }
+                    neo_invocation_status::Status::Invoked => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Invoked(
+                            crate::invocation_status_table::InFlightInvocationMetadata {
+                                response_sinks,
+                                timestamps,
+                                invocation_target,
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                                source,
+                                completion_retention_time: completion_retention_time
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                idempotency_key: idempotency_key.map(ByteString::from),
+                                source_table: crate::invocation_status_table::SourceTable::New,
+                            },
+                        ))
+                    }
+                    neo_invocation_status::Status::Suspended => Ok(
+                        crate::invocation_status_table::InvocationStatus::Suspended {
+                            metadata: crate::invocation_status_table::InFlightInvocationMetadata {
+                                response_sinks,
+                                timestamps,
+                                invocation_target,
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                                source,
+                                completion_retention_time: completion_retention_time
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                idempotency_key: idempotency_key.map(ByteString::from),
+                                source_table: crate::invocation_status_table::SourceTable::New,
+                            },
+                            waiting_for_completed_entries: waiting_for_completed_entries
+                                .into_iter()
+                                .collect(),
+                        },
+                    ),
+                    neo_invocation_status::Status::Completed => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Completed(
+                            crate::invocation_status_table::CompletedInvocation {
+                                timestamps,
+                                invocation_target,
+                                source,
+                                idempotency_key: idempotency_key.map(ByteString::from),
+                                source_table: crate::invocation_status_table::SourceTable::New,
+                                response_result: expect_or_fail!(result)?.try_into()?,
+                            },
+                        ))
+                    }
+                    _ => Err(ConversionError::unexpected_enum_variant(
+                        "status",
+                        value.status,
+                    )),
+                }
+                .map(crate::invocation_status_table::NeoInvocationStatus)
+            }
+        }
+
+        impl From<crate::invocation_status_table::NeoInvocationStatus> for NeoInvocationStatus {
+            fn from(
+                crate::invocation_status_table::NeoInvocationStatus(value): crate::invocation_status_table::NeoInvocationStatus,
+            ) -> Self {
+                match value {
+                    crate::invocation_status_table::InvocationStatus::Scheduled(
+                        crate::invocation_status_table::ScheduledInvocation {
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    argument,
+                                    source,
+                                    span_context,
+                                    headers,
+                                    execution_time,
+                                    completion_retention_time,
+                                    idempotency_key,
+                                    source_table: _,
+                                },
+                        },
+                    ) => NeoInvocationStatus {
+                        status: neo_invocation_status::Status::Scheduled.into(),
+                        invocation_target: Some(invocation_target.into()),
+                        source: Some(source.into()),
+                        span_context: Some(span_context.into()),
+                        creation_time: timestamps.creation_time().as_u64(),
+                        modification_time: timestamps.modification_time().as_u64(),
+                        response_sinks: response_sinks
+                            .into_iter()
+                            .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                            .collect(),
+                        argument: Some(argument),
+                        headers: headers.into_iter().map(Into::into).collect(),
+                        execution_time: execution_time.map(|t| t.as_u64()),
+                        completion_retention_time: Some(completion_retention_time.into()),
+                        idempotency_key: idempotency_key.map(|key| key.to_string()),
+                        inbox_sequence_number: None,
+                        journal_length: 0,
+                        deployment_id: None,
+                        service_protocol_version: None,
+                        waiting_for_completed_entries: vec![],
+                        result: None,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Inboxed(
+                        crate::invocation_status_table::InboxedInvocation {
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    argument,
+                                    source,
+                                    span_context,
+                                    headers,
+                                    execution_time,
+                                    completion_retention_time,
+                                    idempotency_key,
+                                    source_table: _,
+                                },
+                            inbox_sequence_number,
+                        },
+                    ) => NeoInvocationStatus {
+                        status: neo_invocation_status::Status::Inboxed.into(),
+                        invocation_target: Some(invocation_target.into()),
+                        source: Some(source.into()),
+                        span_context: Some(span_context.into()),
+                        creation_time: timestamps.creation_time().as_u64(),
+                        modification_time: timestamps.modification_time().as_u64(),
+                        response_sinks: response_sinks
+                            .into_iter()
+                            .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                            .collect(),
+                        argument: Some(argument),
+                        headers: headers.into_iter().map(Into::into).collect(),
+                        execution_time: execution_time.map(|t| t.as_u64()),
+                        completion_retention_time: Some(completion_retention_time.into()),
+                        idempotency_key: idempotency_key.map(|key| key.to_string()),
+                        inbox_sequence_number: Some(inbox_sequence_number),
+                        journal_length: 0,
+                        deployment_id: None,
+                        service_protocol_version: None,
+                        waiting_for_completed_entries: vec![],
+                        result: None,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Invoked(
+                        crate::invocation_status_table::InFlightInvocationMetadata {
+                            invocation_target,
+                            journal_metadata,
+                            pinned_deployment,
+                            response_sinks,
+                            timestamps,
+                            source,
+                            completion_retention_time,
+                            idempotency_key,
+                            source_table: _,
+                        },
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        NeoInvocationStatus {
+                            status: neo_invocation_status::Status::Invoked.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            creation_time: timestamps.creation_time().as_u64(),
+                            modification_time: timestamps.modification_time().as_u64(),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: vec![],
+                            execution_time: None,
+                            completion_retention_time: Some(completion_retention_time.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            deployment_id,
+                            service_protocol_version,
+                            waiting_for_completed_entries: vec![],
+                            result: None,
+                        }
+                    }
+                    crate::invocation_status_table::InvocationStatus::Suspended {
+                        metadata:
+                            crate::invocation_status_table::InFlightInvocationMetadata {
+                                invocation_target,
+                                journal_metadata,
+                                pinned_deployment,
+                                response_sinks,
+                                timestamps,
+                                source,
+                                completion_retention_time,
+                                idempotency_key,
+                                source_table: _,
+                            },
+                        waiting_for_completed_entries,
+                    } => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        NeoInvocationStatus {
+                            status: neo_invocation_status::Status::Suspended.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            creation_time: timestamps.creation_time().as_u64(),
+                            modification_time: timestamps.modification_time().as_u64(),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: vec![],
+                            execution_time: None,
+                            completion_retention_time: Some(completion_retention_time.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            deployment_id,
+                            service_protocol_version,
+                            waiting_for_completed_entries: waiting_for_completed_entries
+                                .into_iter()
+                                .collect(),
+                            result: None,
+                        }
+                    }
+                    crate::invocation_status_table::InvocationStatus::Completed(
+                        crate::invocation_status_table::CompletedInvocation {
+                            invocation_target,
+                            source,
+                            idempotency_key,
+                            timestamps,
+                            response_result,
+                            source_table: _,
+                        },
+                    ) => NeoInvocationStatus {
+                        status: neo_invocation_status::Status::Completed.into(),
+                        invocation_target: Some(invocation_target.into()),
+                        source: Some(source.into()),
+                        span_context: None,
+                        creation_time: timestamps.creation_time().as_u64(),
+                        modification_time: timestamps.modification_time().as_u64(),
+                        response_sinks: vec![],
+                        argument: None,
+                        headers: vec![],
+                        execution_time: None,
+                        completion_retention_time: None,
+                        idempotency_key: idempotency_key.map(|key| key.to_string()),
+                        inbox_sequence_number: None,
+                        journal_length: 0,
+                        deployment_id: None,
+                        service_protocol_version: None,
+                        waiting_for_completed_entries: vec![],
+                        result: Some(response_result.into()),
+                    },
+                    crate::invocation_status_table::InvocationStatus::Free => {
+                        panic!("Unexpected serialization of Free status. This is a bug of the invocation status table")
+                    }
+                }
+            }
+        }
+
         impl TryFrom<InvocationStatus> for crate::invocation_status_table::InvocationStatus {
             type Error = ConversionError;
 
@@ -358,6 +744,9 @@ pub mod v1 {
                     }
                     crate::invocation_status_table::InvocationStatus::Free => {
                         invocation_status::Status::Free(Free {})
+                    }
+                    crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
+                        panic!("Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation.")
                     }
                 };
 
@@ -449,6 +838,7 @@ pub mod v1 {
                     source,
                     completion_retention_time,
                     idempotency_key,
+                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -464,6 +854,7 @@ pub mod v1 {
                     source,
                     completion_retention_time,
                     idempotency_key,
+                    source_table: _,
                 } = value;
 
                 let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -555,6 +946,7 @@ pub mod v1 {
                         source: caller,
                         completion_retention_time,
                         idempotency_key,
+                        source_table: crate::invocation_status_table::SourceTable::Old,
                     },
                     waiting_for_completed_entries,
                 ))
@@ -661,19 +1053,22 @@ pub mod v1 {
 
                 Ok(crate::invocation_status_table::InboxedInvocation {
                     inbox_sequence_number: value.inbox_sequence_number,
-                    response_sinks,
-                    timestamps: crate::invocation_status_table::StatusTimestamps::new(
-                        MillisSinceEpoch::new(value.creation_time),
-                        MillisSinceEpoch::new(value.modification_time),
-                    ),
-                    source,
-                    span_context,
-                    headers,
-                    argument: value.argument,
-                    execution_time,
-                    idempotency_key,
-                    completion_retention_time,
-                    invocation_target,
+                    metadata: crate::invocation_status_table::PreFlightInvocationMetadata {
+                        response_sinks,
+                        timestamps: crate::invocation_status_table::StatusTimestamps::new(
+                            MillisSinceEpoch::new(value.creation_time),
+                            MillisSinceEpoch::new(value.modification_time),
+                        ),
+                        source,
+                        span_context,
+                        headers,
+                        argument: value.argument,
+                        execution_time,
+                        idempotency_key,
+                        completion_retention_time,
+                        invocation_target,
+                        source_table: crate::invocation_status_table::SourceTable::Old,
+                    },
                 })
             }
         }
@@ -681,17 +1076,21 @@ pub mod v1 {
         impl From<crate::invocation_status_table::InboxedInvocation> for Inboxed {
             fn from(value: crate::invocation_status_table::InboxedInvocation) -> Self {
                 let crate::invocation_status_table::InboxedInvocation {
-                    invocation_target,
+                    metadata:
+                        crate::invocation_status_table::PreFlightInvocationMetadata {
+                            response_sinks,
+                            timestamps,
+                            invocation_target,
+                            argument,
+                            source,
+                            span_context,
+                            headers,
+                            execution_time,
+                            completion_retention_time,
+                            idempotency_key,
+                            source_table: _,
+                        },
                     inbox_sequence_number,
-                    response_sinks,
-                    timestamps,
-                    argument,
-                    source,
-                    span_context,
-                    headers,
-                    execution_time,
-                    completion_retention_time,
-                    idempotency_key,
                 } = value;
 
                 let headers = headers.into_iter().map(Into::into).collect();
@@ -746,6 +1145,7 @@ pub mod v1 {
                         .ok_or(ConversionError::missing_field("result"))?
                         .try_into()?,
                     idempotency_key,
+                    source_table: crate::invocation_status_table::SourceTable::Old,
                 })
             }
         }
@@ -758,6 +1158,7 @@ pub mod v1 {
                     idempotency_key,
                     timestamps,
                     response_result,
+                    source_table: _,
                 } = value;
 
                 Completed {
@@ -2106,6 +2507,9 @@ pub mod v1 {
                         timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(
                             restate_types::invocation::ServiceInvocation::try_from(si)?,
                         ),
+                        timer::Value::NeoInvoke(id) => crate::timer_table::Timer::NeoInvoke(
+                            restate_types::identifiers::InvocationId::try_from(id)?,
+                        ),
                         timer::Value::CleanInvocationStatus(clean_invocation_status) => {
                             crate::timer_table::Timer::CleanInvocationStatus(
                                 restate_types::identifiers::InvocationId::try_from(
@@ -2131,7 +2535,9 @@ pub mod v1 {
                             invocation_id: Some(InvocationId::from(invocation_id)),
                             entry_index,
                         }),
-
+                        crate::timer_table::Timer::NeoInvoke(invocation_id) => {
+                            timer::Value::NeoInvoke(InvocationId::from(invocation_id))
+                        }
                         crate::timer_table::Timer::Invoke(si) => {
                             timer::Value::Invoke(ServiceInvocation::from(si))
                         }

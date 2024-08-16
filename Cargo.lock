@@ -4474,18 +4474,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opentelemetry-http"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad31e9de44ee3538fb9d64fe3376c1362f406162434609e79aea2a41a0af78ab"
-dependencies = [
- "async-trait",
- "bytes",
- "http 1.1.0",
- "opentelemetry",
-]
-
-[[package]]
 name = "opentelemetry-otlp"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5428,6 +5416,7 @@ dependencies = [
  "http 1.1.0",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper-util",
  "okapi-operation",
  "prost 0.13.1",
  "prost-dto",
@@ -5659,6 +5648,7 @@ dependencies = [
  "hyper-util",
  "metrics",
  "once_cell",
+ "parking_lot",
  "pin-project",
  "prost 0.13.1",
  "prost-types 0.13.1",
@@ -5846,8 +5836,6 @@ dependencies = [
  "itertools 0.13.0",
  "metrics",
  "opentelemetry",
- "opentelemetry-http",
- "opentelemetry_sdk",
  "prost 0.13.1",
  "restate-core",
  "restate-errors",
@@ -5870,7 +5858,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 

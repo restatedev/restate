@@ -19,10 +19,9 @@ use bytes::Bytes;
 use futures::future::FusedFuture;
 use futures::{FutureExt, Stream, StreamExt};
 use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Frame;
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::trace::TraceFlags;
 use restate_errors::warn_it;
 use restate_invoker_api::{EagerState, EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
@@ -43,7 +42,6 @@ use std::future::poll_fn;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, trace, warn, Span};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -150,6 +148,7 @@ where
             deployment.metadata,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
+            &service_invocation_span_context,
         );
 
         crate::shortcircuit!(
@@ -208,6 +207,7 @@ where
         deployment_metadata: DeploymentMetadata,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
+        parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
         // Just an arbitrary buffering size
         let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
@@ -227,11 +227,30 @@ where
             (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
 
-        // Inject OpenTelemetry context
-        TraceContextPropagator::new().inject_context(
-            &Span::current().context(),
-            &mut opentelemetry_http::HeaderInjector(&mut headers),
-        );
+        // Inject OpenTelemetry context into the headers
+        // The parent span as seen by the SDK will be the service invocation span context
+        // which is emitted at INFO level representing the invocation, *not* the DEBUG level
+        // `invoker_invocation_task` which wraps this code. This is so that headers will be sent
+        // when in INFO level, not just in DEBUG level.
+        {
+            let span_context = parent_span_context.span_context();
+            if span_context.is_valid() {
+                const SUPPORTED_VERSION: u8 = 0;
+                let header_value = format!(
+                    "{:02x}-{}-{}-{:02x}",
+                    SUPPORTED_VERSION,
+                    span_context.trace_id(),
+                    span_context.span_id(),
+                    span_context.trace_flags() & TraceFlags::SAMPLED
+                );
+                if let Ok(header_value) = HeaderValue::try_from(header_value) {
+                    headers.insert("traceparent", header_value);
+                }
+                if let Ok(tracestate) = HeaderValue::try_from(span_context.trace_state().header()) {
+                    headers.insert("tracestate", tracestate);
+                }
+            }
+        }
 
         let address = match deployment_metadata.ty {
             DeploymentType::Lambda {

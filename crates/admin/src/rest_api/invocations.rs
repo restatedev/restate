@@ -93,17 +93,11 @@ pub async fn delete_invocation<V>(
 
     let partition_key = invocation_id.partition_key();
 
-    let result = state
-        .task_center
-        .run_in_scope(
-            "delete_invocation",
-            None,
-            append_envelope_to_bifrost(
-                &state.bifrost,
-                Envelope::new(create_envelope_header(partition_key), cmd),
-            ),
-        )
-        .await;
+    let result = append_envelope_to_bifrost(
+        &state.bifrost,
+        Envelope::new(create_envelope_header(partition_key), cmd),
+    )
+    .await;
 
     if let Err(err) = result {
         warn!("Could not append invocation termination command to Bifrost: {err}");

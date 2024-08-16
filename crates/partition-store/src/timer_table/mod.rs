@@ -70,6 +70,15 @@ fn exclusive_start_key_range(
 ) -> TableScan<TimersKey> {
     if let Some(timer_key) = timer_key {
         let next_timer_key = match timer_key.kind {
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
+                let incremented_invocation_uuid = increment_invocation_uuid(invocation_uuid);
+                TimerKey {
+                    timestamp: timer_key.timestamp,
+                    kind: TimerKeyKind::NeoInvoke {
+                        invocation_uuid: incremented_invocation_uuid,
+                    },
+                }
+            }
             TimerKeyKind::Invoke { invocation_uuid } => {
                 let incremented_invocation_uuid = increment_invocation_uuid(invocation_uuid);
                 TimerKey {
@@ -481,6 +490,9 @@ mod tests {
                 [rand::thread_rng().gen_range(0..TimerKeyKindDiscriminants::VARIANTS.len())]
             {
                 TimerKeyKindDiscriminants::Invoke => TimerKeyKind::Invoke {
+                    invocation_uuid: InvocationUuid::new(),
+                },
+                TimerKeyKindDiscriminants::NeoInvoke => TimerKeyKind::NeoInvoke {
                     invocation_uuid: InvocationUuid::new(),
                 },
                 TimerKeyKindDiscriminants::CompleteJournalEntry => {

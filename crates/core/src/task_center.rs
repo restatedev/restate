@@ -9,47 +9,44 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::{Future, FutureExt};
 use metrics::counter;
-use restate_types::config::CommonOptions;
-use restate_types::GenerationalNodeId;
+use parking_lot::Mutex;
 use tokio::runtime::RuntimeMetrics;
-use tokio::task::JoinHandle;
 use tokio::task_local;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 use tracing::{debug, error, info, instrument, trace, warn};
 
+use restate_types::config::CommonOptions;
 use restate_types::identifiers::PartitionId;
+use restate_types::GenerationalNodeId;
 
 use crate::metric_definitions::{TC_FINISHED, TC_SPAWN, TC_STATUS_COMPLETED, TC_STATUS_FAILED};
-use crate::{metric_definitions, Metadata, TaskId, TaskKind};
+use crate::{
+    metric_definitions, Metadata, ShutdownError, ShutdownSourceErr, TaskHandle, TaskId, TaskKind,
+};
 
-static WORKER_ID: AtomicUsize = AtomicUsize::new(0);
-static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(0);
+static WORKER_ID: AtomicUsize = const { AtomicUsize::new(0) };
+static NEXT_TASK_ID: AtomicU64 = const { AtomicU64::new(0) };
 const EXIT_CODE_FAILURE: i32 = 1;
 
-#[derive(Debug, thiserror::Error)]
-#[error("system is shutting down")]
-struct ShutdownSourceErr;
-
-#[derive(Debug, Clone, Copy)]
-pub struct ShutdownError;
-impl Display for ShutdownError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("system is shutting down")
-    }
-}
-
-impl std::error::Error for ShutdownError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&ShutdownSourceErr)
-    }
+#[derive(Clone)]
+pub struct TaskContext {
+    /// It's nice to have a unique ID for each task.
+    id: TaskId,
+    name: &'static str,
+    kind: TaskKind,
+    /// cancel this token to request cancelling this task.
+    cancellation_token: CancellationToken,
+    /// Tasks associated with a specific partition ID will have this set. This allows
+    /// for cancellation of tasks associated with that partition.
+    partition_id: Option<PartitionId>,
+    metadata: Option<Metadata>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,7 +141,7 @@ impl TaskCenterBuilder {
                 global_cancel_token: CancellationToken::new(),
                 shutdown_requested: AtomicBool::new(false),
                 current_exit_code: AtomicI32::new(0),
-                tasks: Mutex::new(HashMap::new()),
+                managed_tasks: Mutex::new(HashMap::new()),
                 global_metadata: OnceLock::new(),
                 pp_runtimes: Mutex::new(HashMap::with_capacity(64)),
             }),
@@ -198,7 +195,7 @@ impl TaskCenter {
     }
 
     pub fn partition_processors_runtime_metrics(&self) -> Vec<(&'static str, RuntimeMetrics)> {
-        let guard = self.inner.pp_runtimes.lock().unwrap();
+        let guard = self.inner.pp_runtimes.lock();
         guard.iter().map(|(k, v)| (*k, v.metrics())).collect()
     }
 
@@ -225,6 +222,15 @@ impl TaskCenter {
         }
     }
 
+    /// Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
+    #[track_caller]
+    fn clone_metadata(&self) -> Option<Metadata> {
+        CONTEXT
+            .try_with(|m| m.metadata.clone())
+            .ok()
+            .flatten()
+            .or_else(|| self.inner.global_metadata.get().cloned())
+    }
     /// Triggers a shutdown of the system. All running tasks will be asked gracefully
     /// to cancel but we will only wait for tasks with a TaskKind that has the property
     /// "OnCancel" set to "wait".
@@ -273,63 +279,69 @@ impl TaskCenter {
     {
         let inner = self.inner.clone();
         let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
-        let task = Arc::new(Task {
+        let metadata = self.clone_metadata();
+        let context = TaskContext {
             id,
             name,
             kind,
             partition_id,
-            cancel: cancel.clone(),
-            join_handle: Mutex::new(None),
+            cancellation_token: cancel.clone(),
+            metadata,
+        };
+        let task = Arc::new(Task {
+            context: context.clone(),
+            handle: Mutex::new(None),
         });
 
-        inner.tasks.lock().unwrap().insert(id, Arc::clone(&task));
-        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
-        let metadata = METADATA
-            .try_with(|m| m.clone())
-            .ok()
-            .flatten()
-            .or_else(|| inner.global_metadata.get().cloned());
+        inner.managed_tasks.lock().insert(id, Arc::clone(&task));
 
-        let mut handle_mut = task.join_handle.lock().unwrap();
+        let mut handle_mut = task.handle.lock();
 
-        let task_cloned = Arc::clone(&task);
-        let tokio_task = tokio::task::Builder::new().name(name);
-        let fut = wrapper(
-            self.clone(),
-            id,
-            kind,
-            task_cloned,
-            cancel,
-            metadata,
-            future,
-        );
-
-        let kind_str: &'static str = kind.into();
-        let join_handle = {
-            if matches!(kind, TaskKind::PartitionProcessor) {
-                let mut guard = self.inner.pp_runtimes.lock().unwrap();
-                // special case.
-                let runtime = guard
-                    .entry(name)
-                    .or_insert_with(|| tokio_pp_builder(name).build().unwrap())
-                    .handle();
-
-                counter!(TC_SPAWN, "kind" => kind_str, "runtime" => name).increment(1);
-                tokio_task
-                    .spawn_on(fut, runtime)
-                    .expect("pp dedicated runtime can be spawned")
-            } else {
-                let runtime_name: &'static str = kind.runtime().into();
-                counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
-                tokio_task
-                    .spawn_on(fut, self.runtime_for_kind(kind))
-                    .expect("runtime can spawn tasks")
-            }
-        };
-        *handle_mut = Some(join_handle);
+        let fut = wrapper(self.clone(), context, future);
+        *handle_mut = Some(self.spawn_on_runtime(kind, name, cancel, fut));
+        // drop the lock
         drop(handle_mut);
         // Task is ready
         id
+    }
+
+    fn spawn_on_runtime<F, T>(
+        &self,
+        kind: TaskKind,
+        name: &'static str,
+        cancellation_token: CancellationToken,
+        fut: F,
+    ) -> TaskHandle<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let kind_str: &'static str = kind.into();
+        let tokio_task = tokio::task::Builder::new().name(name);
+        let inner_handle = if matches!(kind, TaskKind::PartitionProcessor) {
+            let mut guard = self.inner.pp_runtimes.lock();
+            // special case.
+            let runtime = guard
+                .entry(name)
+                .or_insert_with(|| tokio_pp_builder(name).build().unwrap())
+                .handle();
+
+            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => name).increment(1);
+            tokio_task
+                .spawn_on(fut, runtime)
+                .expect("pp dedicated runtime can be spawned")
+        } else {
+            let runtime_name: &'static str = kind.runtime().into();
+            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+            tokio_task
+                .spawn_on(fut, self.runtime_for_kind(kind))
+                .expect("runtime can spawn tasks")
+        };
+
+        TaskHandle {
+            cancellation_token,
+            inner_handle,
+        }
     }
 
     /// Launch a new task
@@ -344,11 +356,43 @@ impl TaskCenter {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        let inner = self.inner.clone();
-        if inner.shutdown_requested.load(Ordering::Relaxed) {
+        if self.inner.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
         Ok(self.spawn_unchecked(kind, name, partition_id, future))
+    }
+
+    #[track_caller]
+    pub fn spawn_unmanaged<F, T>(
+        &self,
+        kind: TaskKind,
+        name: &'static str,
+        partition_id: Option<PartitionId>,
+        future: F,
+    ) -> Result<TaskHandle<T>, ShutdownError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        if self.inner.shutdown_requested.load(Ordering::Relaxed) {
+            return Err(ShutdownError);
+        }
+
+        let cancel = CancellationToken::new();
+        let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
+        let metadata = self.clone_metadata();
+        let context = TaskContext {
+            id,
+            name,
+            kind,
+            partition_id,
+            cancellation_token: cancel.clone(),
+            metadata,
+        };
+
+        let fut = unmanaged_wrapper(self.clone(), context, future);
+
+        Ok(self.spawn_on_runtime(kind, name, cancel, fut))
     }
 
     // Allows for spawning a new task without checking if the system is shutting down. This means
@@ -382,20 +426,21 @@ impl TaskCenter {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        let inner = self.inner.clone();
-        if inner.shutdown_requested.load(Ordering::Relaxed) {
+        if self.inner.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
 
         let parent_id =
             current_task_id().expect("spawn_child called outside of a task-center task");
-        let parent_kind =
-            current_task_kind().expect("spawn_child called outside of a task-center task");
-        let parent_name = CURRENT_TASK
-            .try_with(|ct| ct.name)
-            .expect("spawn_child called outside of a task-center task");
+        // From this point onwards, we unwrap() directly with the assumption that we are in task-center
+        // context and that the previous (expect) guards against reaching this point if we are
+        // outside task-center.
+        let parent_kind = current_task_kind().unwrap();
+        let parent_name = CONTEXT.try_with(|ctx| ctx.name).unwrap();
 
-        let cancel = cancellation_token().child_token();
+        let cancel = CONTEXT
+            .try_with(|ctx| ctx.cancellation_token.child_token())
+            .unwrap();
         let result = self.spawn_inner(kind, name, partition_id, cancel, future);
 
         trace!(
@@ -421,7 +466,9 @@ impl TaskCenter {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        let cancel = cancellation_token().child_token();
+        let cancel = CONTEXT
+            .try_with(|ctx| ctx.cancellation_token.child_token())
+            .expect("spawning inside task-center context");
         self.spawn_inner(kind, name, partition_id, cancel, future)
     }
 
@@ -442,38 +489,38 @@ impl TaskCenter {
         let mut victims = Vec::new();
 
         {
-            let tasks = inner.tasks.lock().unwrap();
+            let tasks = inner.managed_tasks.lock();
             for task in tasks.values() {
-                if (kind.is_none() || Some(task.kind) == kind)
-                    && (partition_id.is_none() || task.partition_id == partition_id)
+                if (kind.is_none() || Some(task.context.kind) == kind)
+                    && (partition_id.is_none() || task.context.partition_id == partition_id)
                 {
-                    task.cancel.cancel();
-                    victims.push((Arc::clone(task), task.kind, task.partition_id));
+                    task.context.cancellation_token.cancel();
+                    victims.push((Arc::clone(task), task.kind(), task.partition_id()));
                 }
             }
         }
 
         for (task, task_kind, partition_id) in victims {
-            let join_handle = {
-                let mut task_mut = task.join_handle.lock().unwrap();
+            let handle = {
+                let mut task_mut = task.handle.lock();
                 // Task is not running anymore or another cancel is waiting for it.
                 task_mut.take()
             };
-            if let Some(mut join_handle) = join_handle {
+            if let Some(mut handle) = handle {
                 if task_kind.should_abort_on_cancel() {
                     // We should not wait, instead, just abort the tokio task.
-                    debug!(kind = ?task_kind, name = ?task.name, partition_id = ?partition_id, "task {} aborted!", task.id);
-                    join_handle.abort();
+                    debug!(kind = ?task_kind, name = ?task.name(), partition_id = ?partition_id, "task {} aborted!", task.id());
+                    handle.abort();
                 } else if task_kind.should_wait_on_cancel() {
                     // Give the task a chance to finish before logging.
-                    if tokio::time::timeout(Duration::from_secs(2), &mut join_handle)
+                    if tokio::time::timeout(Duration::from_secs(2), &mut handle)
                         .await
                         .is_err()
                     {
-                        info!(kind = ?task_kind, name = ?task.name, partition_id = ?partition_id, "waiting for task {} to shutdown", task.id);
+                        info!(kind = ?task_kind, name = ?task.name(), partition_id = ?partition_id, "waiting for task {} to shutdown", task.id());
                         // Ignore join errors on cancel. on_finish already takes care
-                        let _ = join_handle.await;
-                        info!(kind = ?task_kind, name = ?task.name, partition_id = ?partition_id, "task {} completed", task.id);
+                        let _ = handle.await;
+                        info!(kind = ?task_kind, name = ?task.name(), partition_id = ?partition_id, "task {} completed", task.id());
                     }
                 } else {
                     // Ignore the task. the task will be dropped on tokio runtime drop.
@@ -513,30 +560,20 @@ impl TaskCenter {
     where
         F: Future<Output = O>,
     {
-        let cancel_token = CancellationToken::new();
+        let cancel = CancellationToken::new();
         let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
-        let task = Arc::new(Task {
+        let metadata = self.clone_metadata();
+        let context = TaskContext {
             id,
             name,
             kind: TaskKind::InPlace,
+            cancellation_token: cancel.clone(),
             partition_id,
-            cancel: cancel_token.clone(),
-            join_handle: Mutex::new(None),
-        });
-        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
-        let metadata = METADATA
-            .try_with(|m| m.clone())
-            .ok()
-            .flatten()
-            .or_else(|| self.inner.global_metadata.get().cloned());
-        METADATA
-            .scope(
-                metadata,
-                CURRENT_TASK_CENTER.scope(
-                    self.clone(),
-                    CANCEL_TOKEN.scope(cancel_token, CURRENT_TASK.scope(task, future)),
-                ),
-            )
+            metadata,
+        };
+
+        CURRENT_TASK_CENTER
+            .scope(self.clone(), CONTEXT.scope(context, future))
             .await
     }
 
@@ -551,40 +588,31 @@ impl TaskCenter {
     where
         F: FnOnce() -> O,
     {
-        let cancel_token = CancellationToken::new();
+        let cancel = CancellationToken::new();
         let id = TaskId::from(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed));
-        let task = Arc::new(Task {
+        let metadata = self.clone_metadata();
+        let context = TaskContext {
             id,
             name,
             kind: TaskKind::InPlace,
             partition_id,
-            cancel: cancel_token.clone(),
-            join_handle: Mutex::new(None),
-        });
-        // Clone the currently set METADATA (and is Some()), otherwise fallback to global metadata.
-        let metadata = METADATA
-            .try_with(|m| m.clone())
-            .ok()
-            .flatten()
-            .or_else(|| self.inner.global_metadata.get().cloned());
-        METADATA.sync_scope(metadata, || {
-            CURRENT_TASK_CENTER.sync_scope(self.clone(), || {
-                CANCEL_TOKEN.sync_scope(cancel_token, || CURRENT_TASK.sync_scope(task, f))
-            })
-        })
+            cancellation_token: cancel.clone(),
+            metadata,
+        };
+        CURRENT_TASK_CENTER.sync_scope(self.clone(), || CONTEXT.sync_scope(context, f))
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not
     /// found, completed, or has been cancelled.
-    pub fn take_task(&self, task_id: TaskId) -> Option<JoinHandle<()>> {
+    pub fn take_task(&self, task_id: TaskId) -> Option<TaskHandle<()>> {
         let inner = self.inner.clone();
         let task = {
             // find the task
-            let mut tasks = inner.tasks.lock().unwrap();
+            let mut tasks = inner.managed_tasks.lock();
             tasks.remove(&task_id)?
         };
 
-        let mut task_mut = task.join_handle.lock().unwrap();
+        let mut task_mut = task.handle.lock();
         // Task is not running anymore or a cancellation is already in progress.
         task_mut.take()
     }
@@ -592,45 +620,44 @@ impl TaskCenter {
     /// Request cancellation of a task. This returns the join handle if the task was found and was
     /// not already cancelled or completed. The returned task will not be awaited by task-center on
     /// shutdown, and it's the responsibility of the caller to join or abort.
-    pub fn cancel_task(&self, task_id: TaskId) -> Option<JoinHandle<()>> {
+    pub fn cancel_task(&self, task_id: TaskId) -> Option<TaskHandle<()>> {
         let inner = self.inner.clone();
         let task = {
             // find the task
-            let tasks = inner.tasks.lock().unwrap();
+            let tasks = inner.managed_tasks.lock();
             let task = tasks.get(&task_id)?;
             // request cancellation
-            task.cancel.cancel();
+            task.cancel();
             Arc::clone(task)
         };
 
-        let mut task_mut = task.join_handle.lock().unwrap();
+        let mut task_mut = task.handle.lock();
         // Task is not running anymore or a cancellation is already in progress.
         task_mut.take()
     }
 
     async fn on_finish(
         &self,
+        task_id: TaskId,
         result: std::result::Result<
             anyhow::Result<()>,
             std::boxed::Box<dyn std::any::Any + std::marker::Send>,
         >,
-        kind: TaskKind,
-        task_id: TaskId,
     ) {
-        let kind_str: &'static str = kind.into();
         let inner = self.inner.clone();
         // Remove our entry from the tasks map.
-        let Some(task) = inner.tasks.lock().unwrap().remove(&task_id) else {
+        let Some(task) = inner.managed_tasks.lock().remove(&task_id) else {
             // This can happen if the task ownership was taken by calling take_task(id);
             return;
         };
+        let kind_str: &'static str = task.kind().into();
 
-        let should_shutdown_on_error = kind.should_shutdown_on_error();
+        let should_shutdown_on_error = task.kind().should_shutdown_on_error();
         let mut request_node_shutdown = false;
         {
             match result {
                 Ok(Ok(())) => {
-                    trace!(kind = ?kind, name = ?task.name, "Task {} exited normally", task_id);
+                    trace!(kind = ?task.kind(), name = ?task.name(), "Task {} exited normally", task_id);
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_COMPLETED)
                         .increment(1);
                 }
@@ -642,17 +669,17 @@ impl TaskCenter {
                     {
                         // The task failed to spawn other tasks because the system
                         // is already shutting down, we ignore those errors.
-                        tracing::debug!(kind = ?kind, name = ?task.name, "[Shutdown] Task {} stopped due to shutdown", task_id);
+                        tracing::debug!(kind = ?task.kind(), name = ?task.name(), "[Shutdown] Task {} stopped due to shutdown", task_id);
                         return;
                     }
                     if should_shutdown_on_error {
-                        error!(kind = ?kind, name = ?task.name,
+                        error!(kind = ?task.kind(), name = ?task.name(),
                             "Shutting down: task {} failed with: {:?}",
                             task_id, err
                         );
                         request_node_shutdown = true;
                     } else {
-                        error!(kind = ?kind, name = ?task.name, "Task {} failed with: {:?}", task_id, err);
+                        error!(kind = ?task.kind(), name = ?task.name(), "Task {} failed with: {:?}", task_id, err);
                     }
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
                         .increment(1);
@@ -661,10 +688,10 @@ impl TaskCenter {
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => TC_STATUS_FAILED)
                         .increment(1);
                     if should_shutdown_on_error {
-                        error!(kind = ?kind, name = ?task.name, "Shutting down: task {} panicked: {:?}", task_id, err);
+                        error!(kind = ?task.kind(), name = ?task.name(), "Shutting down: task {} panicked: {:?}", task_id, err);
                         request_node_shutdown = true;
                     } else {
-                        error!(kind = ?kind, name = ?task.name, "Task {} panicked: {:?}", task_id, err);
+                        error!(kind = ?task.kind(), name = ?task.name(), "Task {} panicked: {:?}", task_id, err);
                     }
                 }
             }
@@ -674,7 +701,7 @@ impl TaskCenter {
             // Note that the task itself has been already removed from the task map, so shutdown
             // will not wait for its completion.
             self.shutdown_node(
-                &format!("task {} failed and requested a shutdown", task.name),
+                &format!("task {} failed and requested a shutdown", task.name()),
                 EXIT_CODE_FAILURE,
             )
             .await;
@@ -696,90 +723,97 @@ struct TaskCenterInner {
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
-    tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
+    managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
 }
 
-pub struct Task {
-    /// It's nice to have a unique ID for each task.
-    id: TaskId,
-    name: &'static str,
-    kind: TaskKind,
-    /// cancel this token to request cancelling this task.
-    cancel: CancellationToken,
+pub struct Task<R = ()> {
+    context: TaskContext,
+    handle: Mutex<Option<TaskHandle<R>>>,
+}
 
-    /// Tasks associated with a specific partition ID will have this set. This allows
-    /// for cancellation of tasks associated with that partition.
-    partition_id: Option<PartitionId>,
-    join_handle: Mutex<Option<JoinHandle<()>>>,
+impl<R> Task<R> {
+    fn id(&self) -> TaskId {
+        self.context.id
+    }
+
+    fn name(&self) -> &'static str {
+        self.context.name
+    }
+
+    fn kind(&self) -> TaskKind {
+        self.context.kind
+    }
+
+    fn partition_id(&self) -> Option<PartitionId> {
+        self.context.partition_id
+    }
+
+    fn cancel(&self) {
+        self.context.cancellation_token.cancel()
+    }
 }
 
 task_local! {
-    // This is a cancellation token which will be cancelled when a task needs to shut down.
-    static CANCEL_TOKEN: CancellationToken;
-
-    // Tasks have self-reference.
-    static CURRENT_TASK: Arc<Task>;
+    // Tasks provide access to their context
+    static CONTEXT: TaskContext;
 
     // Current task center
     static CURRENT_TASK_CENTER: TaskCenter;
-
-    // Metadata handle
-    static METADATA: Option<Metadata>;
 }
 
 /// This wrapper function runs in a newly-spawned task. It initializes the
 /// task-local variables and calls the payload function.
-async fn wrapper<F>(
-    task_center: TaskCenter,
-    task_id: TaskId,
-    kind: TaskKind,
-    task: Arc<Task>,
-    cancel_token: CancellationToken,
-    metadata: Option<Metadata>,
-    future: F,
-) where
+async fn wrapper<F>(task_center: TaskCenter, context: TaskContext, future: F)
+where
     F: Future<Output = anyhow::Result<()>> + Send + 'static,
 {
-    trace!(kind = ?kind, name = ?task.name, "Starting task {}", task_id);
+    let id = context.id;
+    trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
 
     let result = CURRENT_TASK_CENTER
         .scope(
             task_center.clone(),
-            CANCEL_TOKEN.scope(
-                cancel_token,
-                CURRENT_TASK.scope(
-                    task,
-                    METADATA.scope(metadata, {
-                        // We use AssertUnwindSafe here so that the wrapped function
-                        // doesn't need to be UnwindSafe. We should not do anything after
-                        // unwinding that'd risk us being in unwind-unsafe behavior.
-                        AssertUnwindSafe(future).catch_unwind()
-                    }),
-                ),
-            ),
+            CONTEXT.scope(context, {
+                // We use AssertUnwindSafe here so that the wrapped function
+                // doesn't need to be UnwindSafe. We should not do anything after
+                // unwinding that'd risk us being in unwind-unsafe behavior.
+                AssertUnwindSafe(future).catch_unwind()
+            }),
         )
         .await;
-    task_center.on_finish(result, kind, task_id).await;
+    task_center.on_finish(id, result).await;
+}
+
+/// Like wrapper but doesn't call on_finish nor it catches panics
+async fn unmanaged_wrapper<F, T>(task_center: TaskCenter, context: TaskContext, future: F) -> T
+where
+    F: Future<Output = T> + Send + 'static,
+{
+    trace!(kind = ?context.kind, name = ?context.name, "Starting task {}", context.id);
+
+    CURRENT_TASK_CENTER
+        .scope(task_center.clone(), CONTEXT.scope(context, future))
+        .await
 }
 
 /// The current task-center task kind. This returns None if we are not in the scope
 /// of a task-center task.
 pub fn current_task_kind() -> Option<TaskKind> {
-    CURRENT_TASK.try_with(|ct| ct.kind).ok()
+    CONTEXT.try_with(|ctx| ctx.kind).ok()
 }
 
 /// The current task-center task Id. This returns None if we are not in the scope
 /// of a task-center task.
 pub fn current_task_id() -> Option<TaskId> {
-    CURRENT_TASK.try_with(|ct| ct.id).ok()
+    CONTEXT.try_with(|ctx| ctx.id).ok()
 }
 
 /// Access to global metadata handle. This is available in task-center tasks only!
 #[track_caller]
 pub fn metadata() -> Metadata {
-    METADATA
-        .try_with(|m| m.clone())
+    CONTEXT
+        .try_with(|ctx| ctx.metadata.clone())
         .expect("metadata() called outside task-center scope")
         .expect("metadata() called before global metadata was set")
 }
@@ -787,15 +821,15 @@ pub fn metadata() -> Metadata {
 /// Access to this node id. This is available in task-center tasks only!
 #[track_caller]
 pub fn my_node_id() -> GenerationalNodeId {
-    METADATA
-        .try_with(|m| m.as_ref().map(|m| m.my_node_id()))
+    CONTEXT
+        .try_with(|ctx| ctx.metadata.as_ref().map(|m| m.my_node_id()))
         .expect("my_node_id() called outside task-center scope")
         .expect("my_node_id() called before global metadata was set")
 }
 
 /// The current partition Id associated to the running task-center task.
 pub fn current_task_partition_id() -> Option<PartitionId> {
-    CURRENT_TASK.try_with(|ct| ct.partition_id).ok().flatten()
+    CONTEXT.try_with(|ctx| ctx.partition_id).ok().flatten()
 }
 
 /// Get the current task center. Use this to spawn tasks on the current task center.
@@ -819,7 +853,7 @@ pub async fn cancellation_watcher() {
 /// cancel_task() call, or if it's a child and the parent is being cancelled by a
 /// cancel_task() call, this cancellation token will be set to cancelled.
 pub fn cancellation_token() -> CancellationToken {
-    let res = CANCEL_TOKEN.try_with(|t| t.clone());
+    let res = CONTEXT.try_with(|ctx| ctx.cancellation_token.clone());
 
     if cfg!(any(test, feature = "test-util")) {
         // allow in tests to call from non-task-center tasks.
@@ -831,14 +865,14 @@ pub fn cancellation_token() -> CancellationToken {
 
 /// Has the current task been requested to cancel?
 pub fn is_cancellation_requested() -> bool {
-    if let Ok(cancel) = CANCEL_TOKEN.try_with(|t| t.clone()) {
-        cancel.is_cancelled()
-    } else {
-        if cfg!(any(test, feature = "test-util")) {
-            warn!("is_cancellation_requested() called in task-center task");
-        }
-        false
-    }
+    CONTEXT
+        .try_with(|ctx| ctx.cancellation_token.is_cancelled())
+        .unwrap_or_else(|_| {
+            if cfg!(any(test, feature = "test-util")) {
+                warn!("is_cancellation_requested() called outside task-center context");
+            }
+            false
+        })
 }
 
 #[cfg(test)]

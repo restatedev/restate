@@ -45,6 +45,12 @@ impl TimerKeyValue {
         Self { timer_key, value }
     }
 
+    pub fn neo_invoke(wake_up_time: MillisSinceEpoch, invocation_id: InvocationId) -> Self {
+        let (timer_key, value) = Timer::neo_invoke(wake_up_time.as_u64(), invocation_id);
+
+        Self { timer_key, value }
+    }
+
     pub fn clean_invocation_status(
         wake_up_time: MillisSinceEpoch,
         invocation_id: InvocationId,
@@ -111,6 +117,9 @@ pub struct TimerKeyDisplay<'a>(pub &'a TimerKey);
 impl<'a> fmt::Display for TimerKeyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.kind {
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
+                write!(f, "Delayed invocation '{}'", invocation_uuid)
+            }
             TimerKeyKind::Invoke { invocation_uuid } => {
                 write!(f, "Delayed invocation '{}'", invocation_uuid)
             }

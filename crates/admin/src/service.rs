@@ -17,16 +17,16 @@ use restate_types::config::AdminOptions;
 use restate_types::live::LiveLoad;
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
-use tracing::info;
 
 use restate_core::metadata_store::MetadataStoreClient;
+use restate_core::network::net_util;
 use restate_core::network::protobuf::node_svc::node_svc_client::NodeSvcClient;
-use restate_core::{cancellation_token, task_center, MetadataWriter};
+use restate_core::MetadataWriter;
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_types::net::BindAddress;
 use restate_types::schema::subscriptions::SubscriptionValidator;
 
 use crate::schema_registry::SchemaRegistry;
-use crate::Error;
 use crate::{rest_api, state, storage_query};
 
 #[derive(Debug, thiserror::Error)]
@@ -65,8 +65,7 @@ where
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state =
-            state::AdminServiceState::new(self.schema_registry, bifrost, task_center());
+        let rest_state = state::AdminServiceState::new(self.schema_registry, bifrost);
 
         let query_state = Arc::new(state::QueryServiceState { node_svc_client });
         let router = axum::Router::new().merge(storage_query::create_router(query_state));
@@ -85,28 +84,14 @@ where
                     )),
             );
 
-        // run our app with hyper
-        let listener = tokio::net::TcpListener::bind(&opts.bind_address)
-            .await
-            .map_err(|err| Error::Binding {
-                address: opts.bind_address,
-                source: Box::new(err),
-            })?;
+        let service = hyper_util::service::TowerToHyperService::new(router.into_service());
 
-        let local_addr = listener.local_addr().map_err(|err| Error::Binding {
-            address: opts.bind_address,
-            source: Box::new(err),
-        })?;
-        info!(
-            net.host.addr = %local_addr.ip(),
-            net.host.port = %local_addr.port(),
-            "Admin API listening"
-        );
-
-        let cancellation_token = cancellation_token();
-        Ok(axum::serve(listener, router)
-            .with_graceful_shutdown(async move { cancellation_token.cancelled().await })
-            .await
-            .map_err(|e| Error::Running(Box::new(e)))?)
+        net_util::run_hyper_server(
+            &BindAddress::Socket(opts.bind_address),
+            service,
+            "admin-api-server",
+        )
+        .await
+        .map_err(Into::into)
     }
 }

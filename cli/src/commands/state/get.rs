@@ -45,7 +45,7 @@ pub async fn run_get(State(env): State<CliEnv>, opts: &Get) -> Result<()> {
 }
 
 async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
-    let current_state = get_current_state(env, &opts.service, &opts.key).await?;
+    let current_state = get_current_state(env, &opts.service, &opts.key, true).await?;
     let current_state_json = as_json(current_state, opts.binary)?;
 
     if opts.plain {

@@ -20,6 +20,7 @@ use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
+use restate_cli_util::c_warn;
 use serde_json::Value;
 
 use restate_admin_rest_model::services::ModifyServiceStateRequest;
@@ -28,7 +29,7 @@ use restate_types::invocation::ServiceType;
 use restate_types::state_mut::StateMutationVersion;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
+use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
 
 #[derive(Debug, Clone, PartialEq, ArrowField, ArrowDeserialize)]
 pub struct StateEntriesQueryResult {
@@ -40,16 +41,24 @@ pub(crate) async fn get_current_state(
     env: &CliEnv,
     service: &str,
     key: &str,
+    allow_missing_service: bool,
 ) -> anyhow::Result<HashMap<String, Bytes>> {
     //
     // 0. require that this is a keyed service
     //
     let client = AdminClient::new(env).await?;
-    let service_meta = client.get_service(service).await?.into_body().await?;
-    match service_meta.ty {
-        ServiceType::VirtualObject | ServiceType::Workflow => {}
-        ServiceType::Service => bail!("Only virtual objects and workflows support state"),
+    match client.get_service(service).await?.into_body().await {
+        Ok(service_meta) => match service_meta.ty {
+            ServiceType::VirtualObject | ServiceType::Workflow => {}
+            ServiceType::Service => bail!("Only virtual objects and workflows support state"),
+        },
+        Err(MetasClientError::Api(err)) if allow_missing_service && err.http_status_code == 404 => {
+            // continue as it is reasonable to get state for a deleted service
+            c_warn!("This service does not exist in the registry; it may have been deleted, or never existed")
+        }
+        Err(err) => return Err(err.into()),
     }
+
     //
     // 1. get the key-value pairs
     //

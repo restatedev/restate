@@ -33,11 +33,7 @@ pub async fn list_service_handlers<V>(
     State(state): State<AdminServiceState<V>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceHandlersResponse>, MetaApiError> {
-    match state
-        .task_center
-        .run_in_scope_sync("list-service-handlers", None, || {
-            state.schema_registry.list_service_handlers(&service_name)
-        }) {
+    match state.schema_registry.list_service_handlers(&service_name) {
         Some(handlers) => Ok(ListServiceHandlersResponse { handlers }.into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
     }
@@ -67,12 +63,9 @@ pub async fn get_service_handler<V>(
     Path((service_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError> {
     match state
-        .task_center
-        .run_in_scope_sync("get-service-handler", None, || {
-            state
-                .schema_registry
-                .get_service_handler(&service_name, &handler_name)
-        }) {
+        .schema_registry
+        .get_service_handler(&service_name, &handler_name)
+    {
         Some(metadata) => Ok(metadata.into()),
         _ => Err(MetaApiError::HandlerNotFound {
             service_name,

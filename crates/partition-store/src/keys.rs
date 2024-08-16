@@ -31,6 +31,7 @@ pub enum KeyKind {
     Idempotency,
     Inbox,
     InvocationStatus,
+    NeoInvocationStatus,
     Journal,
     Outbox,
     ServiceStatus,
@@ -70,6 +71,7 @@ impl KeyKind {
             KeyKind::Idempotency => b"ip",
             KeyKind::Inbox => b"ib",
             KeyKind::InvocationStatus => b"is",
+            KeyKind::NeoInvocationStatus => b"ni",
             KeyKind::Journal => b"jo",
             KeyKind::Outbox => b"ob",
             KeyKind::ServiceStatus => b"ss",
@@ -94,6 +96,7 @@ impl KeyKind {
             b"ip" => Some(KeyKind::Idempotency),
             b"ib" => Some(KeyKind::Inbox),
             b"is" => Some(KeyKind::InvocationStatus),
+            b"ni" => Some(KeyKind::NeoInvocationStatus),
             b"jo" => Some(KeyKind::Journal),
             b"ob" => Some(KeyKind::Outbox),
             b"ss" => Some(KeyKind::ServiceStatus),
@@ -519,6 +522,10 @@ impl KeyCodec for TimerKeyKind {
                 target.put_u8(2);
                 invocation_uuid.encode(target);
             }
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
+                target.put_u8(3);
+                invocation_uuid.encode(target);
+            }
         }
     }
 
@@ -558,6 +565,9 @@ impl KeyCodec for TimerKeyKind {
     fn serialized_length(&self) -> usize {
         1 + match self {
             TimerKeyKind::Invoke { invocation_uuid } => {
+                KeyCodec::serialized_length(invocation_uuid)
+            }
+            TimerKeyKind::NeoInvoke { invocation_uuid } => {
                 KeyCodec::serialized_length(invocation_uuid)
             }
             TimerKeyKind::CompleteJournalEntry {

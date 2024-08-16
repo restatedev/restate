@@ -14,7 +14,6 @@ use std::sync::Arc;
 use restate_types::cluster::cluster_state::{AliveNode, ClusterState, DeadNode, NodeState};
 use std::time::Instant;
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 use restate_core::network::rpc_router::RpcRouter;
 use restate_core::network::{MessageRouterBuilder, NetworkSender};
@@ -22,14 +21,14 @@ use restate_types::net::partition_processor_manager::GetProcessorsState;
 use restate_types::nodes_config::Role;
 use restate_types::time::MillisSinceEpoch;
 
-use restate_core::{Metadata, ShutdownError, TaskCenter};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle};
 use restate_types::Version;
 
 pub struct ClusterStateRefresher<N> {
     task_center: TaskCenter,
     metadata: Metadata,
     get_state_router: RpcRouter<GetProcessorsState, N>,
-    in_flight_refresh: Option<JoinHandle<()>>,
+    in_flight_refresh: Option<TaskHandle<()>>,
     cluster_state_update_rx: watch::Receiver<Arc<ClusterState>>,
     cluster_state_update_tx: Arc<watch::Sender<Arc<ClusterState>>>,
 }
@@ -110,7 +109,7 @@ where
         get_state_router: RpcRouter<GetProcessorsState, N>,
         cluster_state_tx: Arc<watch::Sender<Arc<ClusterState>>>,
         metadata: Metadata,
-    ) -> Result<Option<JoinHandle<()>>, ShutdownError> {
+    ) -> Result<Option<TaskHandle<()>>, ShutdownError> {
         let task_center = tc.clone();
         let refresh = async move {
             let last_state = Arc::clone(&cluster_state_tx.borrow());

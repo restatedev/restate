@@ -26,7 +26,7 @@ use restate_core::metadata;
 use restate_core::network::Networking;
 use restate_partition_store::{PartitionStore, RocksDBTransaction};
 use restate_storage_api::deduplication_table::{DedupInformation, DedupSequenceNumber, ProducerId};
-use restate_storage_api::StorageError;
+use restate_storage_api::{invocation_status_table, StorageError};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::journal::raw::RawEntryCodec;
@@ -43,7 +43,7 @@ use crate::metric_definitions::{
     PP_APPLY_RECORD_DURATION,
 };
 use crate::partition::leadership::{LeadershipState, PartitionProcessorMetadata};
-use crate::partition::state_machine::{ActionCollector, Effects, StateMachine};
+use crate::partition::state_machine::{ActionCollector, StateMachine};
 use crate::partition::storage::{DedupSequenceNumberResolver, PartitionStorage, Transaction};
 
 mod action_effect_handler;
@@ -67,6 +67,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     pub partition_key_range: RangeInclusive<PartitionKey>,
 
     num_timers_in_memory_limit: Option<usize>,
+    enable_new_invocation_status_table: bool,
     channel_size: usize,
 
     status: PartitionProcessorStatus,
@@ -87,6 +88,7 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         status: PartitionProcessorStatus,
         num_timers_in_memory_limit: Option<usize>,
+        enable_new_invocation_status_table: bool,
         channel_size: usize,
         control_rx: mpsc::Receiver<PartitionProcessorControlCommand>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
@@ -98,6 +100,7 @@ where
             partition_key_range,
             status,
             num_timers_in_memory_limit,
+            enable_new_invocation_status_table,
             channel_size,
             invoker_tx,
             control_rx,
@@ -115,6 +118,7 @@ where
             partition_id,
             partition_key_range,
             num_timers_in_memory_limit,
+            enable_new_invocation_status_table,
             channel_size,
             invoker_tx,
             control_rx,
@@ -129,6 +133,7 @@ where
         let state_machine = Self::create_state_machine::<Codec>(
             &mut partition_storage,
             partition_key_range.clone(),
+            enable_new_invocation_status_table,
         )
         .await?;
 
@@ -173,6 +178,7 @@ where
     async fn create_state_machine<Codec>(
         partition_storage: &mut PartitionStorage<PartitionStore>,
         partition_key_range: RangeInclusive<PartitionKey>,
+        enable_new_invocation_status_table: bool,
     ) -> Result<StateMachine<Codec>, StorageError>
     where
         Codec: RawEntryCodec + Default + Debug,
@@ -186,6 +192,11 @@ where
             outbox_seq_number,
             outbox_head_seq_number,
             partition_key_range,
+            if enable_new_invocation_status_table {
+                invocation_status_table::SourceTable::New
+            } else {
+                invocation_status_table::SourceTable::Old
+            },
         );
 
         Ok(state_machine)
@@ -305,7 +316,6 @@ where
         let actuator_effects_handled = counter!(PARTITION_ACTUATOR_HANDLED);
 
         let mut action_collector = ActionCollector::default();
-        let mut effects = Effects::default();
 
         loop {
             tokio::select! {
@@ -334,12 +344,10 @@ where
 
                     // clear buffers used when applying the next record
                     action_collector.clear();
-                    effects.clear();
 
                     let leadership_change = self.apply_record(
                         record,
                         &mut transaction,
-                        &mut effects,
                         &mut action_collector).await?;
 
                     if let Some((header, announce_leader)) = leadership_change {
@@ -422,7 +430,6 @@ where
         &mut self,
         record: (Lsn, Envelope),
         transaction: &mut Transaction<RocksDBTransaction<'_>>,
-        effects: &mut Effects,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<(Header, AnnounceLeader)>, state_machine::Error> {
         let (lsn, envelope) = record;
@@ -466,7 +473,6 @@ where
                 self.state_machine
                     .apply(
                         envelope.command,
-                        effects,
                         transaction,
                         action_collector,
                         self.leadership_state.is_leader(),
