@@ -14,6 +14,15 @@ use std::time::Duration;
 use hdrhistogram::Histogram;
 use metrics_exporter_prometheus::PrometheusHandle;
 use restate_rocksdb::{DbName, RocksDbManager};
+use restate_types::flexbuffers_storage_encode_decode;
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DummyPayload {
+    pub precise_ts: u64,
+    pub blob: bytes::Bytes,
+}
+
+flexbuffers_storage_encode_decode!(DummyPayload);
 
 pub fn print_latencies(title: &str, histogram: Histogram<u64>) {
     let mut stdout = std::io::stdout().lock();
@@ -37,6 +46,11 @@ pub fn print_latencies(title: &str, histogram: Histogram<u64>) {
         &mut stdout,
         "P999: {:?}",
         Duration::from_nanos(histogram.value_at_percentile(99.9))
+    );
+    let _ = writeln!(
+        &mut stdout,
+        "P9999: {:?}",
+        Duration::from_nanos(histogram.value_at_percentile(99.99))
     );
     let _ = writeln!(
         &mut stdout,

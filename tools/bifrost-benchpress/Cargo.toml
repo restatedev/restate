@@ -7,6 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = []
+console = [
+    "tokio/full",
+    "tokio/tracing",
+    "restate-tracing-instrumentation/console-subscriber",
+]
+io-uring = [
+    "rocksdb/io-uring"
+]
+
 [dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
@@ -15,7 +26,7 @@ restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-server = { workspace = true }
 restate-test-util = { workspace = true }
-restate-tracing-instrumentation = { workspace = true, features = ["console-subscriber"] }
+restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 anyhow = { workspace = true }
@@ -30,6 +41,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 once_cell = { workspace = true }
 quanta = { version = "0.12.3" }
+rlimit = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

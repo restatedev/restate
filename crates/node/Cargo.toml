@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-replicated-loglet = ["restate-bifrost/replicated-loglet", "restate-log-server"]
+replicated-loglet = ["restate-bifrost/replicated-loglet", "dep:restate-log-server"]
 options_schema = [
     "dep:schemars",
     "restate-admin/options_schema",
