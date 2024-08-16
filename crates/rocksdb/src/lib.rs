@@ -500,6 +500,7 @@ where
     R: Send + 'static,
 {
     let mut task = std::pin::pin!(manager.async_spawn(task));
+    let mut timeout = std::pin::pin!(tokio::time::sleep(manager.stall_detection_duration()));
     let mut stalled = false;
     let mut stalled_since = Instant::now();
     loop {
@@ -514,7 +515,7 @@ where
                 }
                 return result;
             }
-            _ = tokio::time::sleep(manager.stall_detection_duration()), if !stalled => {
+            _ = &mut timeout, if !stalled => {
                 stalled = true;
                 stalled_since = Instant::now();
                 gauge!(ROCKSDB_STALL_FLARE).increment(1);
