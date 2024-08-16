@@ -27,33 +27,33 @@ impl From<EtcdError> for WriteError {
 }
 
 trait ToVersion {
-    //todo: version of the kv is reset to 1 if the key was deleted then recrated.
-    // this means that a key can change (by means of deletion and recreation) and will
-    // always have version 1!
-    //
-    // The only way to detect this is to also track the "mod revision" of the store as part
-    // of the VersionValue.
-    //
-    // The problem is that the restate Version is only u32 while both etcd version and mod version
-    // are both i64.
-    //
-    // Changing the Version to have a u64 value also delays the problem for later since it will be a while before
-    // mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
-    //
-    // The correct solution is of course to make Version u128.
-    //
-    // What is implemented instead in current code is to use the lower 32bit of the Etcd version. We return an error
-    // if this value exceeds the u32::MAX.
-    // Objects will be deleted normally (it means version will reset) so it's up to the user of the store to make sure
-    // to use a tombstone instead of relying on actual delete (if needed).
-    //
-    // This is done instead of implementing the tombstone mechanism directly into the the Etcd store implementation because
-    // delete is not used right now, and also because the Etcd implementation is a temporary solution.
     fn to_version(self) -> Result<Version, ReadError>;
 }
 
 impl ToVersion for &KeyValue {
     fn to_version(self) -> Result<Version, ReadError> {
+        //todo: version of the kv is reset to 1 if the key was deleted then recrated.
+        // this means that a key can change (by means of deletion and recreation) and will
+        // always have version 1!
+        //
+        // The only way to detect this is to also track the "mod revision" of the store as part
+        // of the VersionValue.
+        //
+        // The problem is that the restate Version is only u32 while both etcd version and mod version
+        // are both i64.
+        //
+        // Changing the Version to have a u64 value also delays the problem for later since it will be a while before
+        // mod_revision or version hit the u32::MAX but that's totally dependent on how frequent the changes are
+        //
+        // The correct solution is of course to make Version u128.
+        //
+        // What is implemented instead in current code is to use the lower 32bit of the Etcd version. We return an error
+        // if this value exceeds the u32::MAX.
+        // Objects will be deleted normally (it means version will reset) so it's up to the user of the store to make sure
+        // to use a tombstone instead of relying on actual delete (if needed).
+        //
+        // This is done instead of implementing the tombstone mechanism directly into the the Etcd store implementation because
+        // delete is not used right now, and also because the Etcd implementation is a temporary solution.
         let version = Version::from(u32::try_from(self.version()).map_err(|e| {
             ReadError::Internal(format!("[etcd] key version exceeds max u32: {}", e))
         })?);
