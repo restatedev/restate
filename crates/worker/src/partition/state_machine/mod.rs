@@ -480,9 +480,9 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         // Phases of an invocation
         // 1. Try deduplicate it first
         // 1.1. Deduplicate using idempotency id
-        // 1.2. Deduplicate for run once workflow semantics (only for workflow method of workflows)
+        // 1.2. Deduplicate for "run once" workflow semantics (only for workflow handlers of workflows services)
         // 2. Check if we need to schedule it
-        // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
+        // 3. Check if we need to inbox it (only for exclusive handlers of virtual objects services)
         // 4. Execute it
 
         // 1.1. Handle deduplication for idempotency id
@@ -538,7 +538,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
             )
             .await?
         else {
-            // Invocation was scheduled, send back the ingress attach notification and return
+            // Invocation was inboxed, send back the ingress attach notification and return
             Self::send_submit_notification_if_needed(
                 ctx,
                 invocation_id,
@@ -571,7 +571,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         .await
     }
 
-    /// Returns the invocation in case the invocation was not deduplicated
+    /// Returns the invocation in case the invocation is not a duplicate
     async fn handle_service_invocation_idempotency_id<
         State: StateReader + StateStorage + IdempotencyTable,
     >(
@@ -603,7 +603,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
                     debug_if_leader!(
                         ctx.is_leader,
                         restate.idempotency.id = ?idempotency_id,
-                        "Invocation is deduplicated"
+                        "Invocation is a duplicate"
                     );
 
                     // Invocation was either resolved, or the sink was enqueued. Nothing else to do here.
@@ -627,7 +627,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(Some(service_invocation))
     }
 
-    /// Returns the invocation in case the invocation was not deduplicated
+    /// Returns the invocation in case the invocation is not a duplicate
     async fn handle_service_invocation_workflow_run<State: StateReader + StateStorage>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,
@@ -693,7 +693,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
 
                 debug_if_leader!(
                     ctx.is_leader,
-                    "Invocation to workflow method is deduplicated"
+                    "Invocation to workflow method is a duplicate"
                 );
 
                 return Ok(None);
@@ -713,7 +713,7 @@ impl<Codec: RawEntryCodec> StateMachine<Codec> {
         Ok(Some(service_invocation))
     }
 
-    /// Returns the invocation in case the invocation was not scheduled
+    /// Returns the invocation in case the invocation should run immediately
     async fn handle_service_invocation_execution_time<State: StateStorage>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'_, State>,

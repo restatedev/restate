@@ -24,7 +24,7 @@ use std::future::Future;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceTable {
     Old,
     New,

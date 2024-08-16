@@ -19,7 +19,7 @@ use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
     InvocationStatusTable, NeoInvocationStatus, PreFlightInvocationMetadata,
-    ReadOnlyInvocationStatusTable, SourceTable,
+    ReadOnlyInvocationStatusTable, ScheduledInvocation, SourceTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
@@ -117,7 +117,14 @@ fn put_invocation_status<S: StorageAccess>(
                 }
             }
         }
-        InvocationStatus::Scheduled { .. } => {
+        InvocationStatus::Scheduled(ScheduledInvocation {
+            metadata: PreFlightInvocationMetadata { source_table, .. },
+        }) => {
+            assert_eq!(
+                *source_table,
+                SourceTable::New,
+                "Scheduled status can be stored only for NeoInvocationStatus table"
+            );
             // The scheduled variant is only on the NeoInvocationStatus
             storage.put_kv(
                 create_neo_invocation_status_key(invocation_id),
