@@ -456,6 +456,7 @@ pub mod v1 {
                             crate::invocation_status_table::CompletedInvocation {
                                 timestamps,
                                 invocation_target,
+                                span_context: expect_or_fail!(span_context)?.try_into()?,
                                 source,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 source_table: crate::invocation_status_table::SourceTable::New,
@@ -718,6 +719,7 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Completed(
                         crate::invocation_status_table::CompletedInvocation {
                             invocation_target,
+                            span_context,
                             source,
                             idempotency_key,
                             timestamps,
@@ -729,7 +731,7 @@ pub mod v1 {
                         status: neo_invocation_status::Status::Completed.into(),
                         invocation_target: Some(invocation_target.into()),
                         source: Some(source.into()),
-                        span_context: None,
+                        span_context: Some(span_context.into()),
                         creation_time: unsafe { timestamps.creation_time() }.as_u64(),
                         modification_time: unsafe { timestamps.modification_time() }.as_u64(),
                         inboxed_transition_time: unsafe { timestamps.inboxed_transition_time() }
@@ -1233,6 +1235,7 @@ pub mod v1 {
 
                 Ok(crate::invocation_status_table::CompletedInvocation {
                     invocation_target,
+                    span_context: Default::default(),
                     source,
                     timestamps: crate::invocation_status_table::StatusTimestamps::new(
                         MillisSinceEpoch::new(value.creation_time),
@@ -1266,6 +1269,8 @@ pub mod v1 {
                     // We don't store this in the old invocation status table
                     completion_retention_duration: _,
                     source_table: _,
+                    // The old invocation status table doesn't support span context on Completed
+                    span_context: _,
                 } = value;
 
                 Completed {
