@@ -21,7 +21,8 @@ use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_types::identifiers::{IdempotencyId, IngressRequestId};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, SubmitNotificationSink,
+    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+    SubmitNotificationSink,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
@@ -898,6 +899,7 @@ async fn attach_command() {
     );
 }
 
+// TODO remove this once we remove the old invocation status table
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn timer_cleanup() {
     let tc = TaskCenterBuilder::default()
@@ -961,6 +963,68 @@ async fn timer_cleanup() {
         state_machine
             .storage()
             .transaction()
+            .get_idempotency_metadata(&idempotency_id)
+            .await
+            .unwrap(),
+        none()
+    );
+}
+
+#[test(tokio::test)]
+async fn purge_completed_idempotent_invocation() {
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    let mut state_machine = tc
+        .run_in_scope(
+            "mock-state-machine",
+            None,
+            MockStateMachine::create_with_neo_invocation_status_table(),
+        )
+        .await;
+
+    let idempotency_key = ByteString::from_static("my-idempotency-key");
+    let invocation_target = InvocationTarget::mock_virtual_object();
+    let invocation_id = InvocationId::generate_with_idempotency_key(
+        &invocation_target,
+        Some(idempotency_key.clone()),
+    );
+    let idempotency_id =
+        IdempotencyId::combine(invocation_id, &invocation_target, idempotency_key.clone());
+
+    // Prepare idempotency metadata and completed status
+    let mut txn = state_machine.storage().transaction();
+    txn.put_idempotency_metadata(&idempotency_id, IdempotencyMetadata { invocation_id })
+        .await;
+    txn.put_invocation_status(
+        &invocation_id,
+        InvocationStatus::Completed(CompletedInvocation {
+            invocation_target,
+            idempotency_key: Some(idempotency_key.clone()),
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .await;
+    txn.commit().await.unwrap();
+
+    // Send purge command
+    let _ = state_machine
+        .apply(Command::PurgeInvocation(PurgeInvocationRequest {
+            invocation_id,
+        }))
+        .await;
+    assert_that!(
+        state_machine
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Free)
+    );
+    assert_that!(
+        state_machine
+            .storage()
             .get_idempotency_metadata(&idempotency_id)
             .await
             .unwrap(),

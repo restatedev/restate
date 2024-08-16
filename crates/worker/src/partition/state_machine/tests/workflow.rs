@@ -16,7 +16,9 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
-use restate_types::invocation::{AttachInvocationRequest, InvocationQuery, InvocationTarget};
+use restate_types::invocation::{
+    AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
+};
 use restate_wal_protocol::timer::TimerKeyValue;
 use std::time::Duration;
 use test_log::test;
@@ -362,6 +364,7 @@ async fn attach_by_workflow_key() {
     );
 }
 
+// TODO remove this once we remove the old invocation status table
 #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
 async fn timer_cleanup() {
     let tc = TaskCenterBuilder::default()
@@ -422,6 +425,61 @@ async fn timer_cleanup() {
         state_machine
             .storage()
             .transaction()
+            .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
+            .await
+            .unwrap(),
+        pat!(VirtualObjectStatus::Unlocked)
+    );
+}
+
+#[test(tokio::test)]
+async fn purge_completed_workflow() {
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()
+        .expect("task_center builds");
+    let mut state_machine = tc
+        .run_in_scope("mock-state-machine", None, MockStateMachine::create())
+        .await;
+
+    let invocation_target = InvocationTarget::mock_workflow();
+    let invocation_id = InvocationId::mock_random();
+
+    // Prepare idempotency metadata and completed status
+    let mut txn = state_machine.storage().transaction();
+    txn.put_invocation_status(
+        &invocation_id,
+        InvocationStatus::Completed(CompletedInvocation {
+            invocation_target: invocation_target.clone(),
+            idempotency_key: None,
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .await;
+    txn.put_virtual_object_status(
+        &invocation_target.as_keyed_service_id().unwrap(),
+        VirtualObjectStatus::Locked(invocation_id),
+    )
+    .await;
+    txn.commit().await.unwrap();
+
+    // Send timer fired command
+    let _ = state_machine
+        .apply(Command::PurgeInvocation(PurgeInvocationRequest {
+            invocation_id,
+        }))
+        .await;
+    assert_that!(
+        state_machine
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Free)
+    );
+    assert_that!(
+        state_machine
+            .storage()
             .get_virtual_object_status(&invocation_target.as_keyed_service_id().unwrap())
             .await
             .unwrap(),
