@@ -71,6 +71,7 @@ async fn render_services_status(
     table.set_styled_header(vec![
         "",
         "PENDING",
+        "SCHEDULED",
         "READY",
         "RUNNING",
         "BACKING-OFF",
